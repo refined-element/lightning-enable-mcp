@@ -1,3 +1,5 @@
+<!-- mcp-name: io.github.refined-element/lightning-enable-mcp -->
+
 # Lightning Enable MCP Server
 
 A Model Context Protocol (MCP) server that enables AI agents to make Lightning Network payments. All tools are free — no license or subscription required.
@@ -377,7 +379,7 @@ dotnet test tests/LightningEnable.Mcp.Tests
 ```bash
 cd dotnet/src/LightningEnable.Mcp
 dotnet pack -c Release
-dotnet nuget push bin/Release/LightningEnable.Mcp.1.6.0.nupkg --source nuget.org
+dotnet nuget push bin/Release/LightningEnable.Mcp.1.6.1.nupkg --source nuget.org
 ```
 
 ## License

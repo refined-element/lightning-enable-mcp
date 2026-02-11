@@ -1,0 +1,185 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.refined-element/lightning-enable-mcp",
+  "title": "Lightning Enable MCP Server",
+  "description": "AI agent Lightning payments: pay invoices, L402 auto-pay, wallet balance, payment history",
+  "version": "1.6.1",
+  "websiteUrl": "https://docs.lightningenable.com/products/l402-microtransactions/mcp-complete-guide",
+  "packages": [
+    {
+      "registryType": "nuget",
+      "identifier": "LightningEnable.Mcp",
+      "version": "1.6.1",
+      "transport": {
+        "type": "stdio"
+      },
+      "runtimeHint": "dnx",
+      "environmentVariables": [
+        {
+          "name": "STRIKE_API_KEY",
+          "description": "Strike API key for Lightning payments (recommended wallet)",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "NWC_CONNECTION_STRING",
+          "description": "Nostr Wallet Connect URI (for NWC wallets like CoinOS, CLINK)",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "LND_REST_HOST",
+          "description": "LND REST API host (e.g., localhost:8080)",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "LND_MACAROON_HEX",
+          "description": "LND admin macaroon in hex format",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "OPENNODE_API_KEY",
+          "description": "OpenNode API key (direct payments only, no L402 support)",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "OPENNODE_ENVIRONMENT",
+          "description": "OpenNode environment: production or dev (testnet)",
+          "isRequired": false,
+          "isSecret": false,
+          "default": "production"
+        },
+        {
+          "name": "L402_MAX_SATS_PER_REQUEST",
+          "description": "Maximum satoshis allowed per single payment request",
+          "isRequired": false,
+          "isSecret": false,
+          "default": "1000"
+        },
+        {
+          "name": "L402_MAX_SATS_PER_SESSION",
+          "description": "Maximum total satoshis allowed per session",
+          "isRequired": false,
+          "isSecret": false,
+          "default": "10000"
+        }
+      ]
+    },
+    {
+      "registryType": "pypi",
+      "identifier": "lightning-enable-mcp",
+      "version": "1.6.1",
+      "transport": {
+        "type": "stdio"
+      },
+      "runtimeHint": "uvx",
+      "environmentVariables": [
+        {
+          "name": "STRIKE_API_KEY",
+          "description": "Strike API key for Lightning payments (recommended wallet)",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "NWC_CONNECTION_STRING",
+          "description": "Nostr Wallet Connect URI (for NWC wallets like CoinOS, CLINK)",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "LND_REST_HOST",
+          "description": "LND REST API host (e.g., localhost:8080)",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "LND_MACAROON_HEX",
+          "description": "LND admin macaroon in hex format",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "OPENNODE_API_KEY",
+          "description": "OpenNode API key (direct payments only, no L402 support)",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "L402_MAX_SATS_PER_REQUEST",
+          "description": "Maximum satoshis allowed per single payment request",
+          "isRequired": false,
+          "isSecret": false,
+          "default": "1000"
+        },
+        {
+          "name": "L402_MAX_SATS_PER_SESSION",
+          "description": "Maximum total satoshis allowed per session",
+          "isRequired": false,
+          "isSecret": false,
+          "default": "10000"
+        }
+      ]
+    },
+    {
+      "registryType": "oci",
+      "identifier": "docker.io/refinedelement/lightning-enable-mcp:1.6.1",
+      "transport": {
+        "type": "stdio"
+      },
+      "runtimeHint": "docker",
+      "environmentVariables": [
+        {
+          "name": "STRIKE_API_KEY",
+          "description": "Strike API key for Lightning payments (recommended wallet)",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "NWC_CONNECTION_STRING",
+          "description": "Nostr Wallet Connect URI (for NWC wallets like CoinOS, CLINK)",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "LND_REST_HOST",
+          "description": "LND REST API host (e.g., localhost:8080)",
+          "isRequired": false,
+          "isSecret": false
+        },
+        {
+          "name": "LND_MACAROON_HEX",
+          "description": "LND admin macaroon in hex format",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "OPENNODE_API_KEY",
+          "description": "OpenNode API key (direct payments only, no L402 support)",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "L402_MAX_SATS_PER_REQUEST",
+          "description": "Maximum satoshis allowed per single payment request",
+          "isRequired": false,
+          "isSecret": false,
+          "default": "1000"
+        },
+        {
+          "name": "L402_MAX_SATS_PER_SESSION",
+          "description": "Maximum total satoshis allowed per session",
+          "isRequired": false,
+          "isSecret": false,
+          "default": "10000"
+        }
+      ]
+    }
+  ],
+  "repository": {
+    "url": "https://github.com/refined-element/lightning-enable-mcp",
+    "source": "github"
+  }
+}

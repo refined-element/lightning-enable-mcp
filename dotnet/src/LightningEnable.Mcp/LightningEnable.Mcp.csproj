@@ -12,9 +12,9 @@
 
     <!-- NuGet Package Metadata -->
     <PackageId>LightningEnable.Mcp</PackageId>
-    <Version>1.6.0</Version>
-    <AssemblyVersion>1.6.0.0</AssemblyVersion>
-    <FileVersion>1.6.0.0</FileVersion>
+    <Version>1.6.1</Version>
+    <AssemblyVersion>1.6.1.0</AssemblyVersion>
+    <FileVersion>1.6.1.0</FileVersion>
     <Authors>Lightning Enable</Authors>
     <Company>Lightning Enable</Company>
     <Product>Lightning Enable MCP Server</Product>
@@ -24,7 +24,7 @@
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <!-- <PackageIcon>icon.png</PackageIcon> -->
 
-    <PackageReleaseNotes>v1.6.0: Remove L402 license requirement - all L402 tools now work without a license purchase. Removed unlock_l402_features and check_l402_license tools.</PackageReleaseNotes>
+    <PackageReleaseNotes>v1.6.1: Add MCP Registry verification. Published to registry.modelcontextprotocol.io.</PackageReleaseNotes>
 
     <!-- MIT License -->
     <PackageLicenseExpression>MIT</PackageLicenseExpression>

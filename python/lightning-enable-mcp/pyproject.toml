@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "lightning-enable-mcp"
-version = "1.6.0"
+version = "1.6.1"
 description = "MCP server for L402 Lightning payments - access paid APIs with AI agents"
 readme = "README.md"
 license = "MIT"
@@ -61,9 +61,9 @@ dev = [
 
 [project.urls]
 Homepage = "https://lightningenable.com"
-Documentation = "https://github.com/refinedelement/lightning-enable-mcp"
-Repository = "https://github.com/refinedelement/lightning-enable-mcp"
-Issues = "https://github.com/refinedelement/lightning-enable-mcp/issues"
+Documentation = "https://github.com/refined-element/lightning-enable-mcp"
+Repository = "https://github.com/refined-element/lightning-enable-mcp"
+Issues = "https://github.com/refined-element/lightning-enable-mcp/issues"
 
 [project.scripts]
 lightning-enable-mcp = "lightning_enable_mcp.server:main"

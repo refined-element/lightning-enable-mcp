@@ -5,9 +5,10 @@ FROM python:3.12-slim
 LABEL org.opencontainers.image.title="Lightning Enable MCP"
 LABEL org.opencontainers.image.description="Pay Lightning invoices and access L402-protected APIs from your AI agent"
 LABEL org.opencontainers.image.url="https://lightningenable.com"
-LABEL org.opencontainers.image.source="https://github.com/lightningenable/lightning-enable"
+LABEL org.opencontainers.image.source="https://github.com/refined-element/lightning-enable-mcp"
 LABEL org.opencontainers.image.vendor="Lightning Enable"
 LABEL org.opencontainers.image.licenses="MIT"
+LABEL io.modelcontextprotocol.server.name="io.github.refined-element/lightning-enable-mcp"
 
 # Install system dependencies for cryptography and secp256k1
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -32,7 +33,6 @@ RUN mkdir -p /home/mcpuser/.lightning-enable
 ENV NWC_CONNECTION_STRING=""
 ENV OPENNODE_API_KEY=""
 ENV STRIKE_API_KEY=""
-ENV LIGHTNING_ENABLE_API_KEY=""
 ENV L402_MAX_SATS_PER_REQUEST="1000"
 ENV L402_MAX_SATS_PER_SESSION="10000"
 

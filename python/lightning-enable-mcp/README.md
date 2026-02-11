@@ -1,3 +1,5 @@
+<!-- mcp-name: io.github.refined-element/lightning-enable-mcp -->
+
 # Lightning Enable MCP Server (Python)
 
 An MCP (Model Context Protocol) server that enables AI agents to make Lightning Network payments. All tools are free — no license or subscription required.

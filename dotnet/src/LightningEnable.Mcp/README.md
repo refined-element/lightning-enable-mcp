@@ -379,7 +379,7 @@ dotnet test tests/LightningEnable.Mcp.Tests
 ```bash
 cd dotnet/src/LightningEnable.Mcp
 dotnet pack -c Release
-dotnet nuget push bin/Release/LightningEnable.Mcp.1.6.1.nupkg --source nuget.org
+dotnet nuget push bin/Release/LightningEnable.Mcp.1.6.2.nupkg --source nuget.org
 ```
 
 ## License

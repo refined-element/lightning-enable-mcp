@@ -1,0 +1,24 @@
+# Docker Compose for local testing
+# Usage: docker-compose run --rm lightning-enable-mcp
+
+version: '3.8'
+
+services:
+  lightning-enable-mcp:
+    build: .
+    image: lightningenable/mcp:latest
+    environment:
+      - NWC_CONNECTION_STRING=${NWC_CONNECTION_STRING}
+      - OPENNODE_API_KEY=${OPENNODE_API_KEY}
+      - STRIKE_API_KEY=${STRIKE_API_KEY}
+      - LIGHTNING_ENABLE_API_KEY=${LIGHTNING_ENABLE_API_KEY}
+      - L402_MAX_SATS_PER_REQUEST=${L402_MAX_SATS_PER_REQUEST:-1000}
+      - L402_MAX_SATS_PER_SESSION=${L402_MAX_SATS_PER_SESSION:-10000}
+    volumes:
+      # Persist config between runs
+      - lightning-enable-config:/home/mcpuser/.lightning-enable
+    stdin_open: true
+    tty: true
+
+volumes:
+  lightning-enable-config:

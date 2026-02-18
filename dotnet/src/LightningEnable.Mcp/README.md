@@ -388,6 +388,8 @@ MIT License - see [LICENSE](../../LICENSE) for details.
 
 ## Related Projects
 
+- [L402-Requests (Python)](https://github.com/refined-element/l402-requests) - Auto-paying L402 HTTP client for Python
+- [L402-Requests (.NET)](https://github.com/refined-element/l402-dotnet) - Auto-paying L402 HTTP client for .NET
 - [Lightning Enable API](https://api.lightningenable.com) - L402-protected API server
 - [Lightning Enable Store](https://store.lightningenable.com) - Live L402 commerce demo
 - [Lightning Enable Docs](https://docs.lightningenable.com) - Full documentation

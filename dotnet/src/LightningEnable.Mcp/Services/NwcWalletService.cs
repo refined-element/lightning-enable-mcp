@@ -391,6 +391,8 @@ public class NwcWalletService : IWalletService, IDisposable
             Console.Error.WriteLine($"[NWC] Sent EVENT, id: {eventId}");
 
             // Also send REQ to listen for response
+            // IMPORTANT: Filter by #e (request event ID) to avoid picking up cached
+            // responses from previous payments when making rapid successive requests
             var subId = Guid.NewGuid().ToString("N")[..8];
             var reqMessage = new JsonArray
             {
@@ -401,6 +403,7 @@ public class NwcWalletService : IWalletService, IDisposable
                     ["kinds"] = new JsonArray { 23195 }, // NIP-47 response
                     ["authors"] = new JsonArray { _config.WalletPubkey },
                     ["#p"] = new JsonArray { _myPubkeyHex },
+                    ["#e"] = new JsonArray { eventId },
                     ["since"] = createdAt - 10
                 }
             };
@@ -457,6 +460,19 @@ public class NwcWalletService : IWalletService, IDisposable
                             Console.Error.WriteLine($"[NWC] Event kind: {kind}");
                             if (kind == 23195) // NIP-47 response
                             {
+                                // Verify this response is for our specific request via e tag
+                                var responseTags = responseEvent["tags"]?.AsArray();
+                                var responseETag = responseTags?
+                                    .Where(t => t?.AsArray()?.Count >= 2 && t![0]?.GetValue<string>() == "e")
+                                    .Select(t => t![1]?.GetValue<string>())
+                                    .FirstOrDefault();
+
+                                if (responseETag != null && responseETag != eventId)
+                                {
+                                    Console.Error.WriteLine($"[NWC] Ignoring response for different request (e={responseETag[..16]}..., expected={eventId[..16]}...)");
+                                    continue;
+                                }
+
                                 var encryptedContent = responseEvent["content"]?.GetValue<string>();
                                 if (!string.IsNullOrEmpty(encryptedContent))
                                 {

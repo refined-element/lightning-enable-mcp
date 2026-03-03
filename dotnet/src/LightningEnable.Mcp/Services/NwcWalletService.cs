@@ -416,12 +416,10 @@ public class NwcWalletService : IWalletService, IDisposable
             await ws.SendAsync(messageBytes, WebSocketMessageType.Text, true, cancellationToken);
             Console.Error.WriteLine($"[NWC] Sent EVENT, id: {eventId}");
 
-            // Wait for response — only accept events arriving AFTER EOSE.
-            // Pre-EOSE events are stored/cached and may be stale relay responses
-            // from previous payments (some relays ignore #e tag filters).
+            // Wait for response. Stale cached responses from previous payments
+            // are filtered by preimage deduplication (layer 3 defense below).
             var buffer = new byte[8192];
             var responseBuilder = new StringBuilder();
-            var eoseReceived = false;
 
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
@@ -465,18 +463,9 @@ public class NwcWalletService : IWalletService, IDisposable
                         if (responseEvent != null)
                         {
                             var kind = responseEvent["kind"]?.GetValue<int>();
-                            Console.Error.WriteLine($"[NWC] Event kind: {kind}, eoseReceived: {eoseReceived}");
+                            Console.Error.WriteLine($"[NWC] Event kind: {kind}");
                             if (kind == 23195) // NIP-47 response
                             {
-                                // Skip pre-EOSE events — they are stored/cached responses
-                                // from previous payments that the relay replays on subscription.
-                                // The real response to our current payment arrives after EOSE.
-                                if (!eoseReceived)
-                                {
-                                    Console.Error.WriteLine("[NWC] Ignoring pre-EOSE cached event");
-                                    continue;
-                                }
-
                                 // Verify this response is for our specific request via e tag
                                 var responseTags = responseEvent["tags"]?.AsArray();
                                 var responseETag = responseTags?
@@ -538,8 +527,7 @@ public class NwcWalletService : IWalletService, IDisposable
                     }
                     else if (msgType == "EOSE")
                     {
-                        eoseReceived = true;
-                        Console.Error.WriteLine("[NWC] End of stored events, now accepting real-time responses only");
+                        Console.Error.WriteLine("[NWC] End of stored events, waiting for real-time events...");
                         continue;
                     }
                     else if (msgType == "NOTICE")

@@ -389,15 +389,9 @@ public class NwcWalletService : IWalletService, IDisposable
                 ["sig"] = sigHex
             };
 
-            // Send EVENT message (use NostrJsonOptions to avoid escaping + as \u002B)
-            var eventMessage = new JsonArray { "EVENT", nostrEvent };
-            var messageBytes = Encoding.UTF8.GetBytes(eventMessage.ToJsonString(NostrJsonOptions));
-            await ws.SendAsync(messageBytes, WebSocketMessageType.Text, true, cancellationToken);
-            Console.Error.WriteLine($"[NWC] Sent EVENT, id: {eventId}");
-
-            // Also send REQ to listen for response
-            // IMPORTANT: Filter by #e (request event ID) to avoid picking up cached
-            // responses from previous payments when making rapid successive requests
+            // Send REQ FIRST to subscribe before publishing the payment event.
+            // This ensures our subscription is active before the wallet processes
+            // the payment, so the response arrives as a real-time event (after EOSE).
             var subId = Guid.NewGuid().ToString("N")[..8];
             var reqMessage = new JsonArray
             {
@@ -409,16 +403,25 @@ public class NwcWalletService : IWalletService, IDisposable
                     ["authors"] = new JsonArray { _config.WalletPubkey },
                     ["#p"] = new JsonArray { _myPubkeyHex },
                     ["#e"] = new JsonArray { eventId },
-                    ["since"] = createdAt - 10
+                    ["since"] = createdAt
                 }
             };
             var reqBytes = Encoding.UTF8.GetBytes(reqMessage.ToJsonString(NostrJsonOptions));
             await ws.SendAsync(reqBytes, WebSocketMessageType.Text, true, cancellationToken);
             Console.Error.WriteLine($"[NWC] Sent REQ, subId: {subId}");
 
-            // Wait for response
+            // Now send EVENT (payment request) after subscription is active
+            var eventMessage = new JsonArray { "EVENT", nostrEvent };
+            var messageBytes = Encoding.UTF8.GetBytes(eventMessage.ToJsonString(NostrJsonOptions));
+            await ws.SendAsync(messageBytes, WebSocketMessageType.Text, true, cancellationToken);
+            Console.Error.WriteLine($"[NWC] Sent EVENT, id: {eventId}");
+
+            // Wait for response — only accept events arriving AFTER EOSE.
+            // Pre-EOSE events are stored/cached and may be stale relay responses
+            // from previous payments (some relays ignore #e tag filters).
             var buffer = new byte[8192];
             var responseBuilder = new StringBuilder();
+            var eoseReceived = false;
 
             using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
@@ -462,9 +465,18 @@ public class NwcWalletService : IWalletService, IDisposable
                         if (responseEvent != null)
                         {
                             var kind = responseEvent["kind"]?.GetValue<int>();
-                            Console.Error.WriteLine($"[NWC] Event kind: {kind}");
+                            Console.Error.WriteLine($"[NWC] Event kind: {kind}, eoseReceived: {eoseReceived}");
                             if (kind == 23195) // NIP-47 response
                             {
+                                // Skip pre-EOSE events — they are stored/cached responses
+                                // from previous payments that the relay replays on subscription.
+                                // The real response to our current payment arrives after EOSE.
+                                if (!eoseReceived)
+                                {
+                                    Console.Error.WriteLine("[NWC] Ignoring pre-EOSE cached event");
+                                    continue;
+                                }
+
                                 // Verify this response is for our specific request via e tag
                                 var responseTags = responseEvent["tags"]?.AsArray();
                                 var responseETag = responseTags?
@@ -526,7 +538,8 @@ public class NwcWalletService : IWalletService, IDisposable
                     }
                     else if (msgType == "EOSE")
                     {
-                        Console.Error.WriteLine("[NWC] End of stored events, waiting...");
+                        eoseReceived = true;
+                        Console.Error.WriteLine("[NWC] End of stored events, now accepting real-time responses only");
                         continue;
                     }
                     else if (msgType == "NOTICE")

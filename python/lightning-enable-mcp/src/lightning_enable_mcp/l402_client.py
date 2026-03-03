@@ -136,9 +136,6 @@ class L402Client:
             decoded = decode_bolt11(bolt11)
             if hasattr(decoded, "amount_msat") and decoded.amount_msat:
                 return decoded.amount_msat
-            # Some libraries use amount in satoshis
-            if hasattr(decoded, "amount") and decoded.amount:
-                return decoded.amount * 1000
             return None
         except Exception as e:
             logger.warning(f"Failed to decode invoice: {e}")

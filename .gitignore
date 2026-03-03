@@ -44,3 +44,8 @@ Thumbs.db
 # Secrets
 *.pem
 *.key
+.mcpregistry_*
+
+# Build artifacts
+mcp-publisher.exe
+mcp-publisher.tar.gz

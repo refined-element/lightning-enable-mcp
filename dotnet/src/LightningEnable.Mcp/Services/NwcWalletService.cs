@@ -107,8 +107,12 @@ public class NwcWalletService : IWalletService, IDisposable
                 }
             };
 
+            // Extract payment hash from BOLT11 for preimage verification
+            var expectedPaymentHash = ExtractPaymentHashFromBolt11(bolt11);
+            DebugLog($"Payment hash from BOLT11: {(expectedPaymentHash != null ? Convert.ToHexString(expectedPaymentHash).ToLowerInvariant() : "PARSE_FAILED")}");
+
             DebugLog("Sending NWC request...");
-            var response = await SendNwcRequestAsync(request, cancellationToken);
+            var response = await SendNwcRequestAsync(request, cancellationToken, expectedPaymentHash);
 
             if (response == null)
             {
@@ -343,7 +347,7 @@ public class NwcWalletService : IWalletService, IDisposable
         }
     }
 
-    private async Task<JsonObject?> SendNwcRequestAsync(JsonObject request, CancellationToken cancellationToken)
+    private async Task<JsonObject?> SendNwcRequestAsync(JsonObject request, CancellationToken cancellationToken, byte[]? expectedPaymentHash = null)
     {
         if (_config == null || _privateKey == null || _publicKey == null || _myPubkeyHex == null)
             return null;
@@ -496,22 +500,24 @@ public class NwcWalletService : IWalletService, IDisposable
                                     // (ignore cached responses from previous requests)
                                     if (resultType == expectedResultType)
                                     {
-                                        // For pay_invoice responses, check preimage hasn't been used before.
-                                        // Some relays ignore #e filters and return stale cached responses.
-                                        if (resultType == "pay_invoice")
+                                        // For pay_invoice responses, verify preimage matches payment hash.
+                                        // SHA256(preimage) must equal the invoice's payment hash.
+                                        // This catches stale relay responses from previous payments.
+                                        if (resultType == "pay_invoice" && expectedPaymentHash != null)
                                         {
                                             var preimageVal = responseObj?["result"]?["preimage"]?.GetValue<string>();
-                                            if (!string.IsNullOrEmpty(preimageVal))
+                                            if (!string.IsNullOrEmpty(preimageVal) && preimageVal.Length == 64)
                                             {
-                                                if (!_usedPreimages.TryAdd(preimageVal, DateTime.UtcNow))
+                                                var preimageBytes = Convert.FromHexString(preimageVal);
+                                                var computedHash = System.Security.Cryptography.SHA256.HashData(preimageBytes);
+                                                if (!computedHash.SequenceEqual(expectedPaymentHash))
                                                 {
-                                                    Console.Error.WriteLine($"[NWC] Ignoring stale preimage (already used in previous payment): {preimageVal[..16]}...");
+                                                    var expected = Convert.ToHexString(expectedPaymentHash).ToLowerInvariant();
+                                                    var got = Convert.ToHexString(computedHash).ToLowerInvariant();
+                                                    Console.Error.WriteLine($"[NWC] Preimage mismatch! SHA256(preimage)={got[..16]}... expected={expected[..16]}... — stale relay response, continuing...");
                                                     continue;
                                                 }
-                                                // Clean entries older than 5 minutes
-                                                var cutoff = DateTime.UtcNow.AddMinutes(-5);
-                                                foreach (var old in _usedPreimages.Where(kvp => kvp.Value < cutoff).ToList())
-                                                    _usedPreimages.TryRemove(old.Key, out _);
+                                                Console.Error.WriteLine("[NWC] Preimage verified: SHA256(preimage) matches payment hash");
                                             }
                                         }
                                         return responseObj;
@@ -558,6 +564,68 @@ public class NwcWalletService : IWalletService, IDisposable
                 await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Done", CancellationToken.None);
             }
         }
+    }
+
+    /// <summary>
+    /// Extracts the payment hash from a BOLT11 Lightning invoice.
+    /// Parses bech32 data to find the tagged field with type 1 (payment hash).
+    /// </summary>
+    private static byte[]? ExtractPaymentHashFromBolt11(string bolt11)
+    {
+        const string bech32Chars = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+
+        // Find the bech32 data separator '1' (last occurrence)
+        var sepIndex = bolt11.ToLowerInvariant().LastIndexOf('1');
+        if (sepIndex < 0) return null;
+
+        var data = bolt11[(sepIndex + 1)..].ToLowerInvariant();
+        // Need at least: 7 (timestamp) + 3 (tag header) + 52 (payment hash) + 104 (signature)
+        if (data.Length < 166) return null;
+
+        // Skip timestamp (7 bech32 chars = 35 bits)
+        var pos = 7;
+
+        // Parse tagged fields until we find payment hash (type 1)
+        // Stop before signature (last 104 chars)
+        while (pos + 3 <= data.Length - 104)
+        {
+            var type = bech32Chars.IndexOf(data[pos]);
+            if (type < 0) return null;
+
+            var len1 = bech32Chars.IndexOf(data[pos + 1]);
+            var len2 = bech32Chars.IndexOf(data[pos + 2]);
+            if (len1 < 0 || len2 < 0) return null;
+            var dataLen = (len1 << 5) | len2; // length in 5-bit groups
+
+            pos += 3; // skip type + 2 length chars
+
+            if (type == 1 && dataLen == 52) // payment hash: type 1, exactly 256 bits
+            {
+                if (pos + dataLen > data.Length) return null;
+
+                // Convert 52 bech32 chars (5-bit groups) to 32 bytes (8-bit)
+                var acc = 0;
+                var bits = 0;
+                var result = new List<byte>();
+                for (int i = 0; i < dataLen; i++)
+                {
+                    var val = bech32Chars.IndexOf(data[pos + i]);
+                    if (val < 0) return null;
+                    acc = (acc << 5) | val;
+                    bits += 5;
+                    while (bits >= 8)
+                    {
+                        bits -= 8;
+                        result.Add((byte)((acc >> bits) & 0xff));
+                    }
+                }
+                return result.Count == 32 ? result.ToArray() : null;
+            }
+
+            pos += dataLen;
+        }
+
+        return null;
     }
 
     /// <summary>

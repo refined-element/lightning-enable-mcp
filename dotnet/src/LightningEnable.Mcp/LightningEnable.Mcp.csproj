@@ -12,9 +12,9 @@
 
     <!-- NuGet Package Metadata -->
     <PackageId>LightningEnable.Mcp</PackageId>
-    <Version>1.6.4</Version>
-    <AssemblyVersion>1.6.4.0</AssemblyVersion>
-    <FileVersion>1.6.4.0</FileVersion>
+    <Version>1.6.5</Version>
+    <AssemblyVersion>1.6.5.0</AssemblyVersion>
+    <FileVersion>1.6.5.0</FileVersion>
     <Authors>Lightning Enable</Authors>
     <Company>Lightning Enable</Company>
     <Product>Lightning Enable MCP Server</Product>
@@ -24,7 +24,7 @@
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <!-- <PackageIcon>icon.png</PackageIcon> -->
 
-    <PackageReleaseNotes>v1.6.4: Fix NWC preimage mismatch on rapid L402 payments — add #e tag filter to subscription.</PackageReleaseNotes>
+    <PackageReleaseNotes>v1.6.5: Fix stale NWC preimage on rapid payments — deduplicate relay responses that ignore #e filter.</PackageReleaseNotes>
 
     <!-- MIT License -->
     <PackageLicenseExpression>MIT</PackageLicenseExpression>

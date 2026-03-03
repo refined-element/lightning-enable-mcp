@@ -22,6 +22,11 @@ public class NwcWalletService : IWalletService, IDisposable
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
     };
 
+    // Track recently used preimages to detect stale relay responses.
+    // Some NWC relays (e.g. Coinos) ignore #e tag filters and return cached
+    // responses from previous payments. We reject any preimage already used.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _usedPreimages = new();
+
     private readonly NwcConfig? _config;
     private readonly ECPrivKey? _privateKey;
     private readonly ECXOnlyPubKey? _publicKey;
@@ -490,6 +495,24 @@ public class NwcWalletService : IWalletService, IDisposable
                                     // (ignore cached responses from previous requests)
                                     if (resultType == expectedResultType)
                                     {
+                                        // For pay_invoice responses, check preimage hasn't been used before.
+                                        // Some relays ignore #e filters and return stale cached responses.
+                                        if (resultType == "pay_invoice")
+                                        {
+                                            var preimageVal = responseObj?["result"]?["preimage"]?.GetValue<string>();
+                                            if (!string.IsNullOrEmpty(preimageVal))
+                                            {
+                                                if (!_usedPreimages.TryAdd(preimageVal, DateTime.UtcNow))
+                                                {
+                                                    Console.Error.WriteLine($"[NWC] Ignoring stale preimage (already used in previous payment): {preimageVal[..16]}...");
+                                                    continue;
+                                                }
+                                                // Clean entries older than 5 minutes
+                                                var cutoff = DateTime.UtcNow.AddMinutes(-5);
+                                                foreach (var old in _usedPreimages.Where(kvp => kvp.Value < cutoff).ToList())
+                                                    _usedPreimages.TryRemove(old.Key, out _);
+                                            }
+                                        }
                                         return responseObj;
                                     }
                                     else

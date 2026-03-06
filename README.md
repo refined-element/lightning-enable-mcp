@@ -12,9 +12,12 @@ Give your AI agent a Lightning wallet and it can:
 
 - **Pay invoices** — Send Bitcoin via Lightning to any BOLT11 invoice
 - **Access L402 APIs** — Automatically pay L402 challenges for seamless API access
+- **Discover APIs** — Find L402 manifests and explore available endpoints with budget-aware pricing
 - **Track spending** — Budget limits, payment history, and balance checks
 - **Create invoices** — Generate invoices to receive payments
-- **Exchange currency** — Convert USD/BTC (Strike wallet)
+- **Get BTC price** — Real-time Bitcoin price from Strike
+- **Exchange currency** — Convert between USD/BTC/EUR and more (Strike wallet)
+- **Send on-chain** — Send Bitcoin on-chain (Strike/LND)
 
 ## Quick Install
 
@@ -79,7 +82,7 @@ Config file locations:
 | **LND** | REST + macaroon | Yes (guaranteed) |
 | **NWC (CoinOS)** | Connection string | Yes |
 | **NWC (CLINK)** | Connection string | Yes |
-| **NWC (Alby)** | Connection string | Untested |
+| **NWC (Alby Hub)** | Connection string | Yes |
 | **OpenNode** | API key | No (no preimage) |
 
 ## Try It: Lightning Enable Store
@@ -94,7 +97,7 @@ Buy me a Lightning Enable t-shirt from store.lightningenable.com
 
 - [.NET README](dotnet/src/LightningEnable.Mcp/README.md) — Full .NET documentation
 - [Python README](python/lightning-enable-mcp/README.md) — Full Python documentation
-- [Full Docs](https://docs.lightningenable.com/products/l402-microtransactions/mcp-complete-guide) — Complete guide with all 13 tools
+- [Full Docs](https://docs.lightningenable.com/products/l402-microtransactions/mcp-complete-guide) — Complete guide with all 15 tools
 - [AI Spending Security](https://docs.lightningenable.com/products/l402-microtransactions/ai-spending-security) — Budget controls and safety
 
 ## Repository Structure

@@ -2,14 +2,14 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.refined-element/lightning-enable-mcp",
   "title": "Lightning Enable MCP Server",
-  "description": "AI agent Lightning payments: pay invoices, L402 auto-pay, wallet balance, payment history",
-  "version": "1.6.9",
+  "description": "AI agent Lightning payments: pay invoices, L402 auto-pay, API discovery via registry search, wallet balance, payment history",
+  "version": "1.7.0",
   "websiteUrl": "https://docs.lightningenable.com/products/l402-microtransactions/mcp-complete-guide",
   "packages": [
     {
       "registryType": "nuget",
       "identifier": "LightningEnable.Mcp",
-      "version": "1.6.9",
+      "version": "1.7.0",
       "transport": {
         "type": "stdio"
       },
@@ -71,7 +71,7 @@
     {
       "registryType": "pypi",
       "identifier": "lightning-enable-mcp",
-      "version": "1.6.9",
+      "version": "1.7.0",
       "transport": {
         "type": "stdio"
       },

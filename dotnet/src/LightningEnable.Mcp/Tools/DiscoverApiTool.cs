@@ -6,9 +6,10 @@ using ModelContextProtocol.Server;
 namespace LightningEnable.Mcp.Tools;
 
 /// <summary>
-/// MCP tool for discovering L402-enabled API endpoints from a manifest.
-/// Fetches and parses the L402 manifest from well-known locations,
-/// optionally annotating endpoints with budget-aware affordability info.
+/// MCP tool for discovering L402-enabled API endpoints.
+/// Supports two modes:
+/// 1. Registry search: query the L402 API registry by keyword/category
+/// 2. Manifest fetch: fetch a specific API's manifest from well-known locations
 /// </summary>
 [McpServerToolType]
 public static class DiscoverApiTool
@@ -31,24 +32,170 @@ public static class DiscoverApiTool
     };
 
     /// <summary>
-    /// Discovers L402-enabled API endpoints from a manifest URL.
+    /// Discovers L402-enabled API endpoints by searching the registry or fetching a manifest.
     /// </summary>
-    /// <param name="url">Base URL of the L402-enabled API, or direct URL to the manifest JSON.</param>
-    /// <param name="budgetAware">If true, annotates endpoints with affordable call counts based on remaining budget.</param>
-    /// <param name="budgetService">Injected budget service for affordability calculations.</param>
-    /// <param name="priceService">Injected price service for USD conversion.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>JSON with service info, capabilities, endpoints, and optional budget annotations.</returns>
     [McpServerTool(Name = "discover_api"), Description(
-        "Discover L402-enabled API endpoints from a manifest. " +
-        "Pass the base URL of an L402 API to find all available endpoints, their pricing, and capabilities. " +
-        "With budget_aware=true, shows how many calls you can afford with your remaining budget.")]
+        "Discover L402-enabled APIs. Use 'query' to search the registry for available APIs by keyword, " +
+        "or use 'url' to fetch a specific API's manifest with full endpoint details and pricing. " +
+        "Use 'category' to browse by category. With budget_aware=true, shows how many calls you can afford.")]
     public static async Task<string> DiscoverApi(
-        [Description("Base URL of the L402-enabled API (e.g., 'https://api.example.com/l402/proxy/my-api'), or direct URL to the manifest JSON file.")] string url,
+        [Description("Base URL of the L402-enabled API, or direct URL to the manifest JSON file. If omitted, searches the registry instead.")] string? url = null,
+        [Description("Search the L402 API registry by keyword (e.g., 'weather', 'ai', 'geocoding').")] string? query = null,
+        [Description("Filter registry results by category (e.g., 'ai', 'data', 'finance').")] string? category = null,
         [Description("If true, annotate endpoints with affordable call counts based on remaining budget. Default: true.")] bool budgetAware = true,
         IBudgetService? budgetService = null,
         IPriceService? priceService = null,
         CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            // Route: URL provided → fetch manifest (existing behavior)
+            if (!string.IsNullOrWhiteSpace(url))
+            {
+                return await FetchAndFormatManifestAsync(url, budgetAware, budgetService, priceService, cancellationToken);
+            }
+
+            // Route: query/category provided → search registry
+            if (!string.IsNullOrWhiteSpace(query) || !string.IsNullOrWhiteSpace(category))
+            {
+                return await SearchRegistryAsync(query, category, budgetAware, budgetService, priceService, cancellationToken);
+            }
+
+            // No params → usage error
+            return JsonSerializer.Serialize(new
+            {
+                success = false,
+                error = "Please provide either a 'url' to fetch an API manifest, or a 'query'/'category' to search the registry.",
+                examples = new[]
+                {
+                    new { description = "Search for weather APIs", call = "discover_api(query=\"weather\")" },
+                    new { description = "Browse AI category", call = "discover_api(category=\"ai\")" },
+                    new { description = "Get full details for a specific API", call = "discover_api(url=\"https://api.example.com\")" }
+                }
+            }, new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch (Exception ex)
+        {
+            return JsonSerializer.Serialize(new
+            {
+                success = false,
+                error = $"Error discovering API: {ex.Message}"
+            });
+        }
+    }
+
+    /// <summary>
+    /// Searches the L402 API registry for available APIs matching the query/category.
+    /// </summary>
+    internal static async Task<string> SearchRegistryAsync(
+        string? query, string? category, bool budgetAware,
+        IBudgetService? budgetService, IPriceService? priceService,
+        CancellationToken ct)
+    {
+        var registryUrl = GetRegistryBaseUrl();
+        var queryParams = new List<string> { "pageSize=20" };
+        if (!string.IsNullOrWhiteSpace(query))
+            queryParams.Add($"q={Uri.EscapeDataString(query)}");
+        if (!string.IsNullOrWhiteSpace(category))
+            queryParams.Add($"category={Uri.EscapeDataString(category)}");
+
+        var requestUrl = $"{registryUrl}/api/manifests/registry?{string.Join("&", queryParams)}";
+
+        var response = await SharedClient.GetAsync(requestUrl, ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            return JsonSerializer.Serialize(new
+            {
+                success = false,
+                error = $"Registry search failed with status {(int)response.StatusCode}.",
+                registry_url = requestUrl,
+                hint = "The L402 API registry may be temporarily unavailable. Try again later or use discover_api(url=...) to fetch a specific manifest directly."
+            });
+        }
+
+        var json = await response.Content.ReadAsStringAsync(ct);
+        using var doc = JsonDocument.Parse(json);
+        var root = doc.RootElement;
+
+        var items = new List<Dictionary<string, object?>>();
+        if (root.TryGetProperty("items", out var itemsArray) && itemsArray.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var item in itemsArray.EnumerateArray())
+            {
+                var entry = new Dictionary<string, object?>();
+                if (item.TryGetProperty("name", out var name)) entry["name"] = name.GetString();
+                if (item.TryGetProperty("description", out var desc)) entry["description"] = desc.GetString();
+                if (item.TryGetProperty("parsedCategories", out var cats) && cats.ValueKind == JsonValueKind.Array)
+                    entry["categories"] = cats.EnumerateArray().Select(c => c.GetString()).ToList();
+                if (item.TryGetProperty("endpointCount", out var epCount)) entry["endpoint_count"] = epCount.GetInt32();
+                if (item.TryGetProperty("defaultPriceSats", out var price)) entry["default_price_sats"] = price.GetInt32();
+                if (item.TryGetProperty("manifestUrl", out var mUrl)) entry["manifest_url"] = mUrl.GetString();
+                if (item.TryGetProperty("proxyBaseUrl", out var pUrl)) entry["proxy_base_url"] = pUrl.GetString();
+                if (item.TryGetProperty("documentationUrl", out var docUrl)) entry["documentation_url"] = docUrl.GetString();
+
+                // Budget annotation per result
+                if (budgetAware && budgetService != null && entry.ContainsKey("default_price_sats"))
+                {
+                    var priceSats = Convert.ToInt64(entry["default_price_sats"]);
+                    if (priceSats > 0)
+                    {
+                        var config = budgetService.GetConfig();
+                        entry["affordable_calls"] = config.RemainingSessionBudget / priceSats;
+                    }
+                }
+
+                items.Add(entry);
+            }
+        }
+
+        var total = root.TryGetProperty("total", out var totalProp) ? totalProp.GetInt32() : items.Count;
+
+        object? budgetInfo = null;
+        if (budgetAware && budgetService != null)
+        {
+            var config = budgetService.GetConfig();
+            budgetInfo = new
+            {
+                remaining_sats = config.RemainingSessionBudget,
+                session_limit_sats = config.MaxSatsPerSession,
+                session_spent_sats = config.SessionSpent
+            };
+        }
+
+        return JsonSerializer.Serialize(new
+        {
+            success = true,
+            source = "registry",
+            query,
+            category,
+            results = items,
+            total,
+            budget = budgetInfo,
+            hint = items.Count > 0
+                ? "Call discover_api(url=\"<manifest_url>\") for full endpoint details and pricing of a specific API."
+                : "No APIs found. Try different keywords or browse categories."
+        }, new JsonSerializerOptions { WriteIndented = true });
+    }
+
+    private static string GetRegistryBaseUrl()
+    {
+        // Check env vars in priority order
+        var url = Environment.GetEnvironmentVariable("L402_REGISTRY_URL");
+        if (!string.IsNullOrWhiteSpace(url)) return url.TrimEnd('/');
+
+        url = Environment.GetEnvironmentVariable("LIGHTNING_ENABLE_API_URL");
+        if (!string.IsNullOrWhiteSpace(url)) return url.TrimEnd('/');
+
+        return "https://api.lightningenable.com";
+    }
+
+    /// <summary>
+    /// Fetches and formats a manifest from a specific URL (original discover_api behavior).
+    /// </summary>
+    private static async Task<string> FetchAndFormatManifestAsync(
+        string url, bool budgetAware,
+        IBudgetService? budgetService, IPriceService? priceService,
+        CancellationToken cancellationToken)
     {
         try
         {
@@ -126,6 +273,7 @@ public static class DiscoverApiTool
             return JsonSerializer.Serialize(new
             {
                 success = true,
+                source = "manifest",
                 manifest_url = manifestUrl,
                 service = serviceInfo,
                 l402 = l402Info,
@@ -140,14 +288,6 @@ public static class DiscoverApiTool
             {
                 success = false,
                 error = $"Failed to parse manifest JSON: {ex.Message}"
-            });
-        }
-        catch (Exception ex)
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = $"Error discovering API: {ex.Message}"
             });
         }
     }

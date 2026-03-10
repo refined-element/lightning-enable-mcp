@@ -9,6 +9,7 @@ An MCP (Model Context Protocol) server that enables AI agents to make Lightning 
 Lightning Enable MCP provides tools for AI agents (like Claude) to:
 
 - **Pay Lightning invoices** — Send payments to any BOLT11 invoice
+- **Discover APIs** — Search the L402 API registry by keyword/category, or fetch a specific API's manifest
 - **Access L402-protected APIs** — Automatically handle L402 payment challenges
 - **Control spending** — Set per-request and session budgets
 - **Track payments** — View payment history and wallet balance

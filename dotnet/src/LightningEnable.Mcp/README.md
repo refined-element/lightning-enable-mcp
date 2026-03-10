@@ -12,6 +12,7 @@ This MCP server provides tools for AI agents (like Claude) to:
 - **Manage payment budgets** — Set per-request and per-session spending limits
 - **Track payment history** — Review all payments made during a session
 - **Check wallet balance** — Monitor your connected Lightning wallet
+- **Discover APIs** — Search the L402 API registry by keyword/category, or fetch a specific API's manifest
 - **Access L402-protected APIs** — Automatically pay L402 challenges for seamless API access
 - **Create invoices** — Generate BOLT11 invoices to receive payments
 - **Exchange currency** — Convert between USD and BTC (Strike)

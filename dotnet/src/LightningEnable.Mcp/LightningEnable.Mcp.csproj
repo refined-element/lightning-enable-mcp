@@ -12,9 +12,9 @@
 
     <!-- NuGet Package Metadata -->
     <PackageId>LightningEnable.Mcp</PackageId>
-    <Version>1.6.9</Version>
-    <AssemblyVersion>1.6.9.0</AssemblyVersion>
-    <FileVersion>1.6.9.0</FileVersion>
+    <Version>1.7.0</Version>
+    <AssemblyVersion>1.7.0.0</AssemblyVersion>
+    <FileVersion>1.7.0.0</FileVersion>
     <Authors>Lightning Enable</Authors>
     <Company>Lightning Enable</Company>
     <Product>Lightning Enable MCP Server</Product>
@@ -24,7 +24,7 @@
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <!-- <PackageIcon>icon.png</PackageIcon> -->
 
-    <PackageReleaseNotes>v1.6.9: Republish with SHA256 preimage verification — verify SHA256(preimage)==payment_hash to reject stale NWC relay responses.</PackageReleaseNotes>
+    <PackageReleaseNotes>v1.7.0: discover_api now supports L402 API registry search — use query/category params to find APIs by keyword, or url for direct manifest fetch.</PackageReleaseNotes>
 
     <!-- MIT License -->
     <PackageLicenseExpression>MIT</PackageLicenseExpression>

@@ -12,7 +12,7 @@ Give your AI agent a Lightning wallet and it can:
 
 - **Pay invoices** — Send Bitcoin via Lightning to any BOLT11 invoice
 - **Access L402 APIs** — Automatically pay L402 challenges for seamless API access
-- **Discover APIs** — Find L402 manifests and explore available endpoints with budget-aware pricing
+- **Discover APIs** — Search the L402 API registry to find paid APIs by keyword or category, or fetch a specific API's manifest for full endpoint details and pricing
 - **Track spending** — Budget limits, payment history, and balance checks
 - **Create invoices** — Generate invoices to receive payments
 - **Get BTC price** — Real-time Bitcoin price from Strike

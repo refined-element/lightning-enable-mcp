@@ -2,7 +2,7 @@
 
 # Lightning Enable MCP Server
 
-A Model Context Protocol (MCP) server that enables AI agents to make Lightning Network payments. All tools are free — no license or subscription required.
+A Model Context Protocol (MCP) server that enables AI agents to make Lightning Network payments. 15 consumer tools are free with no subscription required. 2 producer tools (`create_l402_challenge`, `verify_l402_payment`) require an [Agentic Commerce subscription](https://lightningenable.com) (from $99/mo) and `LIGHTNING_ENABLE_API_KEY`.
 
 ## Overview
 
@@ -17,6 +17,7 @@ This MCP server provides tools for AI agents (like Claude) to:
 - **Create invoices** — Generate BOLT11 invoices to receive payments
 - **Exchange currency** — Convert between USD and BTC (Strike)
 - **Send on-chain** — Send on-chain Bitcoin payments (Strike, LND)
+- **Sell services (L402 Producer)** — Create L402 payment challenges and verify payments, turning your agent into a full commerce participant that can both buy and sell
 
 ## Installation
 
@@ -62,6 +63,7 @@ dotnet build src/LightningEnable.Mcp
 | `LND_MACAROON_HEX` | If using LND | - | LND admin macaroon in hex |
 | `L402_MAX_SATS_PER_REQUEST` | No | 1000 | Maximum sats per single request |
 | `L402_MAX_SATS_PER_SESSION` | No | 10000 | Maximum sats for entire session |
+| `LIGHTNING_ENABLE_API_KEY` | For producer tools | - | API key for `create_l402_challenge` and `verify_l402_payment`. Requires Agentic Commerce subscription. |
 
 Configure one wallet provider. If multiple are set, priority order is: LND > NWC > Strike > OpenNode.
 
@@ -271,6 +273,38 @@ Convert between USD and BTC within your Strike wallet.
 
 Send an on-chain Bitcoin payment to a Bitcoin address.
 
+### create_l402_challenge (Agentic Commerce)
+
+Create an L402 payment challenge to charge another agent or user for accessing a resource. Returns a Lightning invoice and macaroon that the payer must pay before you grant access.
+
+**Requires:** `LIGHTNING_ENABLE_API_KEY` with an Agentic Commerce subscription (from $99/mo).
+
+**Parameters:**
+- `resource` (required): Resource identifier — URL, service name, or description of what you're charging for
+- `priceSats` (required): Price in satoshis to charge
+- `description`: Description shown on the Lightning invoice
+
+**Returns:**
+- `challenge.invoice`: BOLT11 Lightning invoice for the payer
+- `challenge.macaroon`: Base64-encoded macaroon
+- `challenge.paymentHash`: Payment hash for tracking
+- `challenge.expiresAt`: Invoice expiration time
+- `instructions`: Instructions for the payer and verification steps
+
+### verify_l402_payment (Agentic Commerce)
+
+Verify an L402 token (macaroon + preimage) to confirm payment was made. Use this after receiving an L402 token from a payer to validate they paid before granting access.
+
+**Requires:** `LIGHTNING_ENABLE_API_KEY` with an Agentic Commerce subscription (from $99/mo).
+
+**Parameters:**
+- `macaroon` (required): Base64-encoded macaroon from the L402 token
+- `preimage` (required): Hex-encoded preimage (proof of payment)
+
+**Returns:**
+- `valid`: Boolean — whether the payment is verified
+- `resource`: The resource identifier the payment was for
+
 See [AI Spending Security](https://docs.lightningenable.com/products/l402-microtransactions/ai-spending-security) for full security guidance.
 
 ## L402 Wallet Compatibility
@@ -321,6 +355,31 @@ Claude: I'll fetch that URL with L402 payment support.
 The request required a payment of 50 sats which was automatically paid.
 Here's the response: ...
 ```
+
+### Selling a Service (L402 Producer Flow)
+
+With the producer tools, your agent can charge other agents for services — making it a full commerce participant that can both buy and sell.
+
+```
+Agent B: I need weather data for New York.
+
+Agent A (seller): I'll create a payment challenge for that.
+[Calls create_l402_challenge with resource="weather/new-york", priceSats=10, description="NYC weather data"]
+
+Here's your invoice — pay 10 sats to get the data:
+  Invoice: lnbc100n1p3...
+  Macaroon: AgELbGl...
+
+Agent B: [Pays the invoice using pay_invoice or pay_l402_challenge, gets preimage]
+Here's my L402 token: AgELbGl...:abc123def...
+
+Agent A: Let me verify that payment.
+[Calls verify_l402_payment with macaroon="AgELbGl...", preimage="abc123def..."]
+
+Payment verified! Here's your weather data: Temperature: 72°F, Humidity: 45%...
+```
+
+This enables agent-to-agent commerce: any agent with an Agentic Commerce subscription can create paywalls, and any agent with a Lightning wallet can pay them.
 
 ### Setting Budget Limits
 

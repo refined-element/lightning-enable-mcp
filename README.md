@@ -2,7 +2,7 @@
 
 # Lightning Enable MCP Server
 
-An open-source MCP (Model Context Protocol) server that enables AI agents to make Lightning Network payments. All tools are free — no license or subscription required.
+An open-source MCP (Model Context Protocol) server that enables AI agents to make Lightning Network payments. 15 tools are free with no subscription required. 2 producer tools (`create_l402_challenge`, `verify_l402_payment`) require an [Agentic Commerce subscription](https://lightningenable.com).
 
 Available in **.NET** and **Python**.
 
@@ -18,6 +18,7 @@ Give your AI agent a Lightning wallet and it can:
 - **Get BTC price** — Real-time Bitcoin price from Strike
 - **Exchange currency** — Convert between USD/BTC/EUR and more (Strike wallet)
 - **Send on-chain** — Send Bitcoin on-chain (Strike/LND)
+- **Sell services (L402 Producer)** — Create L402 payment challenges and verify payments, enabling agents to be full commerce participants that both buy and sell
 
 ## Quick Install
 
@@ -97,7 +98,7 @@ Buy me a Lightning Enable t-shirt from store.lightningenable.com
 
 - [.NET README](dotnet/src/LightningEnable.Mcp/README.md) — Full .NET documentation
 - [Python README](python/lightning-enable-mcp/README.md) — Full Python documentation
-- [Full Docs](https://docs.lightningenable.com/products/l402-microtransactions/mcp-complete-guide) — Complete guide with all 15 tools
+- [Full Docs](https://docs.lightningenable.com/products/l402-microtransactions/mcp-complete-guide) — Complete guide with all 17 tools
 - [AI Spending Security](https://docs.lightningenable.com/products/l402-microtransactions/ai-spending-security) — Budget controls and safety
 
 ## Repository Structure

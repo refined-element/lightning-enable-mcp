@@ -2,7 +2,7 @@
 
 # Lightning Enable MCP Server (Python)
 
-An MCP (Model Context Protocol) server that enables AI agents to make Lightning Network payments. All tools are free — no license or subscription required.
+An MCP (Model Context Protocol) server that enables AI agents to make Lightning Network payments. 15 consumer tools are free with no subscription required. 2 producer tools (`create_l402_challenge`, `verify_l402_payment`) require an [Agentic Commerce subscription](https://lightningenable.com) (from $99/mo) and `LIGHTNING_ENABLE_API_KEY`.
 
 ## Overview
 
@@ -13,6 +13,7 @@ Lightning Enable MCP provides tools for AI agents (like Claude) to:
 - **Access L402-protected APIs** — Automatically handle L402 payment challenges
 - **Control spending** — Set per-request and session budgets
 - **Track payments** — View payment history and wallet balance
+- **Sell services (L402 Producer)** — Create L402 payment challenges and verify payments, enabling agents to be full commerce participants that both buy and sell
 
 ## Installation
 
@@ -46,6 +47,7 @@ docker pull refinedelement/lightning-enable-mcp:latest
 | `LND_MACAROON_HEX` | If using LND | - | LND admin macaroon in hex |
 | `L402_MAX_SATS_PER_REQUEST` | No | 1000 | Maximum sats per single request |
 | `L402_MAX_SATS_PER_SESSION` | No | 10000 | Maximum sats for entire session |
+| `LIGHTNING_ENABLE_API_KEY` | For producer tools | - | API key for `create_l402_challenge` and `verify_l402_payment`. Requires Agentic Commerce subscription. |
 
 Configure one wallet provider. If multiple are set, priority order is: LND > NWC > Strike > OpenNode.
 
@@ -221,6 +223,65 @@ View current budget configuration and session spending (read-only).
 
 **Returns:** Budget tiers, limits, and current session spending
 
+### create_l402_challenge (Agentic Commerce)
+
+Create an L402 payment challenge to charge another agent or user for accessing a resource. Returns a Lightning invoice and macaroon that the payer must pay before you grant access.
+
+**Requires:** `LIGHTNING_ENABLE_API_KEY` with an Agentic Commerce subscription (from $99/mo).
+
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `resource` | string | Yes | - | Resource identifier — URL, service name, or description |
+| `price_sats` | integer | Yes | - | Price in satoshis to charge |
+| `description` | string | No | - | Description shown on the Lightning invoice |
+
+**Returns:** JSON with `challenge` (invoice, macaroon, paymentHash, expiresAt), resource, priceSats, and instructions for the payer.
+
+### verify_l402_payment (Agentic Commerce)
+
+Verify an L402 token (macaroon + preimage) to confirm payment was made. Use this after receiving an L402 token from a payer to validate they paid before granting access.
+
+**Requires:** `LIGHTNING_ENABLE_API_KEY` with an Agentic Commerce subscription (from $99/mo).
+
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `macaroon` | string | Yes | - | Base64-encoded macaroon from the L402 token |
+| `preimage` | string | Yes | - | Hex-encoded preimage (proof of payment) |
+
+**Returns:** JSON with `valid` (boolean) and `resource` (the resource identifier the payment was for).
+
+## L402 Producer Flow (Agent-to-Agent Commerce)
+
+The producer tools enable agents to sell services, not just buy them. This makes agents full commerce participants in the L402 ecosystem.
+
+**Flow:**
+1. **Seller agent** calls `create_l402_challenge` with a resource name and price
+2. **Seller agent** shares the Lightning invoice with the buyer
+3. **Buyer agent** pays the invoice (using `pay_invoice` or `pay_l402_challenge`) and gets a preimage
+4. **Buyer agent** sends the L402 token (macaroon + preimage) back to the seller
+5. **Seller agent** calls `verify_l402_payment` to confirm payment
+6. **Seller agent** grants access to the resource
+
+**Example:**
+```
+Agent B: I need weather data for New York.
+
+Agent A (seller): I'll create a payment challenge for that.
+[Calls create_l402_challenge with resource="weather/new-york", price_sats=10]
+
+Here's your invoice — pay 10 sats to get the data:
+  Invoice: lnbc100n1p3...
+  Macaroon: AgELbGl...
+
+Agent B: [Pays the invoice, gets preimage]
+Here's my L402 token: AgELbGl...:abc123def...
+
+Agent A: Let me verify that payment.
+[Calls verify_l402_payment with macaroon="AgELbGl...", preimage="abc123def..."]
+
+Payment verified! Here's your weather data: Temperature: 72F, Humidity: 45%...
+```
+
 ## L402 Wallet Compatibility
 
 L402 requires the payment preimage to create credentials. Not all wallets return it:
@@ -303,10 +364,12 @@ lightning_enable_mcp/
 ├── nwc_wallet.py      # Nostr Wallet Connect client
 ├── budget.py          # Spending limit management
 └── tools/
-    ├── access_resource.py   # access_l402_resource tool
-    ├── pay_challenge.py     # pay_l402_challenge tool
-    ├── wallet.py            # check_wallet_balance tool
-    └── budget.py            # configure_budget, get_payment_history tools
+    ├── access_resource.py       # access_l402_resource tool
+    ├── pay_challenge.py         # pay_l402_challenge tool
+    ├── create_l402_challenge.py # create_l402_challenge tool (producer)
+    ├── verify_l402_payment.py   # verify_l402_payment tool (producer)
+    ├── wallet.py                # check_wallet_balance tool
+    └── budget.py                # configure_budget, get_payment_history tools
 ```
 
 ## License

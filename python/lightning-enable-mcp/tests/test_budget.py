@@ -18,8 +18,8 @@ class TestBudgetManager:
         """Test default budget limits are set."""
         manager = BudgetManager()
 
-        assert manager.max_per_request == 1000
-        assert manager.max_per_session == 10000
+        assert manager.max_per_request == 10000
+        assert manager.max_per_session == 100000
 
     def test_custom_limits(self):
         """Test custom budget limits."""

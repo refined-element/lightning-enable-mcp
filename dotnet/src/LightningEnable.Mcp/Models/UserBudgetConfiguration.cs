@@ -38,6 +38,14 @@ public class UserBudgetConfiguration
     /// </summary>
     [JsonPropertyName("wallets")]
     public WalletSettings Wallets { get; set; } = new();
+
+    /// <summary>
+    /// Lightning Enable API key for L402 producer tools (create_l402_challenge, verify_l402_payment).
+    /// Get this from your Lightning Enable dashboard with an Agentic Commerce subscription.
+    /// Can also be set via LIGHTNING_ENABLE_API_KEY environment variable.
+    /// </summary>
+    [JsonPropertyName("lightningEnableApiKey")]
+    public string? LightningEnableApiKey { get; set; }
 }
 
 /// <summary>

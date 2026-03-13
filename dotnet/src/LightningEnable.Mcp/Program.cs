@@ -187,6 +187,9 @@ public class Program
             }
         }
 
+        // Register Lightning Enable API service for L402 producer tools
+        builder.Services.AddHttpClient<ILightningEnableApiService, LightningEnableApiService>();
+
         // Register price service for USD/sats conversion
         builder.Services.AddHttpClient<IPriceService, PriceService>();
 

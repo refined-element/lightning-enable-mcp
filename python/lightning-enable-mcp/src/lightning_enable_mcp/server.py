@@ -20,12 +20,23 @@ from mcp.types import (
 from .budget import BudgetManager
 from .budget_service import BudgetService, get_budget_service
 from .l402_client import L402Client
+from .lightning_enable_api import LightningEnableApiClient
 from .nwc_wallet import NWCWallet, NWCConfig
 from .opennode_wallet import OpenNodeWallet
 from .strike_wallet import StrikeWallet
 from .tools.access_resource import access_l402_resource
+from .tools.check_invoice_status import check_invoice_status
+from .tools.confirm_payment import confirm_payment
+from .tools.create_invoice import create_invoice
+from .tools.create_l402_challenge import create_l402_challenge
+from .tools.discover_api import discover_api
+from .tools.exchange_currency import exchange_currency
+from .tools.get_all_balances import get_all_balances
+from .tools.get_btc_price import get_btc_price
 from .tools.pay_challenge import pay_l402_challenge
 from .tools.pay_invoice import pay_invoice
+from .tools.send_onchain import send_onchain
+from .tools.verify_l402_payment import verify_l402_payment
 from .tools.wallet import check_wallet_balance
 from .tools.budget import configure_budget, get_payment_history
 from .tools.budget_status import get_budget_status
@@ -49,6 +60,7 @@ class LightningEnableServer:
         self.budget_manager: BudgetManager | None = None
         self.budget_service: BudgetService | None = None  # New multi-tier approval system
         self._nwc_config: NWCConfig | None = None  # Store NWC config for pubkey access
+        self.api_client: LightningEnableApiClient | None = None  # For L402 producer tools
 
         self._setup_handlers()
 
@@ -322,6 +334,103 @@ class LightningEnableServer:
                         "properties": {},
                     },
                 ),
+                Tool(
+                    name="create_l402_challenge",
+                    description=(
+                        "Create an L402 payment challenge to charge another agent or user for accessing a resource. "
+                        "Returns a Lightning invoice and macaroon. The payer must pay the invoice and present "
+                        "the L402 token (macaroon:preimage) back to you for verification. "
+                        "Requires LIGHTNING_ENABLE_API_KEY with an Agentic Commerce subscription."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "resource": {
+                                "type": "string",
+                                "description": "Resource identifier - URL, service name, or description of what you're charging for",
+                            },
+                            "price_sats": {
+                                "type": "integer",
+                                "description": "Price in satoshis to charge",
+                            },
+                            "description": {
+                                "type": "string",
+                                "description": "Description shown on the Lightning invoice",
+                            },
+                        },
+                        "required": ["resource", "price_sats"],
+                    },
+                ),
+                Tool(
+                    name="verify_l402_payment",
+                    description=(
+                        "Verify an L402 token (macaroon + preimage) to confirm payment was made. "
+                        "Use this after receiving an L402 token from a payer to validate they paid "
+                        "before granting access to the resource. "
+                        "Requires LIGHTNING_ENABLE_API_KEY with an Agentic Commerce subscription."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "macaroon": {
+                                "type": "string",
+                                "description": "Base64-encoded macaroon from the L402 token",
+                            },
+                            "preimage": {
+                                "type": "string",
+                                "description": "Hex-encoded preimage (proof of payment)",
+                            },
+                        },
+                        "required": ["macaroon", "preimage"],
+                    },
+                ),
+                Tool(
+                    name="confirm_payment",
+                    description=(
+                        "Confirm a pending payment using the nonce code from a previous payment request. "
+                        "Call this after a payment tool returns requiresConfirmation=true with a nonce."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "nonce": {
+                                "type": "string",
+                                "description": "The 6-character confirmation code from the payment request",
+                            },
+                        },
+                        "required": ["nonce"],
+                    },
+                ),
+                Tool(
+                    name="discover_api",
+                    description=(
+                        "Discover L402-enabled APIs. Use 'query' to search the registry for available APIs by keyword, "
+                        "or use 'url' to fetch a specific API's manifest with full endpoint details and pricing. "
+                        "Use 'category' to browse by category. With budget_aware=true, shows how many calls you can afford."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "url": {
+                                "type": "string",
+                                "description": "Base URL of the L402-enabled API, or direct URL to the manifest JSON file. If omitted, searches the registry instead.",
+                            },
+                            "query": {
+                                "type": "string",
+                                "description": "Search the L402 API registry by keyword (e.g., 'weather', 'ai', 'geocoding').",
+                            },
+                            "category": {
+                                "type": "string",
+                                "description": "Filter registry results by category (e.g., 'ai', 'data', 'finance').",
+                            },
+                            "budget_aware": {
+                                "type": "boolean",
+                                "description": "If true, annotate endpoints with affordable call counts based on remaining budget. Default: true.",
+                                "default": True,
+                            },
+                        },
+                    },
+                ),
             ]
 
         @self.server.call_tool()
@@ -332,7 +441,10 @@ class LightningEnableServer:
                 if self.wallet is None or self.l402_client is None:
                     await self._initialize_services()
 
-                if self.wallet is None:
+                # Tools that don't require a wallet connection
+                producer_tools = {"create_l402_challenge", "verify_l402_payment", "discover_api", "confirm_payment"}
+
+                if self.wallet is None and name not in producer_tools:
                     return [
                         TextContent(
                             type="text",
@@ -392,38 +504,79 @@ class LightningEnableServer:
                     )
 
                 elif name == "create_invoice":
-                    result = await self._create_invoice(
+                    result = await create_invoice(
                         amount_sats=arguments.get("amount_sats", 0),
                         memo=arguments.get("memo"),
                         expiry_secs=arguments.get("expiry_secs", 3600),
+                        wallet=self.wallet,
                     )
 
                 elif name == "check_invoice_status":
-                    result = await self._check_invoice_status(
+                    result = await check_invoice_status(
                         invoice_id=arguments.get("invoice_id", ""),
+                        wallet=self.wallet,
                     )
 
                 elif name == "get_all_balances":
-                    result = await self._get_all_balances()
+                    result = await get_all_balances(
+                        wallet=self.wallet,
+                        strike_wallet=self.strike_wallet,
+                        budget_service=self.budget_service,
+                    )
 
                 elif name == "get_btc_price":
-                    result = await self._get_btc_price()
+                    result = await get_btc_price(
+                        wallet=self.strike_wallet,
+                    )
 
                 elif name == "exchange_currency":
-                    result = await self._exchange_currency(
+                    result = await exchange_currency(
                         source_currency=arguments.get("source_currency", ""),
                         target_currency=arguments.get("target_currency", ""),
                         amount=arguments.get("amount", 0),
+                        wallet=self.strike_wallet,
                     )
 
                 elif name == "send_onchain":
-                    result = await self._send_onchain(
+                    result = await send_onchain(
                         address=arguments.get("address", ""),
                         amount_sats=arguments.get("amount_sats", 0),
+                        wallet=self.strike_wallet,
+                        budget_service=self.budget_service,
                     )
 
                 elif name == "get_budget_status":
                     result = await get_budget_status(
+                        budget_service=self.budget_service,
+                    )
+
+                elif name == "create_l402_challenge":
+                    result = await create_l402_challenge(
+                        resource=arguments.get("resource", ""),
+                        price_sats=arguments.get("price_sats", 0),
+                        description=arguments.get("description"),
+                        api_client=self.api_client,
+                    )
+
+                elif name == "verify_l402_payment":
+                    result = await verify_l402_payment(
+                        macaroon=arguments.get("macaroon", ""),
+                        preimage=arguments.get("preimage", ""),
+                        api_client=self.api_client,
+                    )
+
+                elif name == "confirm_payment":
+                    result = await confirm_payment(
+                        nonce=arguments.get("nonce", ""),
+                        budget_service=self.budget_service,
+                    )
+
+                elif name == "discover_api":
+                    result = await discover_api(
+                        url=arguments.get("url"),
+                        query=arguments.get("query"),
+                        category=arguments.get("category"),
+                        budget_aware=arguments.get("budget_aware", True),
                         budget_service=self.budget_service,
                     )
 
@@ -449,6 +602,11 @@ class LightningEnableServer:
         nwc_connection = os.getenv("NWC_CONNECTION_STRING")
         opennode_api_key = os.getenv("OPENNODE_API_KEY")
         strike_api_key = os.getenv("STRIKE_API_KEY")
+
+        # Always initialize API client (for producer tools, independent of wallet)
+        self.api_client = LightningEnableApiClient()
+        if self.api_client.is_configured:
+            logger.info("Lightning Enable API client configured - producer tools available")
 
         if not nwc_connection and not opennode_api_key and not strike_api_key:
             logger.warning(
@@ -508,90 +666,6 @@ class LightningEnableServer:
         except Exception as e:
             logger.exception("Failed to initialize services")
             raise RuntimeError(f"Failed to initialize: {e!s}") from e
-
-    async def _create_invoice(
-        self, amount_sats: int, memo: str | None, expiry_secs: int
-    ) -> str:
-        """Create a Lightning invoice to receive payment."""
-        if self.strike_wallet:
-            # Strike supports invoice creation - would need to implement
-            # For now, return not supported
-            return "Invoice creation not yet implemented for Strike wallet"
-        return "Invoice creation requires Strike wallet. Set STRIKE_API_KEY."
-
-    async def _check_invoice_status(self, invoice_id: str) -> str:
-        """Check status of an invoice."""
-        if self.strike_wallet:
-            # Would need to implement invoice status check
-            return f"Invoice status check not yet implemented for Strike wallet"
-        return "Invoice status check requires Strike wallet. Set STRIKE_API_KEY."
-
-    async def _get_all_balances(self) -> str:
-        """Get all currency balances."""
-        if self.strike_wallet:
-            result = await self.strike_wallet.get_all_balances()
-            if result.success:
-                lines = ["Currency Balances:"]
-                for b in result.balances:
-                    lines.append(f"  {b.currency}: {b.available} available ({b.total} total)")
-                return "\n".join(lines)
-            return f"Error: {result.error_message}"
-
-        # Fallback to regular balance for non-Strike wallets
-        if self.wallet:
-            try:
-                balance = await self.wallet.get_balance()
-                return f"BTC Balance: {balance} sats"
-            except Exception as e:
-                return f"Error getting balance: {e}"
-
-        return "No wallet configured"
-
-    async def _get_btc_price(self) -> str:
-        """Get BTC/USD price."""
-        if self.strike_wallet:
-            result = await self.strike_wallet.get_btc_price()
-            if result.success:
-                return f"BTC/USD: ${result.btc_usd_price:,.2f}"
-            return f"Error: {result.error_message}"
-        return "BTC price requires Strike wallet. Set STRIKE_API_KEY."
-
-    async def _exchange_currency(
-        self, source_currency: str, target_currency: str, amount: float
-    ) -> str:
-        """Exchange currency."""
-        if self.strike_wallet:
-            from decimal import Decimal
-            result = await self.strike_wallet.exchange_currency(
-                source_currency=source_currency,
-                target_currency=target_currency,
-                amount=Decimal(str(amount)),
-            )
-            if result.success:
-                return (
-                    f"Exchange completed!\n"
-                    f"  Sold: {result.source_amount} {result.source_currency}\n"
-                    f"  Received: {result.target_amount} {result.target_currency}\n"
-                    f"  Rate: {result.rate}\n"
-                    f"  Fee: {result.fee or 'None'}"
-                )
-            return f"Error: {result.error_message}"
-        return "Currency exchange requires Strike wallet. Set STRIKE_API_KEY."
-
-    async def _send_onchain(self, address: str, amount_sats: int) -> str:
-        """Send on-chain Bitcoin payment."""
-        if self.strike_wallet:
-            result = await self.strike_wallet.send_onchain(address, amount_sats)
-            if result.success:
-                return (
-                    f"On-chain payment sent!\n"
-                    f"  Payment ID: {result.payment_id}\n"
-                    f"  Amount: {result.amount_sats} sats\n"
-                    f"  Fee: {result.fee_sats} sats\n"
-                    f"  State: {result.state}"
-                )
-            return f"Error: {result.error_message}"
-        return "On-chain payments require Strike wallet. Set STRIKE_API_KEY."
 
     async def run(self) -> None:
         """Run the MCP server."""

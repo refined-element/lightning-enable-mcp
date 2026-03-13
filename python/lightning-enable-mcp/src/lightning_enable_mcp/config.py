@@ -295,6 +295,13 @@ class UserBudgetConfiguration:
     These can be set here instead of environment variables.
     """
 
+    lightning_enable_api_key: Optional[str] = None
+    """
+    Lightning Enable API key for L402 producer tools (create_l402_challenge, verify_l402_payment).
+    Can also be set via LIGHTNING_ENABLE_API_KEY environment variable.
+    Requires an Agentic Commerce subscription at https://lightningenable.com.
+    """
+
     @classmethod
     def from_dict(cls, data: dict) -> "UserBudgetConfiguration":
         """Create UserBudgetConfiguration from a dictionary."""
@@ -304,6 +311,7 @@ class UserBudgetConfiguration:
             limits=PaymentLimits.from_dict(data.get("limits", {})),
             session=SessionSettings.from_dict(data.get("session", {})),
             wallets=WalletSettings.from_dict(data.get("wallets", {})),
+            lightning_enable_api_key=data.get("lightningEnableApiKey"),
         )
 
     def to_dict(self) -> dict:

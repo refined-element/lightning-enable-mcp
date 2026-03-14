@@ -37,7 +37,8 @@ public class LndWalletService : IWalletService, IDisposable
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+        NumberHandling = JsonNumberHandling.AllowReadingFromString
     };
 
     public LndWalletService(HttpClient httpClient, IBudgetConfigurationService? budgetConfigService = null)

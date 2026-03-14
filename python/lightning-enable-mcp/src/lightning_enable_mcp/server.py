@@ -20,6 +20,7 @@ from mcp.types import (
 from .budget import BudgetManager
 from .budget_service import BudgetService, get_budget_service
 from .l402_client import L402Client
+from .lnd_wallet import LndWallet
 from .lightning_enable_api import LightningEnableApiClient
 from .nwc_wallet import NWCWallet, NWCConfig
 from .opennode_wallet import OpenNodeWallet
@@ -54,7 +55,7 @@ class LightningEnableServer:
 
     def __init__(self) -> None:
         self.server = Server("lightning-enable")
-        self.wallet: NWCWallet | OpenNodeWallet | StrikeWallet | None = None
+        self.wallet: LndWallet | NWCWallet | OpenNodeWallet | StrikeWallet | None = None
         self.strike_wallet: StrikeWallet | None = None  # For Strike-specific features
         self.l402_client: L402Client | None = None
         self.budget_manager: BudgetManager | None = None
@@ -448,8 +449,9 @@ class LightningEnableServer:
                     return [
                         TextContent(
                             type="text",
-                            text="Error: NWC wallet not configured. "
-                            "Set NWC_CONNECTION_STRING environment variable.",
+                            text="Error: No wallet configured. "
+                            "Set LND_REST_HOST+LND_MACAROON_HEX, NWC_CONNECTION_STRING, "
+                            "STRIKE_API_KEY, or OPENNODE_API_KEY environment variable.",
                         )
                     ]
 
@@ -538,10 +540,14 @@ class LightningEnableServer:
                     )
 
                 elif name == "send_onchain":
+                    # send_onchain supports Strike and LND wallets
+                    onchain_wallet = self.strike_wallet
+                    if onchain_wallet is None and isinstance(self.wallet, LndWallet):
+                        onchain_wallet = self.wallet
                     result = await send_onchain(
                         address=arguments.get("address", ""),
                         amount_sats=arguments.get("amount_sats", 0),
-                        wallet=self.strike_wallet,
+                        wallet=onchain_wallet,
                         budget_service=self.budget_service,
                     )
 
@@ -593,38 +599,97 @@ class LightningEnableServer:
         """Initialize wallet, L402 client, and budget manager.
 
         Supports wallet backends (in priority order for L402):
-        1. NWC (Nostr Wallet Connect) - Set NWC_CONNECTION_STRING (returns preimage - best for L402)
-        2. Strike - Set STRIKE_API_KEY (returns preimage via lightning.preImage - L402 works)
-        3. OpenNode - Set OPENNODE_API_KEY (does NOT return preimage - L402 will NOT work)
+        1. LND - Set LND_REST_HOST + LND_MACAROON_HEX (direct node, always returns preimage)
+        2. NWC (Nostr Wallet Connect) - Set NWC_CONNECTION_STRING (returns preimage - best for L402)
+        3. Strike - Set STRIKE_API_KEY (returns preimage via lightning.preImage - L402 works)
+        4. OpenNode - Set OPENNODE_API_KEY (does NOT return preimage - L402 will NOT work)
 
-        For L402 support, use NWC or Strike. OpenNode is for general payments only.
+        For L402 support, use LND, NWC, or Strike. OpenNode is for general payments only.
         """
-        nwc_connection = os.getenv("NWC_CONNECTION_STRING")
-        opennode_api_key = os.getenv("OPENNODE_API_KEY")
-        strike_api_key = os.getenv("STRIKE_API_KEY")
+        from .config import get_config_service
+
+        config_service = get_config_service()
+        wallet_config = config_service.configuration.wallets
+
+        # Read env vars with config file fallback (matching .NET behavior)
+        def _get_env_or_config(env_var: str, config_value: str | None) -> str | None:
+            """Get value from env var, falling back to config file."""
+            value = os.getenv(env_var)
+            if not value or value.startswith("${"):
+                return config_value
+            return value
+
+        lnd_rest_host = _get_env_or_config("LND_REST_HOST", wallet_config.lnd_rest_host)
+        lnd_macaroon_hex = _get_env_or_config("LND_MACAROON_HEX", wallet_config.lnd_macaroon_hex)
+        nwc_connection = _get_env_or_config("NWC_CONNECTION_STRING", wallet_config.nwc_connection_string)
+        strike_api_key = _get_env_or_config("STRIKE_API_KEY", wallet_config.strike_api_key)
+        opennode_api_key = _get_env_or_config("OPENNODE_API_KEY", wallet_config.opennode_api_key)
+
+        lnd_skip_tls_verify = os.getenv("LND_SKIP_TLS_VERIFY", "").lower() == "true"
 
         # Always initialize API client (for producer tools, independent of wallet)
         self.api_client = LightningEnableApiClient()
         if self.api_client.is_configured:
             logger.info("Lightning Enable API client configured - producer tools available")
 
-        if not nwc_connection and not opennode_api_key and not strike_api_key:
+        has_lnd = bool(lnd_rest_host and lnd_macaroon_hex)
+        has_nwc = bool(nwc_connection)
+        has_strike = bool(strike_api_key)
+        has_opennode = bool(opennode_api_key)
+
+        if not has_lnd and not has_nwc and not has_strike and not has_opennode:
             logger.warning(
-                "No wallet configured. Set NWC_CONNECTION_STRING, OPENNODE_API_KEY, or STRIKE_API_KEY"
+                "No wallet configured. Set LND_REST_HOST+LND_MACAROON_HEX, "
+                "NWC_CONNECTION_STRING, STRIKE_API_KEY, or OPENNODE_API_KEY"
             )
             return
 
         try:
-            # Initialize wallet - priority: NWC > OpenNode > Strike (for L402 compatibility)
-            if nwc_connection:
+            # Determine wallet priority
+            # Default: LND > NWC > Strike > OpenNode
+            # Can be overridden via WALLET_PRIORITY env var or config
+            wallet_priority = os.getenv("WALLET_PRIORITY", "").lower() or (wallet_config.priority or "").lower()
+
+            if wallet_priority == "lnd" and has_lnd:
+                selected = "lnd"
+            elif wallet_priority == "nwc" and has_nwc:
+                selected = "nwc"
+            elif wallet_priority == "strike" and has_strike:
+                selected = "strike"
+            elif wallet_priority == "opennode" and has_opennode:
+                selected = "opennode"
+            elif has_lnd:
+                selected = "lnd"
+            elif has_nwc:
+                selected = "nwc"
+            elif has_strike:
+                selected = "strike"
+            elif has_opennode:
+                selected = "opennode"
+            else:
+                selected = None
+
+            # Initialize wallet based on priority
+            if selected == "lnd":
+                logger.info("Initializing LND wallet (L402 compatible, direct node)...")
+                self.wallet = LndWallet(
+                    rest_host=lnd_rest_host,
+                    macaroon_hex=lnd_macaroon_hex,
+                    skip_tls_verify=lnd_skip_tls_verify,
+                )
+                await self.wallet.connect()
+                logger.info("LND wallet connected - preimage always available")
+            elif selected == "nwc":
                 logger.info("Initializing NWC wallet (L402 compatible)...")
                 self._nwc_config = NWCConfig.from_uri(nwc_connection)
                 self.wallet = NWCWallet(nwc_connection)
                 await self.wallet.connect()
                 logger.info("NWC wallet connected - preimage support available")
-            elif opennode_api_key:
+            elif selected == "opennode":
                 logger.info("Initializing OpenNode wallet...")
                 environment = os.getenv("OPENNODE_ENVIRONMENT", "production")
+                if not environment or environment.startswith("${"):
+                    environment = wallet_config.opennode_environment or "production"
                 self.wallet = OpenNodeWallet(
                     api_key=opennode_api_key,
                     environment=environment,
@@ -632,14 +697,14 @@ class LightningEnableServer:
                 await self.wallet.connect()
                 logger.info(f"OpenNode wallet connected ({environment})")
                 logger.warning("OpenNode may not return preimage - L402 may not work")
-            elif strike_api_key:
+            elif selected == "strike":
                 logger.info("Initializing Strike wallet...")
                 self.wallet = StrikeWallet(api_key=strike_api_key)
                 await self.wallet.connect()
                 logger.info("Strike wallet connected - preimage support available via lightning.preImage")
 
             # Also initialize Strike for Strike-specific features if available
-            if strike_api_key and not isinstance(self.wallet, StrikeWallet):
+            if has_strike and not isinstance(self.wallet, StrikeWallet):
                 logger.info("Initializing Strike wallet for multi-currency features...")
                 self.strike_wallet = StrikeWallet(api_key=strike_api_key)
                 await self.strike_wallet.connect()

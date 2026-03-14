@@ -48,7 +48,7 @@ async def create_invoice(
     if not wallet:
         return json.dumps({
             "success": False,
-            "error": "Wallet not configured. Set STRIKE_API_KEY, OPENNODE_API_KEY, or NWC_CONNECTION_STRING environment variable."
+            "error": "Wallet not configured. Set LND_REST_HOST+LND_MACAROON_HEX, STRIKE_API_KEY, OPENNODE_API_KEY, or NWC_CONNECTION_STRING environment variable."
         })
 
     try:

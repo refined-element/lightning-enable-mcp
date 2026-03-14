@@ -3,9 +3,8 @@ Tests for LND Wallet
 """
 
 import base64
-import json
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from lightning_enable_mcp.lnd_wallet import (
     LndConfig,

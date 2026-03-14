@@ -96,6 +96,7 @@ async def send_onchain(
             try:
                 total_sats = amount_sats + (result.fee_sats or 0)
                 budget_service.record_spend(total_sats)
+                budget_service.record_payment_time()
             except Exception:
                 pass
 

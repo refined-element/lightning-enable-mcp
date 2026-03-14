@@ -22,7 +22,6 @@ To get your macaroon in hex format:
 """
 
 import base64
-import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone

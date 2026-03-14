@@ -43,7 +43,7 @@ async def check_invoice_status(
     if not wallet:
         return json.dumps({
             "success": False,
-            "error": "Wallet not configured. Set STRIKE_API_KEY, OPENNODE_API_KEY, or NWC_CONNECTION_STRING environment variable."
+            "error": "Wallet not configured. Set LND_REST_HOST+LND_MACAROON_HEX, STRIKE_API_KEY, OPENNODE_API_KEY, or NWC_CONNECTION_STRING environment variable."
         })
 
     try:
@@ -111,7 +111,7 @@ async def check_invoice_status(
             return json.dumps({
                 "success": False,
                 "error": f"Invoice status check is not supported with {provider_name} wallet.",
-                "hint": "Use Strike wallet (set STRIKE_API_KEY) for invoice status checking."
+                "hint": "Use LND (set LND_REST_HOST+LND_MACAROON_HEX) or Strike (set STRIKE_API_KEY) for invoice status checking."
             })
 
     except Exception as e:

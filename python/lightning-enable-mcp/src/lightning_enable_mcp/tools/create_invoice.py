@@ -10,6 +10,7 @@ import logging
 from typing import TYPE_CHECKING, Union
 
 if TYPE_CHECKING:
+    from ..lnd_wallet import LndWallet
     from ..nwc_wallet import NWCWallet
     from ..opennode_wallet import OpenNodeWallet
     from ..strike_wallet import StrikeWallet
@@ -21,7 +22,7 @@ async def create_invoice(
     amount_sats: int,
     memo: str | None = None,
     expiry_secs: int = 3600,
-    wallet: "Union[NWCWallet, OpenNodeWallet, StrikeWallet, None]" = None,
+    wallet: "Union[LndWallet, NWCWallet, OpenNodeWallet, StrikeWallet, None]" = None,
 ) -> str:
     """
     Create a Lightning invoice to receive a payment.
@@ -47,14 +48,34 @@ async def create_invoice(
     if not wallet:
         return json.dumps({
             "success": False,
-            "error": "Wallet not configured. Set STRIKE_API_KEY, OPENNODE_API_KEY, or NWC_CONNECTION_STRING environment variable."
+            "error": "Wallet not configured. Set LND_REST_HOST+LND_MACAROON_HEX, STRIKE_API_KEY, OPENNODE_API_KEY, or NWC_CONNECTION_STRING environment variable."
         })
 
     try:
+        from ..lnd_wallet import LndWallet
         from ..strike_wallet import StrikeWallet
         from ..opennode_wallet import OpenNodeWallet
 
-        if isinstance(wallet, StrikeWallet):
+        if isinstance(wallet, LndWallet):
+            # Create invoice via LND REST API
+            inv_result = await wallet.create_invoice(
+                amount_sats=amount_sats,
+                memo=memo,
+                expiry_secs=expiry_secs,
+            )
+
+            return json.dumps({
+                "success": True,
+                "provider": "LND",
+                "invoice": {
+                    "id": inv_result["invoice_id"],
+                    "bolt11": inv_result["bolt11"],
+                    "amountSats": inv_result["amount_sats"],
+                },
+                "message": f"Invoice created for {amount_sats} sats. Share the bolt11 string with the payer."
+            }, indent=2)
+
+        elif isinstance(wallet, StrikeWallet):
             # Create invoice via Strike API
             from decimal import Decimal
             amount_btc = Decimal(amount_sats) / Decimal("100000000")

@@ -114,6 +114,22 @@ Add to your Claude Desktop config (`claude_desktop_config.json`):
 }
 ```
 
+**Using LND:**
+```json
+{
+  "mcpServers": {
+    "lightning-enable": {
+      "command": "uvx",
+      "args": ["lightning-enable-mcp"],
+      "env": {
+        "LND_REST_HOST": "localhost:8080",
+        "LND_MACAROON_HEX": "your-admin-macaroon-in-hex"
+      }
+    }
+  }
+}
+```
+
 **Using NWC:**
 ```json
 {

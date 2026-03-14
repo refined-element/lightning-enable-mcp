@@ -9,6 +9,7 @@ import logging
 from typing import TYPE_CHECKING, Union
 
 if TYPE_CHECKING:
+    from ..lnd_wallet import LndWallet
     from ..nwc_wallet import NWCWallet
     from ..opennode_wallet import OpenNodeWallet
     from ..strike_wallet import StrikeWallet
@@ -18,7 +19,7 @@ logger = logging.getLogger("lightning-enable-mcp.tools.check_invoice_status")
 
 async def check_invoice_status(
     invoice_id: str,
-    wallet: "Union[NWCWallet, OpenNodeWallet, StrikeWallet, None]" = None,
+    wallet: "Union[LndWallet, NWCWallet, OpenNodeWallet, StrikeWallet, None]" = None,
 ) -> str:
     """
     Check if a Lightning invoice has been paid.
@@ -42,13 +43,39 @@ async def check_invoice_status(
     if not wallet:
         return json.dumps({
             "success": False,
-            "error": "Wallet not configured. Set STRIKE_API_KEY, OPENNODE_API_KEY, or NWC_CONNECTION_STRING environment variable."
+            "error": "Wallet not configured. Set LND_REST_HOST+LND_MACAROON_HEX, STRIKE_API_KEY, OPENNODE_API_KEY, or NWC_CONNECTION_STRING environment variable."
         })
 
     try:
+        from ..lnd_wallet import LndWallet
         from ..strike_wallet import StrikeWallet
 
-        if isinstance(wallet, StrikeWallet):
+        if isinstance(wallet, LndWallet):
+            # Use LND REST API to check invoice status
+            status = await wallet.get_invoice_status(invoice_id.strip())
+
+            if status["is_paid"]:
+                message = f"Invoice {invoice_id} has been PAID!"
+            elif status["is_pending"]:
+                message = f"Invoice {invoice_id} is still pending payment."
+            else:
+                message = f"Invoice {invoice_id} status: {status['state']}"
+
+            return json.dumps({
+                "success": True,
+                "provider": "LND",
+                "invoice": {
+                    "id": status["id"],
+                    "state": status["state"],
+                    "isPaid": status["is_paid"],
+                    "isPending": status["is_pending"],
+                    "amountSats": status["amount_sats"],
+                    "settledAt": status.get("settled_at"),
+                },
+                "message": message,
+            }, indent=2)
+
+        elif isinstance(wallet, StrikeWallet):
             # Use Strike API to check invoice status
             payment = await wallet._request("GET", f"/invoices/{invoice_id}")
             state = payment.get("state", "UNKNOWN")
@@ -84,7 +111,7 @@ async def check_invoice_status(
             return json.dumps({
                 "success": False,
                 "error": f"Invoice status check is not supported with {provider_name} wallet.",
-                "hint": "Use Strike wallet (set STRIKE_API_KEY) for invoice status checking."
+                "hint": "Use LND (set LND_REST_HOST+LND_MACAROON_HEX) or Strike (set STRIKE_API_KEY) for invoice status checking."
             })
 
     except Exception as e:

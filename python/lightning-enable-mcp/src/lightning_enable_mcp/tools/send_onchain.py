@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Union
 
 if TYPE_CHECKING:
     from ..budget_service import BudgetService
+    from ..lnd_wallet import LndWallet
     from ..strike_wallet import StrikeWallet
 
 logger = logging.getLogger("lightning-enable-mcp.tools.send_onchain")
@@ -19,19 +20,19 @@ logger = logging.getLogger("lightning-enable-mcp.tools.send_onchain")
 async def send_onchain(
     address: str,
     amount_sats: int,
-    wallet: "StrikeWallet | None" = None,
+    wallet: "Union[StrikeWallet, LndWallet, None]" = None,
     budget_service: "BudgetService | None" = None,
 ) -> str:
     """
     Send an on-chain Bitcoin payment to a Bitcoin address.
 
-    Currently supports Strike wallet. The payment is sent from your
-    Strike account balance.
+    Supports Strike and LND wallets. The payment is sent from your
+    wallet balance.
 
     Args:
         address: Bitcoin address to send to (e.g., bc1q...)
         amount_sats: Amount to send in satoshis
-        wallet: Strike wallet instance
+        wallet: Strike or LND wallet instance
         budget_service: BudgetService for spending limits
 
     Returns:
@@ -52,29 +53,30 @@ async def send_onchain(
     if not wallet:
         return json.dumps({
             "success": False,
-            "error": "Wallet not configured. Set STRIKE_API_KEY environment variable for on-chain payments."
+            "error": "Wallet not configured. Set STRIKE_API_KEY or LND_REST_HOST+LND_MACAROON_HEX for on-chain payments."
         })
 
-    # Verify it's a Strike wallet
+    # Verify it's a supported wallet type
     from ..strike_wallet import StrikeWallet
-    if not isinstance(wallet, StrikeWallet):
+    from ..lnd_wallet import LndWallet
+    if not isinstance(wallet, (StrikeWallet, LndWallet)):
         provider_name = type(wallet).__name__.replace("Wallet", "")
         return json.dumps({
             "success": False,
-            "error": f"{provider_name} does not support on-chain payments. Use Strike wallet.",
+            "error": f"{provider_name} does not support on-chain payments. Use Strike or LND wallet.",
             "errorCode": "NOT_SUPPORTED",
-            "hint": "Set STRIKE_API_KEY environment variable for on-chain payments."
+            "hint": "Set STRIKE_API_KEY or LND_REST_HOST+LND_MACAROON_HEX for on-chain payments."
         })
 
     # Check budget if configured
     if budget_service:
         try:
-            result = await budget_service.check_approval_level(amount_sats)
+            budget_result = await budget_service.check_approval_level(amount_sats)
             from ..config import ApprovalLevel
-            if result.level == ApprovalLevel.DENY:
+            if budget_result.level == ApprovalLevel.DENY:
                 return json.dumps({
                     "success": False,
-                    "error": f"Budget check failed: {result.denial_reason}",
+                    "error": f"Budget check failed: {budget_result.denial_reason}",
                 })
         except Exception as e:
             logger.warning(f"Budget check failed: {e}")
@@ -94,8 +96,11 @@ async def send_onchain(
             try:
                 total_sats = amount_sats + (result.fee_sats or 0)
                 budget_service.record_spend(total_sats)
+                budget_service.record_payment_time()
             except Exception:
                 pass
+
+        provider_name = "LND" if isinstance(wallet, LndWallet) else "Strike"
 
         if result.state == "COMPLETED":
             message = f"On-chain payment of {amount_sats} sats sent to {address}"
@@ -104,7 +109,7 @@ async def send_onchain(
 
         return json.dumps({
             "success": True,
-            "provider": "Strike",
+            "provider": provider_name,
             "payment": {
                 "id": result.payment_id,
                 "txId": result.txid,

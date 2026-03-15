@@ -370,9 +370,9 @@ public class NwcWalletService : IWalletService, IDisposable
             var requestJson = request.ToJsonString();
             var tags = new JsonArray { new JsonArray { "p", _config.WalletPubkey } };
 
-            // Encrypt using NIP-04 with proper ECDH
+            // Encrypt using NIP-44 v2 (modern wallets like Alby Hub require it)
             var walletPubkeyBytes = Convert.FromHexString(_config.WalletPubkey);
-            var content = EncryptNip04(requestJson, walletPubkeyBytes, _privateKey);
+            var content = EncryptNip44(requestJson, walletPubkeyBytes, _privateKey);
 
             // Compute proper event ID as SHA256 of serialized event data
             var eventId = ComputeEventId(_myPubkeyHex, createdAt, 23194, tags, content);
@@ -676,6 +676,90 @@ public class NwcWalletService : IWalletService, IDisposable
         var encrypted = encryptor.TransformFinalBlock(plaintextBytes, 0, plaintextBytes.Length);
 
         return Convert.ToBase64String(encrypted) + "?iv=" + Convert.ToBase64String(iv);
+    }
+
+    /// <summary>
+    /// Encrypts content using NIP-44 v2 (ECDH + HKDF + ChaCha20 + HMAC-SHA256).
+    /// </summary>
+    internal static string EncryptNip44(string plaintext, byte[] recipientPubkeyBytes, ECPrivKey senderPrivKey)
+    {
+        var plaintextBytes = Encoding.UTF8.GetBytes(plaintext);
+        if (plaintextBytes.Length < 1 || plaintextBytes.Length > 65535)
+            throw new ArgumentException($"Plaintext length {plaintextBytes.Length} out of range (1-65535)");
+
+        // Compute ECDH shared x-coordinate
+        if (!ECXOnlyPubKey.TryCreate(recipientPubkeyBytes, out _))
+            throw new ArgumentException("Invalid recipient public key");
+
+        var fullPubkeyBytes = new byte[33];
+        fullPubkeyBytes[0] = 0x02;
+        recipientPubkeyBytes.CopyTo(fullPubkeyBytes, 1);
+
+        if (!ECPubKey.TryCreate(fullPubkeyBytes, Context.Instance, out _, out var recipientPubKey))
+            throw new ArgumentException("Failed to create ECPubKey");
+
+        var sharedPoint = recipientPubKey.GetSharedPubkey(senderPrivKey);
+        var sharedX = sharedPoint.ToBytes()[1..33];
+
+        // conversation_key = HKDF-Extract(salt="nip44-v2", ikm=sharedX)
+        var salt = Encoding.UTF8.GetBytes("nip44-v2");
+        var conversationKey = HKDF.Extract(HashAlgorithmName.SHA256, sharedX, salt);
+
+        // Generate random 32-byte nonce
+        var nonce = new byte[32];
+        RandomNumberGenerator.Fill(nonce);
+
+        // Derive message keys via HKDF-Expand
+        var messageKeys = new byte[76];
+        HKDF.Expand(HashAlgorithmName.SHA256, conversationKey, messageKeys, nonce);
+
+        var chachaKey = messageKeys[0..32];
+        var chachaNonce = messageKeys[32..44];
+        var hmacKey = messageKeys[44..76];
+
+        // Pad plaintext: 2-byte big-endian length + plaintext + zero padding
+        var paddedLen = CalcPaddedLen(plaintextBytes.Length);
+        var padded = new byte[2 + paddedLen];
+        padded[0] = (byte)(plaintextBytes.Length >> 8);
+        padded[1] = (byte)(plaintextBytes.Length & 0xFF);
+        plaintextBytes.CopyTo(padded, 2);
+        // Remaining bytes are already zero
+
+        // Encrypt with ChaCha20 (stream cipher — encrypt and decrypt are the same XOR)
+        var ciphertext = ChaCha20Decrypt(padded, chachaKey, chachaNonce);
+
+        // Compute HMAC over nonce + ciphertext
+        var hmacInput = new byte[nonce.Length + ciphertext.Length];
+        nonce.CopyTo(hmacInput, 0);
+        ciphertext.CopyTo(hmacInput, nonce.Length);
+        using var hmac = new System.Security.Cryptography.HMACSHA256(hmacKey);
+        var mac = hmac.ComputeHash(hmacInput);
+
+        // Assemble: version(0x02) + nonce + ciphertext + mac
+        var payload = new byte[1 + nonce.Length + ciphertext.Length + mac.Length];
+        payload[0] = 0x02;
+        nonce.CopyTo(payload, 1);
+        ciphertext.CopyTo(payload, 33);
+        mac.CopyTo(payload, 33 + ciphertext.Length);
+
+        return Convert.ToBase64String(payload);
+    }
+
+    /// <summary>
+    /// Calculates NIP-44 padded length for plaintext.
+    /// </summary>
+    internal static int CalcPaddedLen(int unpaddedLen)
+    {
+        if (unpaddedLen <= 0) throw new ArgumentException("Length must be > 0");
+        if (unpaddedLen <= 32) return 32;
+
+        // Next power of 2
+        var nextPower = 1;
+        var temp = unpaddedLen - 1;
+        while (temp > 0) { nextPower <<= 1; temp >>= 1; }
+
+        var chunk = Math.Max(32, nextPower >> 3);
+        return chunk * ((unpaddedLen + chunk - 1) / chunk);
     }
 
     /// <summary>

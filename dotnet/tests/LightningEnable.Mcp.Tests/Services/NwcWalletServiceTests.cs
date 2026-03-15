@@ -82,52 +82,103 @@ public class NwcWalletServiceTests
 
     #endregion
 
-    #region NIP-44 Format Detection Tests
+    #region NIP-44 Encryption/Decryption Tests
+
+    [Fact]
+    public void EncryptNip44_RoundTrip_RecoversOriginalMessage()
+    {
+        var (alicePriv, alicePub) = GenerateKeyPair();
+        var (bobPriv, bobPub) = GenerateKeyPair();
+
+        var originalMessage = "{\"method\":\"pay_invoice\",\"params\":{\"invoice\":\"lnbc100n1p3test\"}}";
+
+        var encrypted = NwcWalletService.EncryptNip44(originalMessage, bobPub, alicePriv);
+        encrypted.Should().NotContain("?iv=", "NIP-44 output should not contain NIP-04 marker");
+
+        var decrypted = NwcWalletService.DecryptContent(encrypted, alicePub, bobPriv);
+        decrypted.Should().Be(originalMessage);
+    }
+
+    [Fact]
+    public void EncryptNip44_RoundTrip_WithSpecialCharacters()
+    {
+        var (alicePriv, alicePub) = GenerateKeyPair();
+        var (bobPriv, bobPub) = GenerateKeyPair();
+
+        var originalMessage = "{\"description\":\"Unicode: \u00e9\u00e0\u00fc\u2603 and JSON: {\\\"nested\\\": true}\"}";
+
+        var encrypted = NwcWalletService.EncryptNip44(originalMessage, bobPub, alicePriv);
+        var decrypted = NwcWalletService.DecryptNip44(encrypted, alicePub, bobPriv);
+        decrypted.Should().Be(originalMessage);
+    }
+
+    [Fact]
+    public void EncryptNip44_ProducesVersionByte02()
+    {
+        var (alicePriv, alicePub) = GenerateKeyPair();
+        var (_, bobPub) = GenerateKeyPair();
+
+        var encrypted = NwcWalletService.EncryptNip44("test", bobPub, alicePriv);
+        var data = Convert.FromBase64String(encrypted);
+        data[0].Should().Be(0x02, "NIP-44 v2 payload must start with version byte 0x02");
+    }
+
+    [Fact]
+    public void EncryptNip44_DifferentNonceEachTime()
+    {
+        var (alicePriv, _) = GenerateKeyPair();
+        var (_, bobPub) = GenerateKeyPair();
+
+        var enc1 = NwcWalletService.EncryptNip44("same message", bobPub, alicePriv);
+        var enc2 = NwcWalletService.EncryptNip44("same message", bobPub, alicePriv);
+
+        enc1.Should().NotBe(enc2, "each encryption should use a different random nonce");
+    }
+
+    [Fact]
+    public void EncryptNip44_LargePayload_RoundTrips()
+    {
+        var (alicePriv, alicePub) = GenerateKeyPair();
+        var (bobPriv, bobPub) = GenerateKeyPair();
+
+        var largeMessage = new string('A', 5000);
+
+        var encrypted = NwcWalletService.EncryptNip44(largeMessage, bobPub, alicePriv);
+        var decrypted = NwcWalletService.DecryptNip44(encrypted, alicePub, bobPriv);
+        decrypted.Should().Be(largeMessage);
+    }
 
     [Fact]
     public void DecryptContent_Nip44Format_DispatchesToNip44()
     {
-        // Arrange: Build a valid NIP-44 v2 payload using known keys
         var (alicePriv, alicePub) = GenerateKeyPair();
         var (bobPriv, bobPub) = GenerateKeyPair();
 
         var plaintext = "test NIP-44 message";
+        var encrypted = NwcWalletService.EncryptNip44(plaintext, bobPub, alicePriv);
 
-        // Create a NIP-44 encrypted payload manually
-        var encrypted = EncryptNip44ForTest(plaintext, bobPub, alicePriv);
-
-        // It should NOT contain "?iv="
         encrypted.Should().NotContain("?iv=");
 
-        // Act
         var decrypted = NwcWalletService.DecryptContent(encrypted, alicePub, bobPriv);
-
-        // Assert
         decrypted.Should().Be(plaintext);
     }
 
     [Fact]
     public void DecryptNip44_ValidPayload_DecryptsCorrectly()
     {
-        // Arrange
         var (alicePriv, alicePub) = GenerateKeyPair();
         var (bobPriv, bobPub) = GenerateKeyPair();
 
         var plaintext = "{\"result_type\":\"pay_invoice\",\"result\":{\"preimage\":\"abc123\"}}";
-        var encrypted = EncryptNip44ForTest(plaintext, bobPub, alicePriv);
+        var encrypted = NwcWalletService.EncryptNip44(plaintext, bobPub, alicePriv);
 
-        // Act
         var decrypted = NwcWalletService.DecryptNip44(encrypted, alicePub, bobPriv);
-
-        // Assert
         decrypted.Should().Be(plaintext);
     }
 
     [Fact]
     public void DecryptNip44_InvalidVersion_ThrowsException()
     {
-        // Arrange: version byte 0x01 instead of 0x02
-        // Need at least 99 bytes to pass the length check: 1 (version) + 32 (nonce) + 34 (ciphertext) + 32 (mac)
         var data = new byte[99];
         data[0] = 0x01; // Wrong version
 
@@ -135,7 +186,6 @@ public class NwcWalletServiceTests
         var (_, pubBytes) = GenerateKeyPair();
         var (privKey, _) = GenerateKeyPair();
 
-        // Act & Assert
         var act = () => NwcWalletService.DecryptNip44(content, pubBytes, privKey);
         act.Should().Throw<InvalidOperationException>()
             .WithMessage("*Unsupported NIP-44 version*");
@@ -144,19 +194,15 @@ public class NwcWalletServiceTests
     [Fact]
     public void DecryptNip44_TamperedMac_ThrowsException()
     {
-        // Arrange
         var (alicePriv, alicePub) = GenerateKeyPair();
         var (bobPriv, bobPub) = GenerateKeyPair();
 
-        var plaintext = "tamper test";
-        var encrypted = EncryptNip44ForTest(plaintext, bobPub, alicePriv);
+        var encrypted = NwcWalletService.EncryptNip44("tamper test", bobPub, alicePriv);
 
-        // Tamper with the MAC (last 32 bytes of the base64-decoded data)
         var data = Convert.FromBase64String(encrypted);
-        data[^1] ^= 0xFF; // Flip bits in last byte of MAC
+        data[^1] ^= 0xFF;
         var tampered = Convert.ToBase64String(data);
 
-        // Act & Assert
         var act = () => NwcWalletService.DecryptNip44(tampered, alicePub, bobPriv);
         act.Should().Throw<InvalidOperationException>()
             .WithMessage("*HMAC verification failed*");
@@ -165,17 +211,41 @@ public class NwcWalletServiceTests
     [Fact]
     public void DecryptNip44_TooShort_ThrowsException()
     {
-        // Arrange: data too short
-        var data = new byte[50]; // Less than minimum 99 bytes
+        var data = new byte[50];
         data[0] = 0x02;
         var content = Convert.ToBase64String(data);
         var (_, pubBytes) = GenerateKeyPair();
         var (privKey, _) = GenerateKeyPair();
 
-        // Act & Assert
         var act = () => NwcWalletService.DecryptNip44(content, pubBytes, privKey);
         act.Should().Throw<InvalidOperationException>()
             .WithMessage("*too short*");
+    }
+
+    #endregion
+
+    #region CalcPaddedLen Tests
+
+    [Theory]
+    [InlineData(1, 32)]
+    [InlineData(16, 32)]
+    [InlineData(32, 32)]
+    [InlineData(33, 64)]
+    [InlineData(64, 64)]
+    [InlineData(65, 96)]
+    [InlineData(100, 128)]
+    [InlineData(256, 256)]
+    [InlineData(300, 320)]
+    public void CalcPaddedLen_ReturnsExpectedValues(int input, int expected)
+    {
+        NwcWalletService.CalcPaddedLen(input).Should().Be(expected);
+    }
+
+    [Fact]
+    public void CalcPaddedLen_Zero_ThrowsException()
+    {
+        var act = () => NwcWalletService.CalcPaddedLen(0);
+        act.Should().Throw<ArgumentException>();
     }
 
     #endregion
@@ -404,80 +474,4 @@ public class NwcWalletServiceTests
 
     #endregion
 
-    #region NIP-44 Encryption Helper (for tests only)
-
-    /// <summary>
-    /// Encrypts a message in NIP-44 v2 format for testing purposes.
-    /// This mirrors the decryption logic in NwcWalletService.DecryptNip44.
-    /// </summary>
-    private static string EncryptNip44ForTest(string plaintext, byte[] recipientPubkeyBytes, ECPrivKey senderPrivKey)
-    {
-        // 1. Compute ECDH shared secret
-        var fullPubkeyBytes = new byte[33];
-        fullPubkeyBytes[0] = 0x02;
-        recipientPubkeyBytes.CopyTo(fullPubkeyBytes, 1);
-
-        if (!ECPubKey.TryCreate(fullPubkeyBytes, Context.Instance, out _, out var recipientPubKey))
-            throw new ArgumentException("Failed to create ECPubKey");
-
-        var sharedPoint = recipientPubKey.GetSharedPubkey(senderPrivKey);
-        var sharedX = sharedPoint.ToBytes()[1..33];
-
-        // 2. Derive conversation_key
-        var salt = Encoding.UTF8.GetBytes("nip44-v2");
-        var conversationKey = HKDF.Extract(HashAlgorithmName.SHA256, sharedX, salt);
-
-        // 3. Generate random nonce
-        var nonce = new byte[32];
-        RandomNumberGenerator.Fill(nonce);
-
-        // 4. Derive message keys
-        var messageKeys = new byte[76];
-        HKDF.Expand(HashAlgorithmName.SHA256, conversationKey, messageKeys, nonce);
-
-        var chachaKey = messageKeys[0..32];
-        var chachaNonce = messageKeys[32..44];
-        var hmacKey = messageKeys[44..76];
-
-        // 5. Prepare plaintext with length prefix and padding
-        var plaintextBytes = Encoding.UTF8.GetBytes(plaintext);
-        var paddedLength = CalcPaddedLength(plaintextBytes.Length);
-        var padded = new byte[2 + paddedLength];
-        padded[0] = (byte)(plaintextBytes.Length >> 8);
-        padded[1] = (byte)(plaintextBytes.Length & 0xFF);
-        plaintextBytes.CopyTo(padded, 2);
-        // Remaining bytes are already zero (padding)
-
-        // 6. Encrypt with ChaCha20
-        var ciphertext = NwcWalletService.ChaCha20Decrypt(padded, chachaKey, chachaNonce);
-
-        // 7. Compute HMAC over nonce + ciphertext
-        using var hmac = new System.Security.Cryptography.HMACSHA256(hmacKey);
-        var hmacInput = new byte[nonce.Length + ciphertext.Length];
-        nonce.CopyTo(hmacInput, 0);
-        ciphertext.CopyTo(hmacInput, nonce.Length);
-        var mac = hmac.ComputeHash(hmacInput);
-
-        // 8. Assemble: version(1) + nonce(32) + ciphertext(N) + mac(32)
-        var result = new byte[1 + 32 + ciphertext.Length + 32];
-        result[0] = 0x02; // version
-        nonce.CopyTo(result, 1);
-        ciphertext.CopyTo(result, 33);
-        mac.CopyTo(result, 33 + ciphertext.Length);
-
-        return Convert.ToBase64String(result);
-    }
-
-    /// <summary>
-    /// NIP-44 padding: round up to the next power of 2 with minimum of 32.
-    /// </summary>
-    private static int CalcPaddedLength(int unpaddedLength)
-    {
-        if (unpaddedLength <= 32) return 32;
-        var nextPow2 = 1;
-        while (nextPow2 < unpaddedLength) nextPow2 <<= 1;
-        return nextPow2;
-    }
-
-    #endregion
 }

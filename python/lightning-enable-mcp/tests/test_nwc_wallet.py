@@ -14,9 +14,11 @@ from lightning_enable_mcp.nwc_wallet import (
     NWCConfig,
     NWCWallet,
     NWCError,
+    _calc_padded_len,
     _decrypt_content,
     _decrypt_nip04,
     _decrypt_nip44,
+    _encrypt_nip44,
     _hkdf_expand,
 )
 
@@ -377,6 +379,106 @@ class TestDecryptContentAutoDetection:
 
         assert _decrypt_content(nip04_enc, _DUMMY_SECRET_KEY, _DUMMY_PUBKEY_HEX) == plaintext
         assert _decrypt_content(nip44_enc, _DUMMY_SECRET_KEY, _DUMMY_PUBKEY_HEX) == plaintext
+
+
+class TestNIP44Encryption:
+    """Tests for NIP-44 v2 encryption (outgoing NWC requests)."""
+
+    @patch(
+        "lightning_enable_mcp.nwc_wallet._compute_shared_x",
+        return_value=_FIXED_SHARED_X,
+    )
+    def test_encrypt_decrypt_roundtrip(self, mock_shared_x):
+        """Test that NIP-44 encrypt then decrypt returns original plaintext."""
+        plaintext = '{"method":"pay_invoice","params":{"invoice":"lnbc1..."}}'
+
+        encrypted = _encrypt_nip44(plaintext, _DUMMY_SECRET_KEY, _DUMMY_PUBKEY_HEX)
+        assert "?iv=" not in encrypted  # NIP-44, not NIP-04
+
+        decrypted = _decrypt_nip44(encrypted, _DUMMY_SECRET_KEY, _DUMMY_PUBKEY_HEX)
+        assert decrypted == plaintext
+
+    @patch(
+        "lightning_enable_mcp.nwc_wallet._compute_shared_x",
+        return_value=_FIXED_SHARED_X,
+    )
+    def test_encrypt_produces_version_02(self, mock_shared_x):
+        """Test that encrypted payload starts with version byte 0x02."""
+        encrypted = _encrypt_nip44("test", _DUMMY_SECRET_KEY, _DUMMY_PUBKEY_HEX)
+        payload = base64.b64decode(encrypted)
+        assert payload[0] == 0x02
+
+    @patch(
+        "lightning_enable_mcp.nwc_wallet._compute_shared_x",
+        return_value=_FIXED_SHARED_X,
+    )
+    def test_encrypt_different_nonce_each_time(self, mock_shared_x):
+        """Test that each encryption produces different output (random nonce)."""
+        enc1 = _encrypt_nip44("same message", _DUMMY_SECRET_KEY, _DUMMY_PUBKEY_HEX)
+        enc2 = _encrypt_nip44("same message", _DUMMY_SECRET_KEY, _DUMMY_PUBKEY_HEX)
+        assert enc1 != enc2
+
+    @patch(
+        "lightning_enable_mcp.nwc_wallet._compute_shared_x",
+        return_value=_FIXED_SHARED_X,
+    )
+    def test_encrypt_decrypt_content_autodetect(self, mock_shared_x):
+        """Test that _decrypt_content auto-detects NIP-44 from _encrypt_nip44."""
+        plaintext = '{"method":"get_balance","params":{}}'
+        encrypted = _encrypt_nip44(plaintext, _DUMMY_SECRET_KEY, _DUMMY_PUBKEY_HEX)
+        decrypted = _decrypt_content(encrypted, _DUMMY_SECRET_KEY, _DUMMY_PUBKEY_HEX)
+        assert decrypted == plaintext
+
+    @patch(
+        "lightning_enable_mcp.nwc_wallet._compute_shared_x",
+        return_value=_FIXED_SHARED_X,
+    )
+    def test_encrypt_large_payload(self, mock_shared_x):
+        """Test NIP-44 encryption with a large message."""
+        plaintext = "A" * 5000
+        encrypted = _encrypt_nip44(plaintext, _DUMMY_SECRET_KEY, _DUMMY_PUBKEY_HEX)
+        decrypted = _decrypt_nip44(encrypted, _DUMMY_SECRET_KEY, _DUMMY_PUBKEY_HEX)
+        assert decrypted == plaintext
+
+    @patch(
+        "lightning_enable_mcp.nwc_wallet._compute_shared_x",
+        return_value=_FIXED_SHARED_X,
+    )
+    def test_encrypt_unicode(self, mock_shared_x):
+        """Test NIP-44 encryption with unicode content."""
+        plaintext = '{"description":"Pay for API access ⚡","amount":1000}'
+        encrypted = _encrypt_nip44(plaintext, _DUMMY_SECRET_KEY, _DUMMY_PUBKEY_HEX)
+        decrypted = _decrypt_nip44(encrypted, _DUMMY_SECRET_KEY, _DUMMY_PUBKEY_HEX)
+        assert decrypted == plaintext
+
+
+class TestCalcPaddedLen:
+    """Tests for NIP-44 padding length calculation."""
+
+    @pytest.mark.parametrize(
+        "input_len,expected",
+        [
+            (1, 32),
+            (16, 32),
+            (32, 32),
+            (33, 64),
+            (64, 64),
+            (65, 96),
+            (100, 128),
+            (256, 256),
+            (300, 320),
+        ],
+    )
+    def test_padded_len_values(self, input_len, expected):
+        assert _calc_padded_len(input_len) == expected
+
+    def test_padded_len_zero_raises(self):
+        with pytest.raises(ValueError):
+            _calc_padded_len(0)
+
+    def test_padded_len_negative_raises(self):
+        with pytest.raises(ValueError):
+            _calc_padded_len(-1)
 
 
 class TestHKDFExpand:

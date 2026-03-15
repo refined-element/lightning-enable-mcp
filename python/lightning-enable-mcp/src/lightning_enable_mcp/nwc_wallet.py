@@ -194,6 +194,79 @@ def _encrypt_content(plaintext: str, secret_key: bytes, recipient_pubkey: str) -
         return f"{base64.b64encode(ciphertext).decode()}?iv={base64.b64encode(iv).decode()}"
 
 
+def _calc_padded_len(unpadded_len: int) -> int:
+    """Calculate NIP-44 padded length for plaintext."""
+    if unpadded_len <= 0:
+        raise ValueError("Plaintext length must be > 0")
+    if unpadded_len <= 32:
+        return 32
+    next_power = 1 << (unpadded_len - 1).bit_length()
+    chunk = max(32, next_power >> 3)
+    return chunk * ((unpadded_len + chunk - 1) // chunk)
+
+
+def _encrypt_nip44(plaintext: str, secret_key: bytes, recipient_pubkey: str) -> str:
+    """
+    Encrypt content using NIP-44 v2 (ChaCha20 with HKDF-derived keys).
+
+    Args:
+        plaintext: Content to encrypt
+        secret_key: Sender's 32-byte secret key
+        recipient_pubkey: Recipient's hex-encoded public key
+
+    Returns:
+        Base64-encoded NIP-44 v2 payload
+    """
+    import base64
+    import hmac as hmac_module
+    import os
+    import struct
+
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms
+    from cryptography.hazmat.backends import default_backend
+
+    plaintext_bytes = plaintext.encode("utf-8")
+    if len(plaintext_bytes) < 1 or len(plaintext_bytes) > 65535:
+        raise ValueError(f"Plaintext length {len(plaintext_bytes)} out of range (1-65535)")
+
+    # Compute shared x-coordinate (raw, NOT hashed — NIP-44 differs from NIP-04)
+    shared_x = _compute_shared_x(secret_key, recipient_pubkey)
+
+    # conversation_key = HKDF-extract(salt="nip44-v2", ikm=shared_x)
+    conversation_key = hmac_module.new(b"nip44-v2", shared_x, hashlib.sha256).digest()
+
+    # Generate random 32-byte nonce
+    nonce = os.urandom(32)
+
+    # Derive message keys via HKDF-expand
+    message_keys = _hkdf_expand(conversation_key, nonce, 76)
+    chacha_key = message_keys[0:32]
+    chacha_nonce = message_keys[32:44]
+    hmac_key = message_keys[44:76]
+
+    # Pad plaintext: 2-byte big-endian length + plaintext + zero padding
+    padded_len = _calc_padded_len(len(plaintext_bytes))
+    padded = struct.pack(">H", len(plaintext_bytes)) + plaintext_bytes + b"\x00" * (padded_len - len(plaintext_bytes))
+
+    # Encrypt with ChaCha20 (stream cipher — encrypt and decrypt are the same XOR operation)
+    chacha20_nonce = b"\x00\x00\x00\x00" + chacha_nonce
+    cipher = Cipher(
+        algorithms.ChaCha20(chacha_key, chacha20_nonce),
+        mode=None,
+        backend=default_backend(),
+    )
+    encryptor = cipher.encryptor()
+    ciphertext = encryptor.update(padded) + encryptor.finalize()
+
+    # Compute HMAC over nonce + ciphertext
+    mac = hmac_module.new(hmac_key, nonce + ciphertext, hashlib.sha256).digest()
+
+    # Assemble: version_byte(0x02) + nonce + ciphertext + mac
+    payload = bytes([0x02]) + nonce + ciphertext + mac
+
+    return base64.b64encode(payload).decode()
+
+
 def _compute_shared_x(secret_key: bytes, pubkey_hex: str) -> bytes:
     """
     Compute the ECDH shared x-coordinate.
@@ -497,7 +570,7 @@ class NWCWallet:
 
         # Create request content
         request = {"method": method, "params": params}
-        encrypted_content = _encrypt_content(
+        encrypted_content = _encrypt_nip44(
             json.dumps(request), self._secret_key, self.config.wallet_pubkey
         )
 

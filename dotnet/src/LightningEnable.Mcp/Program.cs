@@ -193,6 +193,9 @@ public class Program
         // Register price service for USD/sats conversion
         builder.Services.AddHttpClient<IPriceService, PriceService>();
 
+        // Register agent service for ASA (Agent Service Agreement) operations
+        builder.Services.AddHttpClient<IAgentService, AgentService>();
+
         // Register singleton services
         builder.Services.AddSingleton<IBudgetService, BudgetService>();
         builder.Services.AddSingleton<IPaymentHistoryService, PaymentHistoryService>();

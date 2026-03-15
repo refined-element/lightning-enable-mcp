@@ -368,7 +368,7 @@ public class NwcWalletService : IWalletService, IDisposable
 
             var createdAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             var requestJson = request.ToJsonString();
-            var tags = new JsonArray { new JsonArray { "p", _config.WalletPubkey } };
+            var tags = new JsonArray { new JsonArray { "p", _config.WalletPubkey }, new JsonArray { "encryption", "nip44_v2" } };
 
             // Encrypt using NIP-44 v2 (modern wallets like Alby Hub require it)
             var walletPubkeyBytes = Convert.FromHexString(_config.WalletPubkey);

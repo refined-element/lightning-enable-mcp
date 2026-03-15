@@ -579,7 +579,7 @@ class NWCWallet:
             "kind": 23194,  # NIP-47 request kind
             "pubkey": self._pubkey,
             "created_at": int(time.time()),
-            "tags": [["p", self.config.wallet_pubkey]],
+            "tags": [["p", self.config.wallet_pubkey], ["encryption", "nip44_v2"]],
             "content": encrypted_content,
         }
 

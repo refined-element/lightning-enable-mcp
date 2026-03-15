@@ -81,6 +81,8 @@ public static class AgentDiscoveryTool
                 if (cap.Categories.Count > 0) entry["categories"] = cap.Categories;
                 if (cap.Hashtags.Count > 0) entry["hashtags"] = cap.Hashtags;
                 entry["price_sats"] = cap.PriceSats;
+                entry["negotiable"] = cap.Negotiable;
+                if (cap.MinPriceSats.HasValue) entry["min_price_sats"] = cap.MinPriceSats.Value;
                 if (cap.L402Endpoint != null) entry["l402_endpoint"] = cap.L402Endpoint;
                 if (cap.CreatedAt.HasValue) entry["created_at"] = cap.CreatedAt.Value;
 

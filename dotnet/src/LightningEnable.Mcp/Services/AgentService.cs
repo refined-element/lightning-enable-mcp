@@ -81,6 +81,8 @@ public record AgentCapability
     public int PriceSats { get; init; }
     public string? L402Endpoint { get; init; }
     public long? CreatedAt { get; init; }
+    public bool Negotiable { get; init; } = true;
+    public int? MinPriceSats { get; init; }
 }
 
 /// <summary>
@@ -626,7 +628,9 @@ public class AgentService : IAgentService
                 : new List<string>(),
             PriceSats = item.TryGetProperty("priceSats", out var price) ? price.GetInt32() : 0,
             L402Endpoint = item.TryGetProperty("l402Endpoint", out var ep) ? ep.GetString() : null,
-            CreatedAt = item.TryGetProperty("createdAt", out var ca) ? ca.GetInt64() : null
+            CreatedAt = item.TryGetProperty("createdAt", out var ca) ? ca.GetInt64() : null,
+            Negotiable = item.TryGetProperty("negotiable", out var neg) ? neg.GetBoolean() : true,
+            MinPriceSats = item.TryGetProperty("minPriceSats", out var minP) ? minP.GetInt32() : null
         };
     }
 }

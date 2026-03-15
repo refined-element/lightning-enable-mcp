@@ -489,7 +489,7 @@ public class NwcWalletService : IWalletService, IDisposable
                                     Console.Error.WriteLine($"[NWC] Decrypting response...");
                                     var senderPubkeyHex = responseEvent["pubkey"]?.GetValue<string>() ?? _config.WalletPubkey;
                                     var senderPubkeyBytes = Convert.FromHexString(senderPubkeyHex);
-                                    var decrypted = DecryptNip04(encryptedContent, senderPubkeyBytes, _privateKey);
+                                    var decrypted = DecryptContent(encryptedContent, senderPubkeyBytes, _privateKey);
                                     Console.Error.WriteLine($"[NWC] Decrypted: {decrypted}");
 
                                     var responseObj = JsonNode.Parse(decrypted)?.AsObject();
@@ -643,7 +643,7 @@ public class NwcWalletService : IWalletService, IDisposable
     /// <summary>
     /// Encrypts content using NIP-04 (ECDH + AES-256-CBC).
     /// </summary>
-    private static string EncryptNip04(string plaintext, byte[] recipientPubkeyBytes, ECPrivKey senderPrivKey)
+    internal static string EncryptNip04(string plaintext, byte[] recipientPubkeyBytes, ECPrivKey senderPrivKey)
     {
         // Get recipient's public key as ECPubKey for ECDH
         if (!ECXOnlyPubKey.TryCreate(recipientPubkeyBytes, out var recipientXOnlyPubKey))
@@ -676,6 +676,23 @@ public class NwcWalletService : IWalletService, IDisposable
         var encrypted = encryptor.TransformFinalBlock(plaintextBytes, 0, plaintextBytes.Length);
 
         return Convert.ToBase64String(encrypted) + "?iv=" + Convert.ToBase64String(iv);
+    }
+
+    /// <summary>
+    /// Detects NIP-04 vs NIP-44 format and dispatches to the correct decryption method.
+    /// NIP-04: base64(ciphertext)?iv=base64(iv)
+    /// NIP-44: single base64 blob (version_byte + nonce + ciphertext + mac)
+    /// </summary>
+    internal static string DecryptContent(string encryptedContent, byte[] senderPubkeyBytes, ECPrivKey recipientPrivKey)
+    {
+        if (encryptedContent.Contains("?iv="))
+        {
+            return DecryptNip04(encryptedContent, senderPubkeyBytes, recipientPrivKey);
+        }
+        else
+        {
+            return DecryptNip44(encryptedContent, senderPubkeyBytes, recipientPrivKey);
+        }
     }
 
     /// <summary>
@@ -717,6 +734,171 @@ public class NwcWalletService : IWalletService, IDisposable
         var decrypted = decryptor.TransformFinalBlock(encryptedBytes, 0, encryptedBytes.Length);
 
         return Encoding.UTF8.GetString(decrypted);
+    }
+
+    /// <summary>
+    /// Decrypts content using NIP-44 v2 (ECDH + HKDF + ChaCha20 + HMAC-SHA256).
+    /// Format: base64(version_byte(1) + nonce(32) + ciphertext(N) + mac(32))
+    /// </summary>
+    internal static string DecryptNip44(string content, byte[] senderPubkeyBytes, ECPrivKey recipientPrivKey)
+    {
+        var data = Convert.FromBase64String(content);
+        if (data.Length < 99) // 1 (version) + 32 (nonce) + 32 (min ciphertext with 2-byte length + 1 byte padded to 32) + 32 (mac) + 2 (length prefix)
+            throw new InvalidOperationException("NIP-44 ciphertext too short");
+
+        // 1. Check version byte
+        if (data[0] != 0x02)
+            throw new InvalidOperationException($"Unsupported NIP-44 version: {data[0]}");
+
+        // 2. Extract components
+        var nonce = data[1..33];
+        var ciphertext = data[33..^32];
+        var mac = data[^32..];
+
+        // 3. Compute ECDH shared secret (same as NIP-04)
+        if (!ECXOnlyPubKey.TryCreate(senderPubkeyBytes, out _))
+            throw new ArgumentException("Invalid sender public key");
+
+        var fullPubkeyBytes = new byte[33];
+        fullPubkeyBytes[0] = 0x02; // Even y-coordinate
+        senderPubkeyBytes.CopyTo(fullPubkeyBytes, 1);
+
+        if (!ECPubKey.TryCreate(fullPubkeyBytes, Context.Instance, out _, out var senderPubKey))
+            throw new ArgumentException("Failed to create ECPubKey");
+
+        var sharedPoint = senderPubKey.GetSharedPubkey(recipientPrivKey);
+        var sharedX = sharedPoint.ToBytes()[1..33]; // x-coordinate only
+
+        // 4. Derive conversation_key via HKDF-extract
+        var salt = Encoding.UTF8.GetBytes("nip44-v2");
+        var conversationKey = HKDF.Extract(HashAlgorithmName.SHA256, sharedX, salt);
+
+        // 5. Derive message keys via HKDF-expand
+        var messageKeys = new byte[76];
+        HKDF.Expand(HashAlgorithmName.SHA256, conversationKey, messageKeys, nonce);
+
+        var chachaKey = messageKeys[0..32];
+        var chachaNonce = messageKeys[32..44]; // 12 bytes
+        var hmacKey = messageKeys[44..76];
+
+        // 6. Verify HMAC over nonce + ciphertext
+        using var hmac = new System.Security.Cryptography.HMACSHA256(hmacKey);
+        var hmacInput = new byte[nonce.Length + ciphertext.Length];
+        nonce.CopyTo(hmacInput, 0);
+        ciphertext.CopyTo(hmacInput, nonce.Length);
+        var computedMac = hmac.ComputeHash(hmacInput);
+
+        if (!CryptographicOperations.FixedTimeEquals(computedMac, mac))
+            throw new InvalidOperationException("NIP-44 HMAC verification failed");
+
+        // 7. Decrypt with ChaCha20
+        var decrypted = ChaCha20Decrypt(ciphertext, chachaKey, chachaNonce);
+
+        // 8. Extract plaintext: first 2 bytes are big-endian length
+        if (decrypted.Length < 2)
+            throw new InvalidOperationException("NIP-44 decrypted data too short");
+
+        var plaintextLength = (decrypted[0] << 8) | decrypted[1];
+        if (plaintextLength <= 0 || 2 + plaintextLength > decrypted.Length)
+            throw new InvalidOperationException($"NIP-44 invalid plaintext length: {plaintextLength}");
+
+        return Encoding.UTF8.GetString(decrypted, 2, plaintextLength);
+    }
+
+    /// <summary>
+    /// ChaCha20 stream cipher (IETF variant, RFC 8439).
+    /// Raw stream cipher (NOT AEAD). 32-byte key, 12-byte nonce, counter starts at 0.
+    /// </summary>
+    internal static byte[] ChaCha20Decrypt(byte[] ciphertext, byte[] key, byte[] nonce)
+    {
+        if (key.Length != 32) throw new ArgumentException("Key must be 32 bytes", nameof(key));
+        if (nonce.Length != 12) throw new ArgumentException("Nonce must be 12 bytes", nameof(nonce));
+
+        var output = new byte[ciphertext.Length];
+        var state = new uint[16];
+        var keyStream = new byte[64];
+        uint counter = 0;
+
+        // Parse key as 8 little-endian uint32s
+        var keyWords = new uint[8];
+        for (int i = 0; i < 8; i++)
+            keyWords[i] = BitConverter.ToUInt32(key, i * 4);
+
+        // Parse nonce as 3 little-endian uint32s
+        var nonceWords = new uint[3];
+        for (int i = 0; i < 3; i++)
+            nonceWords[i] = BitConverter.ToUInt32(nonce, i * 4);
+
+        for (int offset = 0; offset < ciphertext.Length; offset += 64)
+        {
+            // Initialize state
+            // "expand 32-byte k" constants
+            state[0] = 0x61707865;
+            state[1] = 0x3320646e;
+            state[2] = 0x79622d32;
+            state[3] = 0x6b206574;
+
+            // Key
+            for (int i = 0; i < 8; i++)
+                state[4 + i] = keyWords[i];
+
+            // Counter + nonce
+            state[12] = counter;
+            state[13] = nonceWords[0];
+            state[14] = nonceWords[1];
+            state[15] = nonceWords[2];
+
+            // Copy initial state for addition after rounds
+            var initialState = (uint[])state.Clone();
+
+            // 20 rounds (10 double rounds)
+            for (int i = 0; i < 10; i++)
+            {
+                // Column rounds
+                QuarterRound(state, 0, 4, 8, 12);
+                QuarterRound(state, 1, 5, 9, 13);
+                QuarterRound(state, 2, 6, 10, 14);
+                QuarterRound(state, 3, 7, 11, 15);
+
+                // Diagonal rounds
+                QuarterRound(state, 0, 5, 10, 15);
+                QuarterRound(state, 1, 6, 11, 12);
+                QuarterRound(state, 2, 7, 8, 13);
+                QuarterRound(state, 3, 4, 9, 14);
+            }
+
+            // Add initial state
+            for (int i = 0; i < 16; i++)
+                state[i] += initialState[i];
+
+            // Serialize state to keystream bytes (little-endian)
+            for (int i = 0; i < 16; i++)
+            {
+                keyStream[i * 4] = (byte)(state[i]);
+                keyStream[i * 4 + 1] = (byte)(state[i] >> 8);
+                keyStream[i * 4 + 2] = (byte)(state[i] >> 16);
+                keyStream[i * 4 + 3] = (byte)(state[i] >> 24);
+            }
+
+            // XOR with ciphertext
+            var blockLen = Math.Min(64, ciphertext.Length - offset);
+            for (int i = 0; i < blockLen; i++)
+                output[offset + i] = (byte)(ciphertext[offset + i] ^ keyStream[i]);
+
+            counter++;
+        }
+
+        return output;
+    }
+
+    private static uint RotateLeft(uint v, int n) => (v << n) | (v >> (32 - n));
+
+    private static void QuarterRound(uint[] s, int a, int b, int c, int d)
+    {
+        s[a] += s[b]; s[d] ^= s[a]; s[d] = RotateLeft(s[d], 16);
+        s[c] += s[d]; s[b] ^= s[c]; s[b] = RotateLeft(s[b], 12);
+        s[a] += s[b]; s[d] ^= s[a]; s[d] = RotateLeft(s[d], 8);
+        s[c] += s[d]; s[b] ^= s[c]; s[b] = RotateLeft(s[b], 7);
     }
 
     public void Dispose()

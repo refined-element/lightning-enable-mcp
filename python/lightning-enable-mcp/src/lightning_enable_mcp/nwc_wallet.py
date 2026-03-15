@@ -194,12 +194,33 @@ def _encrypt_content(plaintext: str, secret_key: bytes, recipient_pubkey: str) -
         return f"{base64.b64encode(ciphertext).decode()}?iv={base64.b64encode(iv).decode()}"
 
 
-def _decrypt_content(encrypted: str, secret_key: bytes, sender_pubkey: str) -> str:
+def _compute_shared_x(secret_key: bytes, pubkey_hex: str) -> bytes:
     """
-    Decrypt content using NIP-04.
+    Compute the ECDH shared x-coordinate.
 
     Args:
-        encrypted: Encrypted content in NIP-04 format
+        secret_key: 32-byte secret key
+        pubkey_hex: Hex-encoded public key (32 or 33 bytes)
+
+    Returns:
+        32-byte shared x-coordinate
+    """
+    from secp256k1 import PrivateKey, PublicKey
+
+    pubkey_bytes = bytes.fromhex(pubkey_hex)
+    if len(pubkey_bytes) == 32:
+        pubkey_bytes = b"\x02" + pubkey_bytes
+    pubkey = PublicKey(pubkey_bytes, raw=True)
+    shared_point = pubkey.tweak_mul(secret_key)
+    return shared_point.serialize()[1:33]
+
+
+def _decrypt_nip04(encrypted: str, secret_key: bytes, sender_pubkey: str) -> str:
+    """
+    Decrypt content using NIP-04 (AES-256-CBC with shared secret).
+
+    Args:
+        encrypted: Encrypted content in NIP-04 format: base64(ciphertext)?iv=base64(iv)
         secret_key: Recipient's 32-byte secret key
         sender_pubkey: Sender's hex-encoded public key
 
@@ -209,38 +230,153 @@ def _decrypt_content(encrypted: str, secret_key: bytes, sender_pubkey: str) -> s
     import base64
     from hashlib import sha256
 
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    from cryptography.hazmat.backends import default_backend
+
+    # Parse encrypted content
+    parts = encrypted.split("?iv=")
+    if len(parts) != 2:
+        raise ValueError("Invalid NIP-04 encrypted content")
+
+    ciphertext = base64.b64decode(parts[0])
+    iv = base64.b64decode(parts[1])
+
+    # Compute shared secret: SHA256 of shared x-coordinate (NIP-04 specific)
+    shared_x = _compute_shared_x(secret_key, sender_pubkey)
+    shared_secret = sha256(shared_x).digest()
+
+    # Decrypt
+    cipher = Cipher(algorithms.AES(shared_secret), modes.CBC(iv), backend=default_backend())
+    decryptor = cipher.decryptor()
+    padded = decryptor.update(ciphertext) + decryptor.finalize()
+
+    # Remove PKCS7 padding
+    padding_len = padded[-1]
+    plaintext = padded[:-padding_len]
+
+    return plaintext.decode("utf-8")
+
+
+def _decrypt_nip44(encrypted: str, secret_key: bytes, sender_pubkey: str) -> str:
+    """
+    Decrypt content using NIP-44 v2 (ChaCha20 with HKDF-derived keys).
+
+    Args:
+        encrypted: Base64-encoded NIP-44 v2 payload
+        secret_key: Recipient's 32-byte secret key
+        sender_pubkey: Sender's hex-encoded public key
+
+    Returns:
+        Decrypted plaintext
+
+    Raises:
+        ValueError: If version byte is not 0x02 or HMAC verification fails
+    """
+    import base64
+    import hmac
+    import struct
+
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms
+    from cryptography.hazmat.backends import default_backend
+
+    # Decode the entire payload
+    payload = base64.b64decode(encrypted)
+
+    # Check version byte
+    version = payload[0]
+    if version != 0x02:
+        raise ValueError(f"Unsupported NIP-44 version: {version:#04x}, expected 0x02")
+
+    # Extract components
+    nonce = payload[1:33]       # 32 bytes
+    ciphertext = payload[33:-32]  # variable length
+    mac = payload[-32:]         # 32 bytes
+
+    # Compute shared x-coordinate (raw, NOT hashed — NIP-44 differs from NIP-04)
+    shared_x = _compute_shared_x(secret_key, sender_pubkey)
+
+    # conversation_key = HKDF-extract(salt="nip44-v2", ikm=shared_x)
+    # HKDF-extract is just HMAC-SHA256(key=salt, msg=ikm)
+    conversation_key = hmac.new(b"nip44-v2", shared_x, hashlib.sha256).digest()
+
+    # message_keys = HKDF-expand(prk=conversation_key, info=nonce, length=76)
+    # HKDF-expand for length <= 32*ceil(76/32) = 96, needs 3 rounds
+    message_keys = _hkdf_expand(conversation_key, nonce, 76)
+
+    chacha_key = message_keys[0:32]
+    chacha_nonce = message_keys[32:44]   # 12 bytes
+    hmac_key = message_keys[44:76]
+
+    # Verify HMAC: HMAC-SHA256(key=hmac_key, msg=nonce + ciphertext)
+    expected_mac = hmac.new(hmac_key, nonce + ciphertext, hashlib.sha256).digest()
+    if not hmac.compare_digest(mac, expected_mac):
+        raise ValueError("NIP-44 HMAC verification failed")
+
+    # Decrypt with ChaCha20 (raw stream cipher, NOT AEAD)
+    # cryptography's ChaCha20 expects a 16-byte nonce: 4-byte counter (LE) + 12-byte nonce
+    chacha20_nonce = b"\x00\x00\x00\x00" + chacha_nonce
+    cipher = Cipher(
+        algorithms.ChaCha20(chacha_key, chacha20_nonce),
+        mode=None,
+        backend=default_backend(),
+    )
+    decryptor = cipher.decryptor()
+    decrypted = decryptor.update(ciphertext) + decryptor.finalize()
+
+    # Extract plaintext: first 2 bytes are big-endian length
+    plaintext_len = struct.unpack(">H", decrypted[0:2])[0]
+    plaintext = decrypted[2:2 + plaintext_len]
+
+    return plaintext.decode("utf-8")
+
+
+def _hkdf_expand(prk: bytes, info: bytes, length: int) -> bytes:
+    """
+    HKDF-Expand (RFC 5869).
+
+    Args:
+        prk: Pseudorandom key (from HKDF-Extract)
+        info: Context/application-specific info
+        length: Output length in bytes
+
+    Returns:
+        Output keying material of requested length
+    """
+    import hmac as hmac_module
+    import math
+
+    hash_len = 32  # SHA-256 output length
+    n = math.ceil(length / hash_len)
+    okm = b""
+    t = b""
+
+    for i in range(1, n + 1):
+        t = hmac_module.new(prk, t + info + bytes([i]), hashlib.sha256).digest()
+        okm += t
+
+    return okm[:length]
+
+
+def _decrypt_content(encrypted: str, secret_key: bytes, sender_pubkey: str) -> str:
+    """
+    Decrypt content using NIP-04 or NIP-44 v2 (auto-detected).
+
+    NIP-04 format: base64(ciphertext)?iv=base64(iv)
+    NIP-44 format: base64(version_byte + nonce + ciphertext + mac)
+
+    Args:
+        encrypted: Encrypted content string
+        secret_key: Recipient's 32-byte secret key
+        sender_pubkey: Sender's hex-encoded public key
+
+    Returns:
+        Decrypted plaintext
+    """
     try:
-        from secp256k1 import PrivateKey, PublicKey
-        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-        from cryptography.hazmat.backends import default_backend
-
-        # Parse encrypted content
-        parts = encrypted.split("?iv=")
-        if len(parts) != 2:
-            raise ValueError("Invalid NIP-04 encrypted content")
-
-        ciphertext = base64.b64decode(parts[0])
-        iv = base64.b64decode(parts[1])
-
-        # Compute shared secret
-        privkey = PrivateKey(secret_key)
-        sender_bytes = bytes.fromhex(sender_pubkey)
-        if len(sender_bytes) == 32:
-            sender_bytes = b"\x02" + sender_bytes
-        pubkey = PublicKey(sender_bytes, raw=True)
-        shared_point = pubkey.tweak_mul(secret_key)
-        shared_secret = sha256(shared_point.serialize()[1:33]).digest()
-
-        # Decrypt
-        cipher = Cipher(algorithms.AES(shared_secret), modes.CBC(iv), backend=default_backend())
-        decryptor = cipher.decryptor()
-        padded = decryptor.update(ciphertext) + decryptor.finalize()
-
-        # Remove PKCS7 padding
-        padding_len = padded[-1]
-        plaintext = padded[:-padding_len]
-
-        return plaintext.decode("utf-8")
+        if "?iv=" in encrypted:
+            return _decrypt_nip04(encrypted, secret_key, sender_pubkey)
+        else:
+            return _decrypt_nip44(encrypted, secret_key, sender_pubkey)
     except ImportError as e:
         raise ImportError(f"Required library not available: {e}")
 

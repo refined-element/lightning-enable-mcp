@@ -12,7 +12,7 @@
 
     <!-- NuGet Package Metadata -->
     <PackageId>LightningEnable.Mcp</PackageId>
-    <Version>1.10.0</Version>
+    <Version>1.10.1</Version>
     <AssemblyVersion>1.9.0.0</AssemblyVersion>
     <FileVersion>1.9.0.0</FileVersion>
     <Authors>Lightning Enable</Authors>
@@ -34,6 +34,10 @@
     <AssemblyName>LightningEnable.Mcp</AssemblyName>
     <RootNamespace>LightningEnable.Mcp</RootNamespace>
   </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="LightningEnable.Mcp.Tests" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="ModelContextProtocol" Version="0.6.0-preview.1" />

@@ -24,6 +24,9 @@ public class L402HttpClient : IL402HttpClient
         IPaymentHistoryService historyService)
     {
         _httpClient = httpClient;
+        // Prevent servers from sending compressed responses that may not decompress correctly
+        // across all environments (Docker, bridge CLI, etc.)
+        _httpClient.DefaultRequestHeaders.TryAddWithoutValidation("Accept-Encoding", "identity");
         _walletService = walletService;
         _budgetService = budgetService;
         _historyService = historyService;

@@ -76,7 +76,10 @@ class L402Client:
             wallet: NWC wallet for paying invoices
         """
         self.wallet = wallet
-        self._http_client = httpx.AsyncClient(timeout=30.0)
+        self._http_client = httpx.AsyncClient(
+            timeout=30.0,
+            headers={"Accept-Encoding": "identity"},
+        )
 
     async def close(self) -> None:
         """Close the HTTP client."""

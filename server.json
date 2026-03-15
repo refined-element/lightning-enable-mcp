@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.refined-element/lightning-enable-mcp",
   "title": "Lightning Enable MCP Server",
-  "description": "AI agent Lightning payments: pay invoices, L402 auto-pay, API discovery, budgets",
+  "description": "AI agent Lightning payments and agent-to-agent commerce: pay invoices, L402 auto-pay, API discovery, budgets, ASA service agreements",
   "version": "1.7.0",
   "websiteUrl": "https://docs.lightningenable.com/products/l402-microtransactions/mcp-complete-guide",
   "packages": [
@@ -65,6 +65,19 @@
           "isRequired": false,
           "isSecret": false,
           "default": "10000"
+        },
+        {
+          "name": "LIGHTNING_ENABLE_API_KEY",
+          "description": "Lightning Enable API key for agent registration and ASA publishing (Agentic Commerce subscription)",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "AGENT_RELAY_URL",
+          "description": "Nostr relay URL for agent events (default: wss://agents.lightningenable.com)",
+          "isRequired": false,
+          "isSecret": false,
+          "default": "wss://agents.lightningenable.com"
         }
       ]
     },
@@ -120,6 +133,19 @@
           "isRequired": false,
           "isSecret": false,
           "default": "10000"
+        },
+        {
+          "name": "LIGHTNING_ENABLE_API_KEY",
+          "description": "Lightning Enable API key for agent registration and ASA publishing (Agentic Commerce subscription)",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "AGENT_RELAY_URL",
+          "description": "Nostr relay URL for agent events (default: wss://agents.lightningenable.com)",
+          "isRequired": false,
+          "isSecret": false,
+          "default": "wss://agents.lightningenable.com"
         }
       ]
     },
@@ -174,6 +200,19 @@
           "isRequired": false,
           "isSecret": false,
           "default": "10000"
+        },
+        {
+          "name": "LIGHTNING_ENABLE_API_KEY",
+          "description": "Lightning Enable API key for agent registration and ASA publishing (Agentic Commerce subscription)",
+          "isRequired": false,
+          "isSecret": true
+        },
+        {
+          "name": "AGENT_RELAY_URL",
+          "description": "Nostr relay URL for agent events (default: wss://agents.lightningenable.com)",
+          "isRequired": false,
+          "isSecret": false,
+          "default": "wss://agents.lightningenable.com"
         }
       ]
     }

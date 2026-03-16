@@ -23,7 +23,7 @@
         },
         {
           "name": "NWC_CONNECTION_STRING",
-          "description": "Nostr Wallet Connect URI (for NWC wallets like CoinOS, CLINK)",
+          "description": "Nostr Wallet Connect URI (for NWC wallets like CoinOS, CLINK, Alby Hub)",
           "isRequired": false,
           "isSecret": true
         },
@@ -98,7 +98,7 @@
         },
         {
           "name": "NWC_CONNECTION_STRING",
-          "description": "Nostr Wallet Connect URI (for NWC wallets like CoinOS, CLINK)",
+          "description": "Nostr Wallet Connect URI (for NWC wallets like CoinOS, CLINK, Alby Hub)",
           "isRequired": false,
           "isSecret": true
         },
@@ -165,7 +165,7 @@
         },
         {
           "name": "NWC_CONNECTION_STRING",
-          "description": "Nostr Wallet Connect URI (for NWC wallets like CoinOS, CLINK)",
+          "description": "Nostr Wallet Connect URI (for NWC wallets like CoinOS, CLINK, Alby Hub)",
           "isRequired": false,
           "isSecret": true
         },

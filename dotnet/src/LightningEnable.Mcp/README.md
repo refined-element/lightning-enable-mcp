@@ -96,7 +96,7 @@ NWC connects to your Lightning wallet via the Nostr protocol. L402 compatibility
 
 - **CoinOS** (https://coinos.io) — Free, L402 works
 - **CLINK** (https://clink.tools) — Nostr-native, L402 works
-- **Alby Hub** (https://albyhub.com) — Self-custody, untested for L402
+- **Alby Hub** (https://albyhub.com) — Self-custody, L402 verified
 
 ```bash
 export NWC_CONNECTION_STRING="nostr+walletconnect://<pubkey>?relay=<relay-url>&secret=<secret>"
@@ -237,7 +237,7 @@ Check if a previously created invoice has been paid.
 
 ### access_l402_resource
 
-Fetches a URL, automatically paying any L402 challenge. Requires a wallet that returns preimage (Strike, LND, CoinOS, CLINK).
+Fetches a URL, automatically paying any L402 challenge. Requires a wallet that returns preimage (Strike, LND, CoinOS, CLINK, Alby Hub).
 
 **Parameters:**
 - `url` (required): The URL to fetch
@@ -317,7 +317,7 @@ L402 requires the payment preimage to create credentials. Not all wallets return
 | **Strike** | Yes | Yes |
 | **CoinOS (NWC)** | Yes | Yes |
 | **CLINK (NWC)** | Yes | Yes |
-| **Alby (NWC)** | Untested | Untested |
+| **Alby (NWC)** | Yes | Yes |
 | **OpenNode** | No | No |
 | **Primal (NWC)** | No | No |
 

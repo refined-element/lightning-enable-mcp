@@ -2,7 +2,11 @@
 
 ## Project Overview
 
+Part of **Lightning Enable — infrastructure for agent commerce over Lightning.**
+
 Open-source (MIT) MCP server for AI agent Lightning payments. See the main repo at `F:\lightning-enable` for full context.
+
+**Publishing:** Bump version in both `LightningEnable.Mcp.csproj` AND `pyproject.toml`, push to main. `server.json` description must be ≤100 chars (enforced by MCP Registry and CI validation).
 
 ## Bug Fix Workflow
 

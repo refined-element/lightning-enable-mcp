@@ -44,6 +44,16 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
+      - name: Validate server.json description length
+        run: |
+          DESC=$(jq -r '.description' server.json)
+          LEN=${#DESC}
+          if [ "$LEN" -gt 100 ]; then
+            echo "::error::server.json description is $LEN chars (max 100): $DESC"
+            exit 1
+          fi
+          echo "server.json description OK ($LEN chars)"
+
       - name: Extract version from tag or csproj
         id: version
         run: |

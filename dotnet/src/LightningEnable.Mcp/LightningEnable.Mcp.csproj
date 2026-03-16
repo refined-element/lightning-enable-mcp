@@ -12,13 +12,13 @@
 
     <!-- NuGet Package Metadata -->
     <PackageId>LightningEnable.Mcp</PackageId>
-    <Version>1.11.2</Version>
+    <Version>1.11.3</Version>
     <AssemblyVersion>1.9.0.0</AssemblyVersion>
     <FileVersion>1.9.0.0</FileVersion>
     <Authors>Lightning Enable</Authors>
     <Company>Lightning Enable</Company>
     <Product>Lightning Enable MCP Server</Product>
-    <Description>MCP server enabling AI agents to make Lightning payments. Pay invoices, check balance, track history, and auto-pay L402 challenges for API access.</Description>
+    <Description>Part of Lightning Enable — infrastructure for agent commerce over Lightning. MCP server enabling AI agents to make Lightning payments, discover APIs, access L402 resources, and participate in agent-to-agent commerce.</Description>
     <PackageProjectUrl>https://lightningenable.com</PackageProjectUrl>
     <PackageTags>mcp;l402;lightning;bitcoin;ai;payments;nostr;nwc;wallet-connect;opennode</PackageTags>
     <PackageReadmeFile>README.md</PackageReadmeFile>

@@ -1,5 +1,7 @@
 <!-- mcp-name: io.github.refined-element/lightning-enable-mcp -->
 
+Part of [Lightning Enable](https://lightningenable.com) — infrastructure for agent commerce over Lightning.
+
 # Lightning Enable MCP Server
 
 An open-source MCP (Model Context Protocol) server that enables AI agents to make Lightning Network payments and participate in agent-to-agent commerce. 23 tools total: 15 free wallet tools, 2 producer tools, and 6 Agent Service Agreement (ASA) tools for discovering, negotiating, and settling services between agents on Nostr. Producer and ASA tools require an [Agentic Commerce subscription](https://lightningenable.com).

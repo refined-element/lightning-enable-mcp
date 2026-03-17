@@ -254,7 +254,7 @@ class LndWallet:
             if payment_preimage_b64:
                 preimage_bytes = base64.b64decode(payment_preimage_b64)
                 preimage_hex = preimage_bytes.hex()
-                logger.info(f"LND payment succeeded! Preimage: {preimage_hex[:16]}...")
+                logger.info("LND payment succeeded, preimage received")
                 return preimage_hex
 
             raise LndPaymentError("Payment succeeded but no preimage returned")

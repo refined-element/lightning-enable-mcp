@@ -280,7 +280,7 @@ class StrikeWallet:
             # Step 1: Create payment quote
             quote_request = {
                 "lnInvoice": bolt11,
-                "sourceCurrency": "USD",
+                "sourceCurrency": "BTC",
             }
 
             quote = await self._request("POST", "/payment-quotes/lightning", quote_request)
@@ -305,6 +305,16 @@ class StrikeWallet:
 
             if state == "COMPLETED":
                 logger.info(f"Payment completed: {payment_id}")
+
+                # Extract preimage from lightning.preImage (Strike API)
+                lightning_details = payment.get("lightning", {})
+                preimage = lightning_details.get("preImage") if lightning_details else None
+                if preimage:
+                    logger.info("Preimage received from Strike, L402 fully supported")
+                    return preimage
+
+                # Fallback: preimage not in response
+                logger.warning("No preimage in Strike response - L402 will NOT work for this payment")
                 return payment_id
 
             raise StrikePaymentError(f"Payment failed with state: {state}")

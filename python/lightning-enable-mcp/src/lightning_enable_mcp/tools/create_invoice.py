@@ -7,6 +7,7 @@ Returns a BOLT11 invoice string to share with the payer.
 
 import json
 import logging
+from . import sanitize_error
 from typing import TYPE_CHECKING, Union
 
 if TYPE_CHECKING:
@@ -163,7 +164,7 @@ async def create_invoice(
             except Exception as e:
                 return json.dumps({
                     "success": False,
-                    "error": f"Invoice creation failed: {str(e)}",
+                    "error": f"Invoice creation failed: {sanitize_error(str(e))}",
                     "hint": "Not all NWC wallets support invoice creation."
                 })
 
@@ -171,5 +172,5 @@ async def create_invoice(
         logger.exception("Error creating invoice")
         return json.dumps({
             "success": False,
-            "error": str(e)
+            "error": sanitize_error(str(e))
         })

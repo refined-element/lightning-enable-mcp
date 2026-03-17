@@ -649,7 +649,7 @@ class NWCWallet:
         # Validate preimage format - should be 64-char hex string
         # Some wallets may incorrectly return the invoice or other data
         if preimage.startswith(("lnbc", "lntb", "lnurl")):
-            logger.error(f"NWC wallet returned invoice instead of preimage: {preimage[:50]}...")
+            logger.error("NWC wallet returned invoice instead of preimage")
             raise NWCPaymentError(
                 "Wallet returned invoice instead of preimage. "
                 "This may be a bug in your NWC wallet implementation."
@@ -660,9 +660,9 @@ class NWCWallet:
 
         # Validate it looks like hex
         if not all(c in "0123456789abcdef" for c in preimage):
-            logger.error(f"Invalid preimage format: {preimage[:50]}...")
+            logger.error("NWC wallet returned invalid preimage format")
             raise NWCPaymentError(
-                f"Invalid preimage format. Expected hex string, got: {preimage[:20]}..."
+                "Invalid preimage format. Expected hex string."
             )
 
         return preimage

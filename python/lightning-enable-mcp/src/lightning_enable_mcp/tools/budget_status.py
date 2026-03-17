@@ -7,6 +7,7 @@ Uses the new multi-tier approval system with USD-based limits.
 
 import json
 import logging
+from . import sanitize_error
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -56,5 +57,5 @@ async def get_budget_status(
         logger.exception("Error getting budget status")
         return json.dumps({
             "success": False,
-            "error": str(e)
+            "error": sanitize_error(str(e))
         })

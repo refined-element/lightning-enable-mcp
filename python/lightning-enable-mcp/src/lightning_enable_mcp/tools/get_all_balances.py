@@ -7,6 +7,7 @@ Most useful with Strike wallet which supports multiple currencies.
 
 import json
 import logging
+from . import sanitize_error
 from typing import TYPE_CHECKING, Union
 
 if TYPE_CHECKING:
@@ -96,7 +97,7 @@ async def get_all_balances(
             logger.exception("Error getting all balances from Strike")
             return json.dumps({
                 "success": False,
-                "error": str(e)
+                "error": sanitize_error(str(e))
             })
 
     # Fallback to regular balance for non-Strike wallets
@@ -137,7 +138,7 @@ async def get_all_balances(
             logger.exception("Error getting balance")
             return json.dumps({
                 "success": False,
-                "error": str(e)
+                "error": sanitize_error(str(e))
             })
 
     return json.dumps({

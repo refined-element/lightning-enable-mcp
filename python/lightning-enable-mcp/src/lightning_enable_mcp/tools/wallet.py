@@ -6,6 +6,7 @@ Check wallet balance and status via NWC.
 
 import json
 import logging
+from . import sanitize_error
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -56,4 +57,4 @@ async def check_wallet_balance(
 
     except Exception as e:
         logger.exception("Error checking wallet balance")
-        return json.dumps({"success": False, "error": str(e)})
+        return json.dumps({"success": False, "error": sanitize_error(str(e))})

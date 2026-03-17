@@ -7,6 +7,7 @@ Currently only available with Strike wallet.
 
 import json
 import logging
+from . import sanitize_error
 from decimal import Decimal
 from typing import TYPE_CHECKING, Union
 
@@ -117,5 +118,5 @@ async def exchange_currency(
         logger.exception("Error exchanging currency")
         return json.dumps({
             "success": False,
-            "error": str(e)
+            "error": sanitize_error(str(e))
         })

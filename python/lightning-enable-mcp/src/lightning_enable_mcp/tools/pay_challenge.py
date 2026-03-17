@@ -6,6 +6,7 @@ Manually pay an L402 invoice and get the authorization token.
 
 import json
 import logging
+from . import sanitize_error
 from typing import TYPE_CHECKING
 
 from bolt11 import decode as decode_bolt11
@@ -79,7 +80,7 @@ async def pay_l402_challenge(
                 budget_manager.check_payment(amount_sats, max_sats)
             except Exception as e:
                 return json.dumps(
-                    {"success": False, "error": str(e), "amount_sats": amount_sats}
+                    {"success": False, "error": sanitize_error(str(e)), "amount_sats": amount_sats}
                 )
 
         # Pay the invoice
@@ -115,4 +116,4 @@ async def pay_l402_challenge(
 
     except Exception as e:
         logger.exception("Error paying L402 challenge")
-        return json.dumps({"success": False, "error": str(e)})
+        return json.dumps({"success": False, "error": sanitize_error(str(e))})

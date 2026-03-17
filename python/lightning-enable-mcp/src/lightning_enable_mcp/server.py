@@ -50,6 +50,24 @@ logging.basicConfig(
 logger = logging.getLogger("lightning-enable-mcp")
 
 
+import re
+
+_CREDENTIAL_PATTERNS = [
+    re.compile(r"Bearer\s+\S+", re.IGNORECASE),
+    re.compile(r"shpat_\S+", re.IGNORECASE),
+    re.compile(r"sk_live_\S+", re.IGNORECASE),
+    re.compile(r"sk_test_\S+", re.IGNORECASE),
+    re.compile(r"[A-Za-z0-9+/]{40,}={0,2}"),  # Long base64-like tokens
+]
+
+
+def _sanitize_error(msg: str) -> str:
+    """Remove potential credentials from error messages."""
+    for pattern in _CREDENTIAL_PATTERNS:
+        msg = pattern.sub("[REDACTED]", msg)
+    return msg
+
+
 class LightningEnableServer:
     """MCP Server for L402 Lightning payments."""
 
@@ -593,7 +611,9 @@ class LightningEnableServer:
 
             except Exception as e:
                 logger.exception(f"Error in tool {name}")
-                return [TextContent(type="text", text=f"Error: {e!s}")]
+                # Sanitize exception message to avoid leaking credentials
+                safe_msg = _sanitize_error(str(e))
+                return [TextContent(type="text", text=f"Error in {name}: {safe_msg}")]
 
     async def _initialize_services(self) -> None:
         """Initialize wallet, L402 client, and budget manager.

@@ -8,6 +8,7 @@ Requires LIGHTNING_ENABLE_API_KEY with an Agentic Commerce subscription.
 
 import json
 import logging
+from . import sanitize_error
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -99,5 +100,5 @@ async def create_l402_challenge(
         logger.exception("Error creating L402 challenge")
         return json.dumps({
             "success": False,
-            "error": str(e)
+            "error": sanitize_error(str(e))
         })

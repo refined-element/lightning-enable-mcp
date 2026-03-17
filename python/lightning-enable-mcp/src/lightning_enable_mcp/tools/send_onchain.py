@@ -7,6 +7,7 @@ Supports Strike and LND wallets.
 
 import json
 import logging
+from . import sanitize_error
 from typing import TYPE_CHECKING, Union
 
 if TYPE_CHECKING:
@@ -124,5 +125,5 @@ async def send_onchain(
         logger.exception("Error sending on-chain payment")
         return json.dumps({
             "success": False,
-            "error": str(e)
+            "error": sanitize_error(str(e))
         })

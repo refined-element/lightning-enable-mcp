@@ -25,7 +25,26 @@ public class NwcWalletService : IWalletService, IDisposable
     // Track recently used preimages to detect stale relay responses.
     // Some NWC relays (e.g. Coinos) ignore #e tag filters and return cached
     // responses from previous payments. We reject any preimage already used.
+    // Capped at MaxUsedPreimages to prevent unbounded memory growth.
+    private const int MaxUsedPreimages = 10000;
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, DateTime> _usedPreimages = new();
+
+    private static void PruneUsedPreimagesIfNeeded()
+    {
+        if (_usedPreimages.Count <= MaxUsedPreimages) return;
+
+        // Remove oldest entries (by timestamp) to get back to 75% capacity
+        var toRemove = _usedPreimages
+            .OrderBy(kvp => kvp.Value)
+            .Take(_usedPreimages.Count - (MaxUsedPreimages * 3 / 4))
+            .Select(kvp => kvp.Key)
+            .ToList();
+
+        foreach (var key in toRemove)
+        {
+            _usedPreimages.TryRemove(key, out _);
+        }
+    }
 
     private readonly NwcConfig? _config;
     private readonly ECPrivKey? _privateKey;
@@ -72,18 +91,9 @@ public class NwcWalletService : IWalletService, IDisposable
 
     public async Task<NwcPaymentResult> PayInvoiceAsync(string bolt11, CancellationToken cancellationToken = default)
     {
-        // Debug log to file for Mac debugging
-        var logPath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".lightning-enable",
-            "nwc-debug.log");
-        Directory.CreateDirectory(Path.GetDirectoryName(logPath)!);
-
         void DebugLog(string msg)
         {
-            var line = $"[{DateTime.UtcNow:yyyy-MM-dd HH:mm:ss.fff}] {msg}";
-            Console.Error.WriteLine(line);
-            try { File.AppendAllText(logPath, line + Environment.NewLine); } catch { }
+            Console.Error.WriteLine($"[NWC] {msg}");
         }
 
         DebugLog("=== PayInvoiceAsync called ===");
@@ -120,7 +130,7 @@ public class NwcWalletService : IWalletService, IDisposable
                 return NwcPaymentResult.Failed("CONNECTION_ERROR", "Failed to connect to NWC relay");
             }
 
-            DebugLog($"Got response: {response.ToJsonString()}");
+            DebugLog($"Got response (result_type: {response["result_type"]?.GetValue<string>() ?? "unknown"})");
 
             // Check for error response
             var error = response["error"]?.AsObject();
@@ -136,13 +146,12 @@ public class NwcWalletService : IWalletService, IDisposable
             var result = response["result"]?.AsObject();
             var preimage = result?["preimage"]?.GetValue<string>();
 
-            DebugLog($"Raw preimage from response: '{preimage}'");
-            DebugLog($"Preimage length: {preimage?.Length ?? 0}");
+            DebugLog($"Preimage present: {!string.IsNullOrEmpty(preimage)}, length: {preimage?.Length ?? 0}");
 
             if (string.IsNullOrEmpty(preimage))
             {
                 DebugLog("ERROR: No preimage in response!");
-                DebugLog($"Full result object: {result?.ToJsonString()}");
+                DebugLog("No preimage in result object");
                 return NwcPaymentResult.Failed("NO_PREIMAGE", "Payment succeeded but no preimage returned");
             }
 
@@ -152,7 +161,7 @@ public class NwcWalletService : IWalletService, IDisposable
 
             if (!isValidHex)
             {
-                DebugLog($"WARNING: Preimage is not 64 hex chars! Got: {preimage}");
+                DebugLog("WARNING: Preimage is not valid 64 hex chars");
                 // Check if it looks like a UUID
                 if (preimage.Contains('-') && preimage.Length == 36)
                 {
@@ -160,7 +169,7 @@ public class NwcWalletService : IWalletService, IDisposable
                 }
             }
 
-            DebugLog($"Returning preimage: {preimage}");
+            DebugLog("Returning preimage");
             return NwcPaymentResult.Succeeded(preimage);
         }
         catch (Exception ex)

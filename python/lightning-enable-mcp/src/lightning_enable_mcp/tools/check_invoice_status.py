@@ -6,6 +6,7 @@ Check the payment status of a previously created Lightning invoice.
 
 import json
 import logging
+from . import sanitize_error
 from typing import TYPE_CHECKING, Union
 
 if TYPE_CHECKING:
@@ -118,5 +119,5 @@ async def check_invoice_status(
         logger.exception("Error checking invoice status")
         return json.dumps({
             "success": False,
-            "error": str(e)
+            "error": sanitize_error(str(e))
         })

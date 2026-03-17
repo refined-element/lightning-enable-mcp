@@ -7,6 +7,7 @@ Only available with Strike wallet.
 
 import json
 import logging
+from . import sanitize_error
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -70,5 +71,5 @@ async def get_btc_price(
         logger.exception("Error getting BTC price")
         return json.dumps({
             "success": False,
-            "error": str(e)
+            "error": sanitize_error(str(e))
         })

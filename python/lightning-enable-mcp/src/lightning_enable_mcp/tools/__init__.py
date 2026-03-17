@@ -4,6 +4,22 @@ Lightning Enable MCP Tools
 Tool implementations for L402 operations.
 """
 
+import re
+
+_CREDENTIAL_PATTERNS = [
+    re.compile(r"Bearer\s+\S+", re.IGNORECASE),
+    re.compile(r"shpat_\S+", re.IGNORECASE),
+    re.compile(r"sk_live_\S+", re.IGNORECASE),
+    re.compile(r"sk_test_\S+", re.IGNORECASE),
+]
+
+
+def sanitize_error(msg: str) -> str:
+    """Remove potential credentials from error messages returned to users."""
+    for pattern in _CREDENTIAL_PATTERNS:
+        msg = pattern.sub("[REDACTED]", msg)
+    return msg
+
 from .access_resource import access_l402_resource
 from .check_invoice_status import check_invoice_status
 from .confirm_payment import confirm_payment

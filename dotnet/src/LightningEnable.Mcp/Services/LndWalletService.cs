@@ -136,7 +136,7 @@ public class LndWalletService : IWalletService, IDisposable
             {
                 var preimageBytes = Convert.FromBase64String(result.PaymentPreimage);
                 var preimageHex = Convert.ToHexString(preimageBytes).ToLowerInvariant();
-                Console.Error.WriteLine($"[LND] Payment succeeded! Preimage: {preimageHex[..Math.Min(16, preimageHex.Length)]}...");
+                Console.Error.WriteLine("[LND] Payment succeeded, preimage received");
                 return NwcPaymentResult.Succeeded(preimageHex);
             }
 

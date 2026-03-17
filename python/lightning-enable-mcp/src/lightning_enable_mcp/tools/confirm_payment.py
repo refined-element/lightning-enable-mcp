@@ -8,6 +8,7 @@ ensuring the user sees and can approve/deny the confirmation.
 
 import json
 import logging
+from . import sanitize_error
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -81,5 +82,5 @@ async def confirm_payment(
         logger.exception("Error confirming payment")
         return json.dumps({
             "success": False,
-            "error": str(e)
+            "error": sanitize_error(str(e))
         })

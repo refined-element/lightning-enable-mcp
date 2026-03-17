@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from ..l402_client import L402Client
 
 from ..config import ApprovalLevel
+from . import sanitize_error
 
 logger = logging.getLogger("lightning-enable-mcp.tools.access")
 
@@ -210,7 +211,7 @@ async def access_l402_resource(
             "success": False,
             "url": url,
             "method": method,
-            "error": str(e),
+            "error": sanitize_error(str(e)),
         }
 
         return json.dumps(error_result, indent=2)

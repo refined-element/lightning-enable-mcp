@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from ..opennode_wallet import OpenNodeWallet
 
 from ..config import ApprovalLevel
+from . import sanitize_error
 
 logger = logging.getLogger("lightning-enable-mcp.tools.pay_invoice")
 
@@ -121,7 +122,7 @@ async def pay_invoice(
             except Exception as e:
                 return json.dumps({
                     "success": False,
-                    "error": str(e),
+                    "error": sanitize_error(str(e)),
                     "budget": {
                         "requested_sats": max_sats,
                         "remaining_sats": budget_manager.max_per_session - budget_manager.session_spent
@@ -227,5 +228,5 @@ async def pay_invoice(
 
         return json.dumps({
             "success": False,
-            "error": str(e)
+            "error": sanitize_error(str(e))
         })

@@ -12,6 +12,7 @@ Two modes:
 import json
 import logging
 import os
+from . import sanitize_error
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote as url_quote
 
@@ -255,7 +256,7 @@ async def discover_api(
     except Exception as e:
         return json.dumps({
             "success": False,
-            "error": f"Error discovering API: {str(e)}"
+            "error": f"Error discovering API: {sanitize_error(str(e))}"
         })
 
 
@@ -390,7 +391,7 @@ async def _fetch_and_format_manifest(
     except json.JSONDecodeError as e:
         return json.dumps({
             "success": False,
-            "error": f"Failed to parse manifest JSON: {str(e)}"
+            "error": f"Failed to parse manifest JSON: {sanitize_error(str(e))}"
         })
 
     service_info = _extract_service_info(root)

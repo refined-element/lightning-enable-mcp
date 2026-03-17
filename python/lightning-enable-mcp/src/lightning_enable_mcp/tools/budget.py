@@ -6,6 +6,7 @@ Configure spending limits and view payment history.
 
 import json
 import logging
+from . import sanitize_error
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -87,7 +88,7 @@ async def configure_budget(
 
     except Exception as e:
         logger.exception("Error configuring budget")
-        return json.dumps({"success": False, "error": str(e)})
+        return json.dumps({"success": False, "error": sanitize_error(str(e))})
 
 
 async def get_payment_history(
@@ -156,4 +157,4 @@ async def get_payment_history(
 
     except Exception as e:
         logger.exception("Error getting payment history")
-        return json.dumps({"success": False, "error": str(e)})
+        return json.dumps({"success": False, "error": sanitize_error(str(e))})

@@ -8,6 +8,7 @@ namespace LightningEnable.Mcp.Services;
 /// </summary>
 public class PaymentHistoryService : IPaymentHistoryService
 {
+    private const int MaxPaymentRecords = 1000;
     private readonly object _lock = new();
     private readonly List<PaymentRecord> _payments = new();
 
@@ -22,6 +23,12 @@ public class PaymentHistoryService : IPaymentHistoryService
     {
         lock (_lock)
         {
+            if (_payments.Count >= MaxPaymentRecords)
+            {
+                // Remove oldest entries to make room
+                _payments.RemoveRange(0, _payments.Count - MaxPaymentRecords + 1);
+            }
+
             _payments.Add(new PaymentRecord
             {
                 Id = Guid.NewGuid().ToString("N"),
@@ -47,6 +54,11 @@ public class PaymentHistoryService : IPaymentHistoryService
     {
         lock (_lock)
         {
+            if (_payments.Count >= MaxPaymentRecords)
+            {
+                _payments.RemoveRange(0, _payments.Count - MaxPaymentRecords + 1);
+            }
+
             _payments.Add(new PaymentRecord
             {
                 Id = Guid.NewGuid().ToString("N"),

@@ -53,12 +53,12 @@ public class StrikeWalletService : IWalletService, IDisposable
         Console.Error.WriteLine($"[Strike] Initializing service. API key configured: {IsConfigured}");
         if (IsConfigured)
         {
-            Console.Error.WriteLine($"[Strike] API key length: {_apiKey!.Length} chars, starts with: {_apiKey.Substring(0, Math.Min(8, _apiKey.Length))}...");
+            Console.Error.WriteLine("[Strike] API key configured");
             _httpClient.DefaultRequestHeaders.Authorization =
                 new AuthenticationHeaderValue("Bearer", _apiKey);
             _httpClient.DefaultRequestHeaders.Accept.Add(
                 new MediaTypeWithQualityHeaderValue("application/json"));
-            Console.Error.WriteLine($"[Strike] Authorization header set: Bearer {_apiKey.Substring(0, Math.Min(8, _apiKey.Length))}...");
+            Console.Error.WriteLine("[Strike] Authorization header set");
         }
         else
         {
@@ -163,8 +163,7 @@ public class StrikeWalletService : IWalletService, IDisposable
                 var preimage = payment.Lightning?.PreImage;
                 if (!string.IsNullOrEmpty(preimage))
                 {
-                    Console.Error.WriteLine($"[Strike] Preimage received: {preimage[..Math.Min(8, preimage.Length)]}...");
-                    Console.Error.WriteLine("[Strike] L402 fully supported with preimage");
+                    Console.Error.WriteLine("[Strike] Preimage received, L402 fully supported");
                     return NwcPaymentResult.Succeeded(preimage);
                 }
 
@@ -206,14 +205,6 @@ public class StrikeWalletService : IWalletService, IDisposable
         {
             Console.Error.WriteLine($"[Strike] GetBalanceAsync: Calling {BaseUrl}/balances");
             Console.Error.WriteLine($"[Strike] Auth header present: {_httpClient.DefaultRequestHeaders.Authorization != null}");
-            if (_httpClient.DefaultRequestHeaders.Authorization != null)
-            {
-                var scheme = _httpClient.DefaultRequestHeaders.Authorization.Scheme;
-                var param = _httpClient.DefaultRequestHeaders.Authorization.Parameter;
-                Console.Error.WriteLine($"[Strike] Auth scheme: {scheme}");
-                Console.Error.WriteLine($"[Strike] Auth param length: {param?.Length ?? 0}");
-                Console.Error.WriteLine($"[Strike] Auth param preview: {param?.Substring(0, Math.Min(12, param?.Length ?? 0))}...");
-            }
 
             var response = await _httpClient.GetAsync($"{BaseUrl}/balances", cancellationToken);
 
@@ -223,13 +214,7 @@ public class StrikeWalletService : IWalletService, IDisposable
                 Console.Error.WriteLine($"[Strike] Balance check failed: {response.StatusCode}");
                 Console.Error.WriteLine($"[Strike] Error response: {errorBody}");
 
-                // Include diagnostic info in error
-                var authInfo = _httpClient.DefaultRequestHeaders.Authorization;
-                var authDiag = authInfo != null
-                    ? $"Auth: {authInfo.Scheme} (param len: {authInfo.Parameter?.Length ?? 0})"
-                    : "Auth: MISSING";
-
-                throw new HttpRequestException($"Strike API error ({response.StatusCode}): {errorBody} | {authDiag}");
+                throw new HttpRequestException($"Strike API error ({response.StatusCode}): {errorBody}");
             }
 
             var balances = await response.Content.ReadFromJsonAsync<List<StrikeBalance>>(

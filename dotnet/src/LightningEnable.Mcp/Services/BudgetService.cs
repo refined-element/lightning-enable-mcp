@@ -10,6 +10,7 @@ namespace LightningEnable.Mcp.Services;
 public class BudgetService : IBudgetService
 {
     private readonly object _lock = new();
+    private readonly SemaphoreSlim _semaphore = new(1, 1);
     private readonly IBudgetConfigurationService _configService;
     private readonly IPriceService _priceService;
 
@@ -50,9 +51,10 @@ public class BudgetService : IBudgetService
         var config = _configService.Configuration;
         var amountUsd = await _priceService.SatsToUsdAsync(amountSats, cancellationToken);
 
-        lock (_lock)
+        await _semaphore.WaitAsync(cancellationToken);
+        try
         {
-            var sessionSpentUsd = _priceService.SatsToUsdAsync(_sessionSpentSats, cancellationToken).GetAwaiter().GetResult();
+            var sessionSpentUsd = await _priceService.SatsToUsdAsync(_sessionSpentSats, cancellationToken);
             var sessionLimitUsd = config.Limits.MaxPerSession ?? decimal.MaxValue;
             var remainingSessionUsd = sessionLimitUsd - sessionSpentUsd;
 
@@ -146,6 +148,10 @@ public class BudgetService : IBudgetService
                 ConfirmationMessage = confirmMessage,
                 RemainingSessionBudgetUsd = Math.Max(0, remainingSessionUsd)
             };
+        }
+        finally
+        {
+            _semaphore.Release();
         }
     }
 

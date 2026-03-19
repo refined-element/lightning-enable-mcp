@@ -267,6 +267,32 @@ public static class AccessL402ResourceTool
             }
             else
             {
+                // If payment was made but the retry failed (e.g., store split-flow),
+                // surface the L402 token so it can be used with the correct endpoint
+                if (result.PaidAmountSats > 0 && !string.IsNullOrEmpty(result.L402Token))
+                {
+                    var amountUsd = priceService != null
+                        ? await priceService.SatsToUsdAsync(result.PaidAmountSats, cancellationToken)
+                        : 0m;
+
+                    return JsonSerializer.Serialize(new
+                    {
+                        success = false,
+                        url = result.Url,
+                        statusCode = result.StatusCode,
+                        error = result.ErrorMessage,
+                        payment = new
+                        {
+                            paid = true,
+                            amountSats = result.PaidAmountSats,
+                            amountUsd = Math.Round(amountUsd, 2),
+                            l402Token = result.L402Token,
+                            note = "Payment succeeded but the server returned a non-success status on retry. " +
+                                   "The L402 token above is valid and can be used with the correct endpoint."
+                        }
+                    });
+                }
+
                 return JsonSerializer.Serialize(new
                 {
                     success = false,

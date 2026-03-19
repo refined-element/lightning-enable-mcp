@@ -237,7 +237,7 @@ public class L402HttpClient : IL402HttpClient
             return L402FetchResult.Succeeded(url, content, (int)retryResponse.StatusCode, contentType, amountSats.Value, l402Token);
         }
 
-        return L402FetchResult.Failed(url, $"Request failed after payment: HTTP {(int)retryResponse.StatusCode}: {content}", (int)retryResponse.StatusCode);
+        return L402FetchResult.Failed(url, $"Request failed after payment: HTTP {(int)retryResponse.StatusCode}: {content}", (int)retryResponse.StatusCode, amountSats.Value, l402Token);
     }
 
     private static HttpRequestMessage CreateRequest(string url, string method, string? headers, string? body)

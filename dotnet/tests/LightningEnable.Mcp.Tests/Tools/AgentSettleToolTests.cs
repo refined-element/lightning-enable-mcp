@@ -36,8 +36,8 @@ public class AgentSettleToolTests
                 "{\"translation\": \"Hola mundo\"}",
                 200,
                 "application/json",
-                paidAmount: 100,
-                token: "macaroon123:preimage456"));
+                paidAmountSats: 100,
+                l402Token: "macaroon123:preimage456"));
 
         // Act
         var result = await AgentSettleTool.SettleAgentService(

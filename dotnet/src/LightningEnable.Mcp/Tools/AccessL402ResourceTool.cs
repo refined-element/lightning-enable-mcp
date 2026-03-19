@@ -271,9 +271,13 @@ public static class AccessL402ResourceTool
                 // surface the L402 token so it can be used with the correct endpoint
                 if (result.PaidAmountSats > 0 && !string.IsNullOrEmpty(result.L402Token))
                 {
-                    var amountUsd = priceService != null
-                        ? await priceService.SatsToUsdAsync(result.PaidAmountSats, cancellationToken)
-                        : 0m;
+                    decimal? amountUsd = null;
+                    try
+                    {
+                        if (priceService != null)
+                            amountUsd = Math.Round(await priceService.SatsToUsdAsync(result.PaidAmountSats, cancellationToken), 2);
+                    }
+                    catch { /* USD conversion is best-effort — never lose the token */ }
 
                     return JsonSerializer.Serialize(new
                     {
@@ -285,7 +289,7 @@ public static class AccessL402ResourceTool
                         {
                             paid = true,
                             amountSats = result.PaidAmountSats,
-                            amountUsd = Math.Round(amountUsd, 2),
+                            amountUsd,
                             l402Token = result.L402Token,
                             note = "Payment succeeded but the server returned a non-success status on retry. " +
                                    "The L402 token above is valid and can be used with the correct endpoint."

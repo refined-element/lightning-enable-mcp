@@ -134,7 +134,7 @@ public record L402FetchResult
     /// <summary>
     /// Creates a successful result.
     /// </summary>
-    public static L402FetchResult Succeeded(string url, string content, int statusCode, string? contentType = null, long paidAmount = 0, string? token = null) =>
+    public static L402FetchResult Succeeded(string url, string content, int statusCode, string? contentType = null, long paidAmountSats = 0, string? l402Token = null) =>
         new()
         {
             Success = true,
@@ -142,8 +142,8 @@ public record L402FetchResult
             Content = content,
             StatusCode = statusCode,
             ContentType = contentType,
-            PaidAmountSats = paidAmount,
-            L402Token = token
+            PaidAmountSats = paidAmountSats,
+            L402Token = l402Token
         };
 
     /// <summary>

@@ -51,6 +51,37 @@ public class L402ToolsTests
             "https://api.example.com/data", "GET", null, null, 1000L, It.IsAny<CancellationToken>()), Times.Once);
     }
 
+    [Fact]
+    public async Task AccessL402Resource_WhenRetryFailsAfterPayment_SurfacesL402Token()
+    {
+        // Arrange — payment succeeded but retry returned 402 (e.g., store split-flow)
+        _l402ClientMock.Setup(c => c.FetchWithL402Async(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(),
+            It.IsAny<string?>(), It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(L402FetchResult.Failed(
+                "https://store.example.com/checkout",
+                "Request failed after payment: HTTP 402",
+                402,
+                paidAmountSats: 5000,
+                l402Token: "macaroon123:preimage456"));
+
+        // Act
+        var result = await AccessL402ResourceTool.AccessL402Resource(
+            url: "https://store.example.com/checkout",
+            l402Client: _l402ClientMock.Object);
+
+        // Assert
+        var json = JsonDocument.Parse(result);
+        json.RootElement.GetProperty("success").GetBoolean().Should().BeFalse();
+        json.RootElement.GetProperty("statusCode").GetInt32().Should().Be(402);
+
+        var payment = json.RootElement.GetProperty("payment");
+        payment.GetProperty("paid").GetBoolean().Should().BeTrue();
+        payment.GetProperty("amountSats").GetInt64().Should().Be(5000);
+        payment.GetProperty("l402Token").GetString().Should().Be("macaroon123:preimage456");
+        payment.GetProperty("note").GetString().Should().Contain("valid");
+    }
+
     #endregion
 
     #region PayL402ChallengeTool Tests

@@ -135,6 +135,56 @@ class TestPayL402ChallengeNoAmountRejection:
         mock_wallet.pay_invoice.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_sub_sat_amount_rounds_up_to_one(self):
+        """Sub-satoshi invoices (1-999 msat) should round up to 1 sat, not 0."""
+        mock_wallet = AsyncMock()
+        mock_wallet.pay_invoice = AsyncMock(return_value="preimage_sub")
+        mock_decoded = MagicMock()
+        mock_decoded.amount_msat = 500
+        mock_decoded.amount = None
+
+        with patch(
+            "lightning_enable_mcp.tools.pay_challenge.decode_bolt11",
+            return_value=mock_decoded,
+        ):
+            result = json.loads(
+                await pay_l402_challenge(
+                    invoice="lnbc1pjtest",
+                    macaroon="mac123",
+                    wallet=mock_wallet,
+                )
+            )
+
+        assert result["success"] is True
+        assert result["amount_sats"] == 1
+        mock_wallet.pay_invoice.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_sub_sat_amount_enforces_budget(self):
+        """Sub-sat amounts rounded up to 1 sat should still be checked against max_sats."""
+        mock_wallet = AsyncMock()
+        mock_decoded = MagicMock()
+        mock_decoded.amount_msat = 500
+        mock_decoded.amount = None
+
+        with patch(
+            "lightning_enable_mcp.tools.pay_challenge.decode_bolt11",
+            return_value=mock_decoded,
+        ):
+            result = json.loads(
+                await pay_l402_challenge(
+                    invoice="lnbc1pjtest",
+                    macaroon="mac123",
+                    max_sats=0,
+                    wallet=mock_wallet,
+                )
+            )
+
+        assert result["success"] is False
+        assert "exceeds maximum" in result["error"]
+        mock_wallet.pay_invoice.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_budget_check_not_skipped_for_valid_amount(self):
         """Budget manager should be checked when amount is present."""
         mock_wallet = AsyncMock()

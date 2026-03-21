@@ -47,9 +47,9 @@ class L402Challenge:
 
     @property
     def amount_sats(self) -> int | None:
-        """Return amount in satoshis."""
+        """Return amount in satoshis (ceiling division to avoid sub-sat amounts rounding to 0)."""
         if self.amount_msat is not None:
-            return self.amount_msat // 1000
+            return -(-self.amount_msat // 1000)  # ceil division
         return None
 
 
@@ -65,9 +65,9 @@ class MppChallenge:
 
     @property
     def amount_sats(self) -> int | None:
-        """Return amount in satoshis."""
+        """Return amount in satoshis (ceiling division to avoid sub-sat amounts rounding to 0)."""
         if self.amount_msat is not None:
-            return self.amount_msat // 1000
+            return -(-self.amount_msat // 1000)  # ceil division
         return None
 
 
@@ -440,7 +440,7 @@ class L402Client:
                 "Invoice has no amount specified. For security, only invoices with explicit amounts are supported."
             )
 
-        amount_sats = amount_msat // 1000
+        amount_sats = -(-amount_msat // 1000)  # ceil division: sub-sat amounts round up to 1
         if amount_sats > max_sats:
             raise L402BudgetExceededError(
                 f"Invoice amount {amount_sats} sats exceeds maximum {max_sats} sats"

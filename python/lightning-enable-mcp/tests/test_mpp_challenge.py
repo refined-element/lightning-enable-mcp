@@ -87,13 +87,29 @@ class TestMppChallengeAmountSats:
         )
         assert challenge.amount_sats is None
 
-    def test_amount_sats_truncation(self):
-        """Millisats that don't divide evenly by 1000 should truncate."""
+    def test_amount_sats_rounds_up(self):
+        """Millisats that don't divide evenly by 1000 should round up (ceiling)."""
         challenge = MppChallenge(
             invoice="test",
             amount_msat=10999,
         )
-        assert challenge.amount_sats == 10
+        assert challenge.amount_sats == 11
+
+    def test_amount_sats_sub_sat_rounds_up_to_one(self):
+        """Sub-satoshi amounts (1-999 msat) should round up to 1 sat, not 0."""
+        challenge = MppChallenge(
+            invoice="test",
+            amount_msat=500,
+        )
+        assert challenge.amount_sats == 1
+
+    def test_amount_sats_1_msat_rounds_up_to_one(self):
+        """Even 1 msat should round up to 1 sat."""
+        challenge = MppChallenge(
+            invoice="test",
+            amount_msat=1,
+        )
+        assert challenge.amount_sats == 1
 
 
 class TestMppToken:

@@ -67,7 +67,7 @@ async def pay_l402_challenge(
 
         if hasattr(decoded, "amount_msat") and decoded.amount_msat:
             amount_msat = decoded.amount_msat
-            amount_sats = amount_msat // 1000
+            amount_sats = -(-amount_msat // 1000)  # ceil division: sub-sat amounts round up to 1
         elif hasattr(decoded, "amount") and decoded.amount:
             amount_sats = decoded.amount
 

@@ -124,6 +124,26 @@ class TestL402ChallengeAmount:
 
         assert challenge.amount_sats is None
 
+    def test_amount_sats_sub_sat_rounds_up(self):
+        """Sub-satoshi amounts (1-999 msat) should round up to 1 sat, not 0."""
+        challenge = L402Challenge(
+            macaroon="test",
+            invoice="test",
+            amount_msat=500,
+        )
+
+        assert challenge.amount_sats == 1
+
+    def test_amount_sats_rounds_up(self):
+        """Millisats that don't divide evenly by 1000 should round up (ceiling)."""
+        challenge = L402Challenge(
+            macaroon="test",
+            invoice="test",
+            amount_msat=10999,
+        )
+
+        assert challenge.amount_sats == 11
+
 
 class TestPayChallengeNoAmountRejection:
     """Tests that pay_challenge rejects invoices without an explicit amount (security)."""
@@ -194,3 +214,30 @@ class TestPayChallengeNoAmountRejection:
             )
             assert isinstance(result, MppToken)
             assert result.preimage == "preimage456"
+
+    @pytest.mark.asyncio
+    async def test_pay_challenge_sub_sat_rounds_up_and_checks_budget(self):
+        """Sub-satoshi invoices (1-999 msat) should round up to 1 sat for budget checks."""
+        mock_wallet = AsyncMock()
+        mock_wallet.pay_invoice = AsyncMock(return_value="preimage_subsats")
+        self.client.wallet = mock_wallet
+
+        with patch.object(
+            self.client, "_get_invoice_amount_msat", return_value=500
+        ):
+            result = await self.client.pay_challenge(
+                invoice="lnbc1pjtest", macaroon="mac123", max_sats=1
+            )
+            assert isinstance(result, L402Token)
+            assert result.preimage == "preimage_subsats"
+
+    @pytest.mark.asyncio
+    async def test_pay_challenge_sub_sat_exceeds_budget(self):
+        """Sub-sat amount rounded up to 1 should fail if max_sats is 0."""
+        with patch.object(
+            self.client, "_get_invoice_amount_msat", return_value=500
+        ):
+            with pytest.raises(L402BudgetExceededError):
+                await self.client.pay_challenge(
+                    invoice="lnbc1pjtest", macaroon="mac123", max_sats=0
+                )

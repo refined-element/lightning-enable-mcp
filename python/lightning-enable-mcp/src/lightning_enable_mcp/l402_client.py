@@ -171,6 +171,7 @@ class L402Client:
         Raises:
             L402Error: If header cannot be parsed
         """
+        www_authenticate = www_authenticate.strip()
         if not www_authenticate.lower().startswith("payment "):
             raise L402Error(f"Invalid MPP challenge: {www_authenticate[:50]}")
 
@@ -400,6 +401,7 @@ class L402Client:
         except Exception as e:
             raise L402PaymentError(f"Payment failed: {e!s}") from e
 
-        if macaroon:
-            return L402Token(macaroon=macaroon, preimage=preimage)
+        normalized_macaroon = macaroon.strip() if macaroon is not None else None
+        if normalized_macaroon:
+            return L402Token(macaroon=normalized_macaroon, preimage=preimage)
         return MppToken(preimage=preimage)

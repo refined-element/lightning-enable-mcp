@@ -52,8 +52,12 @@ async def pay_l402_challenge(
     if not invoice:
         return json.dumps({"success": False, "error": "Invoice is required"})
 
-    # Determine protocol: L402 if macaroon provided, MPP otherwise
-    is_mpp = not macaroon
+    # Normalize macaroon: strip whitespace and treat empty/whitespace-only as None
+    if macaroon is not None:
+        macaroon = macaroon.strip()
+        if not macaroon:
+            macaroon = None
+    is_mpp = macaroon is None
 
     try:
         # Parse invoice to get amount

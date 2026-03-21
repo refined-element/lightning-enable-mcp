@@ -225,7 +225,7 @@ public static class AccessL402ResourceTool
                     budgetService?.RecordPaymentTime();
                     paymentHistory?.RecordPayment(
                         url,
-                        "L402",
+                        result.Protocol ?? "L402",
                         result.PaidAmountSats,
                         null,
                         null,

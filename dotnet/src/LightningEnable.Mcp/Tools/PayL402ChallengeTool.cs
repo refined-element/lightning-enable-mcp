@@ -8,17 +8,18 @@ using ModelContextProtocol.Server;
 namespace LightningEnable.Mcp.Tools;
 
 /// <summary>
-/// MCP tool for manually paying an L402 invoice.
+/// MCP tool for manually paying an L402 or MPP (Machine Payments Protocol) invoice.
 /// Use this when you have received a 402 response and want to pay it manually
-/// to get the L402 token for subsequent requests.
+/// to get the authorization token for subsequent requests.
+/// Supports both L402 (macaroon + preimage) and MPP (preimage only) protocols.
 /// </summary>
 [McpServerToolType]
 public static class PayL402ChallengeTool
 {
     /// <summary>
-    /// Manually pays an L402 invoice and returns the token.
+    /// Manually pays an L402 or MPP invoice and returns the authorization token.
     /// </summary>
-    [McpServerTool(Name = "pay_l402_challenge"), Description("Manually pay an L402 Lightning invoice to get the authentication token")]
+    [McpServerTool(Name = "pay_l402_challenge"), Description("Manually pay an L402 or MPP Lightning invoice to get the authentication token. Omit macaroon for MPP mode.")]
     public static async Task<string> PayL402Challenge(
         [Description("BOLT11 Lightning invoice string from the L402 challenge")] string invoice,
         [Description("Base64-encoded macaroon from the L402 challenge. Optional for MPP (Machine Payments Protocol) where only invoice + preimage are needed.")] string? macaroon = null,

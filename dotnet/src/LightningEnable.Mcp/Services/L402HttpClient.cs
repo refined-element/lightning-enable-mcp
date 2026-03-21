@@ -254,6 +254,8 @@ public class L402HttpClient : IL402HttpClient
         using var retryRequest = CreateRequest(url, method, headers, body);
         if (parsed.IsMpp)
         {
+            // Ensure we do not send multiple Authorization headers: remove any existing one first.
+            retryRequest.Headers.Remove("Authorization");
             retryRequest.Headers.TryAddWithoutValidation("Authorization",
                 $"Payment method=\"lightning\", preimage=\"{paymentResult.PreimageHex}\"");
         }

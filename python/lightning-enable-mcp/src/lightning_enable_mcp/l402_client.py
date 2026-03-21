@@ -133,9 +133,10 @@ class L402Client:
         Raises:
             L402Error: If header cannot be parsed
         """
-        # Handle both L402 and legacy LSAT (case-insensitive per HTTP spec)
-        upper = www_authenticate.strip().upper()
-        if not (upper.startswith("L402 ") or upper.startswith("LSAT ")):
+        # Handle both L402 and legacy LSAT (case-insensitive per HTTP spec),
+        # allowing any valid HTTP whitespace (SP / HTAB) and multiple characters.
+        scheme_match = re.match(r'^\s*(L402|LSAT)\s+', www_authenticate, re.IGNORECASE)
+        if not scheme_match:
             raise L402Error(f"Invalid L402 challenge: {www_authenticate[:50]}")
 
         # Extract macaroon
@@ -172,22 +173,25 @@ class L402Client:
             L402Error: If header cannot be parsed
         """
         www_authenticate = www_authenticate.strip()
-        if not www_authenticate.lower().startswith("payment "):
+        parts = www_authenticate.split(None, 1)
+        if not parts or parts[0].lower() != "payment":
             raise L402Error(f"Invalid MPP challenge: {www_authenticate[:50]}")
 
-        method_match = re.search(r'method="([^"]+)"', www_authenticate, re.IGNORECASE)
+        params_str = parts[1] if len(parts) > 1 else ""
+
+        method_match = re.search(r'method="([^"]+)"', params_str, re.IGNORECASE)
         if not method_match or method_match.group(1).lower() != "lightning":
             raise L402Error("MPP challenge method must be 'lightning'")
 
-        invoice_match = re.search(r'invoice="([^"]+)"', www_authenticate, re.IGNORECASE)
+        invoice_match = re.search(r'invoice="([^"]+)"', params_str, re.IGNORECASE)
         if not invoice_match:
             raise L402Error("Missing invoice in MPP challenge")
         invoice = invoice_match.group(1)
 
-        amount_match = re.search(r'amount="([^"]+)"', www_authenticate, re.IGNORECASE)
+        amount_match = re.search(r'amount="([^"]+)"', params_str, re.IGNORECASE)
         amount = amount_match.group(1) if amount_match else None
 
-        realm_match = re.search(r'realm="([^"]+)"', www_authenticate, re.IGNORECASE)
+        realm_match = re.search(r'realm="([^"]+)"', params_str, re.IGNORECASE)
         realm = realm_match.group(1) if realm_match else None
 
         amount_msat = self._get_invoice_amount_msat(invoice)
@@ -200,6 +204,8 @@ class L402Client:
 
         Prefers L402 when available (caveats, no cache dependency).
         Falls back to MPP only when L402 is not available.
+        Handles comma-separated challenges in a single header value
+        (e.g., "Payment ..., L402 ...") by delegating to _select_best_challenge.
 
         Args:
             www_authenticate: WWW-Authenticate header value
@@ -210,19 +216,7 @@ class L402Client:
         Raises:
             L402Error: If neither L402 nor MPP can be parsed
         """
-        # Try L402 first (preferred)
-        try:
-            return self.parse_l402_challenge(www_authenticate)
-        except L402Error:
-            pass
-
-        # Try MPP fallback
-        try:
-            return self.parse_mpp_challenge(www_authenticate)
-        except L402Error:
-            pass
-
-        raise L402Error(f"No valid L402 or MPP challenge found: {www_authenticate[:80]}")
+        return self._select_best_challenge([www_authenticate])
 
     @staticmethod
     def _expand_challenges(www_auth_values: list[str]) -> list[str]:

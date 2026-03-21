@@ -175,7 +175,7 @@ public static class PayL402ChallengeTool
                 }
             }
 
-            var token = await l402Client.PayChallengeAsync(macaroon, invoice, maxSats, cancellationToken);
+            var token = await l402Client.PayChallengeAsync(macaroon, normalizedInvoice, maxSats, cancellationToken);
 
             var isMpp = string.IsNullOrWhiteSpace(macaroon);
             var protocolName = isMpp ? "MPP" : "L402";
@@ -204,6 +204,7 @@ public static class PayL402ChallengeTool
             {
                 success = true,
                 l402Token = token,
+                protocol = protocolName,
                 payment = new
                 {
                     amountSats = budgetCheckAmount,

@@ -90,6 +90,9 @@ public class L402HttpClient : IL402HttpClient
             throw new InvalidOperationException("NWC wallet not configured. Set NWC_CONNECTION_STRING environment variable.");
         }
 
+        // Normalize inputs: trim whitespace to prevent invalid tokens/payment failures
+        invoice = invoice.Trim();
+        macaroonBase64 = macaroonBase64?.Trim();
         var isMpp = string.IsNullOrWhiteSpace(macaroonBase64);
 
         // Extract amount from invoice

@@ -125,10 +125,16 @@ async def pay_l402_challenge(
             ),
         }
 
-        # Include token for L402 backward compatibility
-        if not is_mpp:
+        # Include token and authorization_header for backward compatibility across protocols
+        if is_mpp:
+            # For MPP, the token is just the preimage
+            result["token"] = preimage
+        else:
+            # For L402, preserve existing macaroon:preimage token format
             result["token"] = f"{macaroon}:{preimage}"
-            result["authorization_header"] = authorization_header
+
+        # Always include the full authorization header
+        result["authorization_header"] = authorization_header
 
         return json.dumps(result, indent=2)
 

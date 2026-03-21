@@ -133,8 +133,9 @@ class L402Client:
         Raises:
             L402Error: If header cannot be parsed
         """
-        # Handle both L402 and legacy LSAT
-        if not www_authenticate.startswith(("L402 ", "LSAT ")):
+        # Handle both L402 and legacy LSAT (case-insensitive per HTTP spec)
+        upper = www_authenticate.strip().upper()
+        if not (upper.startswith("L402 ") or upper.startswith("LSAT ")):
             raise L402Error(f"Invalid L402 challenge: {www_authenticate[:50]}")
 
         # Extract macaroon
@@ -222,6 +223,48 @@ class L402Client:
 
         raise L402Error(f"No valid L402 or MPP challenge found: {www_authenticate[:80]}")
 
+    def _select_best_challenge(self, www_auth_values: list[str]) -> "L402Challenge | MppChallenge":
+        """
+        Select the best challenge from a list of WWW-Authenticate header values.
+
+        Parses each value individually. Prefers L402/LSAT over MPP.
+
+        Args:
+            www_auth_values: List of WWW-Authenticate header values
+
+        Returns:
+            Best available challenge (L402 preferred, MPP fallback)
+
+        Raises:
+            L402Error: If no valid challenge is found
+        """
+        l402_challenge = None
+        mpp_challenge = None
+
+        for value in www_auth_values:
+            value = value.strip()
+            if not value:
+                continue
+            # Try L402 first
+            try:
+                l402_challenge = self.parse_l402_challenge(value)
+                # L402 is preferred — return immediately
+                return l402_challenge
+            except L402Error:
+                pass
+            # Try MPP
+            try:
+                if mpp_challenge is None:
+                    mpp_challenge = self.parse_mpp_challenge(value)
+            except L402Error:
+                pass
+
+        if mpp_challenge is not None:
+            return mpp_challenge
+
+        combined = "; ".join(v[:40] for v in www_auth_values)
+        raise L402Error(f"No valid L402 or MPP challenge found in headers: {combined}")
+
     def _get_invoice_amount_msat(self, bolt11: str) -> int | None:
         """
         Extract amount in millisatoshis from a BOLT11 invoice.
@@ -276,12 +319,14 @@ class L402Client:
 
         # Check for L402 challenge
         if response.status_code == 402:
-            www_auth = response.headers.get("WWW-Authenticate")
-            if not www_auth:
+            # Use get_list to properly handle multiple WWW-Authenticate headers
+            # (httpx may comma-join them into a single string otherwise)
+            www_auth_values = response.headers.get_list("WWW-Authenticate")
+            if not www_auth_values:
                 raise L402Error("402 response without WWW-Authenticate header")
 
-            # Parse challenge (tries L402 first, falls back to MPP)
-            challenge = self.parse_best_challenge(www_auth)
+            # Parse each header value separately, preferring L402 over MPP
+            challenge = self._select_best_challenge(www_auth_values)
 
             # Check budget
             if challenge.amount_sats is not None and challenge.amount_sats > max_sats:

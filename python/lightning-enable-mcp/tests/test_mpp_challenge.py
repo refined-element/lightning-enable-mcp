@@ -158,6 +158,86 @@ class TestParseBestChallenge:
         assert result.realm == "weather.api.com"
         assert result.amount == "50"
 
+    def test_case_insensitive_l402_scheme(self):
+        """L402 scheme detection should be case-insensitive per HTTP spec."""
+        header = 'l402 macaroon="abc123", invoice="lnbc100n1pjtest"'
+        result = self.client.parse_best_challenge(header)
+        assert isinstance(result, L402Challenge)
+        assert result.macaroon == "abc123"
+
+    def test_case_insensitive_lsat_scheme(self):
+        """LSAT scheme detection should be case-insensitive per HTTP spec."""
+        header = 'lsat macaroon="abc123", invoice="lnbc100n1pjtest"'
+        result = self.client.parse_best_challenge(header)
+        assert isinstance(result, L402Challenge)
+        assert result.macaroon == "abc123"
+
+    def test_mixed_case_l402_scheme(self):
+        """Mixed case like 'L402' or 'l402' should both work."""
+        for scheme in ("L402", "l402", "Lsat", "lSAT"):
+            header = f'{scheme} macaroon="mac", invoice="lnbc100n1pjtest"'
+            result = self.client.parse_best_challenge(header)
+            assert isinstance(result, L402Challenge)
+
+
+class TestSelectBestChallenge:
+    """Tests for _select_best_challenge — handles multiple WWW-Authenticate header values."""
+
+    def setup_method(self):
+        self.client = L402Client(wallet=MockWallet())  # type: ignore
+
+    def test_single_l402_header(self):
+        headers = ['L402 macaroon="abc", invoice="lnbc100n1pjtest"']
+        result = self.client._select_best_challenge(headers)
+        assert isinstance(result, L402Challenge)
+
+    def test_single_mpp_header(self):
+        headers = ['Payment method="lightning", invoice="lnbc100n1pjtest"']
+        result = self.client._select_best_challenge(headers)
+        assert isinstance(result, MppChallenge)
+
+    def test_l402_preferred_when_both_present(self):
+        """When server sends both L402 and MPP headers, L402 should be preferred."""
+        headers = [
+            'Payment method="lightning", invoice="lnbc200n1pjmpp"',
+            'L402 macaroon="mac123", invoice="lnbc100n1pjl402"',
+        ]
+        result = self.client._select_best_challenge(headers)
+        assert isinstance(result, L402Challenge)
+        assert result.invoice == "lnbc100n1pjl402"
+
+    def test_l402_preferred_even_when_mpp_first(self):
+        """L402 should be preferred regardless of header order."""
+        headers = [
+            'Payment method="lightning", invoice="lnbc200n1pjmpp"',
+            'L402 macaroon="mac123", invoice="lnbc100n1pjl402"',
+        ]
+        result = self.client._select_best_challenge(headers)
+        assert isinstance(result, L402Challenge)
+
+    def test_falls_back_to_mpp_when_no_l402(self):
+        """When only MPP is present, it should be returned."""
+        headers = [
+            'Bearer realm="test"',
+            'Payment method="lightning", invoice="lnbc100n1pjmpp"',
+        ]
+        result = self.client._select_best_challenge(headers)
+        assert isinstance(result, MppChallenge)
+
+    def test_no_valid_headers_raises(self):
+        headers = ["Bearer token123", "Basic realm=test"]
+        with pytest.raises(L402Error, match="No valid"):
+            self.client._select_best_challenge(headers)
+
+    def test_empty_list_raises(self):
+        with pytest.raises(L402Error, match="No valid"):
+            self.client._select_best_challenge([])
+
+    def test_whitespace_headers_ignored(self):
+        headers = ["  ", "", 'L402 macaroon="abc", invoice="lnbc100n1pjtest"']
+        result = self.client._select_best_challenge(headers)
+        assert isinstance(result, L402Challenge)
+
 
 class TestPayChallengeProtocol:
     """Tests for pay_challenge return types based on macaroon presence."""

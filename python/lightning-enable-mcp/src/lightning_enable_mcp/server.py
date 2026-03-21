@@ -148,7 +148,7 @@ class LightningEnableServer:
                                 "description": "BOLT11 Lightning invoice string",
                             },
                             "macaroon": {
-                                "type": "string",
+                                "type": ["string", "null"],
                                 "description": "Base64-encoded macaroon from the L402 challenge. Omit for MPP mode (preimage-only authentication).",
                             },
                             "max_sats": {

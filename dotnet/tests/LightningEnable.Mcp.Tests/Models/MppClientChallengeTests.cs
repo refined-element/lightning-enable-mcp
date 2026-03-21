@@ -68,4 +68,41 @@ public class MppClientChallengeTests
         result.Amount.Should().BeNull();
         result.Realm.Should().BeNull();
     }
+
+    [Fact]
+    public void Parse_TabAfterScheme_Works()
+    {
+        var header = "Payment\tmethod=\"lightning\", invoice=\"lnbc100n1pjtest\"";
+        var result = MppClientChallenge.Parse(header);
+        result.Should().NotBeNull();
+        result!.Invoice.Should().Be("lnbc100n1pjtest");
+    }
+
+    [Fact]
+    public void Parse_MultipleWhitespaceAfterScheme_Works()
+    {
+        var header = "Payment   \t  method=\"lightning\", invoice=\"lnbc100n1pjtest\"";
+        var result = MppClientChallenge.Parse(header);
+        result.Should().NotBeNull();
+        result!.Invoice.Should().Be("lnbc100n1pjtest");
+    }
+
+    [Fact]
+    public void Parse_WhitespaceAroundEquals_Works()
+    {
+        var header = "Payment method = \"lightning\", invoice = \"lnbc100n1pjtest\", amount = \"100\"";
+        var result = MppClientChallenge.Parse(header);
+        result.Should().NotBeNull();
+        result!.Invoice.Should().Be("lnbc100n1pjtest");
+        result.Amount.Should().Be("100");
+    }
+
+    [Fact]
+    public void Parse_WhitespaceBeforeEquals_Works()
+    {
+        var header = "Payment method =\"lightning\", invoice =\"lnbc100n1pjtest\"";
+        var result = MppClientChallenge.Parse(header);
+        result.Should().NotBeNull();
+        result!.Invoice.Should().Be("lnbc100n1pjtest");
+    }
 }

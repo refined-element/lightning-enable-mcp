@@ -329,8 +329,14 @@ class L402Client:
             # Parse each header value separately, preferring L402 over MPP
             challenge = self._select_best_challenge(www_auth_values)
 
+            # Reject no-amount invoices (security: could bypass budget checks)
+            if challenge.amount_sats is None or challenge.amount_sats <= 0:
+                raise L402Error(
+                    "Invoice has no amount specified. For security, only invoices with explicit amounts are supported."
+                )
+
             # Check budget
-            if challenge.amount_sats is not None and challenge.amount_sats > max_sats:
+            if challenge.amount_sats > max_sats:
                 raise L402BudgetExceededError(
                     f"Invoice amount {challenge.amount_sats} sats exceeds maximum {max_sats} sats"
                 )
@@ -383,17 +389,22 @@ class L402Client:
             L402Token (if macaroon provided) or MppToken (if no macaroon) for authorization
 
         Raises:
+            L402Error: If invoice has no amount specified
             L402BudgetExceededError: If invoice exceeds max_sats
             L402PaymentError: If payment fails
         """
-        # Check invoice amount
+        # Check invoice amount — reject no-amount invoices (security: could bypass budget checks)
         amount_msat = self._get_invoice_amount_msat(invoice)
-        if amount_msat is not None:
-            amount_sats = amount_msat // 1000
-            if amount_sats > max_sats:
-                raise L402BudgetExceededError(
-                    f"Invoice amount {amount_sats} sats exceeds maximum {max_sats} sats"
-                )
+        if amount_msat is None or amount_msat <= 0:
+            raise L402Error(
+                "Invoice has no amount specified. For security, only invoices with explicit amounts are supported."
+            )
+
+        amount_sats = amount_msat // 1000
+        if amount_sats > max_sats:
+            raise L402BudgetExceededError(
+                f"Invoice amount {amount_sats} sats exceeds maximum {max_sats} sats"
+            )
 
         # Pay invoice
         try:

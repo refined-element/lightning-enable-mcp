@@ -2,6 +2,8 @@
 Tests for L402 Client
 """
 
+from unittest.mock import AsyncMock, patch
+
 import pytest
 from lightning_enable_mcp.l402_client import (
     L402Client,
@@ -9,6 +11,7 @@ from lightning_enable_mcp.l402_client import (
     L402Token,
     L402Error,
     L402BudgetExceededError,
+    MppToken,
 )
 
 
@@ -120,3 +123,74 @@ class TestL402ChallengeAmount:
         )
 
         assert challenge.amount_sats is None
+
+
+class TestPayChallengeNoAmountRejection:
+    """Tests that pay_challenge rejects invoices without an explicit amount (security)."""
+
+    def setup_method(self):
+        """Create a client with a mock wallet."""
+
+        class MockWallet:
+            pass
+
+        self.client = L402Client(wallet=MockWallet())  # type: ignore
+
+    @pytest.mark.asyncio
+    async def test_pay_challenge_rejects_no_amount_invoice(self):
+        """Invoices without an amount should be rejected for security."""
+        with patch.object(
+            self.client, "_get_invoice_amount_msat", return_value=None
+        ):
+            with pytest.raises(L402Error, match="no amount specified"):
+                await self.client.pay_challenge(invoice="lnbc1pjtest")
+
+    @pytest.mark.asyncio
+    async def test_pay_challenge_rejects_zero_amount_invoice(self):
+        """Invoices with zero amount should be rejected for security."""
+        with patch.object(
+            self.client, "_get_invoice_amount_msat", return_value=0
+        ):
+            with pytest.raises(L402Error, match="no amount specified"):
+                await self.client.pay_challenge(invoice="lnbc1pjtest")
+
+    @pytest.mark.asyncio
+    async def test_pay_challenge_rejects_no_amount_mpp_mode(self):
+        """MPP mode (no macaroon) should also reject no-amount invoices."""
+        with patch.object(
+            self.client, "_get_invoice_amount_msat", return_value=None
+        ):
+            with pytest.raises(L402Error, match="no amount specified"):
+                await self.client.pay_challenge(invoice="lnbc1pjtest", macaroon=None)
+
+    @pytest.mark.asyncio
+    async def test_pay_challenge_accepts_valid_amount(self):
+        """Invoices with a valid amount should proceed to payment."""
+        mock_wallet = AsyncMock()
+        mock_wallet.pay_invoice = AsyncMock(return_value="preimage123")
+        self.client.wallet = mock_wallet
+
+        with patch.object(
+            self.client, "_get_invoice_amount_msat", return_value=10000
+        ):
+            result = await self.client.pay_challenge(
+                invoice="lnbc10n1pjtest", macaroon="mac123"
+            )
+            assert isinstance(result, L402Token)
+            assert result.preimage == "preimage123"
+
+    @pytest.mark.asyncio
+    async def test_pay_challenge_mpp_accepts_valid_amount(self):
+        """MPP mode with a valid amount should return MppToken."""
+        mock_wallet = AsyncMock()
+        mock_wallet.pay_invoice = AsyncMock(return_value="preimage456")
+        self.client.wallet = mock_wallet
+
+        with patch.object(
+            self.client, "_get_invoice_amount_msat", return_value=5000
+        ):
+            result = await self.client.pay_challenge(
+                invoice="lnbc5n1pjtest", macaroon=None
+            )
+            assert isinstance(result, MppToken)
+            assert result.preimage == "preimage456"

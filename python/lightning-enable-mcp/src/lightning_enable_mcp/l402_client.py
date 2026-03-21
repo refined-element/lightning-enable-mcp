@@ -47,9 +47,27 @@ class L402Challenge:
 
     @property
     def amount_sats(self) -> int | None:
-        """Return amount in satoshis."""
+        """Return amount in satoshis (ceiling division to avoid sub-sat amounts rounding to 0)."""
         if self.amount_msat is not None:
-            return self.amount_msat // 1000
+            return -(-self.amount_msat // 1000)  # ceil division
+        return None
+
+
+@dataclass
+class MppChallenge:
+    """Parsed MPP (Machine Payments Protocol) challenge from WWW-Authenticate header.
+    Per IETF draft-ryan-httpauth-payment. No macaroon — just invoice + preimage."""
+
+    invoice: str
+    amount: str | None = None
+    realm: str | None = None
+    amount_msat: int | None = None
+
+    @property
+    def amount_sats(self) -> int | None:
+        """Return amount in satoshis (ceiling division to avoid sub-sat amounts rounding to 0)."""
+        if self.amount_msat is not None:
+            return -(-self.amount_msat // 1000)  # ceil division
         return None
 
 
@@ -63,6 +81,17 @@ class L402Token:
     def to_header(self) -> str:
         """Format as Authorization header value."""
         return f"L402 {self.macaroon}:{self.preimage}"
+
+
+@dataclass
+class MppToken:
+    """MPP authorization token (preimage only, no macaroon)."""
+
+    preimage: str
+
+    def to_header(self) -> str:
+        """Format as Authorization header value."""
+        return f'Payment method="lightning", preimage="{self.preimage}"'
 
 
 class L402Client:
@@ -104,8 +133,10 @@ class L402Client:
         Raises:
             L402Error: If header cannot be parsed
         """
-        # Handle both L402 and legacy LSAT
-        if not www_authenticate.startswith(("L402 ", "LSAT ")):
+        # Handle both L402 and legacy LSAT (case-insensitive per HTTP spec),
+        # allowing any valid HTTP whitespace (SP / HTAB) and multiple characters.
+        scheme_match = re.match(r'^\s*(L402|LSAT)\s+', www_authenticate, re.IGNORECASE)
+        if not scheme_match:
             raise L402Error(f"Invalid L402 challenge: {www_authenticate[:50]}")
 
         # Extract macaroon
@@ -124,6 +155,156 @@ class L402Client:
         amount_msat = self._get_invoice_amount_msat(invoice)
 
         return L402Challenge(macaroon=macaroon, invoice=invoice, amount_msat=amount_msat)
+
+    def parse_mpp_challenge(self, www_authenticate: str) -> MppChallenge:
+        """
+        Parse WWW-Authenticate header for MPP (Payment) challenge.
+
+        The header format is:
+        Payment realm="<realm>", method="lightning", invoice="<bolt11>", amount="<amount>", currency="sat"
+
+        Args:
+            www_authenticate: WWW-Authenticate header value
+
+        Returns:
+            Parsed MppChallenge
+
+        Raises:
+            L402Error: If header cannot be parsed
+        """
+        www_authenticate = www_authenticate.strip()
+        parts = www_authenticate.split(None, 1)
+        if not parts or parts[0].lower() != "payment":
+            raise L402Error(f"Invalid MPP challenge: {www_authenticate[:50]}")
+
+        params_str = parts[1] if len(parts) > 1 else ""
+
+        method_match = re.search(r'method="([^"]+)"', params_str, re.IGNORECASE)
+        if not method_match or method_match.group(1).lower() != "lightning":
+            raise L402Error("MPP challenge method must be 'lightning'")
+
+        invoice_match = re.search(r'invoice="([^"]+)"', params_str, re.IGNORECASE)
+        if not invoice_match:
+            raise L402Error("Missing invoice in MPP challenge")
+        invoice = invoice_match.group(1)
+
+        amount_match = re.search(r'amount="([^"]+)"', params_str, re.IGNORECASE)
+        amount = amount_match.group(1) if amount_match else None
+
+        realm_match = re.search(r'realm="([^"]+)"', params_str, re.IGNORECASE)
+        realm = realm_match.group(1) if realm_match else None
+
+        amount_msat = self._get_invoice_amount_msat(invoice)
+
+        return MppChallenge(invoice=invoice, amount=amount, realm=realm, amount_msat=amount_msat)
+
+    def parse_best_challenge(self, www_authenticate: str) -> L402Challenge | MppChallenge:
+        """
+        Parse WWW-Authenticate header, trying L402 first then MPP.
+
+        Prefers L402 when available (caveats, no cache dependency).
+        Falls back to MPP only when L402 is not available.
+        Handles comma-separated challenges in a single header value
+        (e.g., "Payment ..., L402 ...") by delegating to _select_best_challenge.
+
+        Args:
+            www_authenticate: WWW-Authenticate header value
+
+        Returns:
+            Parsed L402Challenge or MppChallenge
+
+        Raises:
+            L402Error: If neither L402 nor MPP can be parsed
+        """
+        return self._select_best_challenge([www_authenticate])
+
+    @staticmethod
+    def _expand_challenges(www_auth_values: list[str]) -> list[str]:
+        """
+        Expand a list of WWW-Authenticate header values into individual challenges.
+
+        A single header value may contain multiple challenges comma-separated, e.g.:
+            'Payment method="lightning", invoice="...", L402 macaroon="...", invoice="..."'
+        This splits on known auth scheme boundaries so each challenge is parsed
+        individually.
+
+        Args:
+            www_auth_values: Raw WWW-Authenticate header values (may be comma-joined)
+
+        Returns:
+            List of individual challenge strings
+        """
+        # Pattern matches the start of a known auth scheme (case-insensitive).
+        # We look for scheme names at the start of a segment or after a comma.
+        scheme_boundary = re.compile(r"(?i)(?:^|,\s*)(?=(?:l402|lsat|payment)\s)", re.IGNORECASE)
+
+        expanded: list[str] = []
+        for value in www_auth_values:
+            if not value or not value.strip():
+                continue
+            matches = list(scheme_boundary.finditer(value))
+            if len(matches) <= 1:
+                # Single challenge (or no recognized scheme) — keep as-is
+                expanded.append(value.strip())
+                continue
+            # Multiple scheme boundaries found — split into segments
+            for i, match in enumerate(matches):
+                start = match.start()
+                # Skip any leading comma/whitespace at the boundary
+                while start < len(value) and value[start] in ", ":
+                    start += 1
+                end = matches[i + 1].start() if i + 1 < len(matches) else len(value)
+                segment = value[start:end].strip().rstrip(",").strip()
+                if segment:
+                    expanded.append(segment)
+
+        return expanded
+
+    def _select_best_challenge(self, www_auth_values: list[str]) -> "L402Challenge | MppChallenge":
+        """
+        Select the best challenge from a list of WWW-Authenticate header values.
+
+        Handles comma-separated challenges within a single header value by expanding
+        them first. Prefers L402/LSAT over MPP.
+
+        Args:
+            www_auth_values: List of WWW-Authenticate header values
+
+        Returns:
+            Best available challenge (L402 preferred, MPP fallback)
+
+        Raises:
+            L402Error: If no valid challenge is found
+        """
+        # Expand comma-joined header values into individual challenges
+        expanded = self._expand_challenges(www_auth_values)
+
+        l402_challenge = None
+        mpp_challenge = None
+
+        for value in expanded:
+            value = value.strip()
+            if not value:
+                continue
+            # Try L402 first
+            try:
+                l402_challenge = self.parse_l402_challenge(value)
+                # L402 is preferred — return immediately
+                return l402_challenge
+            except L402Error:
+                pass
+            # Try MPP
+            try:
+                if mpp_challenge is None:
+                    mpp_challenge = self.parse_mpp_challenge(value)
+            except L402Error:
+                pass
+
+        if mpp_challenge is not None:
+            return mpp_challenge
+
+        combined = "; ".join(v[:40] for v in www_auth_values)
+        raise L402Error(f"No valid L402 or MPP challenge found in headers: {combined}")
 
     def _get_invoice_amount_msat(self, bolt11: str) -> int | None:
         """
@@ -179,25 +360,37 @@ class L402Client:
 
         # Check for L402 challenge
         if response.status_code == 402:
-            www_auth = response.headers.get("WWW-Authenticate")
-            if not www_auth:
+            # Use get_list to properly handle multiple WWW-Authenticate headers
+            # (httpx may comma-join them into a single string otherwise)
+            www_auth_values = response.headers.get_list("WWW-Authenticate")
+            if not www_auth_values:
                 raise L402Error("402 response without WWW-Authenticate header")
 
-            # Parse challenge
-            challenge = self.parse_l402_challenge(www_auth)
+            # Parse each header value separately, preferring L402 over MPP
+            challenge = self._select_best_challenge(www_auth_values)
+
+            # Reject no-amount invoices (security: could bypass budget checks)
+            if challenge.amount_sats is None or challenge.amount_sats <= 0:
+                raise L402Error(
+                    "Invoice has no amount specified. For security, only invoices with explicit amounts are supported."
+                )
 
             # Check budget
-            if challenge.amount_sats is not None and challenge.amount_sats > max_sats:
+            if challenge.amount_sats > max_sats:
                 raise L402BudgetExceededError(
                     f"Invoice amount {challenge.amount_sats} sats exceeds maximum {max_sats} sats"
                 )
 
             # Pay invoice
-            logger.info(f"Paying L402 invoice for {challenge.amount_sats} sats")
+            protocol = "MPP" if isinstance(challenge, MppChallenge) else "L402"
+            logger.info(f"Paying {protocol} invoice for {challenge.amount_sats} sats")
             preimage = await self.wallet.pay_invoice(challenge.invoice)
 
             # Create token
-            token = L402Token(macaroon=challenge.macaroon, preimage=preimage)
+            if isinstance(challenge, MppChallenge):
+                token = MppToken(preimage=preimage)
+            else:
+                token = L402Token(macaroon=challenge.macaroon, preimage=preimage)
 
             # Retry with authorization
             auth_headers = {**headers, "Authorization": token.to_header()}
@@ -221,32 +414,37 @@ class L402Client:
     async def pay_challenge(
         self,
         invoice: str,
-        macaroon: str,
+        macaroon: str | None = None,
         max_sats: int = 1000,
-    ) -> L402Token:
+    ) -> L402Token | MppToken:
         """
-        Pay an L402 invoice and return the authorization token.
+        Pay an L402/MPP invoice and return the authorization token.
 
         Args:
             invoice: BOLT11 invoice string
-            macaroon: Base64-encoded macaroon
+            macaroon: Base64-encoded macaroon (optional; if None, returns MPP token)
             max_sats: Maximum satoshis allowed
 
         Returns:
-            L402Token for authorization
+            L402Token (if macaroon provided) or MppToken (if no macaroon) for authorization
 
         Raises:
+            L402Error: If invoice has no amount specified
             L402BudgetExceededError: If invoice exceeds max_sats
             L402PaymentError: If payment fails
         """
-        # Check invoice amount
+        # Check invoice amount — reject no-amount invoices (security: could bypass budget checks)
         amount_msat = self._get_invoice_amount_msat(invoice)
-        if amount_msat is not None:
-            amount_sats = amount_msat // 1000
-            if amount_sats > max_sats:
-                raise L402BudgetExceededError(
-                    f"Invoice amount {amount_sats} sats exceeds maximum {max_sats} sats"
-                )
+        if amount_msat is None or amount_msat <= 0:
+            raise L402Error(
+                "Invoice has no amount specified. For security, only invoices with explicit amounts are supported."
+            )
+
+        amount_sats = -(-amount_msat // 1000)  # ceil division: sub-sat amounts round up to 1
+        if amount_sats > max_sats:
+            raise L402BudgetExceededError(
+                f"Invoice amount {amount_sats} sats exceeds maximum {max_sats} sats"
+            )
 
         # Pay invoice
         try:
@@ -254,4 +452,7 @@ class L402Client:
         except Exception as e:
             raise L402PaymentError(f"Payment failed: {e!s}") from e
 
-        return L402Token(macaroon=macaroon, preimage=preimage)
+        normalized_macaroon = macaroon.strip() if macaroon is not None else None
+        if normalized_macaroon:
+            return L402Token(macaroon=normalized_macaroon, preimage=preimage)
+        return MppToken(preimage=preimage)

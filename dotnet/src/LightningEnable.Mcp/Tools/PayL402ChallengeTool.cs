@@ -8,20 +8,21 @@ using ModelContextProtocol.Server;
 namespace LightningEnable.Mcp.Tools;
 
 /// <summary>
-/// MCP tool for manually paying an L402 invoice.
+/// MCP tool for manually paying an L402 or MPP (Machine Payments Protocol) invoice.
 /// Use this when you have received a 402 response and want to pay it manually
-/// to get the L402 token for subsequent requests.
+/// to get the authorization token for subsequent requests.
+/// Supports both L402 (macaroon + preimage) and MPP (preimage only) protocols.
 /// </summary>
 [McpServerToolType]
 public static class PayL402ChallengeTool
 {
     /// <summary>
-    /// Manually pays an L402 invoice and returns the token.
+    /// Manually pays an L402 or MPP invoice and returns the authorization token.
     /// </summary>
-    [McpServerTool(Name = "pay_l402_challenge"), Description("Manually pay an L402 Lightning invoice to get the authentication token")]
+    [McpServerTool(Name = "pay_l402_challenge"), Description("Manually pay an L402 or MPP Lightning invoice to get the authentication token. Omit macaroon for MPP mode.")]
     public static async Task<string> PayL402Challenge(
         [Description("BOLT11 Lightning invoice string from the L402 challenge")] string invoice,
-        [Description("Base64-encoded macaroon from the L402 challenge")] string macaroon,
+        [Description("Base64-encoded macaroon from the L402 challenge. Optional for MPP (Machine Payments Protocol) where only invoice + preimage are needed.")] string? macaroon = null,
         [Description("Maximum satoshis allowed to pay. Defaults to 1000")] int maxSats = 1000,
         [Description("Confirmation nonce from confirm_payment tool. Required when previous call returned requiresConfirmation=true.")] string? confirmationNonce = null,
         McpServer? server = null,
@@ -37,15 +38,6 @@ public static class PayL402ChallengeTool
             {
                 success = false,
                 error = "Invoice is required"
-            });
-        }
-
-        if (string.IsNullOrWhiteSpace(macaroon))
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = "Macaroon is required"
             });
         }
 
@@ -183,28 +175,26 @@ public static class PayL402ChallengeTool
                 }
             }
 
-            var token = await l402Client.PayChallengeAsync(macaroon, invoice, maxSats, cancellationToken);
+            var token = await l402Client.PayChallengeAsync(macaroon, normalizedInvoice, maxSats, cancellationToken);
 
-            // Record the payment
-            budgetService?.RecordSpend(budgetCheckAmount);
-            budgetService?.RecordPaymentTime();
-            paymentHistory?.RecordPayment(
-                "l402-challenge",
-                "L402",
-                budgetCheckAmount,
-                normalizedInvoice,
-                null,
-                token,
-                200);
+            var isMpp = string.IsNullOrWhiteSpace(macaroon);
+            var protocolName = isMpp ? "MPP" : "L402";
+
+            // Budget recording and payment history are handled by L402HttpClient.PayChallengeAsync()
 
             var amountUsd = priceService != null
                 ? await priceService.SatsToUsdAsync(budgetCheckAmount, cancellationToken)
                 : 0m;
 
+            var headerValue = isMpp
+                ? $"Payment method=\"lightning\", preimage=\"{token}\""
+                : $"L402 {token}";
+
             return JsonSerializer.Serialize(new
             {
                 success = true,
                 l402Token = token,
+                protocol = protocolName,
                 payment = new
                 {
                     amountSats = budgetCheckAmount,
@@ -213,7 +203,8 @@ public static class PayL402ChallengeTool
                 usage = new
                 {
                     headerName = "Authorization",
-                    headerValue = $"L402 {token}",
+                    headerValue,
+                    protocol = protocolName,
                     description = "Include this header in subsequent requests to the same endpoint"
                 }
             });

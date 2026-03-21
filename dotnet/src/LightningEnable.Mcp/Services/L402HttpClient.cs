@@ -80,7 +80,7 @@ public class L402HttpClient : IL402HttpClient
     }
 
     public async Task<string> PayChallengeAsync(
-        string macaroonBase64,
+        string? macaroonBase64,
         string invoice,
         long maxSats = 1000,
         CancellationToken cancellationToken = default)
@@ -89,6 +89,11 @@ public class L402HttpClient : IL402HttpClient
         {
             throw new InvalidOperationException("NWC wallet not configured. Set NWC_CONNECTION_STRING environment variable.");
         }
+
+        // Normalize inputs: trim whitespace to prevent invalid tokens/payment failures
+        invoice = invoice.Trim();
+        macaroonBase64 = macaroonBase64?.Trim();
+        var isMpp = string.IsNullOrWhiteSpace(macaroonBase64);
 
         // Extract amount from invoice
         var amountSats = ExtractAmountFromBolt11(invoice);
@@ -119,28 +124,46 @@ public class L402HttpClient : IL402HttpClient
             throw new InvalidOperationException($"Payment failed: {paymentResult.ErrorMessage}");
         }
 
-        // Check if preimage is available - L402 requires it
+        // Check if preimage is available - both L402 and MPP require it
         if (!paymentResult.HasPreimage)
         {
             var trackingInfo = !string.IsNullOrEmpty(paymentResult.TrackingId)
                 ? $" (tracking ID: {paymentResult.TrackingId})"
                 : "";
+            var protocol = isMpp ? "MPP" : "L402";
             throw new InvalidOperationException(
                 $"Payment succeeded{trackingInfo} but wallet did not return preimage. " +
-                "L402 requires preimage for verification. Use NWC or LND wallet for L402 support.");
+                $"{protocol} requires preimage for verification. Use NWC or LND wallet for L402/MPP support.");
         }
 
         // Record payment
         _budgetService.RecordSpend(amountSats.Value);
+
+        if (isMpp)
+        {
+            // MPP mode: return just the preimage
+            _historyService.RecordPayment(
+                url: "manual_payment",
+                method: "MANUAL",
+                amountSats: amountSats.Value,
+                invoice: invoice,
+                preimageHex: paymentResult.PreimageHex,
+                l402Token: paymentResult.PreimageHex);
+
+            return paymentResult.PreimageHex;
+        }
+
+        // L402 mode: return macaroon:preimage
+        var l402Token = $"{macaroonBase64}:{paymentResult.PreimageHex}";
         _historyService.RecordPayment(
             url: "manual_payment",
             method: "MANUAL",
             amountSats: amountSats.Value,
             invoice: invoice,
             preimageHex: paymentResult.PreimageHex,
-            l402Token: $"{macaroonBase64}:{paymentResult.PreimageHex}");
+            l402Token: l402Token);
 
-        return $"{macaroonBase64}:{paymentResult.PreimageHex}";
+        return l402Token;
     }
 
     private async Task<L402FetchResult> HandleL402ChallengeAsync(
@@ -152,13 +175,13 @@ public class L402HttpClient : IL402HttpClient
         HttpResponseMessage initialResponse,
         CancellationToken cancellationToken)
     {
-        // Parse WWW-Authenticate header
-        var wwwAuth = initialResponse.Headers.WwwAuthenticate.FirstOrDefault()?.ToString();
-        var challenge = L402ClientChallenge.Parse(wwwAuth);
+        // Parse WWW-Authenticate headers (may contain both L402 and MPP challenges)
+        var wwwAuthHeaders = initialResponse.Headers.WwwAuthenticate.Select(h => h.ToString()).ToList();
+        var parsed = PaymentChallengeParser.ParseBest(wwwAuthHeaders);
 
-        if (challenge == null)
+        if (!parsed.HasChallenge)
         {
-            return L402FetchResult.Failed(url, "Invalid L402 challenge: Could not parse WWW-Authenticate header", 402);
+            return L402FetchResult.Failed(url, "Invalid payment challenge: Could not parse WWW-Authenticate header (expected L402 or Payment scheme)", 402);
         }
 
         // Check wallet configuration
@@ -168,12 +191,12 @@ public class L402HttpClient : IL402HttpClient
         }
 
         // Extract amount from invoice
-        var amountSats = ExtractAmountFromBolt11(challenge.Invoice);
+        var amountSats = ExtractAmountFromBolt11(parsed.Invoice!);
 
         // Reject no-amount invoices (security: could bypass budget checks)
         if (amountSats == null || amountSats.Value <= 0)
         {
-            return L402FetchResult.Failed(url, "L402 invoice has no amount specified. For security, only invoices with explicit amounts are supported.", 402);
+            return L402FetchResult.Failed(url, "Payment invoice has no amount specified. For security, only invoices with explicit amounts are supported.", 402);
         }
 
         // Check budget
@@ -189,34 +212,60 @@ public class L402HttpClient : IL402HttpClient
         }
 
         // Pay invoice via wallet
-        var paymentResult = await _walletService.PayInvoiceAsync(challenge.Invoice, cancellationToken);
+        var paymentResult = await _walletService.PayInvoiceAsync(parsed.Invoice!, cancellationToken);
 
         if (!paymentResult.Success)
         {
-            _historyService.RecordFailedPayment(url, method, amountSats.Value, paymentResult.ErrorMessage ?? "Unknown error", challenge.Invoice);
+            _historyService.RecordFailedPayment(url, method, amountSats.Value, paymentResult.ErrorMessage ?? "Unknown error", parsed.Invoice!);
             return L402FetchResult.Failed(url, $"Payment failed: {paymentResult.ErrorMessage}", 402);
         }
 
-        // Check if preimage is available - L402 requires it for verification
+        // Check if preimage is available - both L402 and MPP require it for verification
         if (!paymentResult.HasPreimage)
         {
             var trackingInfo = !string.IsNullOrEmpty(paymentResult.TrackingId)
                 ? $" (tracking ID: {paymentResult.TrackingId})"
                 : "";
+            var protocolName = parsed.IsMpp ? "MPP" : "L402";
             _historyService.RecordFailedPayment(url, method, amountSats.Value,
-                $"Payment succeeded but no preimage returned{trackingInfo}. L402 requires preimage.", challenge.Invoice);
+                $"Payment succeeded but no preimage returned{trackingInfo}. {protocolName} requires preimage.", parsed.Invoice!);
             return L402FetchResult.Failed(url,
                 $"Payment succeeded{trackingInfo} but wallet did not return preimage. " +
-                "L402 requires preimage for verification. Use NWC or LND wallet for L402 support.", 402);
+                $"{protocolName} requires preimage for verification. Use NWC or LND wallet for L402/MPP support.", 402);
         }
 
         // Record successful payment
         _budgetService.RecordSpend(amountSats.Value);
-        var l402Token = $"{challenge.MacaroonBase64}:{paymentResult.PreimageHex}";
 
-        // Retry request with L402 token
+        string authToken;
+        string protocol;
+
+        if (parsed.IsMpp)
+        {
+            // MPP: preimage-only authentication
+            authToken = paymentResult.PreimageHex;
+            protocol = "MPP";
+        }
+        else
+        {
+            // L402: macaroon:preimage authentication
+            authToken = $"{parsed.L402!.MacaroonBase64}:{paymentResult.PreimageHex}";
+            protocol = "L402";
+        }
+
+        // Retry request with payment proof
         using var retryRequest = CreateRequest(url, method, headers, body);
-        retryRequest.Headers.Authorization = new AuthenticationHeaderValue(challenge.Scheme, l402Token);
+        if (parsed.IsMpp)
+        {
+            // Ensure we do not send multiple Authorization headers: remove any existing one first.
+            retryRequest.Headers.Remove("Authorization");
+            retryRequest.Headers.TryAddWithoutValidation("Authorization",
+                $"Payment method=\"lightning\", preimage=\"{paymentResult.PreimageHex}\"");
+        }
+        else
+        {
+            retryRequest.Headers.Authorization = new AuthenticationHeaderValue(parsed.L402!.Scheme, authToken);
+        }
 
         var retryResponse = await _httpClient.SendAsync(retryRequest, cancellationToken);
         var content = await retryResponse.Content.ReadAsStringAsync(cancellationToken);
@@ -227,17 +276,17 @@ public class L402HttpClient : IL402HttpClient
             url: url,
             method: method,
             amountSats: amountSats.Value,
-            invoice: challenge.Invoice,
+            invoice: parsed.Invoice!,
             preimageHex: paymentResult.PreimageHex,
-            l402Token: l402Token,
+            l402Token: authToken,
             statusCode: (int)retryResponse.StatusCode);
 
         if (retryResponse.IsSuccessStatusCode)
         {
-            return L402FetchResult.Succeeded(url, content, (int)retryResponse.StatusCode, contentType, amountSats.Value, l402Token);
+            return L402FetchResult.Succeeded(url, content, (int)retryResponse.StatusCode, contentType, amountSats.Value, authToken, protocol);
         }
 
-        return L402FetchResult.Failed(url, $"Request failed after payment: HTTP {(int)retryResponse.StatusCode}: {content}", (int)retryResponse.StatusCode, amountSats.Value, l402Token);
+        return L402FetchResult.Failed(url, $"Request failed after payment: HTTP {(int)retryResponse.StatusCode}: {content}", (int)retryResponse.StatusCode, amountSats.Value, authToken, protocol);
     }
 
     private static HttpRequestMessage CreateRequest(string url, string method, string? headers, string? body)

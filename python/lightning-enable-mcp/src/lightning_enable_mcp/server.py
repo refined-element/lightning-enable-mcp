@@ -136,8 +136,9 @@ class LightningEnableServer:
                 Tool(
                     name="pay_l402_challenge",
                     description=(
-                        "Manually pay an L402 invoice and receive the authorization token. "
-                        "Use this if you need to handle the L402 flow yourself."
+                        "Manually pay an L402 or MPP invoice and receive the authorization token. "
+                        "Use this if you need to handle the L402/MPP flow yourself. "
+                        "Omit macaroon for MPP (Machine Payments Protocol) mode."
                     ),
                     inputSchema={
                         "type": "object",
@@ -147,8 +148,8 @@ class LightningEnableServer:
                                 "description": "BOLT11 Lightning invoice string",
                             },
                             "macaroon": {
-                                "type": "string",
-                                "description": "Base64-encoded macaroon from the L402 challenge",
+                                "type": ["string", "null"],
+                                "description": "Base64-encoded macaroon from the L402 challenge. Omit for MPP mode (preimage-only authentication).",
                             },
                             "max_sats": {
                                 "type": "integer",
@@ -156,7 +157,7 @@ class LightningEnableServer:
                                 "default": 1000,
                             },
                         },
-                        "required": ["invoice", "macaroon"],
+                        "required": ["invoice"],
                     },
                 ),
                 Tool(
@@ -490,7 +491,7 @@ class LightningEnableServer:
                 elif name == "pay_l402_challenge":
                     result = await pay_l402_challenge(
                         invoice=arguments["invoice"],
-                        macaroon=arguments["macaroon"],
+                        macaroon=arguments.get("macaroon"),
                         max_sats=arguments.get("max_sats", 1000),
                         wallet=self.wallet,
                         budget_manager=self.budget_manager,

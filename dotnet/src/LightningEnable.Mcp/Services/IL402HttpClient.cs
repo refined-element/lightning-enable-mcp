@@ -27,15 +27,15 @@ public interface IL402HttpClient
         CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Manually pays an L402 invoice and returns the token.
+    /// Manually pays an L402/MPP invoice and returns the token.
     /// </summary>
-    /// <param name="macaroonBase64">Base64-encoded macaroon from challenge.</param>
+    /// <param name="macaroonBase64">Base64-encoded macaroon from L402 challenge. Null for MPP (preimage-only).</param>
     /// <param name="invoice">BOLT11 invoice to pay.</param>
     /// <param name="maxSats">Maximum satoshis to pay.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>L402 token (macaroon:preimage) for use in Authorization header.</returns>
+    /// <returns>L402 token (macaroon:preimage) or MPP preimage for use in Authorization header.</returns>
     Task<string> PayChallengeAsync(
-        string macaroonBase64,
+        string? macaroonBase64,
         string invoice,
         long maxSats = 1000,
         CancellationToken cancellationToken = default);

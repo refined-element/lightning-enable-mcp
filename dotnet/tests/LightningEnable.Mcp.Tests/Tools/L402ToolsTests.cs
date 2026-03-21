@@ -126,18 +126,49 @@ public class L402ToolsTests
     }
 
     [Fact]
-    public async Task PayL402Challenge_WithMissingMacaroon_ReturnsInputError()
+    public async Task PayL402Challenge_WithNullMacaroon_MppMode_ReturnsPreimageOnly()
     {
+        // Arrange
+        _l402ClientMock.Setup(c => c.PayChallengeAsync(
+            null, It.IsAny<string>(), It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync("abcdef1234567890");
+
         // Act
         var result = await PayL402ChallengeTool.PayL402Challenge(
-            invoice: "lnbc100n1...",
-            macaroon: "",
+            invoice: "lnbc100n1pjtest",
+            macaroon: null,
             l402Client: _l402ClientMock.Object);
 
         // Assert
         var json = JsonDocument.Parse(result);
-        json.RootElement.GetProperty("success").GetBoolean().Should().BeFalse();
-        json.RootElement.GetProperty("error").GetString().Should().Contain("Macaroon is required");
+        json.RootElement.GetProperty("success").GetBoolean().Should().BeTrue();
+        json.RootElement.GetProperty("l402Token").GetString().Should().Be("abcdef1234567890");
+        json.RootElement.GetProperty("usage").GetProperty("protocol").GetString().Should().Be("MPP");
+        json.RootElement.GetProperty("usage").GetProperty("headerValue").GetString()
+            .Should().Contain("Payment method=\"lightning\"");
+    }
+
+    [Fact]
+    public async Task PayL402Challenge_WithMacaroon_L402Mode_ReturnsFullToken()
+    {
+        // Arrange
+        _l402ClientMock.Setup(c => c.PayChallengeAsync(
+            "base64macaroon", It.IsAny<string>(), It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync("base64macaroon:preimage123");
+
+        // Act
+        var result = await PayL402ChallengeTool.PayL402Challenge(
+            invoice: "lnbc100n1pjtest",
+            macaroon: "base64macaroon",
+            l402Client: _l402ClientMock.Object);
+
+        // Assert
+        var json = JsonDocument.Parse(result);
+        json.RootElement.GetProperty("success").GetBoolean().Should().BeTrue();
+        json.RootElement.GetProperty("l402Token").GetString().Should().Be("base64macaroon:preimage123");
+        json.RootElement.GetProperty("usage").GetProperty("protocol").GetString().Should().Be("L402");
+        json.RootElement.GetProperty("usage").GetProperty("headerValue").GetString()
+            .Should().StartWith("L402 ");
     }
 
     #endregion

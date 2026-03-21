@@ -64,6 +64,39 @@ class TestMppChallengeParsing:
         result = self.client.parse_mpp_challenge(header)
         assert result.invoice == "lnbc100n1pjtest"
 
+    def test_parse_ows_around_equals(self):
+        """Auth-param OWS: whitespace around '=' should be tolerated (RFC 9110)."""
+        header = 'Payment realm = "api.example.com", method = "lightning", invoice = "lnbc100n1pjtest", amount = "100", currency = "sat"'
+        result = self.client.parse_mpp_challenge(header)
+        assert isinstance(result, MppChallenge)
+        assert result.invoice == "lnbc100n1pjtest"
+        assert result.amount == "100"
+        assert result.realm == "api.example.com"
+
+    def test_parse_ows_spaces_before_equals(self):
+        """Whitespace only before '=' should be tolerated."""
+        header = 'Payment method ="lightning", invoice ="lnbc100n1pjtest"'
+        result = self.client.parse_mpp_challenge(header)
+        assert result.invoice == "lnbc100n1pjtest"
+
+    def test_parse_ows_spaces_after_equals(self):
+        """Whitespace only after '=' should be tolerated."""
+        header = 'Payment method= "lightning", invoice= "lnbc100n1pjtest"'
+        result = self.client.parse_mpp_challenge(header)
+        assert result.invoice == "lnbc100n1pjtest"
+
+    def test_parse_ows_multiple_spaces(self):
+        """Multiple spaces around '=' should be tolerated."""
+        header = 'Payment method  =  "lightning", invoice  =  "lnbc100n1pjtest"'
+        result = self.client.parse_mpp_challenge(header)
+        assert result.invoice == "lnbc100n1pjtest"
+
+    def test_parse_ows_tab_around_equals(self):
+        """Tab characters around '=' should be tolerated (OWS = *(SP / HTAB))."""
+        header = 'Payment method\t=\t"lightning", invoice\t=\t"lnbc100n1pjtest"'
+        result = self.client.parse_mpp_challenge(header)
+        assert result.invoice == "lnbc100n1pjtest"
+
     def test_parse_missing_method_raises(self):
         header = 'Payment invoice="lnbc100n1pjtest", amount="100"'
         with pytest.raises(L402Error, match="must be 'lightning'"):

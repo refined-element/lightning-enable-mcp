@@ -139,14 +139,14 @@ class L402Client:
         if not scheme_match:
             raise L402Error(f"Invalid L402 challenge: {www_authenticate[:50]}")
 
-        # Extract macaroon
-        macaroon_match = re.search(r'macaroon="([^"]+)"', www_authenticate)
+        # Extract macaroon (allow optional whitespace around '=' per HTTP auth-param OWS rules)
+        macaroon_match = re.search(r'macaroon\s*=\s*"([^"]+)"', www_authenticate)
         if not macaroon_match:
             raise L402Error("Missing macaroon in L402 challenge")
         macaroon = macaroon_match.group(1)
 
-        # Extract invoice
-        invoice_match = re.search(r'invoice="([^"]+)"', www_authenticate)
+        # Extract invoice (allow optional whitespace around '=' per HTTP auth-param OWS rules)
+        invoice_match = re.search(r'invoice\s*=\s*"([^"]+)"', www_authenticate)
         if not invoice_match:
             raise L402Error("Missing invoice in L402 challenge")
         invoice = invoice_match.group(1)
@@ -179,19 +179,19 @@ class L402Client:
 
         params_str = parts[1] if len(parts) > 1 else ""
 
-        method_match = re.search(r'method="([^"]+)"', params_str, re.IGNORECASE)
+        method_match = re.search(r'method\s*=\s*"([^"]+)"', params_str, re.IGNORECASE)
         if not method_match or method_match.group(1).lower() != "lightning":
             raise L402Error("MPP challenge method must be 'lightning'")
 
-        invoice_match = re.search(r'invoice="([^"]+)"', params_str, re.IGNORECASE)
+        invoice_match = re.search(r'invoice\s*=\s*"([^"]+)"', params_str, re.IGNORECASE)
         if not invoice_match:
             raise L402Error("Missing invoice in MPP challenge")
         invoice = invoice_match.group(1)
 
-        amount_match = re.search(r'amount="([^"]+)"', params_str, re.IGNORECASE)
+        amount_match = re.search(r'amount\s*=\s*"([^"]+)"', params_str, re.IGNORECASE)
         amount = amount_match.group(1) if amount_match else None
 
-        realm_match = re.search(r'realm="([^"]+)"', params_str, re.IGNORECASE)
+        realm_match = re.search(r'realm\s*=\s*"([^"]+)"', params_str, re.IGNORECASE)
         realm = realm_match.group(1) if realm_match else None
 
         amount_msat = self._get_invoice_amount_msat(invoice)

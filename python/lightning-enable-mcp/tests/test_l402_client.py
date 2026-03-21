@@ -81,6 +81,45 @@ class TestL402Challenge:
         with pytest.raises(L402Error, match="Missing invoice"):
             client.parse_l402_challenge(header)
 
+    def test_parse_l402_ows_around_equals(self):
+        """Auth-param OWS: whitespace around '=' should be tolerated (RFC 9110)."""
+        header = 'L402 macaroon = "YWJjZGVm", invoice = "lnbc10n1..."'
+
+        class MockWallet:
+            pass
+
+        client = L402Client(wallet=MockWallet())  # type: ignore
+        challenge = client.parse_l402_challenge(header)
+
+        assert challenge.macaroon == "YWJjZGVm"
+        assert challenge.invoice == "lnbc10n1..."
+
+    def test_parse_l402_ows_spaces_before_equals(self):
+        """Whitespace only before '=' should be tolerated."""
+        header = 'L402 macaroon ="YWJjZGVm", invoice ="lnbc10n1..."'
+
+        class MockWallet:
+            pass
+
+        client = L402Client(wallet=MockWallet())  # type: ignore
+        challenge = client.parse_l402_challenge(header)
+
+        assert challenge.macaroon == "YWJjZGVm"
+        assert challenge.invoice == "lnbc10n1..."
+
+    def test_parse_l402_ows_spaces_after_equals(self):
+        """Whitespace only after '=' should be tolerated."""
+        header = 'L402 macaroon= "YWJjZGVm", invoice= "lnbc10n1..."'
+
+        class MockWallet:
+            pass
+
+        client = L402Client(wallet=MockWallet())  # type: ignore
+        challenge = client.parse_l402_challenge(header)
+
+        assert challenge.macaroon == "YWJjZGVm"
+        assert challenge.invoice == "lnbc10n1..."
+
 
 class TestL402Token:
     """Tests for L402Token."""

@@ -220,17 +220,7 @@ public static class AccessL402ResourceTool
             {
                 if (result.PaidAmountSats > 0)
                 {
-                    // Record the actual payment
-                    budgetService?.RecordSpend(result.PaidAmountSats);
-                    budgetService?.RecordPaymentTime();
-                    paymentHistory?.RecordPayment(
-                        url,
-                        result.Protocol ?? "L402",
-                        result.PaidAmountSats,
-                        null,
-                        null,
-                        result.L402Token,
-                        result.StatusCode);
+                    // Budget recording and payment history are handled by L402HttpClient.FetchWithL402Async()
 
                     var amountUsd = priceService != null
                         ? await priceService.SatsToUsdAsync(result.PaidAmountSats, cancellationToken)

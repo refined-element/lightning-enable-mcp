@@ -180,17 +180,7 @@ public static class PayL402ChallengeTool
             var isMpp = string.IsNullOrWhiteSpace(macaroon);
             var protocolName = isMpp ? "MPP" : "L402";
 
-            // Record the payment
-            budgetService?.RecordSpend(budgetCheckAmount);
-            budgetService?.RecordPaymentTime();
-            paymentHistory?.RecordPayment(
-                "l402-challenge",
-                protocolName,
-                budgetCheckAmount,
-                normalizedInvoice,
-                null,
-                token,
-                200);
+            // Budget recording and payment history are handled by L402HttpClient.PayChallengeAsync()
 
             var amountUsd = priceService != null
                 ? await priceService.SatsToUsdAsync(budgetCheckAmount, cancellationToken)

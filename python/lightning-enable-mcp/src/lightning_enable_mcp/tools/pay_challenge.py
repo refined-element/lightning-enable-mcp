@@ -52,6 +52,9 @@ async def pay_l402_challenge(
     if not invoice:
         return json.dumps({"success": False, "error": "Invoice is required"})
 
+    # Normalize invoice: strip whitespace/newlines that could cause decode or payment failures
+    invoice = invoice.strip()
+
     # Normalize macaroon: strip whitespace and treat empty/whitespace-only as None
     if macaroon is not None:
         macaroon = macaroon.strip()

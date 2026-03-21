@@ -1,0 +1,183 @@
+"""Tests for MPP (Machine Payments Protocol) challenge parsing."""
+
+import pytest
+from lightning_enable_mcp.l402_client import (
+    L402Client,
+    L402Challenge,
+    L402Error,
+    L402Token,
+    MppChallenge,
+    MppToken,
+)
+
+
+class MockWallet:
+    """Minimal mock wallet for creating L402Client instances."""
+
+    pass
+
+
+class TestMppChallengeParsing:
+    """Tests for MppChallenge parsing."""
+
+    def setup_method(self):
+        """Create a client with a mock wallet."""
+        self.client = L402Client(wallet=MockWallet())  # type: ignore
+
+    def test_parse_valid_mpp_header(self):
+        header = 'Payment realm="api.example.com", method="lightning", invoice="lnbc100n1pjtest", amount="100", currency="sat"'
+        result = self.client.parse_mpp_challenge(header)
+        assert isinstance(result, MppChallenge)
+        assert result.invoice == "lnbc100n1pjtest"
+        assert result.amount == "100"
+        assert result.realm == "api.example.com"
+
+    def test_parse_non_lightning_method_raises(self):
+        header = 'Payment realm="test", method="stripe", invoice="lnbc100n1pjtest"'
+        with pytest.raises(L402Error, match="must be 'lightning'"):
+            self.client.parse_mpp_challenge(header)
+
+    def test_parse_missing_invoice_raises(self):
+        header = 'Payment realm="test", method="lightning", amount="100"'
+        with pytest.raises(L402Error, match="Missing invoice"):
+            self.client.parse_mpp_challenge(header)
+
+    def test_parse_non_payment_scheme_raises(self):
+        header = 'L402 macaroon="abc", invoice="lnbc100n1pjtest"'
+        with pytest.raises(L402Error, match="Invalid MPP"):
+            self.client.parse_mpp_challenge(header)
+
+    def test_parse_minimal_header(self):
+        header = 'Payment method="lightning", invoice="lnbc100n1pjtest"'
+        result = self.client.parse_mpp_challenge(header)
+        assert result.invoice == "lnbc100n1pjtest"
+        assert result.amount is None
+        assert result.realm is None
+
+    def test_parse_case_insensitive_scheme(self):
+        header = 'payment method="lightning", invoice="lnbc100n1pjtest"'
+        result = self.client.parse_mpp_challenge(header)
+        assert result.invoice == "lnbc100n1pjtest"
+
+    def test_parse_case_insensitive_method(self):
+        header = 'Payment METHOD="Lightning", invoice="lnbc100n1pjtest"'
+        result = self.client.parse_mpp_challenge(header)
+        assert result.invoice == "lnbc100n1pjtest"
+
+    def test_parse_missing_method_raises(self):
+        header = 'Payment invoice="lnbc100n1pjtest", amount="100"'
+        with pytest.raises(L402Error, match="must be 'lightning'"):
+            self.client.parse_mpp_challenge(header)
+
+
+class TestMppChallengeAmountSats:
+    """Tests for MppChallenge.amount_sats property."""
+
+    def test_amount_sats_conversion(self):
+        challenge = MppChallenge(
+            invoice="test",
+            amount_msat=10000,
+        )
+        assert challenge.amount_sats == 10
+
+    def test_amount_sats_none_when_no_msat(self):
+        challenge = MppChallenge(
+            invoice="test",
+            amount_msat=None,
+        )
+        assert challenge.amount_sats is None
+
+    def test_amount_sats_truncation(self):
+        """Millisats that don't divide evenly by 1000 should truncate."""
+        challenge = MppChallenge(
+            invoice="test",
+            amount_msat=10999,
+        )
+        assert challenge.amount_sats == 10
+
+
+class TestMppToken:
+    """Tests for MppToken."""
+
+    def test_to_header(self):
+        token = MppToken(preimage="abcdef1234567890")
+        expected = 'Payment method="lightning", preimage="abcdef1234567890"'
+        assert token.to_header() == expected
+
+    def test_to_header_full_preimage(self):
+        preimage = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        token = MppToken(preimage=preimage)
+        assert preimage in token.to_header()
+        assert token.to_header().startswith("Payment ")
+
+
+class TestParseBestChallenge:
+    """Tests for parse_best_challenge — prefers L402, falls back to MPP."""
+
+    def setup_method(self):
+        self.client = L402Client(wallet=MockWallet())  # type: ignore
+
+    def test_l402_header_returns_l402(self):
+        header = 'L402 macaroon="abc123", invoice="lnbc100n1pjtest"'
+        result = self.client.parse_best_challenge(header)
+        assert isinstance(result, L402Challenge)
+        assert result.macaroon == "abc123"
+        assert result.invoice == "lnbc100n1pjtest"
+
+    def test_lsat_header_returns_l402(self):
+        header = 'LSAT macaroon="abc123", invoice="lnbc100n1pjtest"'
+        result = self.client.parse_best_challenge(header)
+        assert isinstance(result, L402Challenge)
+        assert result.macaroon == "abc123"
+
+    def test_mpp_header_returns_mpp(self):
+        header = 'Payment method="lightning", invoice="lnbc100n1pjtest"'
+        result = self.client.parse_best_challenge(header)
+        assert isinstance(result, MppChallenge)
+        assert result.invoice == "lnbc100n1pjtest"
+
+    def test_invalid_header_raises(self):
+        with pytest.raises(L402Error, match="No valid"):
+            self.client.parse_best_challenge("Bearer token123")
+
+    def test_empty_header_raises(self):
+        with pytest.raises(L402Error, match="No valid"):
+            self.client.parse_best_challenge("")
+
+    def test_l402_preferred_over_mpp_when_both_valid(self):
+        """When the header starts with L402, it should be parsed as L402 even though
+        it could theoretically contain MPP-style fields."""
+        header = 'L402 macaroon="mac123", invoice="lnbc100n1pjtest"'
+        result = self.client.parse_best_challenge(header)
+        assert isinstance(result, L402Challenge)
+
+    def test_mpp_header_with_full_fields(self):
+        header = 'Payment realm="weather.api.com", method="lightning", invoice="lnbc50n1pj...", amount="50", currency="sat"'
+        result = self.client.parse_best_challenge(header)
+        assert isinstance(result, MppChallenge)
+        assert result.realm == "weather.api.com"
+        assert result.amount == "50"
+
+
+class TestPayChallengeProtocol:
+    """Tests for pay_challenge return types based on macaroon presence."""
+
+    def test_l402_token_has_macaroon_and_preimage(self):
+        token = L402Token(macaroon="mac123", preimage="pre456")
+        assert "L402" in token.to_header()
+        assert "mac123" in token.to_header()
+        assert "pre456" in token.to_header()
+
+    def test_mpp_token_has_only_preimage(self):
+        token = MppToken(preimage="pre456")
+        header = token.to_header()
+        assert "Payment" in header
+        assert "pre456" in header
+        assert "macaroon" not in header.lower()
+
+    def test_l402_and_mpp_tokens_have_different_headers(self):
+        l402 = L402Token(macaroon="mac", preimage="pre")
+        mpp = MppToken(preimage="pre")
+        assert l402.to_header() != mpp.to_header()
+        assert l402.to_header().startswith("L402 ")
+        assert mpp.to_header().startswith("Payment ")

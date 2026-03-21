@@ -54,6 +54,24 @@ class L402Challenge:
 
 
 @dataclass
+class MppChallenge:
+    """Parsed MPP (Machine Payments Protocol) challenge from WWW-Authenticate header.
+    Per IETF draft-ryan-httpauth-payment. No macaroon — just invoice + preimage."""
+
+    invoice: str
+    amount: str | None = None
+    realm: str | None = None
+    amount_msat: int | None = None
+
+    @property
+    def amount_sats(self) -> int | None:
+        """Return amount in satoshis."""
+        if self.amount_msat is not None:
+            return self.amount_msat // 1000
+        return None
+
+
+@dataclass
 class L402Token:
     """L402 authorization token (macaroon + preimage)."""
 
@@ -63,6 +81,17 @@ class L402Token:
     def to_header(self) -> str:
         """Format as Authorization header value."""
         return f"L402 {self.macaroon}:{self.preimage}"
+
+
+@dataclass
+class MppToken:
+    """MPP authorization token (preimage only, no macaroon)."""
+
+    preimage: str
+
+    def to_header(self) -> str:
+        """Format as Authorization header value."""
+        return f'Payment method="lightning", preimage="{self.preimage}"'
 
 
 class L402Client:
@@ -125,6 +154,74 @@ class L402Client:
 
         return L402Challenge(macaroon=macaroon, invoice=invoice, amount_msat=amount_msat)
 
+    def parse_mpp_challenge(self, www_authenticate: str) -> MppChallenge:
+        """
+        Parse WWW-Authenticate header for MPP (Payment) challenge.
+
+        The header format is:
+        Payment realm="<realm>", method="lightning", invoice="<bolt11>", amount="<amount>", currency="sat"
+
+        Args:
+            www_authenticate: WWW-Authenticate header value
+
+        Returns:
+            Parsed MppChallenge
+
+        Raises:
+            L402Error: If header cannot be parsed
+        """
+        if not www_authenticate.lower().startswith("payment "):
+            raise L402Error(f"Invalid MPP challenge: {www_authenticate[:50]}")
+
+        method_match = re.search(r'method="([^"]+)"', www_authenticate, re.IGNORECASE)
+        if not method_match or method_match.group(1).lower() != "lightning":
+            raise L402Error("MPP challenge method must be 'lightning'")
+
+        invoice_match = re.search(r'invoice="([^"]+)"', www_authenticate, re.IGNORECASE)
+        if not invoice_match:
+            raise L402Error("Missing invoice in MPP challenge")
+        invoice = invoice_match.group(1)
+
+        amount_match = re.search(r'amount="([^"]+)"', www_authenticate, re.IGNORECASE)
+        amount = amount_match.group(1) if amount_match else None
+
+        realm_match = re.search(r'realm="([^"]+)"', www_authenticate, re.IGNORECASE)
+        realm = realm_match.group(1) if realm_match else None
+
+        amount_msat = self._get_invoice_amount_msat(invoice)
+
+        return MppChallenge(invoice=invoice, amount=amount, realm=realm, amount_msat=amount_msat)
+
+    def parse_best_challenge(self, www_authenticate: str) -> L402Challenge | MppChallenge:
+        """
+        Parse WWW-Authenticate header, trying L402 first then MPP.
+
+        Prefers L402 when available (caveats, no cache dependency).
+        Falls back to MPP only when L402 is not available.
+
+        Args:
+            www_authenticate: WWW-Authenticate header value
+
+        Returns:
+            Parsed L402Challenge or MppChallenge
+
+        Raises:
+            L402Error: If neither L402 nor MPP can be parsed
+        """
+        # Try L402 first (preferred)
+        try:
+            return self.parse_l402_challenge(www_authenticate)
+        except L402Error:
+            pass
+
+        # Try MPP fallback
+        try:
+            return self.parse_mpp_challenge(www_authenticate)
+        except L402Error:
+            pass
+
+        raise L402Error(f"No valid L402 or MPP challenge found: {www_authenticate[:80]}")
+
     def _get_invoice_amount_msat(self, bolt11: str) -> int | None:
         """
         Extract amount in millisatoshis from a BOLT11 invoice.
@@ -183,8 +280,8 @@ class L402Client:
             if not www_auth:
                 raise L402Error("402 response without WWW-Authenticate header")
 
-            # Parse challenge
-            challenge = self.parse_l402_challenge(www_auth)
+            # Parse challenge (tries L402 first, falls back to MPP)
+            challenge = self.parse_best_challenge(www_auth)
 
             # Check budget
             if challenge.amount_sats is not None and challenge.amount_sats > max_sats:
@@ -193,11 +290,15 @@ class L402Client:
                 )
 
             # Pay invoice
-            logger.info(f"Paying L402 invoice for {challenge.amount_sats} sats")
+            protocol = "MPP" if isinstance(challenge, MppChallenge) else "L402"
+            logger.info(f"Paying {protocol} invoice for {challenge.amount_sats} sats")
             preimage = await self.wallet.pay_invoice(challenge.invoice)
 
             # Create token
-            token = L402Token(macaroon=challenge.macaroon, preimage=preimage)
+            if isinstance(challenge, MppChallenge):
+                token = MppToken(preimage=preimage)
+            else:
+                token = L402Token(macaroon=challenge.macaroon, preimage=preimage)
 
             # Retry with authorization
             auth_headers = {**headers, "Authorization": token.to_header()}
@@ -221,19 +322,19 @@ class L402Client:
     async def pay_challenge(
         self,
         invoice: str,
-        macaroon: str,
+        macaroon: str | None = None,
         max_sats: int = 1000,
-    ) -> L402Token:
+    ) -> L402Token | MppToken:
         """
-        Pay an L402 invoice and return the authorization token.
+        Pay an L402/MPP invoice and return the authorization token.
 
         Args:
             invoice: BOLT11 invoice string
-            macaroon: Base64-encoded macaroon
+            macaroon: Base64-encoded macaroon (optional; if None, returns MPP token)
             max_sats: Maximum satoshis allowed
 
         Returns:
-            L402Token for authorization
+            L402Token (if macaroon provided) or MppToken (if no macaroon) for authorization
 
         Raises:
             L402BudgetExceededError: If invoice exceeds max_sats
@@ -254,4 +355,6 @@ class L402Client:
         except Exception as e:
             raise L402PaymentError(f"Payment failed: {e!s}") from e
 
-        return L402Token(macaroon=macaroon, preimage=preimage)
+        if macaroon:
+            return L402Token(macaroon=macaroon, preimage=preimage)
+        return MppToken(preimage=preimage)

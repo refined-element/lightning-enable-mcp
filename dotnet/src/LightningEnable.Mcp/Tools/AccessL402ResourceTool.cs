@@ -248,7 +248,8 @@ public static class AccessL402ResourceTool
                             paid = true,
                             amountSats = result.PaidAmountSats,
                             amountUsd = Math.Round(amountUsd, 2),
-                            l402Token = result.L402Token
+                            l402Token = result.L402Token,
+                            protocol = result.Protocol ?? "L402"
                         }
                     });
                 }
@@ -291,8 +292,9 @@ public static class AccessL402ResourceTool
                             amountSats = result.PaidAmountSats,
                             amountUsd,
                             l402Token = result.L402Token,
+                            protocol = result.Protocol ?? "L402",
                             note = "Payment succeeded but the server returned a non-success status on retry. " +
-                                   "The L402 token above is valid and can be used with the correct endpoint."
+                                   "The payment token above is valid and can be used with the correct endpoint."
                         }
                     });
                 }

@@ -20,26 +20,29 @@ logger = logging.getLogger("lightning-enable-mcp.tools.pay")
 
 async def pay_l402_challenge(
     invoice: str,
-    macaroon: str,
+    macaroon: str | None = None,
     max_sats: int = 1000,
     wallet: "NWCWallet | None" = None,
     budget_manager: "BudgetManager | None" = None,
 ) -> str:
     """
-    Manually pay an L402 invoice and receive the authorization token.
+    Manually pay an L402 or MPP invoice and receive the authorization token.
 
-    This is useful when you want to handle the L402 flow yourself rather than
+    This is useful when you want to handle the L402/MPP flow yourself rather than
     using access_l402_resource which does it automatically.
+
+    When macaroon is provided, uses L402 protocol.
+    When macaroon is omitted, uses MPP (Machine Payments Protocol) — preimage only.
 
     Args:
         invoice: BOLT11 Lightning invoice string
-        macaroon: Base64-encoded macaroon from the L402 challenge
+        macaroon: Base64-encoded macaroon from the L402 challenge (optional; omit for MPP mode)
         max_sats: Maximum satoshis allowed for this payment
         wallet: NWC wallet instance
         budget_manager: Budget manager for tracking spending
 
     Returns:
-        JSON with L402 token or error message
+        JSON with L402/MPP token or error message
     """
     if not wallet:
         return json.dumps(
@@ -49,8 +52,8 @@ async def pay_l402_challenge(
     if not invoice:
         return json.dumps({"success": False, "error": "Invoice is required"})
 
-    if not macaroon:
-        return json.dumps({"success": False, "error": "Macaroon is required"})
+    # Determine protocol: L402 if macaroon provided, MPP otherwise
+    is_mpp = not macaroon
 
     try:
         # Parse invoice to get amount
@@ -84,36 +87,51 @@ async def pay_l402_challenge(
                 )
 
         # Pay the invoice
-        logger.info(f"Paying invoice for {amount_sats} sats")
+        protocol = "MPP" if is_mpp else "L402"
+        logger.info(f"Paying {protocol} invoice for {amount_sats} sats")
         preimage = await wallet.pay_invoice(invoice)
 
         # Record payment
         if budget_manager and amount_sats:
             budget_manager.record_payment(
-                url="manual_l402_payment",
+                url=f"manual_{protocol.lower()}_payment",
                 amount_sats=amount_sats,
                 invoice=invoice,
                 preimage=preimage,
                 status="success",
             )
 
-        # Construct L402 token
-        l402_token = f"{macaroon}:{preimage}"
+        # Construct authorization header based on protocol
+        if is_mpp:
+            authorization_header = f'Payment method="lightning", preimage="{preimage}"'
+        else:
+            l402_token = f"{macaroon}:{preimage}"
+            authorization_header = f"L402 {l402_token}"
 
         result = {
             "success": True,
-            "token": l402_token,
-            "authorization_header": f"L402 {l402_token}",
             "preimage": preimage,
             "amount_sats": amount_sats,
+            "protocol": protocol,
+            "usage": {
+                "headerName": "Authorization",
+                "headerValue": authorization_header,
+                "protocol": protocol,
+                "description": "Include this header in subsequent requests to the same endpoint",
+            },
             "message": (
-                f"Payment successful. Use the authorization_header value in your "
-                f"Authorization header to access the L402-protected resource."
+                f"Payment successful ({protocol}). Use the authorization header value "
+                f"to access the protected resource."
             ),
         }
+
+        # Include token for L402 backward compatibility
+        if not is_mpp:
+            result["token"] = f"{macaroon}:{preimage}"
+            result["authorization_header"] = authorization_header
 
         return json.dumps(result, indent=2)
 
     except Exception as e:
-        logger.exception("Error paying L402 challenge")
+        logger.exception("Error paying L402/MPP challenge")
         return json.dumps({"success": False, "error": sanitize_error(str(e))})

@@ -21,7 +21,7 @@ public static class PayL402ChallengeTool
     [McpServerTool(Name = "pay_l402_challenge"), Description("Manually pay an L402 Lightning invoice to get the authentication token")]
     public static async Task<string> PayL402Challenge(
         [Description("BOLT11 Lightning invoice string from the L402 challenge")] string invoice,
-        [Description("Base64-encoded macaroon from the L402 challenge")] string macaroon,
+        [Description("Base64-encoded macaroon from the L402 challenge. Optional for MPP (Machine Payments Protocol) where only invoice + preimage are needed.")] string? macaroon = null,
         [Description("Maximum satoshis allowed to pay. Defaults to 1000")] int maxSats = 1000,
         [Description("Confirmation nonce from confirm_payment tool. Required when previous call returned requiresConfirmation=true.")] string? confirmationNonce = null,
         McpServer? server = null,
@@ -37,15 +37,6 @@ public static class PayL402ChallengeTool
             {
                 success = false,
                 error = "Invoice is required"
-            });
-        }
-
-        if (string.IsNullOrWhiteSpace(macaroon))
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = "Macaroon is required"
             });
         }
 
@@ -185,12 +176,15 @@ public static class PayL402ChallengeTool
 
             var token = await l402Client.PayChallengeAsync(macaroon, invoice, maxSats, cancellationToken);
 
+            var isMpp = string.IsNullOrWhiteSpace(macaroon);
+            var protocolName = isMpp ? "MPP" : "L402";
+
             // Record the payment
             budgetService?.RecordSpend(budgetCheckAmount);
             budgetService?.RecordPaymentTime();
             paymentHistory?.RecordPayment(
                 "l402-challenge",
-                "L402",
+                protocolName,
                 budgetCheckAmount,
                 normalizedInvoice,
                 null,
@@ -200,6 +194,10 @@ public static class PayL402ChallengeTool
             var amountUsd = priceService != null
                 ? await priceService.SatsToUsdAsync(budgetCheckAmount, cancellationToken)
                 : 0m;
+
+            var headerValue = isMpp
+                ? $"Payment method=\"lightning\", preimage=\"{token}\""
+                : $"L402 {token}";
 
             return JsonSerializer.Serialize(new
             {
@@ -213,7 +211,8 @@ public static class PayL402ChallengeTool
                 usage = new
                 {
                     headerName = "Authorization",
-                    headerValue = $"L402 {token}",
+                    headerValue,
+                    protocol = protocolName,
                     description = "Include this header in subsequent requests to the same endpoint"
                 }
             });

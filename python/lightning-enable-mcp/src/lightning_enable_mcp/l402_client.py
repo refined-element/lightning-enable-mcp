@@ -224,11 +224,54 @@ class L402Client:
 
         raise L402Error(f"No valid L402 or MPP challenge found: {www_authenticate[:80]}")
 
+    @staticmethod
+    def _expand_challenges(www_auth_values: list[str]) -> list[str]:
+        """
+        Expand a list of WWW-Authenticate header values into individual challenges.
+
+        A single header value may contain multiple challenges comma-separated, e.g.:
+            'Payment method="lightning", invoice="...", L402 macaroon="...", invoice="..."'
+        This splits on known auth scheme boundaries so each challenge is parsed
+        individually.
+
+        Args:
+            www_auth_values: Raw WWW-Authenticate header values (may be comma-joined)
+
+        Returns:
+            List of individual challenge strings
+        """
+        # Pattern matches the start of a known auth scheme (case-insensitive).
+        # We look for scheme names at the start of a segment or after a comma.
+        scheme_boundary = re.compile(r"(?i)(?:^|,\s*)(?=(?:l402|lsat|payment)\s)", re.IGNORECASE)
+
+        expanded: list[str] = []
+        for value in www_auth_values:
+            if not value or not value.strip():
+                continue
+            matches = list(scheme_boundary.finditer(value))
+            if len(matches) <= 1:
+                # Single challenge (or no recognized scheme) — keep as-is
+                expanded.append(value.strip())
+                continue
+            # Multiple scheme boundaries found — split into segments
+            for i, match in enumerate(matches):
+                start = match.start()
+                # Skip any leading comma/whitespace at the boundary
+                while start < len(value) and value[start] in ", ":
+                    start += 1
+                end = matches[i + 1].start() if i + 1 < len(matches) else len(value)
+                segment = value[start:end].strip().rstrip(",").strip()
+                if segment:
+                    expanded.append(segment)
+
+        return expanded
+
     def _select_best_challenge(self, www_auth_values: list[str]) -> "L402Challenge | MppChallenge":
         """
         Select the best challenge from a list of WWW-Authenticate header values.
 
-        Parses each value individually. Prefers L402/LSAT over MPP.
+        Handles comma-separated challenges within a single header value by expanding
+        them first. Prefers L402/LSAT over MPP.
 
         Args:
             www_auth_values: List of WWW-Authenticate header values
@@ -239,10 +282,13 @@ class L402Client:
         Raises:
             L402Error: If no valid challenge is found
         """
+        # Expand comma-joined header values into individual challenges
+        expanded = self._expand_challenges(www_auth_values)
+
         l402_challenge = None
         mpp_challenge = None
 
-        for value in www_auth_values:
+        for value in expanded:
             value = value.strip()
             if not value:
                 continue

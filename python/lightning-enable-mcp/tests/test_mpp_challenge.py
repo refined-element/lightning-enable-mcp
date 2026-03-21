@@ -239,6 +239,70 @@ class TestSelectBestChallenge:
         assert isinstance(result, L402Challenge)
 
 
+class TestExpandChallenges:
+    """Tests for _expand_challenges — handles comma-separated challenges in a single header."""
+
+    def setup_method(self):
+        self.client = L402Client(wallet=MockWallet())  # type: ignore
+
+    def test_single_challenge_unchanged(self):
+        values = ['L402 macaroon="abc", invoice="lnbc100n1pjtest"']
+        result = L402Client._expand_challenges(values)
+        assert len(result) == 1
+        assert result[0].startswith("L402")
+
+    def test_single_mpp_challenge_unchanged(self):
+        values = ['Payment method="lightning", invoice="lnbc100n1pjtest"']
+        result = L402Client._expand_challenges(values)
+        assert len(result) == 1
+        assert result[0].startswith("Payment")
+
+    def test_comma_joined_payment_then_l402(self):
+        """A single header value with Payment and L402 should expand to two challenges."""
+        combined = (
+            'Payment method="lightning", invoice="lnbc200n1pjmpp", '
+            'L402 macaroon="mac123", invoice="lnbc100n1pjl402"'
+        )
+        result = L402Client._expand_challenges([combined])
+        assert len(result) == 2
+        assert result[0].startswith("Payment")
+        assert result[1].startswith("L402")
+
+    def test_comma_joined_l402_then_payment(self):
+        """L402 first, then Payment in single value — should expand to two challenges."""
+        combined = (
+            'L402 macaroon="mac123", invoice="lnbc100n1pjl402", '
+            'Payment method="lightning", invoice="lnbc200n1pjmpp"'
+        )
+        result = L402Client._expand_challenges([combined])
+        assert len(result) == 2
+        assert result[0].startswith("L402")
+        assert result[1].startswith("Payment")
+
+    def test_empty_and_whitespace_values_ignored(self):
+        result = L402Client._expand_challenges(["", "  ", ""])
+        assert len(result) == 0
+
+    def test_multiple_separate_values_passthrough(self):
+        """Multiple separate header values should pass through unchanged."""
+        values = [
+            'Payment method="lightning", invoice="lnbc200n1pjmpp"',
+            'L402 macaroon="mac123", invoice="lnbc100n1pjl402"',
+        ]
+        result = L402Client._expand_challenges(values)
+        assert len(result) == 2
+
+    def test_select_best_prefers_l402_in_comma_joined(self):
+        """When a single header has Payment then L402 comma-joined, L402 should be selected."""
+        combined = (
+            'Payment method="lightning", invoice="lnbc200n1pjmpp", '
+            'L402 macaroon="mac123", invoice="lnbc100n1pjl402"'
+        )
+        result = self.client._select_best_challenge([combined])
+        assert isinstance(result, L402Challenge)
+        assert result.invoice == "lnbc100n1pjl402"
+
+
 class TestPayChallengeProtocol:
     """Tests for pay_challenge return types based on macaroon presence."""
 

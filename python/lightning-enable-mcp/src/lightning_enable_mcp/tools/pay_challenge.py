@@ -71,8 +71,17 @@ async def pay_l402_challenge(
         elif hasattr(decoded, "amount") and decoded.amount:
             amount_sats = decoded.amount
 
+        # Reject no-amount invoices (security: could bypass budget checks)
+        if amount_sats is None or amount_sats <= 0:
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": "Invoice has no amount specified. For security, only invoices with explicit amounts are supported.",
+                }
+            )
+
         # Check against max_sats
-        if amount_sats is not None and amount_sats > max_sats:
+        if amount_sats > max_sats:
             return json.dumps(
                 {
                     "success": False,

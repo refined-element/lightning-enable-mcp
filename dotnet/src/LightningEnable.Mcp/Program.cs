@@ -187,6 +187,9 @@ public class Program
             }
         }
 
+        // Register Strike banking service (ACH/wire deposits and payouts)
+        builder.Services.AddHttpClient<IStrikeBankingService, StrikeBankingService>();
+
         // Register Lightning Enable API service for L402 producer tools
         builder.Services.AddHttpClient<ILightningEnableApiService, LightningEnableApiService>();
 

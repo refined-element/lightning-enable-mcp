@@ -161,3 +161,8 @@ MIT — see [LICENSE](LICENSE).
 - [NuGet](https://www.nuget.org/packages/LightningEnable.Mcp) — .NET package
 - [PyPI](https://pypi.org/project/lightning-enable-mcp) — Python package
 - [Docker Hub](https://hub.docker.com/r/refinedelement/lightning-enable-mcp) — Docker image
+
+## Hosted deployment
+
+A hosted deployment is available on [Fronteir AI](https://fronteir.ai/mcp/refined-element-lightning-enable-mcp).
+

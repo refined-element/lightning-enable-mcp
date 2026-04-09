@@ -138,7 +138,7 @@ public static class AccessL402ResourceTool
                 }
                 else
                 {
-                    // Try MCP elicitation first
+                    // Try MCP elicitation first (most clients don't support this yet)
                     var elicitationConfirmed = await RequestL402ConfirmationAsync(
                         server,
                         approvalResult,
@@ -147,52 +147,35 @@ public static class AccessL402ResourceTool
 
                     if (!elicitationConfirmed)
                     {
-                        // Check if elicitation was even available
-                        var elicitationAvailable = server?.ClientCapabilities?.Elicitation != null;
+                        // Always fall back to nonce-based confirmation.
+                        // MCP elicitation is unreliable — many clients (including Claude Code)
+                        // report Elicitation capability but don't handle it correctly.
+                        var urlDisplay = url.Length > 60 ? url.Substring(0, 60) + "..." : url;
+                        var pending = budgetService.CreatePendingConfirmation(
+                            maxSats,
+                            approvalResult.AmountUsd,
+                            "access_l402_resource",
+                            urlDisplay);
 
-                        if (!elicitationAvailable)
-                        {
-                            // Create a pending confirmation with a nonce
-                            var urlDisplay = url.Length > 60 ? url.Substring(0, 60) + "..." : url;
-                            var pending = budgetService.CreatePendingConfirmation(
-                                maxSats,
-                                approvalResult.AmountUsd,
-                                "access_l402_resource",
-                                urlDisplay);
-
-                            return JsonSerializer.Serialize(new
-                            {
-                                success = false,
-                                requiresConfirmation = true,
-                                error = "L402 payment requires your confirmation",
-                                message = $"This L402 request may cost up to {approvalResult.AmountUsd:C} ({maxSats:N0} sats), which exceeds the auto-approve threshold.",
-                                nonce = pending.Nonce,
-                                howToConfirm = $"Step 1: Call confirm_payment(nonce: \"{pending.Nonce}\") to approve.\n" +
-                                               $"Step 2: Call access_l402_resource(url=\"{url}\", confirmationNonce=\"{pending.Nonce}\") to proceed.",
-                                expiresInSeconds = 120,
-                                amount = new
-                                {
-                                    maxSats,
-                                    usd = Math.Round(approvalResult.AmountUsd, 2)
-                                },
-                                thresholds = new
-                                {
-                                    autoApprove = budgetService.GetUserConfiguration().Tiers.AutoApprove,
-                                    note = "Payments above this require confirmation via confirm_payment tool"
-                                }
-                            });
-                        }
-
-                        // Elicitation was available but user declined
                         return JsonSerializer.Serialize(new
                         {
                             success = false,
-                            error = "L402 payment cancelled by user",
                             requiresConfirmation = true,
+                            error = "L402 payment requires your confirmation",
+                            message = $"This L402 request may cost up to {approvalResult.AmountUsd:C} ({maxSats:N0} sats), which exceeds the auto-approve threshold.",
+                            nonce = pending.Nonce,
+                            howToConfirm = $"Step 1: Call confirm_payment(nonce: \"{pending.Nonce}\") to approve.\n" +
+                                           $"Step 2: Call access_l402_resource(url=\"{url}\", confirmationNonce=\"{pending.Nonce}\") to proceed.",
+                            expiresInSeconds = 120,
                             amount = new
                             {
                                 maxSats,
-                                usd = approvalResult.AmountUsd
+                                usd = Math.Round(approvalResult.AmountUsd, 2)
+                            },
+                            thresholds = new
+                            {
+                                autoApprove = budgetService.GetUserConfiguration().Tiers.AutoApprove,
+                                note = "Payments above this require confirmation via confirm_payment tool"
                             }
                         });
                     }

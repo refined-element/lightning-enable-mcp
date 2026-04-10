@@ -140,7 +140,7 @@ public static class PayInvoiceTool
                     }
                     else
                     {
-                        // Try MCP elicitation first
+                        // Try MCP elicitation first (most clients don't support this yet)
                         var elicitationConfirmed = await RequestConfirmationAsync(
                             server,
                             approvalResult,
@@ -149,52 +149,36 @@ public static class PayInvoiceTool
 
                         if (!elicitationConfirmed)
                         {
-                            // Check if elicitation was even available
-                            var elicitationAvailable = server?.ClientCapabilities?.Elicitation != null;
+                            // Always fall back to nonce-based confirmation.
+                            // MCP elicitation is unreliable — many clients (including Claude Code)
+                            // report Elicitation capability but don't handle it correctly,
+                            // causing payments to fail with no recovery path.
+                            var invoicePrefix = normalizedInvoice.Substring(0, Math.Min(30, normalizedInvoice.Length)) + "...";
+                            var pending = budgetService.CreatePendingConfirmation(
+                                amountSats.Value,
+                                approvalResult.AmountUsd,
+                                "pay_invoice",
+                                invoicePrefix);
 
-                            if (!elicitationAvailable)
-                            {
-                                // Create a pending confirmation with a nonce
-                                var invoicePrefix = normalizedInvoice.Substring(0, Math.Min(30, normalizedInvoice.Length)) + "...";
-                                var pending = budgetService.CreatePendingConfirmation(
-                                    amountSats.Value,
-                                    approvalResult.AmountUsd,
-                                    "pay_invoice",
-                                    invoicePrefix);
-
-                                return JsonSerializer.Serialize(new
-                                {
-                                    success = false,
-                                    requiresConfirmation = true,
-                                    error = "Payment requires your confirmation",
-                                    message = $"This payment of {approvalResult.AmountUsd:C} ({amountSats.Value:N0} sats) exceeds the auto-approve threshold.",
-                                    nonce = pending.Nonce,
-                                    howToConfirm = $"Step 1: Call confirm_payment(nonce: \"{pending.Nonce}\") to approve.\n" +
-                                                   $"Step 2: Call pay_invoice(invoice=\"...\", confirmationNonce=\"{pending.Nonce}\") to proceed.",
-                                    expiresInSeconds = 120,
-                                    amount = new
-                                    {
-                                        sats = amountSats.Value,
-                                        usd = Math.Round(approvalResult.AmountUsd, 2)
-                                    },
-                                    thresholds = new
-                                    {
-                                        autoApprove = budgetService.GetUserConfiguration().Tiers.AutoApprove,
-                                        note = "Payments above this require confirmation via confirm_payment tool"
-                                    }
-                                });
-                            }
-
-                            // Elicitation was available but user declined
                             return JsonSerializer.Serialize(new
                             {
                                 success = false,
-                                error = "Payment cancelled by user",
                                 requiresConfirmation = true,
+                                error = "Payment requires your confirmation",
+                                message = $"This payment of {approvalResult.AmountUsd:C} ({amountSats.Value:N0} sats) exceeds the auto-approve threshold.",
+                                nonce = pending.Nonce,
+                                howToConfirm = $"Step 1: Call confirm_payment(nonce: \"{pending.Nonce}\") to approve.\n" +
+                                               $"Step 2: Call pay_invoice(invoice=\"...\", confirmationNonce=\"{pending.Nonce}\") to proceed.",
+                                expiresInSeconds = 120,
                                 amount = new
                                 {
                                     sats = amountSats.Value,
-                                    usd = approvalResult.AmountUsd
+                                    usd = Math.Round(approvalResult.AmountUsd, 2)
+                                },
+                                thresholds = new
+                                {
+                                    autoApprove = budgetService.GetUserConfiguration().Tiers.AutoApprove,
+                                    note = "Payments above this require confirmation via confirm_payment tool"
                                 }
                             });
                         }

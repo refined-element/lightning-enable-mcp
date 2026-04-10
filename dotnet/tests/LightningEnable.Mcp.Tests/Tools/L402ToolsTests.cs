@@ -172,4 +172,105 @@ public class L402ToolsTests
     }
 
     #endregion
+
+    #region Nonce Fallback Tests
+
+    [Fact]
+    public async Task AccessL402Resource_RequiresConfirmation_ElicitationFails_ReturnsNonceFallback()
+    {
+        // Arrange — budget says RequiresConfirmation, no server (elicitation unavailable)
+        var budgetServiceMock = new Mock<IBudgetService>();
+        var priceServiceMock = new Mock<IPriceService>();
+
+        budgetServiceMock.Setup(b => b.CheckApprovalLevelAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApprovalCheckResult
+            {
+                Level = ApprovalLevel.FormConfirm,
+                AmountSats = 1000,
+                AmountUsd = 5.00m,
+                RemainingSessionBudgetUsd = 95.00m
+            });
+        budgetServiceMock.Setup(b => b.CreatePendingConfirmation(
+                It.IsAny<long>(), It.IsAny<decimal>(), It.IsAny<string>(), It.IsAny<string>()))
+            .Returns(new PendingConfirmation
+            {
+                Nonce = "L4C123",
+                AmountSats = 1000,
+                AmountUsd = 5.00m,
+                ToolName = "access_l402_resource",
+                Description = "https://api.example.com/data",
+                CreatedAt = DateTime.UtcNow,
+                ExpiresAt = DateTime.UtcNow.AddMinutes(2)
+            });
+        budgetServiceMock.Setup(b => b.GetUserConfiguration())
+            .Returns(new UserBudgetConfiguration());
+
+        // Act — no McpServer, so elicitation can't work
+        var result = await AccessL402ResourceTool.AccessL402Resource(
+            url: "https://api.example.com/data",
+            l402Client: _l402ClientMock.Object,
+            budgetService: budgetServiceMock.Object,
+            priceService: priceServiceMock.Object);
+
+        // Assert — should return nonce-based fallback
+        var json = JsonDocument.Parse(result);
+        json.RootElement.GetProperty("success").GetBoolean().Should().BeFalse();
+        json.RootElement.GetProperty("requiresConfirmation").GetBoolean().Should().BeTrue();
+        json.RootElement.GetProperty("nonce").GetString().Should().Be("L4C123");
+        json.RootElement.TryGetProperty("howToConfirm", out _).Should().BeTrue();
+        json.RootElement.GetProperty("expiresInSeconds").GetInt32().Should().Be(120);
+        json.RootElement.GetProperty("amount").GetProperty("maxSats").GetInt32().Should().Be(1000);
+        json.RootElement.GetProperty("amount").GetProperty("usd").GetDecimal().Should().Be(5.00m);
+    }
+
+    [Fact]
+    public async Task PayL402Challenge_RequiresConfirmation_ElicitationFails_ReturnsNonceFallback()
+    {
+        // Arrange — budget says RequiresConfirmation, no server (elicitation unavailable)
+        var budgetServiceMock = new Mock<IBudgetService>();
+        var priceServiceMock = new Mock<IPriceService>();
+
+        budgetServiceMock.Setup(b => b.CheckApprovalLevelAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApprovalCheckResult
+            {
+                Level = ApprovalLevel.FormConfirm,
+                AmountSats = 500,
+                AmountUsd = 2.50m,
+                RemainingSessionBudgetUsd = 97.50m
+            });
+        budgetServiceMock.Setup(b => b.CreatePendingConfirmation(
+                It.IsAny<long>(), It.IsAny<decimal>(), It.IsAny<string>(), It.IsAny<string>()))
+            .Returns(new PendingConfirmation
+            {
+                Nonce = "PLC456",
+                AmountSats = 500,
+                AmountUsd = 2.50m,
+                ToolName = "pay_l402_challenge",
+                Description = "lnbc500n1pjtest...",
+                CreatedAt = DateTime.UtcNow,
+                ExpiresAt = DateTime.UtcNow.AddMinutes(2)
+            });
+        budgetServiceMock.Setup(b => b.GetUserConfiguration())
+            .Returns(new UserBudgetConfiguration());
+
+        // Act — no McpServer, so elicitation can't work
+        var result = await PayL402ChallengeTool.PayL402Challenge(
+            invoice: "lnbc500n1pjtest",
+            macaroon: "base64macaroon",
+            l402Client: _l402ClientMock.Object,
+            budgetService: budgetServiceMock.Object,
+            priceService: priceServiceMock.Object);
+
+        // Assert — should return nonce-based fallback
+        var json = JsonDocument.Parse(result);
+        json.RootElement.GetProperty("success").GetBoolean().Should().BeFalse();
+        json.RootElement.GetProperty("requiresConfirmation").GetBoolean().Should().BeTrue();
+        json.RootElement.GetProperty("nonce").GetString().Should().Be("PLC456");
+        json.RootElement.TryGetProperty("howToConfirm", out _).Should().BeTrue();
+        json.RootElement.GetProperty("expiresInSeconds").GetInt32().Should().Be(120);
+        json.RootElement.GetProperty("amount").GetProperty("sats").GetInt64().Should().Be(50); // lnbc500n = 50 sats
+        json.RootElement.GetProperty("amount").GetProperty("usd").GetDecimal().Should().Be(2.50m);
+    }
+
+    #endregion
 }

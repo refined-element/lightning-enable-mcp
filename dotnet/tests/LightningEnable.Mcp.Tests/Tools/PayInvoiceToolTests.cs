@@ -527,4 +527,54 @@ public class PayInvoiceToolTests
     }
 
     #endregion
+
+    #region Nonce Fallback Tests
+
+    [Fact]
+    public async Task PayInvoice_RequiresConfirmation_ElicitationFails_ReturnsNonceFallback()
+    {
+        // Arrange — budget says RequiresConfirmation, elicitation unavailable (no server)
+        _walletServiceMock.Setup(w => w.IsConfigured).Returns(true);
+        _budgetServiceMock.Setup(b => b.CheckApprovalLevelAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApprovalCheckResult
+            {
+                Level = ApprovalLevel.FormConfirm,
+                AmountSats = 1000,
+                AmountUsd = 5.00m,
+                RemainingSessionBudgetUsd = 95.00m
+            });
+        _budgetServiceMock.Setup(b => b.CreatePendingConfirmation(
+                It.IsAny<long>(), It.IsAny<decimal>(), It.IsAny<string>(), It.IsAny<string>()))
+            .Returns(new PendingConfirmation
+            {
+                Nonce = "ABC123",
+                AmountSats = 1000,
+                AmountUsd = 5.00m,
+                ToolName = "pay_invoice",
+                Description = "lnbc1000n1p3abcdef...",
+                CreatedAt = DateTime.UtcNow,
+                ExpiresAt = DateTime.UtcNow.AddMinutes(2)
+            });
+        _budgetServiceMock.Setup(b => b.GetUserConfiguration())
+            .Returns(new UserBudgetConfiguration());
+
+        // Act — no McpServer, so elicitation can't work
+        var result = await PayInvoiceTool.PayInvoice(
+            invoice: TestInvoice,
+            walletService: _walletServiceMock.Object,
+            budgetService: _budgetServiceMock.Object,
+            priceService: _priceServiceMock.Object);
+
+        // Assert — should return nonce-based fallback, not an error
+        var json = JsonDocument.Parse(result);
+        json.RootElement.GetProperty("success").GetBoolean().Should().BeFalse();
+        json.RootElement.GetProperty("requiresConfirmation").GetBoolean().Should().BeTrue();
+        json.RootElement.GetProperty("nonce").GetString().Should().Be("ABC123");
+        json.RootElement.TryGetProperty("howToConfirm", out _).Should().BeTrue();
+        json.RootElement.GetProperty("expiresInSeconds").GetInt32().Should().Be(120);
+        json.RootElement.GetProperty("amount").GetProperty("sats").GetInt64().Should().Be(100); // lnbc1000n = 100 sats
+        json.RootElement.GetProperty("amount").GetProperty("usd").GetDecimal().Should().Be(5.00m);
+    }
+
+    #endregion
 }

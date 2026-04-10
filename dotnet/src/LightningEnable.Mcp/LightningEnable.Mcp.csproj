@@ -24,7 +24,7 @@
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <!-- <PackageIcon>icon.png</PackageIcon> -->
 
-    <PackageReleaseNotes>v1.12.2: CRITICAL FIX — Payment confirmation broken on all .NET MCP clients. Elicitation-based confirmation silently failed, blocking payments above auto-approve threshold with no recovery path. Now always falls back to nonce-based confirmation. Affects PayInvoice, AccessL402Resource, PayL402Challenge, CreatePayout, InitiateDeposit, InitiatePayout.</PackageReleaseNotes>
+    <PackageReleaseNotes>v1.12.2: CRITICAL FIX — Payment confirmation broken on all .NET MCP clients. Elicitation-based confirmation silently failed, blocking payments above auto-approve threshold with no recovery path. Now always falls back to nonce-based confirmation. Affects PayInvoice, AccessL402Resource, PayL402Challenge.</PackageReleaseNotes>
 
     <!-- MIT License -->
     <PackageLicenseExpression>MIT</PackageLicenseExpression>

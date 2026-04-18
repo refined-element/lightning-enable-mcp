@@ -15,7 +15,7 @@ Available tools:
 
 # Derive __version__ from installed package metadata so it can never drift from
 # pyproject.toml (which is the single source of truth). Fall back to a sentinel when
-# running from an uninstalled source tree (e.g. editable dev without pip install -e).
+# running directly from an uninstalled source checkout (e.g., without pip install).
 from importlib.metadata import version as _pkg_version, PackageNotFoundError as _PackageNotFoundError
 try:
     __version__ = _pkg_version("lightning-enable-mcp")

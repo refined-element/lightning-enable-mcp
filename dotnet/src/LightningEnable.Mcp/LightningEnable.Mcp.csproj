@@ -24,7 +24,7 @@
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <!-- <PackageIcon>icon.png</PackageIcon> -->
 
-    <PackageReleaseNotes>v1.12.3: Discovery + distribution improvements. Smithery.ai manifest added to the repo root so the server auto-lists on Cursor / VS Code / Claude Desktop "Add MCP" flows. Docker Hub description now auto-populated from the repo README on each release. No code changes in this version.</PackageReleaseNotes>
+    <PackageReleaseNotes>v1.12.3: Discovery + distribution improvements. Smithery.ai manifest added to the repo root so the server auto-lists on Cursor / VS Code / Claude Desktop "Add MCP" flows. Docker Hub description now auto-populated from the repo README on each release. No .NET code changes; the companion Python package in this release switches `__version__` to derive from package metadata.</PackageReleaseNotes>
 
     <!-- MIT License -->
     <PackageLicenseExpression>MIT</PackageLicenseExpression>

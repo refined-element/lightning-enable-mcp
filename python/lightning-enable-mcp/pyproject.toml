@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "lightning-enable-mcp"
-version = "1.12.2"
+version = "1.12.3"
 description = "Part of Lightning Enable — infrastructure for agent commerce over Lightning. MCP server for L402 Lightning payments, API discovery, and agent commerce."
 readme = "README.md"
 license = "MIT"

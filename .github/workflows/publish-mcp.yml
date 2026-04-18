@@ -164,6 +164,9 @@ jobs:
             -e "s|\]\((python/[^)]+)\)|](${REPO_URL}/blob/${BRANCH}/\1)|g" \
             -e "s|\]\((docs/[^)]+)\)|](${REPO_URL}/blob/${BRANCH}/\1)|g" \
             -e "s|\]\((server\.json)\)|](${REPO_URL}/blob/${BRANCH}/\1)|g" \
+            -e "s|\]\((LICENSE)\)|](${REPO_URL}/blob/${BRANCH}/\1)|g" \
+            -e "s|\]\((CHANGELOG\.md)\)|](${REPO_URL}/blob/${BRANCH}/\1)|g" \
+            -e "s|\]\((CONTRIBUTING\.md)\)|](${REPO_URL}/blob/${BRANCH}/\1)|g" \
             README.md > README.dockerhub.md
           echo "=== Docker Hub README preview (first 40 lines) ==="
           head -n 40 README.dockerhub.md

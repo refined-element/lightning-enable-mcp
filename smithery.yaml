@@ -1,0 +1,120 @@
+# Smithery configuration for the Lightning Enable MCP server.
+# Smithery is the default discovery surface for Cursor / VS Code / Claude Desktop
+# "Add MCP server" flows. This manifest lets Smithery auto-ingest the server
+# from its PyPI package.
+#
+# Docs: https://smithery.ai/docs/build/publish
+#
+# Note: no explicit `version` field — Smithery resolves the current version from
+# the published PyPI package (lightning-enable-mcp), so there's no second place
+# to keep in sync on every release.
+
+name: lightning-enable
+description: AI agent Lightning payments and commerce — invoices, L402, API discovery, budgets, ASA negotiation. 23 tools, 15 free, 8 unlock with a Lightning Enable API key.
+author: Lightning Enable
+license: MIT
+repository: https://github.com/refined-element/lightning-enable-mcp
+
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    properties:
+      lightningEnableApiKey:
+        type: string
+        description: >-
+          Optional. Your Lightning Enable API key. Required only to enable the 8
+          subscription-gated tools (2 producer + 6 ASA). The 15 consumer tools
+          work without it. Get a key at https://lightningenable.com.
+        secret: true
+      strikeApiKey:
+        type: string
+        description: >-
+          Optional. Strike API key for wallet operations (preferred for L402 —
+          returns preimage on payments). Generate at dashboard.strike.me.
+        secret: true
+      nwcConnectionString:
+        type: string
+        description: >-
+          Optional. Nostr Wallet Connect connection string (nostr+walletconnect://...)
+          for wallets like Alby Hub, CoinOS, CLINK. Alternative to Strike/LND.
+        secret: true
+      lndRestHost:
+        type: string
+        description: >-
+          Optional. Your LND node REST host (e.g., https://my-lnd:8080). Used
+          with your own Lightning node.
+      lndMacaroonHex:
+        type: string
+        description: >-
+          Optional. Hex-encoded LND admin.macaroon for REST authentication.
+        secret: true
+      lndSkipTlsVerify:
+        type: boolean
+        default: false
+        description: >-
+          Optional, dev-only. Skip TLS verification when connecting to LND.
+          Useful for self-signed / development LND instances. Do not enable
+          in production.
+      opennodeApiKey:
+        type: string
+        description: >-
+          Optional. OpenNode API key. Note: OpenNode does not return preimage
+          on incoming payments, so L402 auto-pay does not work with OpenNode.
+        secret: true
+      opennodeEnvironment:
+        type: string
+        enum: [production, dev]
+        default: production
+        description: >-
+          Optional. OpenNode environment — "production" or "dev" (testnet).
+          Defaults to production.
+      l402MaxSatsPerRequest:
+        type: integer
+        minimum: 0
+        description: >-
+          Optional. Per-request spending cap in satoshis for L402 payments.
+          Defaults to a conservative value if unset.
+      l402MaxSatsPerSession:
+        type: integer
+        minimum: 0
+        description: >-
+          Optional. Per-session spending cap in satoshis for L402 payments.
+  commandFunction: |-
+    (config) => {
+      const env = {};
+      if (config.lightningEnableApiKey) env.LIGHTNING_ENABLE_API_KEY = config.lightningEnableApiKey;
+      if (config.strikeApiKey)          env.STRIKE_API_KEY            = config.strikeApiKey;
+      if (config.nwcConnectionString)   env.NWC_CONNECTION_STRING     = config.nwcConnectionString;
+      if (config.lndRestHost)           env.LND_REST_HOST             = config.lndRestHost;
+      if (config.lndMacaroonHex)        env.LND_MACAROON_HEX          = config.lndMacaroonHex;
+      if (config.lndSkipTlsVerify === true) env.LND_SKIP_TLS_VERIFY   = 'true';
+      if (config.opennodeApiKey)        env.OPENNODE_API_KEY          = config.opennodeApiKey;
+      if (config.opennodeEnvironment)   env.OPENNODE_ENVIRONMENT      = config.opennodeEnvironment;
+      if (typeof config.l402MaxSatsPerRequest === 'number') env.L402_MAX_SATS_PER_REQUEST = String(config.l402MaxSatsPerRequest);
+      if (typeof config.l402MaxSatsPerSession === 'number') env.L402_MAX_SATS_PER_SESSION = String(config.l402MaxSatsPerSession);
+      return {
+        command: 'uvx',
+        args: ['lightning-enable-mcp'],
+        env
+      };
+    }
+  exampleConfig: {}
+
+tags:
+  - mcp
+  - lightning
+  - bitcoin
+  - l402
+  - payments
+  - agent
+  - agents
+  - commerce
+  - strike
+  - opennode
+  - lnd
+  - nwc
+  - ai
+  - agentic-commerce
+  - asa
+  - nostr

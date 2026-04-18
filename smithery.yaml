@@ -30,11 +30,11 @@ startCommand:
           Optional. Strike API key for wallet operations (preferred for L402 —
           returns preimage on payments). Generate at dashboard.strike.me.
         secret: true
-      nwcUrl:
+      nwcConnectionString:
         type: string
         description: >-
-          Optional. Nostr Wallet Connect URI (nostr+walletconnect://...) for
-          wallets like Alby Hub, CoinOS, CLINK. Alternative to Strike/LND.
+          Optional. Nostr Wallet Connect connection string (nostr+walletconnect://...)
+          for wallets like Alby Hub, CoinOS, CLINK. Alternative to Strike/LND.
         secret: true
       lndRestHost:
         type: string
@@ -47,12 +47,14 @@ startCommand:
           Optional. Hex-encoded LND admin.macaroon for REST authentication.
         secret: true
       l402MaxSatsPerRequest:
-        type: string
+        type: integer
+        minimum: 0
         description: >-
           Optional. Per-request spending cap in satoshis for L402 payments.
           Defaults to a conservative value if unset.
       l402MaxSatsPerSession:
-        type: string
+        type: integer
+        minimum: 0
         description: >-
           Optional. Per-session spending cap in satoshis for L402 payments.
   commandFunction: |-
@@ -60,11 +62,11 @@ startCommand:
       const env = {};
       if (config.lightningEnableApiKey) env.LIGHTNING_ENABLE_API_KEY = config.lightningEnableApiKey;
       if (config.strikeApiKey)          env.STRIKE_API_KEY            = config.strikeApiKey;
-      if (config.nwcUrl)                env.NWC_URL                   = config.nwcUrl;
+      if (config.nwcConnectionString)   env.NWC_CONNECTION_STRING     = config.nwcConnectionString;
       if (config.lndRestHost)           env.LND_REST_HOST             = config.lndRestHost;
       if (config.lndMacaroonHex)        env.LND_MACAROON_HEX          = config.lndMacaroonHex;
-      if (config.l402MaxSatsPerRequest) env.L402_MAX_SATS_PER_REQUEST = config.l402MaxSatsPerRequest;
-      if (config.l402MaxSatsPerSession) env.L402_MAX_SATS_PER_SESSION = config.l402MaxSatsPerSession;
+      if (typeof config.l402MaxSatsPerRequest === 'number') env.L402_MAX_SATS_PER_REQUEST = String(config.l402MaxSatsPerRequest);
+      if (typeof config.l402MaxSatsPerSession === 'number') env.L402_MAX_SATS_PER_SESSION = String(config.l402MaxSatsPerSession);
       return {
         command: 'uvx',
         args: ['lightning-enable-mcp'],

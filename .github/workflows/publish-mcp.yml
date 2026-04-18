@@ -158,15 +158,18 @@ jobs:
           # resolve on Docker Hub. Generate a Docker-Hub-specific copy with absolute
           # GitHub URLs so links render correctly on the listing page.
           REPO_URL="https://github.com/refined-element/lightning-enable-mcp"
-          BRANCH="main"
+          # Pin link targets to the exact commit that produced this image rather than `main`,
+          # so the Docker Hub README keeps pointing at the version it was published alongside
+          # even after main moves on.
+          BLOB_REF="${GITHUB_SHA}"
           sed -E \
-            -e "s|\]\((dotnet/[^)]+)\)|](${REPO_URL}/blob/${BRANCH}/\1)|g" \
-            -e "s|\]\((python/[^)]+)\)|](${REPO_URL}/blob/${BRANCH}/\1)|g" \
-            -e "s|\]\((docs/[^)]+)\)|](${REPO_URL}/blob/${BRANCH}/\1)|g" \
-            -e "s|\]\((server\.json)\)|](${REPO_URL}/blob/${BRANCH}/\1)|g" \
-            -e "s|\]\((LICENSE)\)|](${REPO_URL}/blob/${BRANCH}/\1)|g" \
-            -e "s|\]\((CHANGELOG\.md)\)|](${REPO_URL}/blob/${BRANCH}/\1)|g" \
-            -e "s|\]\((CONTRIBUTING\.md)\)|](${REPO_URL}/blob/${BRANCH}/\1)|g" \
+            -e "s|\]\((dotnet/[^)]+)\)|](${REPO_URL}/blob/${BLOB_REF}/\1)|g" \
+            -e "s|\]\((python/[^)]+)\)|](${REPO_URL}/blob/${BLOB_REF}/\1)|g" \
+            -e "s|\]\((docs/[^)]+)\)|](${REPO_URL}/blob/${BLOB_REF}/\1)|g" \
+            -e "s|\]\((server\.json)\)|](${REPO_URL}/blob/${BLOB_REF}/\1)|g" \
+            -e "s|\]\((LICENSE)\)|](${REPO_URL}/blob/${BLOB_REF}/\1)|g" \
+            -e "s|\]\((CHANGELOG\.md)\)|](${REPO_URL}/blob/${BLOB_REF}/\1)|g" \
+            -e "s|\]\((CONTRIBUTING\.md)\)|](${REPO_URL}/blob/${BLOB_REF}/\1)|g" \
             README.md > README.dockerhub.md
           echo "=== Docker Hub README preview (first 40 lines) ==="
           head -n 40 README.dockerhub.md

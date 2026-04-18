@@ -4,9 +4,12 @@
 # from its PyPI package.
 #
 # Docs: https://smithery.ai/docs/build/publish
+#
+# Note: no explicit `version` field — Smithery resolves the current version from
+# the published PyPI package (lightning-enable-mcp), so there's no second place
+# to keep in sync on every release.
 
 name: lightning-enable
-version: 1.12.2
 description: AI agent Lightning payments and commerce — invoices, L402, API discovery, budgets, ASA negotiation. 23 tools, 15 free, 8 unlock with a Lightning Enable API key.
 author: Lightning Enable
 license: MIT
@@ -46,6 +49,26 @@ startCommand:
         description: >-
           Optional. Hex-encoded LND admin.macaroon for REST authentication.
         secret: true
+      lndSkipTlsVerify:
+        type: boolean
+        default: false
+        description: >-
+          Optional, dev-only. Skip TLS verification when connecting to LND.
+          Useful for self-signed / development LND instances. Do not enable
+          in production.
+      opennodeApiKey:
+        type: string
+        description: >-
+          Optional. OpenNode API key. Note: OpenNode does not return preimage
+          on incoming payments, so L402 auto-pay does not work with OpenNode.
+        secret: true
+      opennodeEnvironment:
+        type: string
+        enum: [production, dev]
+        default: production
+        description: >-
+          Optional. OpenNode environment — "production" or "dev" (testnet).
+          Defaults to production.
       l402MaxSatsPerRequest:
         type: integer
         minimum: 0
@@ -65,6 +88,9 @@ startCommand:
       if (config.nwcConnectionString)   env.NWC_CONNECTION_STRING     = config.nwcConnectionString;
       if (config.lndRestHost)           env.LND_REST_HOST             = config.lndRestHost;
       if (config.lndMacaroonHex)        env.LND_MACAROON_HEX          = config.lndMacaroonHex;
+      if (config.lndSkipTlsVerify === true) env.LND_SKIP_TLS_VERIFY   = 'true';
+      if (config.opennodeApiKey)        env.OPENNODE_API_KEY          = config.opennodeApiKey;
+      if (config.opennodeEnvironment)   env.OPENNODE_ENVIRONMENT      = config.opennodeEnvironment;
       if (typeof config.l402MaxSatsPerRequest === 'number') env.L402_MAX_SATS_PER_REQUEST = String(config.l402MaxSatsPerRequest);
       if (typeof config.l402MaxSatsPerSession === 'number') env.L402_MAX_SATS_PER_SESSION = String(config.l402MaxSatsPerSession);
       return {

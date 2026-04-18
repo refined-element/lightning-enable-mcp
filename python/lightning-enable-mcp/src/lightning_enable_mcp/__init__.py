@@ -13,7 +13,8 @@ Available tools:
 - pay_l402_challenge - Manual L402 payment
 """
 
-__version__ = "1.6.0"
+from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 
 from .budget import BudgetManager, BudgetExceededError, PaymentRecord
 from .budget_service import (
@@ -45,6 +46,14 @@ from .price_service import (
     usd_to_sats,
 )
 from .server import LightningEnableServer, main
+
+# Derive __version__ from installed package metadata so it can never drift from
+# pyproject.toml (which is the single source of truth). Fall back to a sentinel when
+# running directly from an uninstalled source checkout (e.g., without pip install).
+try:
+    __version__ = _pkg_version("lightning-enable-mcp")
+except _PackageNotFoundError:  # pragma: no cover
+    __version__ = "0.0.0+unknown"
 
 __all__ = [
     # Server

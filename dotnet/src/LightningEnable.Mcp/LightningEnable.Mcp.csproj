@@ -12,7 +12,7 @@
 
     <!-- NuGet Package Metadata -->
     <PackageId>LightningEnable.Mcp</PackageId>
-    <Version>1.12.2</Version>
+    <Version>1.12.3</Version>
     <AssemblyVersion>1.9.0.0</AssemblyVersion>
     <FileVersion>1.9.0.0</FileVersion>
     <Authors>Lightning Enable</Authors>
@@ -24,7 +24,7 @@
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <!-- <PackageIcon>icon.png</PackageIcon> -->
 
-    <PackageReleaseNotes>v1.12.2: CRITICAL FIX — Payment confirmation broken on all .NET MCP clients. Elicitation-based confirmation silently failed, blocking payments above auto-approve threshold with no recovery path. Now always falls back to nonce-based confirmation. Affects PayInvoice, AccessL402Resource, PayL402Challenge.</PackageReleaseNotes>
+    <PackageReleaseNotes>v1.12.3: Discovery + distribution improvements. Smithery.ai manifest added to the repo root so the server auto-lists on Cursor / VS Code / Claude Desktop "Add MCP" flows. Docker Hub description now auto-populated from the repo README on each release. No .NET code changes; the companion Python package in this release switches `__version__` to derive from package metadata.</PackageReleaseNotes>
 
     <!-- MIT License -->
     <PackageLicenseExpression>MIT</PackageLicenseExpression>

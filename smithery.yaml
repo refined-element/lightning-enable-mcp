@@ -1,0 +1,92 @@
+# Smithery configuration for the Lightning Enable MCP server.
+# Smithery is the default discovery surface for Cursor / VS Code / Claude Desktop
+# "Add MCP server" flows. This manifest lets Smithery auto-ingest the server
+# from its PyPI package.
+#
+# Docs: https://smithery.ai/docs/build/publish
+
+name: lightning-enable
+version: 1.12.2
+description: AI agent Lightning payments and commerce — invoices, L402, API discovery, budgets, ASA negotiation. 23 tools, 15 free, 8 unlock with a Lightning Enable API key.
+author: Lightning Enable
+license: MIT
+repository: https://github.com/refined-element/lightning-enable-mcp
+
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    properties:
+      lightningEnableApiKey:
+        type: string
+        description: >-
+          Optional. Your Lightning Enable API key. Required only to enable the 8
+          subscription-gated tools (2 producer + 6 ASA). The 15 consumer tools
+          work without it. Get a key at https://lightningenable.com.
+        secret: true
+      strikeApiKey:
+        type: string
+        description: >-
+          Optional. Strike API key for wallet operations (preferred for L402 —
+          returns preimage on payments). Generate at dashboard.strike.me.
+        secret: true
+      nwcUrl:
+        type: string
+        description: >-
+          Optional. Nostr Wallet Connect URI (nostr+walletconnect://...) for
+          wallets like Alby Hub, CoinOS, CLINK. Alternative to Strike/LND.
+        secret: true
+      lndRestHost:
+        type: string
+        description: >-
+          Optional. Your LND node REST host (e.g., https://my-lnd:8080). Used
+          with your own Lightning node.
+      lndMacaroonHex:
+        type: string
+        description: >-
+          Optional. Hex-encoded LND admin.macaroon for REST authentication.
+        secret: true
+      l402MaxSatsPerRequest:
+        type: string
+        description: >-
+          Optional. Per-request spending cap in satoshis for L402 payments.
+          Defaults to a conservative value if unset.
+      l402MaxSatsPerSession:
+        type: string
+        description: >-
+          Optional. Per-session spending cap in satoshis for L402 payments.
+  commandFunction: |-
+    (config) => {
+      const env = {};
+      if (config.lightningEnableApiKey) env.LIGHTNING_ENABLE_API_KEY = config.lightningEnableApiKey;
+      if (config.strikeApiKey)          env.STRIKE_API_KEY            = config.strikeApiKey;
+      if (config.nwcUrl)                env.NWC_URL                   = config.nwcUrl;
+      if (config.lndRestHost)           env.LND_REST_HOST             = config.lndRestHost;
+      if (config.lndMacaroonHex)        env.LND_MACAROON_HEX          = config.lndMacaroonHex;
+      if (config.l402MaxSatsPerRequest) env.L402_MAX_SATS_PER_REQUEST = config.l402MaxSatsPerRequest;
+      if (config.l402MaxSatsPerSession) env.L402_MAX_SATS_PER_SESSION = config.l402MaxSatsPerSession;
+      return {
+        command: 'uvx',
+        args: ['lightning-enable-mcp'],
+        env
+      };
+    }
+  exampleConfig: {}
+
+tags:
+  - mcp
+  - lightning
+  - bitcoin
+  - l402
+  - payments
+  - agent
+  - agents
+  - commerce
+  - strike
+  - opennode
+  - lnd
+  - nwc
+  - ai
+  - agentic-commerce
+  - asa
+  - nostr

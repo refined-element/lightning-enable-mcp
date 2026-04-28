@@ -1,18 +1,29 @@
 """
 Price Service
 
-Provides BTC/USD price fetching with caching and conversion utilities.
-Fetches prices from multiple sources (CoinGecko, Coinbase, Strike) with
-automatic fallback on API failures.
+Fetches BTC/USD price from three independent public sources (CoinGecko,
+Coinbase, Kraken) in parallel and returns the first successful response.
+
+Design:
+- 60-second cache: keeps price close to spot while absorbing burst traffic
+  and avoiding rate-limit pressure on any single source.
+- Parallel fetch on cache miss: a slow or failing source cannot hold up the
+  others — the first success wins.
+- No hardcoded fallback price. If every source fails, the service RAISES
+  PriceUnavailableError. A wrong fake price would silently mis-evaluate
+  budgets. Better to fail loud.
+- Every fetch attempt is logged (source, latency, success/failure).
 """
+
+from __future__ import annotations
 
 import asyncio
 import logging
-import os
+import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
-from typing import Any
+from typing import Awaitable, Callable
 
 try:
     import httpx
@@ -24,87 +35,59 @@ logger = logging.getLogger("lightning-enable-mcp.price")
 # Satoshis per Bitcoin
 SATS_PER_BTC = Decimal("100000000")
 
-# Default fallback price if all sources fail (conservative estimate)
-DEFAULT_FALLBACK_PRICE = Decimal("100000")
+# Cache duration — short, so price stays close to spot.
+CACHE_DURATION = timedelta(seconds=60)
 
-# Default cache duration
-DEFAULT_CACHE_DURATION_MINUTES = 15
-
-
-class PriceServiceError(Exception):
-    """Exception for price service errors."""
-
-    pass
+# Per-source timeout. A slow source must not block the others.
+PER_SOURCE_TIMEOUT_SECONDS = 5.0
 
 
-@dataclass
-class PriceResult:
-    """Result of a price fetch operation."""
+class PriceUnavailableError(Exception):
+    """
+    Raised when CoinGecko, Coinbase, and Kraken all fail and no recent
+    cached value is available. The MCP refuses to fall back to a fake price
+    because that would mis-evaluate budgets.
+    """
 
-    success: bool
-    price: Decimal | None = None
-    source: str | None = None
-    error_message: str | None = None
 
-    @classmethod
-    def succeeded(cls, price: Decimal, source: str) -> "PriceResult":
-        return cls(success=True, price=price, source=source)
+@dataclass(frozen=True)
+class PriceSnapshot:
+    """A point-in-time price with provenance."""
 
-    @classmethod
-    def failed(cls, message: str) -> "PriceResult":
-        return cls(success=False, error_message=message)
+    btc_usd: Decimal
+    source: str
+    fetched_at: datetime
 
 
 class PriceService:
     """
-    Price service that fetches BTC/USD from multiple sources with caching.
+    BTC/USD price service. Fetches from CoinGecko, Coinbase, Kraken in
+    parallel; first success wins.
 
-    Provides methods for:
-    - Getting current BTC/USD price
-    - Converting satoshis to USD
-    - Converting USD to satoshis
-
-    Sources are tried in order:
-    1. Strike (if API key is configured)
-    2. CoinGecko (free, no API key required)
-    3. Coinbase (free, no API key required)
-
-    Prices are cached for 15 minutes by default to avoid rate limits.
+    Sources are intentionally limited to public, unauthenticated APIs that
+    are widely trusted. Strike is NOT used here even when configured — it's
+    surfaced separately via the explicit get_btc_price tool for Strike-only
+    users.
     """
 
-    def __init__(
-        self,
-        cache_duration_minutes: int = DEFAULT_CACHE_DURATION_MINUTES,
-        fallback_price: Decimal | None = None,
-    ) -> None:
-        """
-        Initialize the price service.
-
-        Args:
-            cache_duration_minutes: How long to cache prices (default 15 minutes)
-            fallback_price: Price to use if all sources fail (default $100,000)
-        """
+    def __init__(self) -> None:
         if httpx is None:
             raise ImportError(
                 "httpx is required for PriceService. Install with: pip install httpx"
             )
 
-        self._cache_duration = timedelta(minutes=cache_duration_minutes)
-        self._fallback_price = fallback_price or DEFAULT_FALLBACK_PRICE
-        self._cached_price: Decimal = self._fallback_price
-        self._cache_expiry: datetime = datetime.min
-        self._cache_source: str | None = None
         self._lock = asyncio.Lock()
         self._client: httpx.AsyncClient | None = None
+        self._snapshot: PriceSnapshot | None = None
 
     async def _get_client(self) -> httpx.AsyncClient:
-        """Get or create the HTTP client."""
+        """Get or create the shared HTTP client."""
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(
-                timeout=10.0,
+                timeout=PER_SOURCE_TIMEOUT_SECONDS,
                 headers={
                     "Accept": "application/json",
-                    "User-Agent": "lightning-enable-mcp/1.0",
+                    "User-Agent": "lightning-enable-mcp/price",
                 },
             )
         return self._client
@@ -119,239 +102,204 @@ class PriceService:
         """
         Get the current BTC/USD price.
 
-        Returns cached price if available and not expired.
-        Tries multiple sources if cache is expired.
-        Returns fallback price if all sources fail.
-
-        Returns:
-            BTC/USD price as Decimal
+        Returns the cached price if it's less than CACHE_DURATION old,
+        otherwise fires CoinGecko/Coinbase/Kraken in parallel and returns
+        the first successful response. Raises PriceUnavailableError if all
+        sources fail.
         """
-        # Check cache first (without lock for performance)
-        now = datetime.utcnow()
-        if now < self._cache_expiry:
-            return self._cached_price
+        snapshot = self._snapshot
+        if snapshot is not None and datetime.now(timezone.utc) - snapshot.fetched_at < CACHE_DURATION:
+            return snapshot.btc_usd
 
-        # Acquire lock and double-check cache
         async with self._lock:
-            now = datetime.utcnow()
-            if now < self._cache_expiry:
-                return self._cached_price
+            # Re-check after acquiring lock — another caller may have refreshed.
+            snapshot = self._snapshot
+            if snapshot is not None and datetime.now(timezone.utc) - snapshot.fetched_at < CACHE_DURATION:
+                return snapshot.btc_usd
 
-            # Try to fetch new price
-            result = await self._try_get_price()
-
-            if result.success and result.price is not None and result.price > 0:
-                self._cached_price = result.price
-                self._cache_expiry = now + self._cache_duration
-                self._cache_source = result.source
-                logger.info(f"Updated BTC price to ${result.price:,.2f} from {result.source}")
-                return self._cached_price
-
-            # Return cached price even if expired, or fallback
-            if self._cached_price > 0:
-                logger.warning(
-                    f"Price fetch failed, using cached price: ${self._cached_price:,.2f}"
-                )
-                return self._cached_price
-
-            logger.warning(
-                f"Price fetch failed, using fallback price: ${self._fallback_price:,.2f}"
-            )
-            return self._fallback_price
+            fresh = await self._fetch_first_successful()
+            self._snapshot = fresh
+            return fresh.btc_usd
 
     async def sats_to_usd(self, sats: int) -> Decimal:
         """
-        Convert satoshis to USD using current BTC price.
-
-        Args:
-            sats: Amount in satoshis
-
-        Returns:
-            USD value rounded to 2 decimal places
+        Convert satoshis to USD using the current BTC price.
+        Raises PriceUnavailableError if the price cannot be fetched.
         """
         btc_price = await self.get_btc_price()
-        btc = Decimal(sats) / SATS_PER_BTC
-        usd = btc * btc_price
+        usd = Decimal(sats) / SATS_PER_BTC * btc_price
         return round(usd, 2)
 
     async def usd_to_sats(self, usd: Decimal | float | int) -> int:
         """
-        Convert USD to satoshis using current BTC price.
-
-        Args:
-            usd: Amount in USD
-
-        Returns:
-            Equivalent amount in satoshis (rounded up)
+        Convert USD to satoshis using the current BTC price (rounded up).
+        Raises PriceUnavailableError if the price cannot be fetched.
         """
-        btc_price = await self.get_btc_price()
-        usd_decimal = Decimal(str(usd))
-        btc = usd_decimal / btc_price
-        sats = btc * SATS_PER_BTC
-        # Round up to ensure we always have enough sats
         import math
 
+        btc_price = await self.get_btc_price()
+        usd_decimal = Decimal(str(usd))
+        sats = usd_decimal / btc_price * SATS_PER_BTC
         return math.ceil(sats)
+
+    def get_last_snapshot(self) -> PriceSnapshot | None:
+        """
+        Returns the most recent successfully fetched snapshot (price + source +
+        timestamp) without triggering a fresh fetch. None if no fetch has
+        succeeded yet.
+        """
+        return self._snapshot
 
     def get_cached_btc_price(self) -> Decimal:
         """
-        Get the cached BTC price without fetching.
-
-        Returns the last successfully fetched price, or fallback if none available.
-        Useful for synchronous contexts where async is not possible.
-
-        Returns:
-            Cached BTC/USD price
+        Returns the last successfully fetched price for synchronous callers.
+        Returns Decimal("0") if no fetch has succeeded yet — callers must
+        handle this case rather than relying on a hardcoded fake price.
         """
-        return self._cached_price if self._cached_price > 0 else self._fallback_price
+        if self._snapshot is None:
+            return Decimal("0")
+        return self._snapshot.btc_usd
 
     def get_cache_source(self) -> str | None:
-        """Get the source of the cached price."""
-        return self._cache_source
+        """The source of the cached price, or None if no fetch has succeeded."""
+        return self._snapshot.source if self._snapshot else None
 
     def is_cache_valid(self) -> bool:
-        """Check if the cache is still valid."""
-        return datetime.utcnow() < self._cache_expiry
+        """Whether the cached value is within CACHE_DURATION."""
+        if self._snapshot is None:
+            return False
+        return datetime.now(timezone.utc) - self._snapshot.fetched_at < CACHE_DURATION
 
-    async def _try_get_price(self) -> PriceResult:
-        """Try to get price from various sources in order."""
-        # Try Strike first if API key is configured
-        strike_api_key = os.getenv("STRIKE_API_KEY")
-        if strike_api_key:
-            result = await self._try_strike_price(strike_api_key)
-            if result.success:
-                return result
+    # ── internals ────────────────────────────────────────────────────────────
 
-        # Try CoinGecko (free, no API key)
-        result = await self._try_coingecko_price()
-        if result.success:
-            return result
-
-        # Try Coinbase as fallback
-        result = await self._try_coinbase_price()
-        if result.success:
-            return result
-
-        return PriceResult.failed("All price sources failed")
-
-    async def _try_strike_price(self, api_key: str) -> PriceResult:
+    async def _fetch_first_successful(self) -> PriceSnapshot:
         """
-        Fetch BTC/USD price from Strike.
-
-        Args:
-            api_key: Strike API key
-
-        Returns:
-            PriceResult with price or error
+        Fire CoinGecko, Coinbase, and Kraken in parallel; return the first
+        successful PriceSnapshot. Raise PriceUnavailableError if all fail.
         """
+        attempts: list[tuple[str, Callable[[], Awaitable[Decimal]]]] = [
+            ("CoinGecko", self._fetch_coingecko),
+            ("Coinbase", self._fetch_coinbase),
+            ("Kraken", self._fetch_kraken),
+        ]
+        tasks = {asyncio.create_task(self._try(source, fetch)): source for source, fetch in attempts}
+
+        winner: PriceSnapshot | None = None
         try:
-            client = await self._get_client()
-            response = await client.get(
-                "https://api.strike.me/v1/rates/ticker",
-                headers={"Authorization": f"Bearer {api_key}"},
+            for completed in asyncio.as_completed(tasks):
+                result = await completed
+                if result is not None:
+                    winner = result
+                    break
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            # Drain cancelled tasks so they don't surface as warnings.
+            for task in tasks:
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
+
+        if winner is not None:
+            logger.info(
+                "BTC price fetched: $%s from %s",
+                f"{winner.btc_usd:,.2f}",
+                winner.source,
             )
+            return winner
 
-            if response.status_code != 200:
-                return PriceResult.failed(f"Strike API error: {response.status_code}")
+        message = (
+            "BTC price unavailable: CoinGecko, Coinbase, and Kraken all failed. "
+            "Cannot evaluate budget safely."
+        )
+        logger.error(message)
+        raise PriceUnavailableError(message)
 
-            data = response.json()
-
-            # Strike returns an array of rate objects
-            for rate in data:
-                source = rate.get("sourceCurrency", "").upper()
-                target = rate.get("targetCurrency", "").upper()
-
-                if source == "BTC" and target == "USD":
-                    amount = rate.get("amount")
-                    if amount:
-                        price = Decimal(str(amount))
-                        return PriceResult.succeeded(price, "strike")
-
-            return PriceResult.failed("BTC/USD rate not found in Strike response")
-
-        except httpx.RequestError as e:
-            logger.debug(f"Strike price fetch failed: {e}")
-            return PriceResult.failed(f"Strike request error: {e!s}")
-        except Exception as e:
-            logger.debug(f"Strike price parse failed: {e}")
-            return PriceResult.failed(f"Strike parse error: {e!s}")
-
-    async def _try_coingecko_price(self) -> PriceResult:
-        """
-        Fetch BTC/USD price from CoinGecko.
-
-        Returns:
-            PriceResult with price or error
-        """
+    async def _try(
+        self,
+        source: str,
+        fetch: Callable[[], Awaitable[Decimal]],
+    ) -> PriceSnapshot | None:
+        """Run a single source fetch with timing and error logging."""
+        started = time.monotonic()
         try:
-            client = await self._get_client()
-            response = await client.get(
-                "https://api.coingecko.com/api/v3/simple/price",
-                params={"ids": "bitcoin", "vs_currencies": "usd"},
+            price = await fetch()
+            elapsed_ms = (time.monotonic() - started) * 1000
+            if price <= 0:
+                logger.warning(
+                    "BTC price fetch from %s returned non-positive value %s after %.1fms",
+                    source, price, elapsed_ms,
+                )
+                return None
+            logger.debug("BTC price fetched from %s: $%s in %.1fms", source, price, elapsed_ms)
+            return PriceSnapshot(
+                btc_usd=price,
+                source=source,
+                fetched_at=datetime.now(timezone.utc),
             )
-
-            if response.status_code != 200:
-                return PriceResult.failed(f"CoinGecko API error: {response.status_code}")
-
-            data = response.json()
-
-            if "bitcoin" in data and "usd" in data["bitcoin"]:
-                price = Decimal(str(data["bitcoin"]["usd"]))
-                return PriceResult.succeeded(price, "coingecko")
-
-            return PriceResult.failed("BTC/USD not found in CoinGecko response")
-
-        except httpx.RequestError as e:
-            logger.debug(f"CoinGecko price fetch failed: {e}")
-            return PriceResult.failed(f"CoinGecko request error: {e!s}")
-        except Exception as e:
-            logger.debug(f"CoinGecko price parse failed: {e}")
-            return PriceResult.failed(f"CoinGecko parse error: {e!s}")
-
-    async def _try_coinbase_price(self) -> PriceResult:
-        """
-        Fetch BTC/USD price from Coinbase.
-
-        Returns:
-            PriceResult with price or error
-        """
-        try:
-            client = await self._get_client()
-            response = await client.get(
-                "https://api.coinbase.com/v2/prices/BTC-USD/spot"
+        except asyncio.CancelledError:
+            # Sibling source already won — not a failure.
+            raise
+        except Exception as ex:
+            elapsed_ms = (time.monotonic() - started) * 1000
+            logger.warning(
+                "BTC price fetch from %s failed after %.1fms: %s",
+                source, elapsed_ms, ex,
             )
+            return None
 
-            if response.status_code != 200:
-                return PriceResult.failed(f"Coinbase API error: {response.status_code}")
+    async def _fetch_coingecko(self) -> Decimal:
+        client = await self._get_client()
+        response = await client.get(
+            "https://api.coingecko.com/api/v3/simple/price",
+            params={"ids": "bitcoin", "vs_currencies": "usd"},
+        )
+        response.raise_for_status()
+        data = response.json()
+        if "bitcoin" in data and "usd" in data["bitcoin"]:
+            return Decimal(str(data["bitcoin"]["usd"]))
+        raise ValueError("CoinGecko response missing bitcoin.usd")
 
-            data = response.json()
+    async def _fetch_coinbase(self) -> Decimal:
+        client = await self._get_client()
+        response = await client.get("https://api.coinbase.com/v2/prices/BTC-USD/spot")
+        response.raise_for_status()
+        data = response.json()
+        if "data" in data and "amount" in data["data"]:
+            return Decimal(str(data["data"]["amount"]))
+        raise ValueError("Coinbase response missing data.amount")
 
-            if "data" in data and "amount" in data["data"]:
-                amount = data["data"]["amount"]
-                price = Decimal(str(amount))
-                return PriceResult.succeeded(price, "coinbase")
+    async def _fetch_kraken(self) -> Decimal:
+        client = await self._get_client()
+        response = await client.get(
+            "https://api.kraken.com/0/public/Ticker",
+            params={"pair": "XBTUSD"},
+        )
+        response.raise_for_status()
+        data = response.json()
 
-            return PriceResult.failed("BTC/USD not found in Coinbase response")
+        errors = data.get("error") or []
+        if errors:
+            raise ValueError(f"Kraken error: {errors[0]}")
 
-        except httpx.RequestError as e:
-            logger.debug(f"Coinbase price fetch failed: {e}")
-            return PriceResult.failed(f"Coinbase request error: {e!s}")
-        except Exception as e:
-            logger.debug(f"Coinbase price parse failed: {e}")
-            return PriceResult.failed(f"Coinbase parse error: {e!s}")
+        result = data.get("result") or {}
+        # Pair key is typically "XXBTZUSD" but may vary.
+        for pair_data in result.values():
+            close = pair_data.get("c")
+            if isinstance(close, list) and close:
+                return Decimal(str(close[0]))
+
+        raise ValueError("Kraken response missing close price")
 
 
-# Module-level singleton for convenience
+# Module-level singleton for convenience.
 _default_service: PriceService | None = None
 
 
 def get_price_service() -> PriceService:
-    """
-    Get the default price service singleton.
-
-    Returns:
-        PriceService instance
-    """
+    """Get the default price service singleton."""
     global _default_service
     if _default_service is None:
         _default_service = PriceService()
@@ -359,39 +307,15 @@ def get_price_service() -> PriceService:
 
 
 async def get_btc_price() -> Decimal:
-    """
-    Get current BTC/USD price using the default service.
-
-    Returns:
-        BTC/USD price
-    """
-    service = get_price_service()
-    return await service.get_btc_price()
+    """Get current BTC/USD price using the default service."""
+    return await get_price_service().get_btc_price()
 
 
 async def sats_to_usd(sats: int) -> Decimal:
-    """
-    Convert satoshis to USD using the default service.
-
-    Args:
-        sats: Amount in satoshis
-
-    Returns:
-        USD value rounded to 2 decimal places
-    """
-    service = get_price_service()
-    return await service.sats_to_usd(sats)
+    """Convert satoshis to USD using the default service."""
+    return await get_price_service().sats_to_usd(sats)
 
 
 async def usd_to_sats(usd: Decimal | float | int) -> int:
-    """
-    Convert USD to satoshis using the default service.
-
-    Args:
-        usd: Amount in USD
-
-    Returns:
-        Equivalent amount in satoshis
-    """
-    service = get_price_service()
-    return await service.usd_to_sats(usd)
+    """Convert USD to satoshis using the default service."""
+    return await get_price_service().usd_to_sats(usd)

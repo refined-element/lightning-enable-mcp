@@ -38,8 +38,8 @@ from .l402_client import L402Client, L402Error, L402Challenge, L402Token
 from .nwc_wallet import NWCWallet, NWCError, NWCConfig
 from .price_service import (
     PriceService,
-    PriceServiceError,
-    PriceResult,
+    PriceSnapshot,
+    PriceUnavailableError,
     get_price_service,
     get_btc_price,
     sats_to_usd,
@@ -89,8 +89,8 @@ __all__ = [
     "get_configuration",
     # Price Service
     "PriceService",
-    "PriceServiceError",
-    "PriceResult",
+    "PriceSnapshot",
+    "PriceUnavailableError",
     "get_price_service",
     "get_btc_price",
     "sats_to_usd",

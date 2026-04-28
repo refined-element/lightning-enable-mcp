@@ -43,16 +43,33 @@ public static class GetBudgetStatusTool
             var config = budgetService.GetUserConfiguration();
             var runtimeConfig = budgetService.GetConfig();
 
-            // Get current BTC price for display
-            decimal btcPrice = 100000m; // fallback
+            // Get current BTC price for display. Use the async fresh-fetch path
+            // so we don't surface stale numbers; on price-source failure, expose
+            // the error on the response rather than crashing or guessing.
+            decimal? btcPrice = null;
+            string priceSource = "unavailable";
+            string? priceError = null;
+
             if (priceService != null)
             {
-                btcPrice = priceService.GetCachedBtcPrice();
+                try
+                {
+                    btcPrice = await priceService.GetBtcPriceAsync(cancellationToken);
+                    var snapshot = priceService.GetLastSnapshot();
+                    if (snapshot != null)
+                    {
+                        priceSource = snapshot.Source;
+                    }
+                }
+                catch (PriceUnavailableException ex)
+                {
+                    priceError = ex.Message;
+                }
             }
 
-            // Convert session spent to USD
+            // Convert session spent to USD when we have a price.
             decimal sessionSpentUsd = 0;
-            if (priceService != null && runtimeConfig.SessionSpent > 0)
+            if (priceService != null && runtimeConfig.SessionSpent > 0 && btcPrice.HasValue)
             {
                 sessionSpentUsd = await priceService.SatsToUsdAsync(runtimeConfig.SessionSpent, cancellationToken);
             }
@@ -67,7 +84,8 @@ public static class GetBudgetStatusTool
                 currentPrice = new
                 {
                     btcUsd = btcPrice,
-                    source = "cached"
+                    source = priceSource,
+                    error = priceError
                 },
                 tiers = new
                 {

@@ -12,7 +12,7 @@
 
     <!-- NuGet Package Metadata -->
     <PackageId>LightningEnable.Mcp</PackageId>
-    <Version>1.12.3</Version>
+    <Version>1.12.4</Version>
     <AssemblyVersion>1.9.0.0</AssemblyVersion>
     <FileVersion>1.9.0.0</FileVersion>
     <Authors>Lightning Enable</Authors>
@@ -24,7 +24,7 @@
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <!-- <PackageIcon>icon.png</PackageIcon> -->
 
-    <PackageReleaseNotes>v1.12.3: Discovery + distribution improvements. Smithery.ai manifest added to the repo root so the server auto-lists on Cursor / VS Code / Claude Desktop "Add MCP" flows. Docker Hub description now auto-populated from the repo README on each release. No .NET code changes; the companion Python package in this release switches `__version__` to derive from package metadata.</PackageReleaseNotes>
+    <PackageReleaseNotes>v1.12.4: Price service rewrite for budget accuracy. Replaces a hardcoded $100,000 fallback (which silently mis-evaluated USD budgets when CoinGecko/Coinbase fetches failed) with a parallel multi-source fetch from CoinGecko, Coinbase, and Kraken — first success wins. 60-second cache, structured logging on every attempt, and a fail-loud PriceUnavailableException when every source fails (no fake fallback price). Mirrors the same change in the Python package.</PackageReleaseNotes>
 
     <!-- MIT License -->
     <PackageLicenseExpression>MIT</PackageLicenseExpression>

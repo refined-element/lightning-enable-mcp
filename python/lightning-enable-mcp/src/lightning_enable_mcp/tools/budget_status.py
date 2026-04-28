@@ -47,8 +47,25 @@ async def get_budget_status(
                 "hint": "Budget service is initialized on first use. Try making a payment first."
             })
 
+    # Trigger a fresh BTC price fetch so the displayed price isn't stale.
+    # If the price service raises, get_status() falls back to "unavailable"
+    # and the response surfaces the error rather than guessing.
+    price_error: str | None = None
+    try:
+        from ..price_service import get_price_service, PriceUnavailableError
+        try:
+            await get_price_service().get_btc_price()
+        except PriceUnavailableError as ex:
+            price_error = str(ex)
+            logger.warning("Could not refresh BTC price for budget status: %s", ex)
+    except Exception as ex:  # pragma: no cover - defensive
+        logger.exception("Unexpected error refreshing BTC price")
+        price_error = sanitize_error(str(ex))
+
     try:
         status = budget_service.get_status()
+        if price_error and isinstance(status.get("price"), dict):
+            status["price"]["error"] = price_error
         return json.dumps({
             "success": True,
             **status,

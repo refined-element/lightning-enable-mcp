@@ -239,10 +239,12 @@ class BudgetService:
         if amount_sats < 0:
             raise ValueError("Amount cannot be negative")
 
-        # Use cached price for synchronous update
+        # Use last-known cached price for synchronous USD tracking. If no
+        # successful fetch has happened yet (cached_btc_price == 0), USD
+        # tracking starts later — never substitute a fake number.
         btc_price = self._price_service.get_cached_btc_price()
         btc = Decimal(amount_sats) / Decimal("100000000")
-        amount_usd = round(btc * btc_price, 2)
+        amount_usd = round(btc * btc_price, 2) if btc_price > 0 else Decimal("0")
 
         self._session_spent_sats += amount_sats
         self._session_spent_usd += amount_usd
@@ -295,7 +297,8 @@ class BudgetService:
             Dict with complete budget status information.
         """
         config = self._config_service.configuration
-        btc_price = self._price_service.get_cached_btc_price()
+        snapshot = self._price_service.get_last_snapshot()
+        btc_price = snapshot.btc_usd if snapshot else Decimal("0")
 
         # Calculate remaining budget
         session_limit_usd = config.limits.max_per_session or Decimal("999999999")
@@ -331,8 +334,9 @@ class BudgetService:
                 "cooldownActive": not self._is_cooldown_elapsed(),
             },
             "price": {
-                "btcUsd": float(btc_price),
-                "source": self._price_service.get_cache_source() or "cached",
+                "btcUsd": float(btc_price) if btc_price > 0 else None,
+                "source": snapshot.source if snapshot else "unavailable",
+                "fetchedAt": snapshot.fetched_at.isoformat() if snapshot else None,
             },
             "note": "Configuration is READ-ONLY. Edit ~/.lightning-enable/config.json to change limits.",
         }

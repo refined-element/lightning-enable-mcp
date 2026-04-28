@@ -188,3 +188,42 @@ async def test_usd_to_sats_uses_fresh_price():
 
     assert sats == 100_000
     await service.close()
+
+
+@pytest.mark.asyncio
+async def test_all_fail_message_includes_per_source_reasons():
+    """The PriceUnavailableError message must enumerate why each source failed."""
+    service, _ = _build_service()  # all default to 503 failure
+
+    with pytest.raises(PriceUnavailableError) as exc_info:
+        await service.get_btc_price()
+
+    msg = str(exc_info.value)
+    assert "CoinGecko" in msg
+    assert "Coinbase" in msg
+    assert "Kraken" in msg
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_propagates_caller_cancellation():
+    """
+    Caller cancellation must surface as asyncio.CancelledError, not be silently
+    turned into a phantom PriceUnavailableError.
+    """
+    import asyncio as aio
+
+    async def slow_handler(request: httpx.Request) -> httpx.Response:
+        await aio.sleep(10)
+        return httpx.Response(200)
+
+    service = PriceService()
+    service._client = httpx.AsyncClient(transport=httpx.MockTransport(slow_handler), timeout=30.0)
+
+    task = aio.create_task(service.get_btc_price())
+    await aio.sleep(0.05)  # let the task start
+    task.cancel()
+
+    with pytest.raises(aio.CancelledError):
+        await task
+    await service.close()

@@ -7,7 +7,7 @@ namespace LightningEnable.Mcp.Tests.Services;
 public class PriceServiceTests
 {
     [Fact]
-    public async Task GetBtcPriceAsync_ReturnsCoinGeckoPrice_WhenAllSourcesSucceed()
+    public async Task GetBtcPriceAsync_ReturnsValidPrice_WhenAllSourcesSucceed()
     {
         var handler = new FakeHttpHandler();
         handler.SetCoinGeckoResponse(76800m);
@@ -150,6 +150,46 @@ public class PriceServiceTests
         sats.Should().Be(100_000);
     }
 
+    [Fact]
+    public async Task GetBtcPriceAsync_PropagatesCallerCancellation_AsOperationCanceledException()
+    {
+        // Caller cancellation must surface as OperationCanceledException, not
+        // be silently turned into a phantom PriceUnavailableException.
+        var handler = new FakeHttpHandler();
+        handler.SetSlowResponseForAllSources(TimeSpan.FromSeconds(10));
+
+        using var http = new HttpClient(handler);
+        var service = new PriceService(http);
+
+        using var cts = new CancellationTokenSource();
+        var task = service.GetBtcPriceAsync(cts.Token);
+        cts.Cancel();
+
+        var act = async () => await task;
+        await act.Should().ThrowAsync<OperationCanceledException>();
+    }
+
+    [Fact]
+    public async Task GetBtcPriceAsync_AllFailMessage_IncludesPerSourceReasons()
+    {
+        // The PriceUnavailableException must enumerate why each source failed,
+        // so operators can debug without a separate log dive.
+        var handler = new FakeHttpHandler();
+        handler.SetCoinGeckoFailure();
+        handler.SetCoinbaseFailure();
+        handler.SetKrakenFailure();
+
+        using var http = new HttpClient(handler);
+        var service = new PriceService(http);
+
+        var act = async () => await service.GetBtcPriceAsync();
+
+        var ex = await act.Should().ThrowAsync<PriceUnavailableException>();
+        ex.Which.Message.Should().Contain("CoinGecko");
+        ex.Which.Message.Should().Contain("Coinbase");
+        ex.Which.Message.Should().Contain("Kraken");
+    }
+
     // ── Test infrastructure ─────────────────────────────────────────────────
 
     private sealed class FakeHttpHandler : HttpMessageHandler
@@ -190,29 +230,41 @@ public class PriceServiceTests
 
         public void SetKrakenFailure() => _krakenFail = true;
 
-        protected override Task<HttpResponseMessage> SendAsync(
+        public void SetSlowResponseForAllSources(TimeSpan delay)
+        {
+            _slowDelay = delay;
+        }
+
+        private TimeSpan? _slowDelay;
+
+        protected override async Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request,
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
+            if (_slowDelay.HasValue)
+            {
+                await Task.Delay(_slowDelay.Value, cancellationToken);
+            }
+
             var url = request.RequestUri!.ToString();
             if (url.Contains("coingecko"))
             {
                 CoinGeckoCallCount++;
-                return Respond(_coingeckoBody, _coingeckoFail);
+                return await Respond(_coingeckoBody, _coingeckoFail);
             }
             if (url.Contains("coinbase"))
             {
                 CoinbaseCallCount++;
-                return Respond(_coinbaseBody, _coinbaseFail);
+                return await Respond(_coinbaseBody, _coinbaseFail);
             }
             if (url.Contains("kraken"))
             {
                 KrakenCallCount++;
-                return Respond(_krakenBody, _krakenFail);
+                return await Respond(_krakenBody, _krakenFail);
             }
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound));
+            return new HttpResponseMessage(HttpStatusCode.NotFound);
         }
 
         private static Task<HttpResponseMessage> Respond(string? body, bool fail)

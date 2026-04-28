@@ -120,53 +120,70 @@ public class PriceService : IPriceService
     public PriceSnapshot? GetLastSnapshot() => _cached;
 
     /// <summary>
-    /// Fires CoinGecko, Coinbase, and Kraken in parallel and returns the first
-    /// successful result. Throws PriceUnavailableException if all fail.
+    /// One source's outcome: either a successful snapshot, or a short
+    /// human-readable reason it failed (used to enrich the
+    /// PriceUnavailableException when every source fails).
     /// </summary>
-    private async Task<PriceSnapshot> FetchFirstSuccessfulAsync(CancellationToken cancellationToken)
-    {
-        using var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+    private sealed record FetchOutcome(PriceSnapshot? Snapshot, string? FailureReason);
 
-        var tasks = new List<Task<PriceSnapshot?>>
+    /// <summary>
+    /// Fires CoinGecko, Coinbase, and Kraken in parallel and returns the first
+    /// successful result. Throws OperationCanceledException if the caller
+    /// cancels, or PriceUnavailableException if every source fails on its own.
+    /// </summary>
+    private async Task<PriceSnapshot> FetchFirstSuccessfulAsync(CancellationToken callerToken)
+    {
+        using var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(callerToken);
+
+        var tasks = new List<Task<FetchOutcome>>
         {
-            TryFetchAsync("CoinGecko", FetchCoinGeckoAsync, attemptCts.Token),
-            TryFetchAsync("Coinbase",  FetchCoinbaseAsync,  attemptCts.Token),
-            TryFetchAsync("Kraken",    FetchKrakenAsync,    attemptCts.Token)
+            TryFetchAsync("CoinGecko", FetchCoinGeckoAsync, attemptCts.Token, callerToken),
+            TryFetchAsync("Coinbase",  FetchCoinbaseAsync,  attemptCts.Token, callerToken),
+            TryFetchAsync("Kraken",    FetchKrakenAsync,    attemptCts.Token, callerToken)
         };
 
-        var failures = new List<string>();
+        var failures = new List<string>(tasks.Count);
         while (tasks.Count > 0)
         {
             var completed = await Task.WhenAny(tasks);
             tasks.Remove(completed);
 
-            var snapshot = await completed;
-            if (snapshot != null)
+            var outcome = await completed;
+            if (outcome.Snapshot != null)
             {
                 // First success wins — cancel the rest to free sockets.
                 attemptCts.Cancel();
                 _logger?.LogInformation(
                     "BTC price fetched: ${Price} from {Source}",
-                    snapshot.BtcUsd,
-                    snapshot.Source);
-                return snapshot;
+                    outcome.Snapshot.BtcUsd,
+                    outcome.Snapshot.Source);
+                return outcome.Snapshot;
+            }
+            if (outcome.FailureReason != null)
+            {
+                failures.Add(outcome.FailureReason);
             }
         }
 
+        // If the caller cancelled, surface that — not a fake "all sources failed" error.
+        callerToken.ThrowIfCancellationRequested();
+
+        var detail = failures.Count > 0 ? string.Join("; ", failures) : "no source attempted";
         var message =
             "BTC price unavailable: CoinGecko, Coinbase, and Kraken all failed. " +
-            "Cannot evaluate budget safely.";
+            "Cannot evaluate budget safely. Details: " + detail;
         _logger?.LogError("{Message}", message);
         throw new PriceUnavailableException(message);
     }
 
-    private async Task<PriceSnapshot?> TryFetchAsync(
+    private async Task<FetchOutcome> TryFetchAsync(
         string source,
         Func<CancellationToken, Task<decimal>> fetch,
-        CancellationToken cancellationToken)
+        CancellationToken attemptToken,
+        CancellationToken callerToken)
     {
         var startedAt = DateTime.UtcNow;
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(attemptToken);
         timeoutCts.CancelAfter(PerSourceTimeout);
 
         try
@@ -174,37 +191,50 @@ public class PriceService : IPriceService
             var price = await fetch(timeoutCts.Token);
             if (price <= 0)
             {
+                var reason = $"{source}: returned non-positive value {price}";
                 _logger?.LogWarning(
                     "BTC price fetch from {Source} returned non-positive value {Price}",
                     source,
                     price);
-                return null;
+                return new FetchOutcome(null, reason);
             }
 
-            return new PriceSnapshot(price, source, DateTime.UtcNow);
+            return new FetchOutcome(new PriceSnapshot(price, source, DateTime.UtcNow), null);
         }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (callerToken.IsCancellationRequested)
         {
-            // Caller cancelled (a sibling source already succeeded) — not a failure.
-            return null;
+            // Caller cancelled the whole operation — propagate, do not silently
+            // turn user cancellation into "price unavailable".
+            throw;
         }
         catch (OperationCanceledException)
         {
-            _logger?.LogWarning(
-                "BTC price fetch from {Source} timed out after {ElapsedMs}ms",
-                source,
-                (DateTime.UtcNow - startedAt).TotalMilliseconds);
-            return null;
+            // Either a sibling source already won (attemptCts.Cancel) or this
+            // source hit its per-source timeout — not a failure to surface.
+            var elapsedMs = (DateTime.UtcNow - startedAt).TotalMilliseconds;
+            if (timeoutCts.IsCancellationRequested && !attemptToken.IsCancellationRequested)
+            {
+                var reason = $"{source}: timed out after {elapsedMs:F0}ms";
+                _logger?.LogWarning(
+                    "BTC price fetch from {Source} timed out after {ElapsedMs}ms",
+                    source,
+                    elapsedMs);
+                return new FetchOutcome(null, reason);
+            }
+            // Sibling already succeeded; this attempt being cancelled is fine.
+            return new FetchOutcome(null, null);
         }
         catch (Exception ex)
         {
+            var elapsedMs = (DateTime.UtcNow - startedAt).TotalMilliseconds;
+            var reason = $"{source}: {ex.GetType().Name} after {elapsedMs:F0}ms — {ex.Message}";
             _logger?.LogWarning(
                 ex,
                 "BTC price fetch from {Source} failed after {ElapsedMs}ms: {Message}",
                 source,
-                (DateTime.UtcNow - startedAt).TotalMilliseconds,
+                elapsedMs,
                 ex.Message);
-            return null;
+            return new FetchOutcome(null, reason);
         }
     }
 

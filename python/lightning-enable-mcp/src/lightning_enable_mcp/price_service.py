@@ -175,22 +175,27 @@ class PriceService:
     async def _fetch_first_successful(self) -> PriceSnapshot:
         """
         Fire CoinGecko, Coinbase, and Kraken in parallel; return the first
-        successful PriceSnapshot. Raise PriceUnavailableError if all fail.
+        successful PriceSnapshot. Raise PriceUnavailableError if all sources
+        fail (with each source's failure reason in the message).
+        Caller cancellation propagates as asyncio.CancelledError.
         """
         attempts: list[tuple[str, Callable[[], Awaitable[Decimal]]]] = [
             ("CoinGecko", self._fetch_coingecko),
             ("Coinbase", self._fetch_coinbase),
             ("Kraken", self._fetch_kraken),
         ]
-        tasks = {asyncio.create_task(self._try(source, fetch)): source for source, fetch in attempts}
+        tasks = [asyncio.create_task(self._try(source, fetch)) for source, fetch in attempts]
 
         winner: PriceSnapshot | None = None
+        failures: list[str] = []
         try:
             for completed in asyncio.as_completed(tasks):
-                result = await completed
-                if result is not None:
-                    winner = result
+                snapshot, reason = await completed
+                if snapshot is not None:
+                    winner = snapshot
                     break
+                if reason is not None:
+                    failures.append(reason)
         finally:
             for task in tasks:
                 if not task.done():
@@ -210,9 +215,10 @@ class PriceService:
             )
             return winner
 
+        detail = "; ".join(failures) if failures else "no source attempted"
         message = (
             "BTC price unavailable: CoinGecko, Coinbase, and Kraken all failed. "
-            "Cannot evaluate budget safely."
+            f"Cannot evaluate budget safely. Details: {detail}"
         )
         logger.error(message)
         raise PriceUnavailableError(message)
@@ -221,34 +227,46 @@ class PriceService:
         self,
         source: str,
         fetch: Callable[[], Awaitable[Decimal]],
-    ) -> PriceSnapshot | None:
-        """Run a single source fetch with timing and error logging."""
+    ) -> tuple[PriceSnapshot | None, str | None]:
+        """
+        Run a single source fetch. Returns (snapshot, None) on success or
+        (None, failure_reason) on failure. Re-raises asyncio.CancelledError
+        so caller cancellation propagates rather than being silently turned
+        into a "price unavailable" error.
+        """
         started = time.monotonic()
         try:
             price = await fetch()
             elapsed_ms = (time.monotonic() - started) * 1000
             if price <= 0:
+                reason = f"{source}: returned non-positive value {price}"
                 logger.warning(
                     "BTC price fetch from %s returned non-positive value %s after %.1fms",
                     source, price, elapsed_ms,
                 )
-                return None
+                return None, reason
             logger.debug("BTC price fetched from %s: $%s in %.1fms", source, price, elapsed_ms)
-            return PriceSnapshot(
-                btc_usd=price,
-                source=source,
-                fetched_at=datetime.now(timezone.utc),
+            return (
+                PriceSnapshot(
+                    btc_usd=price,
+                    source=source,
+                    fetched_at=datetime.now(timezone.utc),
+                ),
+                None,
             )
         except asyncio.CancelledError:
-            # Sibling source already won — not a failure.
+            # Either the caller cancelled or a sibling source already won.
+            # Either way, propagate — never swallow cancellation into a
+            # phantom "price unavailable" error.
             raise
         except Exception as ex:
             elapsed_ms = (time.monotonic() - started) * 1000
+            reason = f"{source}: {type(ex).__name__} after {elapsed_ms:.0f}ms — {ex}"
             logger.warning(
                 "BTC price fetch from %s failed after %.1fms: %s",
                 source, elapsed_ms, ex,
             )
-            return None
+            return None, reason
 
     async def _fetch_coingecko(self) -> Decimal:
         client = await self._get_client()

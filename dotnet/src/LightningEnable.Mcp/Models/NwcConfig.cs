@@ -1,6 +1,25 @@
 namespace LightningEnable.Mcp.Models;
 
 /// <summary>
+/// Allowed values for <see cref="NwcConfig.Encryption"/>. Centralized so callers don't
+/// duplicate magic strings.
+/// </summary>
+public static class NwcEncryption
+{
+    public const string Nip04 = "nip04";
+    public const string Nip44V2 = "nip44_v2";
+
+    /// <summary>
+    /// Default outbound encryption scheme. NIP-04 is the wider-compatibility default —
+    /// Primal NWC, CoinOS, Mutiny, ZBD all silently drop NIP-44 v2 events. Wallets that
+    /// require NIP-44 v2 (notably Alby Hub) opt in via the <c>NWC_ENCRYPTION</c> env var.
+    /// </summary>
+    public const string Default = Nip04;
+
+    public static bool IsValid(string? value) => value == Nip04 || value == Nip44V2;
+}
+
+/// <summary>
 /// Configuration for Nostr Wallet Connect (NWC).
 /// Parsed from a nostr+walletconnect:// URI.
 /// </summary>
@@ -25,6 +44,20 @@ public record NwcConfig
     /// Optional LUD16 lightning address associated with this wallet.
     /// </summary>
     public string? Lud16 { get; init; }
+
+    /// <summary>
+    /// Outbound encryption scheme for NIP-47 requests sent to the wallet.
+    /// <list type="bullet">
+    ///   <item><c>"nip04"</c> (default) — widest compatibility. Required by Primal NWC, CoinOS, Mutiny, ZBD.
+    ///   These wallets accept the relay event but the wallet service silently drops events tagged
+    ///   <c>encryption=nip44_v2</c>, leading to a 30-second timeout with no response.</item>
+    ///   <item><c>"nip44_v2"</c> — required by some modern wallets like Alby Hub. Use this if your wallet
+    ///   never replies under the default.</item>
+    /// </list>
+    /// Inbound responses are auto-detected (NIP-04 by <c>?iv=</c> marker, NIP-44 v2 otherwise) regardless
+    /// of this setting. Override at runtime with the <c>NWC_ENCRYPTION</c> env var.
+    /// </summary>
+    public string Encryption { get; init; } = NwcEncryption.Default;
 
     /// <summary>
     /// Parses an NWC connection string into configuration.

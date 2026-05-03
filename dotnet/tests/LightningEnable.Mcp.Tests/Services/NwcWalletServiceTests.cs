@@ -474,4 +474,140 @@ public class NwcWalletServiceTests
 
     #endregion
 
+    #region Encryption-default + NWC_ENCRYPTION env-var override (PR fix)
+
+    private const string TestNwcUri =
+        "nostr+walletconnect://0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" +
+        "?relay=wss://relay.example.com" +
+        "&secret=fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+
+    [Fact]
+    public void NwcConfig_DefaultEncryption_IsNip04()
+    {
+        // Default outbound encryption should be NIP-04 — widest wallet compatibility.
+        // Primal/CoinOS/Mutiny silently drop NIP-44 v2 events; the previous default
+        // of nip44_v2 caused 30s "Failed to connect to NWC relay" failures with no
+        // actual connect failure.
+        var config = LightningEnable.Mcp.Models.NwcConfig.Parse(TestNwcUri);
+
+        config.Encryption.Should().Be("nip04");
+        LightningEnable.Mcp.Models.NwcEncryption.Default.Should().Be("nip04");
+    }
+
+    [Fact]
+    public void NwcEncryption_IsValid_AcceptsKnownSchemesOnly()
+    {
+        LightningEnable.Mcp.Models.NwcEncryption.IsValid("nip04").Should().BeTrue();
+        LightningEnable.Mcp.Models.NwcEncryption.IsValid("nip44_v2").Should().BeTrue();
+        LightningEnable.Mcp.Models.NwcEncryption.IsValid("nip44").Should().BeFalse("nip44_v2 is the only NIP-44 variant we support");
+        LightningEnable.Mcp.Models.NwcEncryption.IsValid("").Should().BeFalse();
+        LightningEnable.Mcp.Models.NwcEncryption.IsValid(null).Should().BeFalse();
+    }
+
+    [Fact]
+    public void NwcWalletService_ConstructedWithNip44EnvVar_HonorsOverride()
+    {
+        // Explicit opt-in for users with wallets that require NIP-44 v2 (Alby Hub).
+        var prevConn = Environment.GetEnvironmentVariable("NWC_CONNECTION_STRING");
+        var prevEnc = Environment.GetEnvironmentVariable("NWC_ENCRYPTION");
+        try
+        {
+            Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", TestNwcUri);
+            Environment.SetEnvironmentVariable("NWC_ENCRYPTION", "nip44_v2");
+
+            using var http = new HttpClient();
+            var svc = new LightningEnable.Mcp.Services.NwcWalletService(http);
+            svc.GetConfig()!.Encryption.Should().Be("nip44_v2");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", prevConn);
+            Environment.SetEnvironmentVariable("NWC_ENCRYPTION", prevEnc);
+        }
+    }
+
+    [Fact]
+    public void NwcWalletService_ConstructedWithInvalidEncryptionEnvVar_FallsBackToDefault()
+    {
+        // Typos must not silently disable the wallet — fall back to the documented
+        // default (nip04) and warn via stderr (verified by no exception).
+        var prevConn = Environment.GetEnvironmentVariable("NWC_CONNECTION_STRING");
+        var prevEnc = Environment.GetEnvironmentVariable("NWC_ENCRYPTION");
+        try
+        {
+            Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", TestNwcUri);
+            Environment.SetEnvironmentVariable("NWC_ENCRYPTION", "nip-something-bogus");
+
+            using var http = new HttpClient();
+            var svc = new LightningEnable.Mcp.Services.NwcWalletService(http);
+            svc.GetConfig()!.Encryption.Should().Be("nip04",
+                "an invalid override must fall back to the default rather than silently ship a broken value");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", prevConn);
+            Environment.SetEnvironmentVariable("NWC_ENCRYPTION", prevEnc);
+        }
+    }
+
+    [Fact]
+    public void NwcWalletService_ConstructedWithoutEncryptionEnvVar_UsesDefault()
+    {
+        var prevConn = Environment.GetEnvironmentVariable("NWC_CONNECTION_STRING");
+        var prevEnc = Environment.GetEnvironmentVariable("NWC_ENCRYPTION");
+        try
+        {
+            Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", TestNwcUri);
+            Environment.SetEnvironmentVariable("NWC_ENCRYPTION", null);
+
+            using var http = new HttpClient();
+            var svc = new LightningEnable.Mcp.Services.NwcWalletService(http);
+            svc.GetConfig()!.Encryption.Should().Be("nip04");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", prevConn);
+            Environment.SetEnvironmentVariable("NWC_ENCRYPTION", prevEnc);
+        }
+    }
+
+    [Fact]
+    public async Task GetBalanceAsync_OnConnectFailure_BubblesSpecificFailureKind()
+    {
+        // Regression test for the "Failed to connect to NWC relay" string that
+        // collapsed every failure mode into a single misleading message.
+        // The new contract: error message must include the failure kind so users
+        // can distinguish connect failures from no-response (encryption mismatch)
+        // from cancellations.
+        const string unreachable =
+            "nostr+walletconnect://0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" +
+            "?relay=ws://127.0.0.1:1" + // port 1 is reserved/unbindable — connect must fail
+            "&secret=fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+
+        var prevConn = Environment.GetEnvironmentVariable("NWC_CONNECTION_STRING");
+        try
+        {
+            Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", unreachable);
+
+            using var http = new HttpClient();
+            var svc = new LightningEnable.Mcp.Services.NwcWalletService(http);
+
+            // Cap the wait so the test stays fast; ConnectAsync should throw quickly.
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            var act = async () => await svc.GetBalanceAsync(cts.Token);
+
+            var ex = await act.Should().ThrowAsync<InvalidOperationException>();
+            ex.Which.Message.Should().Contain("NWC request failed",
+                "the new error contract prefixes failures with 'NWC request failed (<kind>)'");
+            ex.Which.Message.Should().Contain("connect_failed",
+                "an unreachable relay should classify as connect_failed, not the generic old 'Failed to connect to NWC relay'");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", prevConn);
+        }
+    }
+
+    #endregion
+
 }

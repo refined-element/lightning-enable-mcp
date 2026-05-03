@@ -72,6 +72,25 @@ public class NwcWalletService : IWalletService, IDisposable
 
         if (_config != null)
         {
+            // Outbound encryption override. NWC_ENCRYPTION=nip44_v2 lets users with
+            // wallets that require NIP-44 v2 (Alby Hub) opt out of the NIP-04 default.
+            // Invalid values are ignored with a warning so a typo doesn't silently break
+            // requests on a previously-working wallet.
+            var encOverride = Environment.GetEnvironmentVariable("NWC_ENCRYPTION");
+            if (!string.IsNullOrWhiteSpace(encOverride))
+            {
+                var normalized = encOverride.Trim().ToLowerInvariant();
+                if (NwcEncryption.IsValid(normalized))
+                {
+                    _config = _config with { Encryption = normalized };
+                    Console.Error.WriteLine($"[NWC] Outbound encryption overridden via NWC_ENCRYPTION: {normalized}");
+                }
+                else
+                {
+                    Console.Error.WriteLine($"[NWC] Ignoring invalid NWC_ENCRYPTION='{encOverride}' (allowed: nip04, nip44_v2). Falling back to default '{NwcEncryption.Default}'.");
+                }
+            }
+
             // Derive secp256k1 key pair from secret
             var secretBytes = Convert.FromHexString(_config.Secret);
             if (ECPrivKey.TryCreate(secretBytes, out var privKey))
@@ -122,14 +141,25 @@ public class NwcWalletService : IWalletService, IDisposable
             DebugLog($"Payment hash from BOLT11: {(expectedPaymentHash != null ? Convert.ToHexString(expectedPaymentHash).ToLowerInvariant() : "PARSE_FAILED")}");
 
             DebugLog("Sending NWC request...");
-            var response = await SendNwcRequestAsync(request, cancellationToken, expectedPaymentHash);
+            var outcome = await SendNwcRequestAsync(request, cancellationToken, expectedPaymentHash);
 
-            if (response == null)
+            if (!outcome.Success)
             {
-                DebugLog("ERROR: No response from NWC");
-                return NwcPaymentResult.Failed("CONNECTION_ERROR", "Failed to connect to NWC relay");
+                DebugLog($"ERROR: {outcome.FormatFailure()}");
+                // Map structured failure kind to a stable error code so callers can
+                // discriminate (e.g. retry on no_response, abort on connect_failed).
+                var code = outcome.FailureKind switch
+                {
+                    FailKindConnect => "CONNECTION_ERROR",
+                    FailKindNoResponse => "NO_RESPONSE",
+                    FailKindCancelled => "CANCELLED",
+                    FailKindProtocol => "PROTOCOL_ERROR",
+                    _ => "ERROR"
+                };
+                return NwcPaymentResult.Failed(code, outcome.FormatFailure() ?? "Unknown NWC failure");
             }
 
+            var response = outcome.Response!;
             DebugLog($"Got response (result_type: {response["result_type"]?.GetValue<string>() ?? "unknown"})");
 
             // Check for error response
@@ -194,12 +224,18 @@ public class NwcWalletService : IWalletService, IDisposable
             ["params"] = new JsonObject()
         };
 
-        var response = await SendNwcRequestAsync(request, cancellationToken);
+        var outcome = await SendNwcRequestAsync(request, cancellationToken);
 
-        if (response == null)
+        if (!outcome.Success)
         {
-            throw new InvalidOperationException($"Failed to connect to NWC relay: {_config.RelayUrl}");
+            // Bubble the actual failure reason instead of collapsing every failure
+            // into a generic "Failed to connect" — that string was misleading because
+            // SendNwcRequestAsync reaches this code path on connect failure, no-response
+            // timeout, encryption mismatch, AND unexpected exceptions.
+            throw new InvalidOperationException(outcome.FormatFailure() ?? "Unknown NWC failure");
         }
+
+        var response = outcome.Response!;
 
         // Check for error
         var error = response["error"]?.AsObject();
@@ -249,12 +285,22 @@ public class NwcWalletService : IWalletService, IDisposable
 
             Console.Error.WriteLine($"[NWC] Creating invoice for {amountSats} sats...");
 
-            var response = await SendNwcRequestAsync(request, cancellationToken);
+            var outcome = await SendNwcRequestAsync(request, cancellationToken);
 
-            if (response == null)
+            if (!outcome.Success)
             {
-                return WalletInvoiceResult.Failed("CONNECTION_ERROR", "Failed to connect to NWC relay");
+                var code = outcome.FailureKind switch
+                {
+                    FailKindConnect => "CONNECTION_ERROR",
+                    FailKindNoResponse => "NO_RESPONSE",
+                    FailKindCancelled => "CANCELLED",
+                    FailKindProtocol => "PROTOCOL_ERROR",
+                    _ => "ERROR"
+                };
+                return WalletInvoiceResult.Failed(code, outcome.FormatFailure() ?? "Unknown NWC failure");
             }
+
+            var response = outcome.Response!;
 
             var error = response["error"]?.AsObject();
             if (error != null)
@@ -356,32 +402,86 @@ public class NwcWalletService : IWalletService, IDisposable
         }
     }
 
-    private async Task<JsonObject?> SendNwcRequestAsync(JsonObject request, CancellationToken cancellationToken, byte[]? expectedPaymentHash = null)
+    /// <summary>
+    /// Outcome of an NWC request round-trip. Carries either a successful response or a
+    /// structured failure reason (kind + detail) so callers can surface the actual cause
+    /// instead of collapsing every failure into a generic "connect failed" message.
+    /// </summary>
+    internal sealed record NwcSendOutcome(JsonObject? Response, string? FailureKind, string? FailureDetail)
+    {
+        public bool Success => Response != null;
+        public static NwcSendOutcome Ok(JsonObject response) => new(response, null, null);
+        public static NwcSendOutcome Fail(string kind, string detail) => new(null, kind, detail);
+
+        /// <summary>
+        /// Renders this outcome as a user-facing message suitable for an error string.
+        /// Returns null if the outcome was successful.
+        /// </summary>
+        public string? FormatFailure() =>
+            Success ? null : $"NWC request failed ({FailureKind}): {FailureDetail}";
+    }
+
+    // Failure-kind constants — used by FormatFailure() and asserted by tests so we
+    // don't drift the user-facing error contract.
+    internal const string FailKindConnect = "connect_failed";
+    internal const string FailKindNoResponse = "no_response";
+    internal const string FailKindCancelled = "cancelled";
+    internal const string FailKindProtocol = "protocol_error";
+    internal const string FailKindUnknown = "unknown";
+
+    private async Task<NwcSendOutcome> SendNwcRequestAsync(JsonObject request, CancellationToken cancellationToken, byte[]? expectedPaymentHash = null)
     {
         if (_config == null || _privateKey == null || _publicKey == null || _myPubkeyHex == null)
-            return null;
+            return NwcSendOutcome.Fail(FailKindUnknown, "NWC connection string not configured");
 
         // Extract the method from the request so we can filter responses by result_type
         var expectedResultType = request["method"]?.GetValue<string>();
-        Console.Error.WriteLine($"[NWC] Sending request, method: {expectedResultType}");
+        Console.Error.WriteLine($"[NWC] Sending request, method: {expectedResultType}, encryption: {_config.Encryption}");
 
         using var ws = new ClientWebSocket();
+        var relayUri = new Uri(_config.RelayUrl);
 
+        // Connect first; report a specific failure kind if the WS handshake itself fails.
+        // Separating connect from send/receive lets the caller distinguish "couldn't reach
+        // the relay" from "relay accepted us but the wallet never replied" — the latter
+        // is the most common silent-encryption-mismatch symptom.
         try
         {
-            // Connect to relay
-            var relayUri = new Uri(_config.RelayUrl);
             Console.Error.WriteLine($"[NWC] Connecting to: {relayUri}");
             await ws.ConnectAsync(relayUri, cancellationToken);
             Console.Error.WriteLine($"[NWC] Connected, state: {ws.State}");
+        }
+        catch (OperationCanceledException)
+        {
+            return NwcSendOutcome.Fail(FailKindCancelled, $"Cancelled before WebSocket connection to {relayUri} completed");
+        }
+        catch (Exception ex)
+        {
+            return NwcSendOutcome.Fail(FailKindConnect, $"WebSocket connection to {relayUri} failed: {ex.Message}");
+        }
 
+        try
+        {
             var createdAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             var requestJson = request.ToJsonString();
-            var tags = new JsonArray { new JsonArray { "p", _config.WalletPubkey }, new JsonArray { "encryption", "nip44_v2" } };
 
-            // Encrypt using NIP-44 v2 (modern wallets like Alby Hub require it)
+            // Encrypt outbound. Default is NIP-04 (widest wallet compatibility); users
+            // with wallets that require NIP-44 v2 opt in via NWC_ENCRYPTION=nip44_v2.
+            // Inbound auto-detects, so this only affects outbound.
             var walletPubkeyBytes = Convert.FromHexString(_config.WalletPubkey);
-            var content = EncryptNip44(requestJson, walletPubkeyBytes, _privateKey);
+            string content;
+            JsonArray tags;
+            if (_config.Encryption == NwcEncryption.Nip44V2)
+            {
+                content = EncryptNip44(requestJson, walletPubkeyBytes, _privateKey);
+                tags = new JsonArray { new JsonArray { "p", _config.WalletPubkey }, new JsonArray { "encryption", "nip44_v2" } };
+            }
+            else
+            {
+                content = EncryptNip04(requestJson, walletPubkeyBytes, _privateKey);
+                // No "encryption" tag for NIP-04 — that's the original NIP-47 default.
+                tags = new JsonArray { new JsonArray { "p", _config.WalletPubkey } };
+            }
 
             // Compute proper event ID as SHA256 of serialized event data
             var eventId = ComputeEventId(_myPubkeyHex, createdAt, 23194, tags, content);
@@ -529,7 +629,7 @@ public class NwcWalletService : IWalletService, IDisposable
                                                 Console.Error.WriteLine("[NWC] Preimage verified: SHA256(preimage) matches payment hash");
                                             }
                                         }
-                                        return responseObj;
+                                        return NwcSendOutcome.Ok(responseObj!);
                                     }
                                     else
                                     {
@@ -554,17 +654,27 @@ public class NwcWalletService : IWalletService, IDisposable
             }
 
             Console.Error.WriteLine("[NWC] Loop ended without response");
-            return null;
+            // Connect succeeded but the wallet never sent a matching reply within 30s.
+            // Most common cause is encryption mismatch — Primal/CoinOS silently drop
+            // events tagged "encryption=nip44_v2"; Alby Hub silently drops NIP-04.
+            // Tell the user how to opt into the other scheme.
+            var altScheme = _config.Encryption == NwcEncryption.Nip44V2 ? NwcEncryption.Nip04 : NwcEncryption.Nip44V2;
+            return NwcSendOutcome.Fail(FailKindNoResponse,
+                $"Wallet did not respond within 30s using {_config.Encryption} encryption. " +
+                $"Most common cause: encryption mismatch — try setting NWC_ENCRYPTION={altScheme} " +
+                $"if your wallet (e.g. Alby Hub for nip44_v2; Primal/CoinOS for nip04) requires the other scheme.");
         }
         catch (OperationCanceledException)
         {
             Console.Error.WriteLine("[NWC] Operation cancelled/timeout");
-            return null;
+            return NwcSendOutcome.Fail(FailKindCancelled,
+                $"Operation cancelled or timed out after sending request (encryption={_config.Encryption}).");
         }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"[NWC] Exception: {ex.Message}");
-            return null;
+            return NwcSendOutcome.Fail(FailKindProtocol,
+                $"Unexpected error after WebSocket connect (encryption={_config.Encryption}): {ex.Message}");
         }
         finally
         {

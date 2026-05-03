@@ -8,9 +8,10 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
@@ -38,6 +39,28 @@ class NWCPaymentError(NWCError):
     pass
 
 
+# Outbound NIP-47 encryption schemes. Default is NIP-04 because Primal NWC, CoinOS,
+# Mutiny, and ZBD silently drop events tagged ``encryption=nip44_v2`` — the relay
+# accepts the event but the wallet never replies, producing a 30-second timeout that
+# the old code reported as "Failed to connect to NWC relay" (misleading; the connect
+# actually succeeded). Wallets that require NIP-44 v2 (notably Alby Hub) opt in via
+# the ``NWC_ENCRYPTION`` env var.
+NWC_ENCRYPTION_NIP04 = "nip04"
+NWC_ENCRYPTION_NIP44_V2 = "nip44_v2"
+NWC_ENCRYPTION_DEFAULT = NWC_ENCRYPTION_NIP04
+_VALID_NWC_ENCRYPTIONS = {NWC_ENCRYPTION_NIP04, NWC_ENCRYPTION_NIP44_V2}
+
+
+# Failure-kind constants for NWC request outcomes. Mirrored from the .NET
+# implementation; tests assert these strings so the user-facing error contract
+# stays aligned across language ports.
+NWC_FAIL_CONNECT = "connect_failed"
+NWC_FAIL_NO_RESPONSE = "no_response"
+NWC_FAIL_CANCELLED = "cancelled"
+NWC_FAIL_PROTOCOL = "protocol_error"
+NWC_FAIL_UNKNOWN = "unknown"
+
+
 @dataclass
 class NWCConfig:
     """Parsed NWC connection configuration."""
@@ -45,6 +68,7 @@ class NWCConfig:
     wallet_pubkey: str
     relay_url: str
     secret: str
+    encryption: str = NWC_ENCRYPTION_DEFAULT
 
     @classmethod
     def from_uri(cls, uri: str) -> "NWCConfig":
@@ -463,8 +487,30 @@ class NWCWallet:
 
         Args:
             connection_string: nostr+walletconnect:// URI
+
+        Reads ``NWC_ENCRYPTION`` env var for outbound encryption override
+        (``nip04`` default; ``nip44_v2`` for wallets that require it, e.g. Alby Hub).
+        Invalid values fall back to the documented default with a warning so a typo
+        doesn't silently disable a previously-working wallet.
         """
         self.config = NWCConfig.from_uri(connection_string)
+
+        encryption_override = os.environ.get("NWC_ENCRYPTION")
+        if encryption_override:
+            normalized = encryption_override.strip().lower()
+            if normalized in _VALID_NWC_ENCRYPTIONS:
+                self.config = replace(self.config, encryption=normalized)
+                logger.info(
+                    "NWC outbound encryption overridden via NWC_ENCRYPTION: %s", normalized
+                )
+            else:
+                logger.warning(
+                    "Ignoring invalid NWC_ENCRYPTION=%r (allowed: nip04, nip44_v2). "
+                    "Falling back to default %r.",
+                    encryption_override,
+                    NWC_ENCRYPTION_DEFAULT,
+                )
+
         self._secret_key = bytes.fromhex(self.config.secret)
         self._pubkey = _get_pubkey(self._secret_key)
         self._ws: WebSocketClientProtocol | None = None
@@ -483,7 +529,10 @@ class NWCWallet:
             self._response_task = asyncio.create_task(self._handle_responses())
             logger.info(f"Connected to NWC relay: {self.config.relay_url}")
         except Exception as e:
-            raise NWCConnectionError(f"Failed to connect to relay: {e!s}") from e
+            raise NWCConnectionError(
+                f"NWC request failed ({NWC_FAIL_CONNECT}): "
+                f"WebSocket connection to {self.config.relay_url} failed: {e!s}"
+            ) from e
 
     async def disconnect(self) -> None:
         """Disconnect from the relay."""
@@ -568,18 +617,28 @@ class NWCWallet:
         if not self._connected or not self._ws:
             await self.connect()
 
-        # Create request content
+        # Create request content. Default outbound is NIP-04 (widest wallet
+        # compatibility); users with wallets that require NIP-44 v2 opt in via
+        # NWC_ENCRYPTION=nip44_v2. Inbound auto-detects so this only affects outbound.
         request = {"method": method, "params": params}
-        encrypted_content = _encrypt_nip44(
-            json.dumps(request), self._secret_key, self.config.wallet_pubkey
-        )
+        if self.config.encryption == NWC_ENCRYPTION_NIP44_V2:
+            encrypted_content = _encrypt_nip44(
+                json.dumps(request), self._secret_key, self.config.wallet_pubkey
+            )
+            tags = [["p", self.config.wallet_pubkey], ["encryption", "nip44_v2"]]
+        else:
+            encrypted_content = _encrypt_content(
+                json.dumps(request), self._secret_key, self.config.wallet_pubkey
+            )
+            # No "encryption" tag for NIP-04 — that's the original NIP-47 default.
+            tags = [["p", self.config.wallet_pubkey]]
 
         # Create event
         event = {
             "kind": 23194,  # NIP-47 request kind
             "pubkey": self._pubkey,
             "created_at": int(time.time()),
-            "tags": [["p", self.config.wallet_pubkey], ["encryption", "nip44_v2"]],
+            "tags": tags,
             "content": encrypted_content,
         }
 
@@ -615,7 +674,22 @@ class NWCWallet:
             response = await asyncio.wait_for(future, timeout=60.0)
             return response
         except asyncio.TimeoutError:
-            raise NWCError(f"Timeout waiting for {method} response")
+            # Improved error: tell the user the most common cause is an outbound
+            # encryption mismatch (Primal/CoinOS silently drop nip44_v2; Alby Hub
+            # silently drops nip04) and how to opt into the other scheme.
+            alt_scheme = (
+                NWC_ENCRYPTION_NIP04
+                if self.config.encryption == NWC_ENCRYPTION_NIP44_V2
+                else NWC_ENCRYPTION_NIP44_V2
+            )
+            raise NWCError(
+                f"NWC request failed ({NWC_FAIL_NO_RESPONSE}): wallet did not respond "
+                f"to '{method}' within 60s using {self.config.encryption} encryption. "
+                f"Most common cause: encryption mismatch — try setting "
+                f"NWC_ENCRYPTION={alt_scheme} if your wallet "
+                f"(e.g. Alby Hub for nip44_v2; Primal/CoinOS for nip04) requires "
+                f"the other scheme."
+            )
         finally:
             del self._pending_requests[event["id"]]
             # Unsubscribe

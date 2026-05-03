@@ -520,3 +520,98 @@ class TestHKDFExpand:
         t1 = hmac.new(prk, info + b"\x01", hashlib.sha256).digest()
         result = _hkdf_expand(prk, info, 32)
         assert result == t1
+
+
+# ---------- Encryption-default + NWC_ENCRYPTION env-var override (PR fix) ----------
+
+_TEST_NWC_URI = (
+    "nostr+walletconnect://"
+    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    "?relay=wss://relay.example.com"
+    "&secret=fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+)
+
+
+class TestNWCEncryptionDefault:
+    """
+    Default outbound encryption must be NIP-04 — the wider-compatibility default.
+    Primal/CoinOS/Mutiny silently drop ``encryption=nip44_v2`` events.
+    """
+
+    def test_nwcconfig_default_encryption_is_nip04(self):
+        from lightning_enable_mcp.nwc_wallet import NWC_ENCRYPTION_DEFAULT, NWCConfig
+
+        config = NWCConfig.from_uri(_TEST_NWC_URI)
+        assert config.encryption == "nip04"
+        assert NWC_ENCRYPTION_DEFAULT == "nip04"
+
+    @patch("lightning_enable_mcp.nwc_wallet._get_pubkey", return_value="aa" * 32)
+    def test_nwcwallet_constructed_without_env_var_uses_default(
+        self, _mock_pubkey, monkeypatch
+    ):
+        monkeypatch.delenv("NWC_ENCRYPTION", raising=False)
+        wallet = NWCWallet(_TEST_NWC_URI)
+        assert wallet.config.encryption == "nip04"
+
+    @patch("lightning_enable_mcp.nwc_wallet._get_pubkey", return_value="aa" * 32)
+    def test_nwcwallet_constructed_with_nip44_env_var_honors_override(
+        self, _mock_pubkey, monkeypatch
+    ):
+        monkeypatch.setenv("NWC_ENCRYPTION", "nip44_v2")
+        wallet = NWCWallet(_TEST_NWC_URI)
+        assert wallet.config.encryption == "nip44_v2"
+
+    @patch("lightning_enable_mcp.nwc_wallet._get_pubkey", return_value="aa" * 32)
+    def test_nwcwallet_constructed_with_uppercase_nip44_env_var_normalized(
+        self, _mock_pubkey, monkeypatch
+    ):
+        # Normalization defends against env-var copy-paste with stray casing.
+        monkeypatch.setenv("NWC_ENCRYPTION", "NIP44_V2")
+        wallet = NWCWallet(_TEST_NWC_URI)
+        assert wallet.config.encryption == "nip44_v2"
+
+    @patch("lightning_enable_mcp.nwc_wallet._get_pubkey", return_value="aa" * 32)
+    def test_nwcwallet_constructed_with_invalid_encryption_falls_back_to_default(
+        self, _mock_pubkey, monkeypatch, caplog
+    ):
+        # A typo must not silently disable the wallet — fall back to the documented
+        # default and log a warning. Regression guard for "user fat-fingers env var,
+        # wallet stops working with no clear cause".
+        monkeypatch.setenv("NWC_ENCRYPTION", "nip-something-bogus")
+        with caplog.at_level("WARNING"):
+            wallet = NWCWallet(_TEST_NWC_URI)
+        assert wallet.config.encryption == "nip04"
+        # Warning must mention the rejected value AND the allowed set.
+        assert any(
+            "nip-something-bogus" in rec.getMessage() for rec in caplog.records
+        )
+
+    @pytest.mark.asyncio
+    @patch("lightning_enable_mcp.nwc_wallet._get_pubkey", return_value="aa" * 32)
+    async def test_send_request_unreachable_relay_raises_with_specific_kind(
+        self, _mock_pubkey, monkeypatch
+    ):
+        # Regression test for the old "Failed to connect to relay" string that
+        # collapsed connect failure with no-response/encryption-mismatch into one
+        # opaque message. The new contract: connect failure includes the kind
+        # ``connect_failed`` so users (and the .NET parity tests) can distinguish
+        # it from the no-response timeout.
+        monkeypatch.delenv("NWC_ENCRYPTION", raising=False)
+        from lightning_enable_mcp.nwc_wallet import (
+            NWC_FAIL_CONNECT,
+            NWCConnectionError,
+            NWCWallet,
+        )
+
+        # Port 1 is reserved/unbindable, so connect MUST fail quickly.
+        unreachable_uri = (
+            "nostr+walletconnect://"
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            "?relay=ws://127.0.0.1:1"
+            "&secret=fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+        )
+        wallet = NWCWallet(unreachable_uri)
+        with pytest.raises(NWCConnectionError) as excinfo:
+            await wallet.connect()
+        assert NWC_FAIL_CONNECT in str(excinfo.value)
+        assert "127.0.0.1:1" in str(excinfo.value)

@@ -535,8 +535,16 @@ _TEST_NWC_URI = (
 
 class TestNWCEncryptionDefault:
     """
-    Default outbound encryption must be NIP-04 — the wider-compatibility default.
-    Primal/CoinOS/Mutiny silently drop ``encryption=nip44_v2`` events.
+    Default outbound encryption mode is ``auto`` — fetches the wallet's NIP-47
+    INFO event (kind 13194) on first request, picks the strongest advertised
+    scheme, caches the choice for the wallet instance's lifetime. Falls back
+    to ``nip04`` when no INFO event is available within the timeout — older
+    wallets that don't publish 13194 still work because NIP-04 is the original
+    NIP-47 default.
+
+    Class name is preserved from v1.12.5 (when the default was the literal
+    ``nip04``) for git-history continuity; the contract has shifted to
+    ``auto``-with-``nip04``-fallback per v1.12.6.
     """
 
     def test_nwcconfig_default_encryption_is_auto(self):

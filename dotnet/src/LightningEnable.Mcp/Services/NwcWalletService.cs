@@ -1377,7 +1377,9 @@ public class NwcWalletService : IWalletService, IDisposable
             // SemaphoreSlim is IDisposable — its underlying wait handle leaks if
             // we don't release it explicitly. Matters for long-running processes
             // that recreate the wallet service (e.g. config reload).
-            _autoResolveLock?.Dispose();
+            // Direct call (not null-conditional) since the field is
+            // non-nullable and eagerly initialised at construction.
+            _autoResolveLock.Dispose();
             _disposed = true;
         }
     }

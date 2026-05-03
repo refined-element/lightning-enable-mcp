@@ -98,10 +98,14 @@ public class NwcWalletService : IWalletService, IDisposable
 
         if (_config != null)
         {
-            // Outbound encryption override. NWC_ENCRYPTION=nip44_v2 lets users with
-            // wallets that require NIP-44 v2 (Alby Hub) opt out of the NIP-04 default.
-            // Invalid values are ignored with a warning so a typo doesn't silently break
-            // requests on a previously-working wallet.
+            // Outbound encryption override. Default is "auto" (per NwcEncryption.Default)
+            // which fetches the wallet's NIP-47 INFO event and picks the strongest
+            // advertised scheme. NWC_ENCRYPTION lets the operator pin to "auto",
+            // "nip04", or "nip44_v2" — useful when the INFO fetch is unreliable on
+            // a particular relay or when the wallet doesn't publish kind 13194 and
+            // the operator already knows which scheme it accepts. Invalid values are
+            // ignored with a warning so a typo doesn't silently break requests on a
+            // previously-working wallet.
             var encOverride = Environment.GetEnvironmentVariable("NWC_ENCRYPTION");
             if (!string.IsNullOrWhiteSpace(encOverride))
             {

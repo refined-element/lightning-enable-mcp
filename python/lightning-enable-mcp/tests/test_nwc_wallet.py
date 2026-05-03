@@ -693,6 +693,109 @@ class TestNWCEncryptionDefault:
             "explicit env-var pin must persist literally, not get rewritten to auto"
         )
 
+    # ---- _verify_nostr_event_signature tests (mirror the .NET coverage) ----
+
+    @staticmethod
+    def _build_signed_info_event(privkey_bytes, pubkey_hex, encryption_tag_value):
+        """Build a kind 13194 event with a real BIP340 signature."""
+        import time as time_mod
+        from lightning_enable_mcp.nwc_wallet import _compute_event_id, _sign_event
+
+        event = {
+            "kind": 13194,
+            "pubkey": pubkey_hex,
+            "created_at": int(time_mod.time()),
+            "tags": [["encryption", encryption_tag_value]],
+            "content": "Wallet capabilities: pay_invoice get_balance",
+        }
+        event["id"] = _compute_event_id(event)
+        event["sig"] = _sign_event(event, privkey_bytes)
+        return event
+
+    @staticmethod
+    def _new_keypair():
+        secp = pytest.importorskip("secp256k1")
+        privkey_bytes = b"\x01" + b"\x42" * 31  # deterministic but valid scalar
+        pk = secp.PrivateKey(privkey_bytes)
+        # x-only pubkey (drop the leading 02/03 byte from compressed form)
+        pubkey_hex = pk.pubkey.serialize()[1:33].hex()
+        return privkey_bytes, pubkey_hex
+
+    def test_verify_nostr_event_signature_valid_event_returns_true(self):
+        # Sign-then-verify baseline. Establishes that genuine events pass.
+        secp = pytest.importorskip("secp256k1")
+        from lightning_enable_mcp.nwc_wallet import _verify_nostr_event_signature
+
+        privkey, pubkey_hex = self._new_keypair()
+        event = self._build_signed_info_event(privkey, pubkey_hex, "nip04 nip44_v2")
+        assert _verify_nostr_event_signature(event) is True, (
+            "a correctly signed kind 13194 event must verify"
+        )
+
+    def test_verify_nostr_event_signature_tampered_encryption_tag_returns_false(
+        self,
+    ):
+        # The core security guarantee: a relay-injected event with a forged
+        # encryption tag (but otherwise looking like the wallet's INFO event)
+        # must fail verification. Tamper after signing — the recomputed event
+        # id won't match the claimed id.
+        secp = pytest.importorskip("secp256k1")
+        from lightning_enable_mcp.nwc_wallet import _verify_nostr_event_signature
+
+        privkey, pubkey_hex = self._new_keypair()
+        event = self._build_signed_info_event(privkey, pubkey_hex, "nip04 nip44_v2")
+        # Mutate the encryption tag to force a downgrade
+        for tag in event["tags"]:
+            if tag[0] == "encryption":
+                tag[1] = "nip04"
+                break
+        assert _verify_nostr_event_signature(event) is False, (
+            "tampering with the encryption tag must invalidate the signature"
+        )
+
+    def test_verify_nostr_event_signature_wrong_signature_returns_false(self):
+        # Substitute a signature from a different keypair — pubkey unchanged
+        # but sig signed by attacker's key. Must fail.
+        secp = pytest.importorskip("secp256k1")
+        from lightning_enable_mcp.nwc_wallet import (
+            _sign_event,
+            _verify_nostr_event_signature,
+        )
+
+        alice_priv, alice_pubkey_hex = self._new_keypair()
+        # Different keypair for Bob
+        bob_priv = b"\x02" + b"\x37" * 31
+        secp.PrivateKey(bob_priv)  # validate
+
+        event = self._build_signed_info_event(
+            alice_priv, alice_pubkey_hex, "nip04 nip44_v2"
+        )
+        # Replace sig with Bob's signature over the same event id
+        event["sig"] = _sign_event(event, bob_priv)
+        assert _verify_nostr_event_signature(event) is False, (
+            "a signature from the wrong key must not verify"
+        )
+
+    def test_verify_nostr_event_signature_malformed_fields_returns_false(self):
+        # Defensive checks — malformed/missing fields must not throw.
+        from lightning_enable_mcp.nwc_wallet import _verify_nostr_event_signature
+
+        assert _verify_nostr_event_signature({}) is False, "empty event"
+        assert (
+            _verify_nostr_event_signature(
+                {
+                    "id": "not-hex",
+                    "pubkey": "also-not-hex",
+                    "sig": "neither",
+                    "created_at": 1,
+                    "kind": 13194,
+                    "tags": [],
+                    "content": "",
+                }
+            )
+            is False
+        ), "malformed hex must not throw"
+
     def test_encrypt_content_returns_string_not_none(self):
         # Regression test for the dead-try fall-through bug: ``_encrypt_content``
         # used to return None when pycryptodome (``Crypto``) was importable, because

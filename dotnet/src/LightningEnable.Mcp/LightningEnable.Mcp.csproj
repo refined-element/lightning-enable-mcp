@@ -12,7 +12,7 @@
 
     <!-- NuGet Package Metadata -->
     <PackageId>LightningEnable.Mcp</PackageId>
-    <Version>1.12.5</Version>
+    <Version>1.12.6</Version>
     <AssemblyVersion>1.9.0.0</AssemblyVersion>
     <FileVersion>1.9.0.0</FileVersion>
     <Authors>Lightning Enable</Authors>
@@ -24,7 +24,7 @@
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <!-- <PackageIcon>icon.png</PackageIcon> -->
 
-    <PackageReleaseNotes>v1.12.5: NWC encryption default is now NIP-04 (was NIP-44 v2). The previous default broke Primal NWC, CoinOS, Mutiny, and ZBD wallets — those wallets silently dropped events tagged "encryption=nip44_v2", producing a 30-second timeout with the misleading error message "Failed to connect to NWC relay" (the connect actually succeeded; the wallet just never replied). Wallets that require NIP-44 v2 (notably Alby Hub) opt in via the new NWC_ENCRYPTION env var. Also overhauls error reporting in NwcWalletService: failures now bubble a structured kind (connect_failed, no_response, cancelled, protocol_error) and a specific detail string, including a hint to try the other encryption scheme on no-response. Mirrors the same change in the Python package.</PackageReleaseNotes>
+    <PackageReleaseNotes>v1.12.6: NWC outbound encryption is now auto-detected via the wallet's NIP-47 INFO event (kind 13194) — zero-config across Primal NWC, CoinOS, Mutiny, ZBD, Alby Hub, and any other spec-compliant wallet. On first request, fetches the wallet's INFO event, reads the encryption tag, picks the strongest advertised scheme (nip44_v2 if listed; nip04 otherwise), and caches the choice for the lifetime of the service instance. Falls back to nip04 if the INFO event isn't available within ~3 seconds. NWC_ENCRYPTION env var is preserved as an explicit override (auto/nip04/nip44_v2). Mirrors the same change in the Python package.</PackageReleaseNotes>
 
     <!-- MIT License -->
     <PackageLicenseExpression>MIT</PackageLicenseExpression>

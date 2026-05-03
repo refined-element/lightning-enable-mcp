@@ -535,16 +535,28 @@ _TEST_NWC_URI = (
 
 class TestNWCEncryptionDefault:
     """
-    Default outbound encryption must be NIP-04 — the wider-compatibility default.
-    Primal/CoinOS/Mutiny silently drop ``encryption=nip44_v2`` events.
+    Default outbound encryption mode is ``auto`` — fetches the wallet's NIP-47
+    INFO event (kind 13194) on first request, picks the strongest advertised
+    scheme, caches the choice for the wallet instance's lifetime. Falls back
+    to ``nip04`` when no INFO event is available within the timeout — older
+    wallets that don't publish 13194 still work because NIP-04 is the original
+    NIP-47 default.
+
+    Class name is preserved from v1.12.5 (when the default was the literal
+    ``nip04``) for git-history continuity; the contract has shifted to
+    ``auto``-with-``nip04``-fallback per v1.12.6.
     """
 
-    def test_nwcconfig_default_encryption_is_nip04(self):
+    def test_nwcconfig_default_encryption_is_auto(self):
+        # Default outbound mode is "auto" — fetches NIP-47 INFO event and picks
+        # the strongest advertised scheme. v1.12.5 used "nip04"; v1.12.6 promotes
+        # to "auto" so the wallet works zero-config across all spec-compliant
+        # implementations.
         from lightning_enable_mcp.nwc_wallet import NWC_ENCRYPTION_DEFAULT, NWCConfig
 
         config = NWCConfig.from_uri(_TEST_NWC_URI)
-        assert config.encryption == "nip04"
-        assert NWC_ENCRYPTION_DEFAULT == "nip04"
+        assert config.encryption == "auto"
+        assert NWC_ENCRYPTION_DEFAULT == "auto"
 
     @patch("lightning_enable_mcp.nwc_wallet._get_pubkey", return_value="aa" * 32)
     def test_nwcwallet_constructed_without_env_var_uses_default(
@@ -552,7 +564,7 @@ class TestNWCEncryptionDefault:
     ):
         monkeypatch.delenv("NWC_ENCRYPTION", raising=False)
         wallet = NWCWallet(_TEST_NWC_URI)
-        assert wallet.config.encryption == "nip04"
+        assert wallet.config.encryption == "auto"
 
     @patch("lightning_enable_mcp.nwc_wallet._get_pubkey", return_value="aa" * 32)
     def test_nwcwallet_constructed_with_nip44_env_var_honors_override(
@@ -581,11 +593,208 @@ class TestNWCEncryptionDefault:
         monkeypatch.setenv("NWC_ENCRYPTION", "nip-something-bogus")
         with caplog.at_level("WARNING"):
             wallet = NWCWallet(_TEST_NWC_URI)
-        assert wallet.config.encryption == "nip04"
+        assert wallet.config.encryption == "auto"
         # Warning must mention the rejected value AND the allowed set.
         assert any(
             "nip-something-bogus" in rec.getMessage() for rec in caplog.records
         )
+
+    @pytest.mark.parametrize(
+        "tag_value, expected",
+        [
+            ("nip04 nip44_v2", "nip44_v2"),
+            ("nip44_v2 nip04", "nip44_v2"),
+            ("nip04", "nip04"),
+            ("nip44_v2", "nip44_v2"),
+            ("nip04,nip44_v2", "nip44_v2"),  # tolerate comma separator
+            ("NIP04 NIP44_V2", "nip44_v2"),  # case-insensitive
+            ("nip04  nip44_v2", "nip44_v2"),  # double spaces
+            ("", "nip04"),  # empty → fallback
+            (None, "nip04"),  # null → fallback
+            ("nip99_alpha", "nip04"),  # unknown → fallback
+        ],
+    )
+    def test_pick_encryption_from_info_tag(self, tag_value, expected):
+        # Pure parsing test for the picker. Mirrors the .NET theory test —
+        # both ports must agree on the contract since they consume the same
+        # NIP-47 INFO event format.
+        from lightning_enable_mcp.nwc_wallet import _pick_encryption_from_info_tag
+
+        assert _pick_encryption_from_info_tag(tag_value) == expected
+
+    @pytest.mark.asyncio
+    @patch("lightning_enable_mcp.nwc_wallet._get_pubkey", return_value="aa" * 32)
+    async def test_resolve_auto_encryption_unreachable_relay_falls_back_to_nip04(
+        self, _mock_pubkey, monkeypatch
+    ):
+        # INFO-event fetch must NEVER throw on operational failures — a missing
+        # or unreachable relay falls back to nip04 so a real request can still
+        # go out. Without this guarantee, every call would fail with "auto" mode
+        # whenever the relay was flaky.
+        # Force "auto" mode regardless of what the dev/CI env has pinned —
+        # an env-var-pinned NWC_ENCRYPTION would skip the resolver entirely
+        # and break the test's intent.
+        monkeypatch.delenv("NWC_ENCRYPTION", raising=False)
+        unreachable_uri = (
+            "nostr+walletconnect://"
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            "?relay=ws://127.0.0.1:1"
+            "&secret=fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+        )
+        wallet = NWCWallet(unreachable_uri)
+        resolved = await wallet._resolve_auto_encryption()
+        assert resolved == "nip04", (
+            "INFO-event fetch must fall back to nip04 on operational failure, not throw"
+        )
+
+    @pytest.mark.asyncio
+    @patch("lightning_enable_mcp.nwc_wallet._get_pubkey", return_value="aa" * 32)
+    async def test_resolve_auto_encryption_caches_result(
+        self, _mock_pubkey, monkeypatch
+    ):
+        # Second call must be served from the cache without reaching the relay.
+        # Asserted by patching the fetcher and counting invocations rather than
+        # using wall-clock timing — busy CI agents can violate timing thresholds
+        # even when the cache is working correctly.
+        monkeypatch.delenv("NWC_ENCRYPTION", raising=False)
+        wallet = NWCWallet(_TEST_NWC_URI)
+
+        # Patch the fetcher on this wallet instance to a counting stub. We don't
+        # want to actually open a WebSocket — the resolver's contract is "fetch
+        # once, cache, return cached on subsequent calls".
+        call_count = 0
+
+        async def _stub_fetch():
+            nonlocal call_count
+            call_count += 1
+            return "nip04"
+
+        monkeypatch.setattr(wallet, "_fetch_encryption_from_info_event", _stub_fetch)
+
+        first = await wallet._resolve_auto_encryption()
+        assert call_count == 1, "first call must invoke the fetcher exactly once"
+
+        second = await wallet._resolve_auto_encryption()
+        assert call_count == 1, (
+            "second call must hit the cache — fetcher count must NOT increment"
+        )
+        assert second == first, "cached result must equal first resolution"
+
+    @patch("lightning_enable_mcp.nwc_wallet._get_pubkey", return_value="aa" * 32)
+    def test_explicit_env_var_pin_does_not_resolve_to_auto(
+        self, _mock_pubkey, monkeypatch
+    ):
+        # Explicit env-var pinning skips auto-detect entirely. The config holds
+        # the literal scheme, not "auto", so _send_request's fast path bypasses
+        # the INFO-event fetch.
+        monkeypatch.setenv("NWC_ENCRYPTION", "nip04")
+        wallet = NWCWallet(_TEST_NWC_URI)
+        assert wallet.config.encryption == "nip04", (
+            "explicit env-var pin must persist literally, not get rewritten to auto"
+        )
+
+    # ---- _verify_nostr_event_signature tests (mirror the .NET coverage) ----
+
+    @staticmethod
+    def _build_signed_info_event(privkey_bytes, pubkey_hex, encryption_tag_value):
+        """Build a kind 13194 event with a real BIP340 signature."""
+        import time as time_mod
+        from lightning_enable_mcp.nwc_wallet import _compute_event_id, _sign_event
+
+        event = {
+            "kind": 13194,
+            "pubkey": pubkey_hex,
+            "created_at": int(time_mod.time()),
+            "tags": [["encryption", encryption_tag_value]],
+            "content": "Wallet capabilities: pay_invoice get_balance",
+        }
+        event["id"] = _compute_event_id(event)
+        event["sig"] = _sign_event(event, privkey_bytes)
+        return event
+
+    @staticmethod
+    def _new_keypair():
+        pytest.importorskip("secp256k1")
+        privkey_bytes = b"\x01" + b"\x42" * 31  # deterministic but valid scalar
+        pk = secp.PrivateKey(privkey_bytes)
+        # x-only pubkey (drop the leading 02/03 byte from compressed form)
+        pubkey_hex = pk.pubkey.serialize()[1:33].hex()
+        return privkey_bytes, pubkey_hex
+
+    def test_verify_nostr_event_signature_valid_event_returns_true(self):
+        # Sign-then-verify baseline. Establishes that genuine events pass.
+        pytest.importorskip("secp256k1")
+        from lightning_enable_mcp.nwc_wallet import _verify_nostr_event_signature
+
+        privkey, pubkey_hex = self._new_keypair()
+        event = self._build_signed_info_event(privkey, pubkey_hex, "nip04 nip44_v2")
+        assert _verify_nostr_event_signature(event) is True, (
+            "a correctly signed kind 13194 event must verify"
+        )
+
+    def test_verify_nostr_event_signature_tampered_encryption_tag_returns_false(
+        self,
+    ):
+        # The core security guarantee: a relay-injected event with a forged
+        # encryption tag (but otherwise looking like the wallet's INFO event)
+        # must fail verification. Tamper after signing — the recomputed event
+        # id won't match the claimed id.
+        pytest.importorskip("secp256k1")
+        from lightning_enable_mcp.nwc_wallet import _verify_nostr_event_signature
+
+        privkey, pubkey_hex = self._new_keypair()
+        event = self._build_signed_info_event(privkey, pubkey_hex, "nip04 nip44_v2")
+        # Mutate the encryption tag to force a downgrade
+        for tag in event["tags"]:
+            if tag[0] == "encryption":
+                tag[1] = "nip04"
+                break
+        assert _verify_nostr_event_signature(event) is False, (
+            "tampering with the encryption tag must invalidate the signature"
+        )
+
+    def test_verify_nostr_event_signature_wrong_signature_returns_false(self):
+        # Substitute a signature from a different keypair — pubkey unchanged
+        # but sig signed by attacker's key. Must fail.
+        pytest.importorskip("secp256k1")
+        from lightning_enable_mcp.nwc_wallet import (
+            _sign_event,
+            _verify_nostr_event_signature,
+        )
+
+        alice_priv, alice_pubkey_hex = self._new_keypair()
+        # Different keypair for Bob
+        bob_priv = b"\x02" + b"\x37" * 31
+        secp.PrivateKey(bob_priv)  # validate
+
+        event = self._build_signed_info_event(
+            alice_priv, alice_pubkey_hex, "nip04 nip44_v2"
+        )
+        # Replace sig with Bob's signature over the same event id
+        event["sig"] = _sign_event(event, bob_priv)
+        assert _verify_nostr_event_signature(event) is False, (
+            "a signature from the wrong key must not verify"
+        )
+
+    def test_verify_nostr_event_signature_malformed_fields_returns_false(self):
+        # Defensive checks — malformed/missing fields must not throw.
+        from lightning_enable_mcp.nwc_wallet import _verify_nostr_event_signature
+
+        assert _verify_nostr_event_signature({}) is False, "empty event"
+        assert (
+            _verify_nostr_event_signature(
+                {
+                    "id": "not-hex",
+                    "pubkey": "also-not-hex",
+                    "sig": "neither",
+                    "created_at": 1,
+                    "kind": 13194,
+                    "tags": [],
+                    "content": "",
+                }
+            )
+            is False
+        ), "malformed hex must not throw"
 
     def test_encrypt_content_returns_string_not_none(self):
         # Regression test for the dead-try fall-through bug: ``_encrypt_content``
@@ -594,7 +803,7 @@ class TestNWCEncryptionDefault:
         # The post-fix invariant: the function always returns a NIP-04-shaped
         # string. Skipped when ``secp256k1`` (a C lib) isn't installed locally;
         # CI has it.
-        secp = pytest.importorskip("secp256k1")
+        pytest.importorskip("secp256k1")
         from lightning_enable_mcp.nwc_wallet import _encrypt_content
 
         secret = bytes.fromhex(

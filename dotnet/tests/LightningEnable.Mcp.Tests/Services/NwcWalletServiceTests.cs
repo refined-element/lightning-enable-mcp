@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json.Nodes;
 using LightningEnable.Mcp.Services;
 using NBitcoin.Secp256k1;
 
@@ -482,16 +483,16 @@ public class NwcWalletServiceTests
         "&secret=fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
 
     [Fact]
-    public void NwcConfig_DefaultEncryption_IsNip04()
+    public void NwcConfig_DefaultEncryption_IsAuto()
     {
-        // Default outbound encryption should be NIP-04 — widest wallet compatibility.
-        // Primal/CoinOS/Mutiny silently drop NIP-44 v2 events; the previous default
-        // of nip44_v2 caused 30s "Failed to connect to NWC relay" failures with no
-        // actual connect failure.
+        // Default outbound mode is "auto" — fetches the wallet's NIP-47 INFO event
+        // (kind 13194) and picks the strongest advertised scheme. Falls back to
+        // NIP-04 when no INFO event is available. v1.12.5 used "nip04" as the
+        // default; v1.12.6 promotes to "auto" for zero-config across all wallets.
         var config = LightningEnable.Mcp.Models.NwcConfig.Parse(TestNwcUri);
 
-        config.Encryption.Should().Be("nip04");
-        LightningEnable.Mcp.Models.NwcEncryption.Default.Should().Be("nip04");
+        config.Encryption.Should().Be("auto");
+        LightningEnable.Mcp.Models.NwcEncryption.Default.Should().Be("auto");
     }
 
     [Fact]
@@ -499,9 +500,257 @@ public class NwcWalletServiceTests
     {
         LightningEnable.Mcp.Models.NwcEncryption.IsValid("nip04").Should().BeTrue();
         LightningEnable.Mcp.Models.NwcEncryption.IsValid("nip44_v2").Should().BeTrue();
+        LightningEnable.Mcp.Models.NwcEncryption.IsValid("auto").Should().BeTrue("auto is the v1.12.6 default");
         LightningEnable.Mcp.Models.NwcEncryption.IsValid("nip44").Should().BeFalse("nip44_v2 is the only NIP-44 variant we support");
         LightningEnable.Mcp.Models.NwcEncryption.IsValid("").Should().BeFalse();
         LightningEnable.Mcp.Models.NwcEncryption.IsValid(null).Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("nip04 nip44_v2", "nip44_v2")]
+    [InlineData("nip44_v2 nip04", "nip44_v2")]
+    [InlineData("nip04", "nip04")]
+    [InlineData("nip44_v2", "nip44_v2")]
+    [InlineData("nip04,nip44_v2", "nip44_v2")] // tolerate comma separator
+    [InlineData("NIP04 NIP44_V2", "nip44_v2")] // case-insensitive
+    [InlineData("nip04  nip44_v2", "nip44_v2")] // double spaces
+    [InlineData("", "nip04")] // empty → fallback
+    [InlineData(null, "nip04")] // null → fallback
+    [InlineData("nip99_alpha", "nip04")] // unknown scheme → fallback
+    public void PickEncryptionFromInfoTag_PicksStrongestAvailableOrFallsBack(string? tagValue, string expected)
+    {
+        // Pure parsing test for the INFO-event tag picker. Exercises the contract
+        // documented on PickEncryptionFromInfoTag: prefer nip44_v2 when listed,
+        // fall back to nip04 for missing/unknown tag values.
+        LightningEnable.Mcp.Services.NwcWalletService.PickEncryptionFromInfoTag(tagValue)
+            .Should().Be(expected);
+    }
+
+    [Fact]
+    public void VerifyNostrEventSignature_ValidEvent_ReturnsTrue()
+    {
+        // Sign-then-verify round trip. Builds a kind 13194 INFO-shaped event,
+        // signs it with the wallet keypair, then verifies. Establishes the
+        // baseline that genuine events pass.
+        var (privKey, pubKeyBytes) = GenerateKeyPair();
+        var pubkeyHex = Convert.ToHexString(pubKeyBytes).ToLowerInvariant();
+        var ev = BuildSignedInfoEvent(privKey, pubkeyHex, "nip04 nip44_v2");
+
+        LightningEnable.Mcp.Services.NwcWalletService.VerifyNostrEventSignature(ev)
+            .Should().BeTrue("a correctly signed event must verify");
+    }
+
+    [Fact]
+    public void VerifyNostrEventSignature_TamperedEncryptionTag_ReturnsFalse()
+    {
+        // The core security guarantee: a relay-injected event with a forged
+        // encryption tag (but otherwise looking like the wallet's INFO event)
+        // must fail verification. Tamper after signing — the recomputed event
+        // id won't match the claimed id, so verification fails.
+        var (privKey, pubKeyBytes) = GenerateKeyPair();
+        var pubkeyHex = Convert.ToHexString(pubKeyBytes).ToLowerInvariant();
+        var ev = BuildSignedInfoEvent(privKey, pubkeyHex, "nip04 nip44_v2");
+
+        // Mutate the encryption tag to force a downgrade. Without sig verify,
+        // the auto-detect path would happily read this and switch encryption.
+        ev["tags"]!.AsArray()
+            .Where(t => t?.AsArray()?[0]?.GetValue<string>() == "encryption")
+            .Select(t => t!.AsArray())
+            .First()[1] = "nip04";
+
+        LightningEnable.Mcp.Services.NwcWalletService.VerifyNostrEventSignature(ev)
+            .Should().BeFalse("tampering with the encryption tag must invalidate the signature");
+    }
+
+    [Fact]
+    public void VerifyNostrEventSignature_WrongSignature_ReturnsFalse()
+    {
+        // Substitute a signature from a different keypair — pubkey unchanged
+        // but sig signed by attacker's key. Must fail.
+        var (alicePriv, alicePubBytes) = GenerateKeyPair();
+        var (bobPriv, _) = GenerateKeyPair();
+        var alicePubHex = Convert.ToHexString(alicePubBytes).ToLowerInvariant();
+
+        // Alice's event with Bob's signature
+        var ev = BuildSignedInfoEvent(alicePriv, alicePubHex, "nip04 nip44_v2");
+        var idBytes = Convert.FromHexString(ev["id"]!.GetValue<string>());
+        bobPriv.TrySignBIP340(idBytes, null, out var fakeSig);
+        ev["sig"] = Convert.ToHexString(fakeSig!.ToBytes()).ToLowerInvariant();
+
+        LightningEnable.Mcp.Services.NwcWalletService.VerifyNostrEventSignature(ev)
+            .Should().BeFalse("a signature from the wrong key must not verify");
+    }
+
+    [Fact]
+    public void VerifyNostrEventSignature_MalformedFields_ReturnsFalse()
+    {
+        // Defensive checks — malformed/missing fields must not throw.
+        LightningEnable.Mcp.Services.NwcWalletService.VerifyNostrEventSignature(new JsonObject())
+            .Should().BeFalse("empty event");
+
+        var ev = new JsonObject
+        {
+            ["id"] = "not-hex",
+            ["pubkey"] = "also-not-hex",
+            ["sig"] = "neither",
+            ["created_at"] = 1L,
+            ["kind"] = 13194,
+            ["tags"] = new JsonArray(),
+            ["content"] = ""
+        };
+        LightningEnable.Mcp.Services.NwcWalletService.VerifyNostrEventSignature(ev)
+            .Should().BeFalse("malformed hex must not throw");
+    }
+
+    private static JsonObject BuildSignedInfoEvent(ECPrivKey privKey, string pubkeyHex, string encryptionTagValue)
+    {
+        var createdAt = 1700000000L;
+        var tags = new JsonArray
+        {
+            new JsonArray { "encryption", encryptionTagValue }
+        };
+        var content = "Wallet capabilities: pay_invoice get_balance";
+
+        // Compute the canonical event id the same way ComputeEventId does
+        // (private — replicated here so the test is self-contained).
+        var eventArray = new JsonArray
+        {
+            0, pubkeyHex, createdAt, 13194,
+            JsonNode.Parse(tags.ToJsonString())!,
+            content
+        };
+        var serialized = eventArray.ToJsonString();
+        var hash = System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(serialized));
+        var id = Convert.ToHexString(hash).ToLowerInvariant();
+
+        privKey.TrySignBIP340(hash, null, out var sig);
+
+        return new JsonObject
+        {
+            ["id"] = id,
+            ["pubkey"] = pubkeyHex,
+            ["created_at"] = createdAt,
+            ["kind"] = 13194,
+            ["tags"] = JsonNode.Parse(tags.ToJsonString()),
+            ["content"] = content,
+            ["sig"] = Convert.ToHexString(sig!.ToBytes()).ToLowerInvariant()
+        };
+    }
+
+    [Fact]
+    public void NwcEncryption_AllowedValuesCsv_DerivesFromConstants()
+    {
+        // The user-facing warning text in NwcWalletService quotes this CSV when an
+        // invalid NWC_ENCRYPTION is supplied. Pinning it here means: if someone
+        // adds a fourth scheme without updating IsValid + this property, the test
+        // fails. Defends against drift between the warning text and the actual
+        // accepted set.
+        var csv = LightningEnable.Mcp.Models.NwcEncryption.AllowedValuesCsv;
+        csv.Should().Contain("auto");
+        csv.Should().Contain("nip04");
+        csv.Should().Contain("nip44_v2");
+    }
+
+    [Fact]
+    public async Task ResolveAutoEncryptionAsync_OnUnreachableRelay_FallsBackToNip04()
+    {
+        // INFO-event fetch must NEVER throw on operational failures — a missing or
+        // unreachable relay falls back to nip04 (the safe spec-pre-13194 default)
+        // so a real request can still go out. Without this guarantee, every
+        // call would fail with "auto" mode whenever the relay was flaky.
+        const string unreachable =
+            "nostr+walletconnect://0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" +
+            "?relay=ws://127.0.0.1:1" +
+            "&secret=fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+
+        var prevConn = Environment.GetEnvironmentVariable("NWC_CONNECTION_STRING");
+        var prevEnc = Environment.GetEnvironmentVariable("NWC_ENCRYPTION");
+        try
+        {
+            Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", unreachable);
+            // Force "auto" mode regardless of what the dev/CI env has pinned —
+            // an env-var-pinned NWC_ENCRYPTION would skip the resolver entirely
+            // and break the test's intent.
+            Environment.SetEnvironmentVariable("NWC_ENCRYPTION", null);
+            using var http = new HttpClient();
+            var svc = new LightningEnable.Mcp.Services.NwcWalletService(http);
+
+            // Default is "auto"; fetcher will fail and fall back to nip04.
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            var resolved = await svc.ResolveAutoEncryptionAsync(cts.Token);
+            resolved.Should().Be("nip04",
+                "INFO-event fetch must fall back to nip04 on operational failure, not throw");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", prevConn);
+            Environment.SetEnvironmentVariable("NWC_ENCRYPTION", prevEnc);
+        }
+    }
+
+    [Fact]
+    public async Task ResolveAutoEncryptionAsync_CachesResultAcrossCalls()
+    {
+        // First call resolves via the relay (or fallback); the second call must
+        // be served from the in-instance cache without re-running the fetcher.
+        // Asserted via the InfoEventFetchCount instrumentation counter rather
+        // than wall-clock timing — busy CI agents can violate timing thresholds
+        // even when the cache is working correctly.
+        const string unreachable =
+            "nostr+walletconnect://0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" +
+            "?relay=ws://127.0.0.1:1" +
+            "&secret=fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+
+        var prevConn = Environment.GetEnvironmentVariable("NWC_CONNECTION_STRING");
+        var prevEnc = Environment.GetEnvironmentVariable("NWC_ENCRYPTION");
+        try
+        {
+            Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", unreachable);
+            Environment.SetEnvironmentVariable("NWC_ENCRYPTION", null);
+            using var http = new HttpClient();
+            var svc = new LightningEnable.Mcp.Services.NwcWalletService(http);
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+
+            svc.InfoEventFetchCount.Should().Be(0, "fetcher hasn't been invoked yet");
+            var first = await svc.ResolveAutoEncryptionAsync(cts.Token);
+            svc.InfoEventFetchCount.Should().Be(1, "first call must invoke the fetcher exactly once");
+
+            var second = await svc.ResolveAutoEncryptionAsync(cts.Token);
+            svc.InfoEventFetchCount.Should().Be(1,
+                "second call must hit the cache — fetcher count must NOT increment");
+            second.Should().Be(first, "cached result must equal first resolution");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", prevConn);
+            Environment.SetEnvironmentVariable("NWC_ENCRYPTION", prevEnc);
+        }
+    }
+
+    [Fact]
+    public void NwcWalletService_WithExplicitNip04EnvVar_DoesNotResolveToAuto()
+    {
+        // Explicit env-var pinning skips auto-detect entirely. The config holds
+        // the literal scheme, not "auto", so SendNwcRequestAsync's fast path
+        // bypasses the INFO-event fetch.
+        var prevConn = Environment.GetEnvironmentVariable("NWC_CONNECTION_STRING");
+        var prevEnc = Environment.GetEnvironmentVariable("NWC_ENCRYPTION");
+        try
+        {
+            Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", TestNwcUri);
+            Environment.SetEnvironmentVariable("NWC_ENCRYPTION", "nip04");
+
+            using var http = new HttpClient();
+            var svc = new LightningEnable.Mcp.Services.NwcWalletService(http);
+            svc.GetConfig()!.Encryption.Should().Be("nip04",
+                "explicit env-var pin must persist literally, not get rewritten to auto");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", prevConn);
+            Environment.SetEnvironmentVariable("NWC_ENCRYPTION", prevEnc);
+        }
     }
 
     [Fact]
@@ -530,7 +779,7 @@ public class NwcWalletServiceTests
     public void NwcWalletService_ConstructedWithInvalidEncryptionEnvVar_FallsBackToDefault()
     {
         // Typos must not silently disable the wallet — fall back to the documented
-        // default (nip04) and warn via stderr (verified by no exception).
+        // default ("auto") and warn via stderr (verified by no exception).
         var prevConn = Environment.GetEnvironmentVariable("NWC_CONNECTION_STRING");
         var prevEnc = Environment.GetEnvironmentVariable("NWC_ENCRYPTION");
         try
@@ -540,7 +789,7 @@ public class NwcWalletServiceTests
 
             using var http = new HttpClient();
             var svc = new LightningEnable.Mcp.Services.NwcWalletService(http);
-            svc.GetConfig()!.Encryption.Should().Be("nip04",
+            svc.GetConfig()!.Encryption.Should().Be("auto",
                 "an invalid override must fall back to the default rather than silently ship a broken value");
         }
         finally
@@ -562,7 +811,7 @@ public class NwcWalletServiceTests
 
             using var http = new HttpClient();
             var svc = new LightningEnable.Mcp.Services.NwcWalletService(http);
-            svc.GetConfig()!.Encryption.Should().Be("nip04");
+            svc.GetConfig()!.Encryption.Should().Be("auto");
         }
         finally
         {

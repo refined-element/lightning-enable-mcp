@@ -6,17 +6,39 @@ namespace LightningEnable.Mcp.Models;
 /// </summary>
 public static class NwcEncryption
 {
+    /// <summary>
+    /// NIP-04 — original NIP-47 encryption (ECDH + sha256(shared_x) + AES-256-CBC).
+    /// Compatible with Primal NWC, CoinOS, Mutiny, ZBD, and most other deployed
+    /// wallets. Not accepted by Alby Hub.
+    /// </summary>
     public const string Nip04 = "nip04";
+
+    /// <summary>
+    /// NIP-44 v2 — newer encryption (ECDH + HKDF + ChaCha20 + HMAC-SHA256). Required
+    /// by Alby Hub. Silently dropped by older wallets, which surfaces as a 30-second
+    /// no-response timeout — the original motivation for adding auto-detect.
+    /// </summary>
     public const string Nip44V2 = "nip44_v2";
 
     /// <summary>
-    /// Default outbound encryption scheme. NIP-04 is the wider-compatibility default —
-    /// Primal NWC, CoinOS, Mutiny, ZBD all silently drop NIP-44 v2 events. Wallets that
-    /// require NIP-44 v2 (notably Alby Hub) opt in via the <c>NWC_ENCRYPTION</c> env var.
+    /// Auto — fetch the wallet's NIP-47 INFO event (kind 13194) on first request,
+    /// read the <c>encryption</c> tag, and pick <see cref="Nip44V2"/> if advertised
+    /// (more secure) else <see cref="Nip04"/>. Result is cached for the lifetime
+    /// of the service instance. Falls back to <see cref="Nip04"/> if the INFO event
+    /// can't be fetched within ~3s — older wallets that don't publish 13194 still
+    /// work because NIP-04 is the original NIP-47 default.
     /// </summary>
-    public const string Default = Nip04;
+    public const string Auto = "auto";
 
-    public static bool IsValid(string? value) => value == Nip04 || value == Nip44V2;
+    /// <summary>
+    /// Default outbound encryption mode. <see cref="Auto"/> means zero-config for
+    /// every spec-compliant wallet — Primal/CoinOS/Mutiny/ZBD/Alby Hub all just work.
+    /// Operators can pin to a specific scheme via the <c>NWC_ENCRYPTION</c> env var.
+    /// </summary>
+    public const string Default = Auto;
+
+    public static bool IsValid(string? value) =>
+        value == Nip04 || value == Nip44V2 || value == Auto;
 }
 
 /// <summary>

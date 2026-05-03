@@ -39,16 +39,52 @@ class NWCPaymentError(NWCError):
     pass
 
 
-# Outbound NIP-47 encryption schemes. Default is NIP-04 because Primal NWC, CoinOS,
-# Mutiny, and ZBD silently drop events tagged ``encryption=nip44_v2`` — the relay
-# accepts the event but the wallet never replies, producing a 30-second timeout that
-# the old code reported as "Failed to connect to NWC relay" (misleading; the connect
-# actually succeeded). Wallets that require NIP-44 v2 (notably Alby Hub) opt in via
-# the ``NWC_ENCRYPTION`` env var.
+# Outbound NIP-47 encryption schemes. Default is ``auto`` — the wallet's NIP-47
+# INFO event (kind 13194) is fetched on first request and the strongest advertised
+# scheme is picked; the choice is cached for the wallet instance's lifetime. Falls
+# back to NIP-04 when no INFO event is available, since NIP-04 is the original
+# NIP-47 default and what every spec-pre-13194 wallet expects. Operators can pin
+# to a specific scheme via the ``NWC_ENCRYPTION`` env var.
 NWC_ENCRYPTION_NIP04 = "nip04"
 NWC_ENCRYPTION_NIP44_V2 = "nip44_v2"
-NWC_ENCRYPTION_DEFAULT = NWC_ENCRYPTION_NIP04
-_VALID_NWC_ENCRYPTIONS = {NWC_ENCRYPTION_NIP04, NWC_ENCRYPTION_NIP44_V2}
+NWC_ENCRYPTION_AUTO = "auto"
+NWC_ENCRYPTION_DEFAULT = NWC_ENCRYPTION_AUTO
+_VALID_NWC_ENCRYPTIONS = {
+    NWC_ENCRYPTION_NIP04,
+    NWC_ENCRYPTION_NIP44_V2,
+    NWC_ENCRYPTION_AUTO,
+}
+
+# How long to wait for the NIP-47 INFO event before falling back to NIP-04.
+# Kept short so a missing or stale relay never delays a real request by more
+# than a few seconds. Module-level so tests can monkeypatch it.
+NWC_AUTO_RESOLVE_TIMEOUT_SECONDS = 3.0
+
+
+def _pick_encryption_from_info_tag(encryption_tag_value: str | None) -> str:
+    """
+    Pick the strongest scheme from a NIP-47 INFO event's ``encryption`` tag value.
+
+    The spec defines the tag value as a space-separated list of supported
+    schemes (e.g. ``"nip04 nip44_v2"``). Prefers ``nip44_v2`` when listed
+    (more secure); otherwise picks ``nip04``; falls back to ``nip04`` when
+    the tag is empty/missing/unknown so spec-pre-13194 wallets still work.
+
+    Pulled out as a module-level function so it can be unit-tested without
+    spinning up a relay.
+    """
+    if not encryption_tag_value:
+        return NWC_ENCRYPTION_NIP04
+
+    schemes = {
+        s.strip().lower()
+        for s in encryption_tag_value.replace(",", " ").replace("\t", " ").split(" ")
+        if s.strip()
+    }
+
+    if NWC_ENCRYPTION_NIP44_V2 in schemes:
+        return NWC_ENCRYPTION_NIP44_V2
+    return NWC_ENCRYPTION_NIP04
 
 
 # Failure-kind constants for NWC request outcomes. Mirrored from the .NET
@@ -514,6 +550,14 @@ class NWCWallet:
         self._connected = False
         self._pending_requests: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._response_task: asyncio.Task[None] | None = None
+        # Auto-detect cache. Populated on the first ``_send_request`` when the
+        # configured encryption is "auto" — fetches the wallet's NIP-47 INFO
+        # event (kind 13194), reads the ``encryption`` tag, picks the strongest
+        # advertised scheme. Subsequent requests use the cached value with no
+        # extra round trip. The lock serialises concurrent first-request fetches
+        # so we don't open N relay connections at startup.
+        self._resolved_auto_encryption: str | None = None
+        self._auto_resolve_lock = asyncio.Lock()
 
     async def connect(self) -> None:
         """Connect to the relay."""
@@ -606,6 +650,121 @@ class NWCWallet:
         except Exception as e:
             logger.exception(f"Error decrypting response: {e}")
 
+    async def _resolve_auto_encryption(self) -> str:
+        """
+        Resolve outbound encryption when configured as "auto". Fetches the
+        wallet's NIP-47 INFO event (kind 13194) once on first request, picks
+        the strongest advertised scheme, and caches the result on this wallet
+        instance for the rest of its lifetime. On any failure (relay
+        unreachable, timeout, malformed event) falls back to NIP-04.
+
+        Concurrent first calls are serialised by ``_auto_resolve_lock`` so we
+        don't open N relay connections for N parallel first-requests.
+        """
+        # Fast-path cache check
+        if self._resolved_auto_encryption is not None:
+            return self._resolved_auto_encryption
+
+        async with self._auto_resolve_lock:
+            # Double-check after acquiring the lock
+            if self._resolved_auto_encryption is not None:
+                return self._resolved_auto_encryption
+
+            resolved = await self._fetch_encryption_from_info_event()
+            self._resolved_auto_encryption = resolved
+            logger.info("NWC auto-detect resolved outbound encryption: %s", resolved)
+            return resolved
+
+    async def _fetch_encryption_from_info_event(self) -> str:
+        """
+        One-shot WebSocket REQ for the wallet's kind 13194 (NIP-47 INFO) event.
+        Always returns a value — exceptions and timeouts translate to the
+        NIP-04 fallback so a flaky relay or older wallet doesn't make every
+        future request fail.
+        """
+        ws = None
+        try:
+            ws = await asyncio.wait_for(
+                websockets.connect(self.config.relay_url),
+                timeout=NWC_AUTO_RESOLVE_TIMEOUT_SECONDS,
+            )
+
+            sub_id = secrets.token_hex(8)
+            req = json.dumps(
+                [
+                    "REQ",
+                    sub_id,
+                    {
+                        "kinds": [13194],
+                        "authors": [self.config.wallet_pubkey],
+                        "limit": 1,
+                    },
+                ]
+            )
+            await ws.send(req)
+
+            # Drain messages up to the timeout. The wallet service publishes
+            # 13194 to the relay; relays usually have it stored, so we get
+            # EVENT then EOSE quickly. Older wallets that never published
+            # one trigger EOSE without an EVENT and we fall back.
+            deadline_remaining = NWC_AUTO_RESOLVE_TIMEOUT_SECONDS
+            while True:
+                if deadline_remaining <= 0:
+                    logger.info(
+                        "NWC INFO-event fetch timed out after %ss; falling back to NIP-04",
+                        NWC_AUTO_RESOLVE_TIMEOUT_SECONDS,
+                    )
+                    return NWC_ENCRYPTION_NIP04
+                msg_raw = await asyncio.wait_for(ws.recv(), timeout=deadline_remaining)
+                deadline_remaining -= 0.05  # rough — receive returned, drop a bit
+                try:
+                    data = json.loads(msg_raw)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(data, list) or len(data) < 2:
+                    continue
+                msg_type = data[0]
+                if msg_type == "EVENT" and len(data) >= 3:
+                    event = data[2]
+                    if event.get("kind") != 13194:
+                        continue
+                    enc_tag_value: str | None = None
+                    for tag in event.get("tags", []):
+                        if (
+                            isinstance(tag, list)
+                            and len(tag) >= 2
+                            and tag[0] == "encryption"
+                        ):
+                            enc_tag_value = tag[1]
+                            break
+                    return _pick_encryption_from_info_tag(enc_tag_value)
+                elif msg_type == "EOSE":
+                    logger.info(
+                        "NWC INFO event not in relay history; falling back to NIP-04"
+                    )
+                    return NWC_ENCRYPTION_NIP04
+        except asyncio.CancelledError:
+            # Caller cancellation must propagate — don't translate to a fallback.
+            raise
+        except asyncio.TimeoutError:
+            logger.info(
+                "NWC INFO-event fetch timed out after %ss; falling back to NIP-04",
+                NWC_AUTO_RESOLVE_TIMEOUT_SECONDS,
+            )
+            return NWC_ENCRYPTION_NIP04
+        except Exception as e:
+            logger.info(
+                "NWC INFO-event fetch failed (%s); falling back to NIP-04",
+                e,
+            )
+            return NWC_ENCRYPTION_NIP04
+        finally:
+            if ws is not None:
+                try:
+                    await ws.close()
+                except Exception:
+                    pass
+
     async def _send_request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         """
         Send an NWC request and wait for response.
@@ -620,11 +779,17 @@ class NWCWallet:
         if not self._connected or not self._ws:
             await self.connect()
 
-        # Create request content. Default outbound is NIP-04 (widest wallet
-        # compatibility); users with wallets that require NIP-44 v2 opt in via
-        # NWC_ENCRYPTION=nip44_v2. Inbound auto-detects so this only affects outbound.
+        # Resolve outbound encryption. When config is "auto" (the default) we
+        # fetch the wallet's NIP-47 INFO event once and cache the choice.
+        # Explicit "nip04"/"nip44_v2" skip the fetch entirely. Inbound
+        # auto-detects so this only affects outbound.
+        if self.config.encryption == NWC_ENCRYPTION_AUTO:
+            effective_encryption = await self._resolve_auto_encryption()
+        else:
+            effective_encryption = self.config.encryption
+
         request = {"method": method, "params": params}
-        if self.config.encryption == NWC_ENCRYPTION_NIP44_V2:
+        if effective_encryption == NWC_ENCRYPTION_NIP44_V2:
             encrypted_content = _encrypt_nip44(
                 json.dumps(request), self._secret_key, self.config.wallet_pubkey
             )
@@ -680,14 +845,16 @@ class NWCWallet:
             # Improved error: tell the user the most common cause is an outbound
             # encryption mismatch (Primal/CoinOS silently drop nip44_v2; Alby Hub
             # silently drops nip04) and how to opt into the other scheme.
+            # We quote effective_encryption (the actually-used scheme, post-
+            # auto-resolve) so the hint points at the *real* mismatch direction.
             alt_scheme = (
                 NWC_ENCRYPTION_NIP04
-                if self.config.encryption == NWC_ENCRYPTION_NIP44_V2
+                if effective_encryption == NWC_ENCRYPTION_NIP44_V2
                 else NWC_ENCRYPTION_NIP44_V2
             )
             raise NWCError(
                 f"NWC request failed ({NWC_FAIL_NO_RESPONSE}): wallet did not respond "
-                f"to '{method}' within 60s using {self.config.encryption} encryption. "
+                f"to '{method}' within 60s using {effective_encryption} encryption. "
                 f"Most common cause: encryption mismatch — try setting "
                 f"NWC_ENCRYPTION={alt_scheme} if your wallet "
                 f"(e.g. Alby Hub for nip44_v2; Primal/CoinOS for nip04) requires "

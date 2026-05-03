@@ -482,16 +482,16 @@ public class NwcWalletServiceTests
         "&secret=fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
 
     [Fact]
-    public void NwcConfig_DefaultEncryption_IsNip04()
+    public void NwcConfig_DefaultEncryption_IsAuto()
     {
-        // Default outbound encryption should be NIP-04 — widest wallet compatibility.
-        // Primal/CoinOS/Mutiny silently drop NIP-44 v2 events; the previous default
-        // of nip44_v2 caused 30s "Failed to connect to NWC relay" failures with no
-        // actual connect failure.
+        // Default outbound mode is "auto" — fetches the wallet's NIP-47 INFO event
+        // (kind 13194) and picks the strongest advertised scheme. Falls back to
+        // NIP-04 when no INFO event is available. v1.12.5 used "nip04" as the
+        // default; v1.12.6 promotes to "auto" for zero-config across all wallets.
         var config = LightningEnable.Mcp.Models.NwcConfig.Parse(TestNwcUri);
 
-        config.Encryption.Should().Be("nip04");
-        LightningEnable.Mcp.Models.NwcEncryption.Default.Should().Be("nip04");
+        config.Encryption.Should().Be("auto");
+        LightningEnable.Mcp.Models.NwcEncryption.Default.Should().Be("auto");
     }
 
     [Fact]
@@ -499,9 +499,122 @@ public class NwcWalletServiceTests
     {
         LightningEnable.Mcp.Models.NwcEncryption.IsValid("nip04").Should().BeTrue();
         LightningEnable.Mcp.Models.NwcEncryption.IsValid("nip44_v2").Should().BeTrue();
+        LightningEnable.Mcp.Models.NwcEncryption.IsValid("auto").Should().BeTrue("auto is the v1.12.6 default");
         LightningEnable.Mcp.Models.NwcEncryption.IsValid("nip44").Should().BeFalse("nip44_v2 is the only NIP-44 variant we support");
         LightningEnable.Mcp.Models.NwcEncryption.IsValid("").Should().BeFalse();
         LightningEnable.Mcp.Models.NwcEncryption.IsValid(null).Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData("nip04 nip44_v2", "nip44_v2")]
+    [InlineData("nip44_v2 nip04", "nip44_v2")]
+    [InlineData("nip04", "nip04")]
+    [InlineData("nip44_v2", "nip44_v2")]
+    [InlineData("nip04,nip44_v2", "nip44_v2")] // tolerate comma separator
+    [InlineData("NIP04 NIP44_V2", "nip44_v2")] // case-insensitive
+    [InlineData("nip04  nip44_v2", "nip44_v2")] // double spaces
+    [InlineData("", "nip04")] // empty → fallback
+    [InlineData(null, "nip04")] // null → fallback
+    [InlineData("nip99_alpha", "nip04")] // unknown scheme → fallback
+    public void PickEncryptionFromInfoTag_PicksStrongestAvailableOrFallsBack(string? tagValue, string expected)
+    {
+        // Pure parsing test for the INFO-event tag picker. Exercises the contract
+        // documented on PickEncryptionFromInfoTag: prefer nip44_v2 when listed,
+        // fall back to nip04 for missing/unknown tag values.
+        LightningEnable.Mcp.Services.NwcWalletService.PickEncryptionFromInfoTag(tagValue)
+            .Should().Be(expected);
+    }
+
+    [Fact]
+    public async Task ResolveAutoEncryptionAsync_OnUnreachableRelay_FallsBackToNip04()
+    {
+        // INFO-event fetch must NEVER throw on operational failures — a missing or
+        // unreachable relay falls back to nip04 (the safe spec-pre-13194 default)
+        // so a real request can still go out. Without this guarantee, every
+        // call would fail with "auto" mode whenever the relay was flaky.
+        const string unreachable =
+            "nostr+walletconnect://0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" +
+            "?relay=ws://127.0.0.1:1" +
+            "&secret=fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+
+        var prevConn = Environment.GetEnvironmentVariable("NWC_CONNECTION_STRING");
+        try
+        {
+            Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", unreachable);
+            using var http = new HttpClient();
+            var svc = new LightningEnable.Mcp.Services.NwcWalletService(http);
+
+            // Default is "auto"; fetcher will fail and fall back to nip04.
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            var resolved = await svc.ResolveAutoEncryptionAsync(cts.Token);
+            resolved.Should().Be("nip04",
+                "INFO-event fetch must fall back to nip04 on operational failure, not throw");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", prevConn);
+        }
+    }
+
+    [Fact]
+    public async Task ResolveAutoEncryptionAsync_CachesResultAcrossCalls()
+    {
+        // The first call may pay the relay round-trip; subsequent calls must hit
+        // the in-instance cache and return immediately. Verified by timing: even
+        // the second call against an unreachable relay should be instant because
+        // the first call already populated the cache with the nip04 fallback.
+        const string unreachable =
+            "nostr+walletconnect://0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" +
+            "?relay=ws://127.0.0.1:1" +
+            "&secret=fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+
+        var prevConn = Environment.GetEnvironmentVariable("NWC_CONNECTION_STRING");
+        try
+        {
+            Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", unreachable);
+            using var http = new HttpClient();
+            var svc = new LightningEnable.Mcp.Services.NwcWalletService(http);
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            var first = await svc.ResolveAutoEncryptionAsync(cts.Token);
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var second = await svc.ResolveAutoEncryptionAsync(cts.Token);
+            sw.Stop();
+
+            second.Should().Be(first, "cached result must equal first resolution");
+            sw.ElapsedMilliseconds.Should().BeLessThan(50,
+                "second call must hit the cache, not redo the relay round-trip");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", prevConn);
+        }
+    }
+
+    [Fact]
+    public void NwcWalletService_WithExplicitNip04EnvVar_DoesNotResolveToAuto()
+    {
+        // Explicit env-var pinning skips auto-detect entirely. The config holds
+        // the literal scheme, not "auto", so SendNwcRequestAsync's fast path
+        // bypasses the INFO-event fetch.
+        var prevConn = Environment.GetEnvironmentVariable("NWC_CONNECTION_STRING");
+        var prevEnc = Environment.GetEnvironmentVariable("NWC_ENCRYPTION");
+        try
+        {
+            Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", TestNwcUri);
+            Environment.SetEnvironmentVariable("NWC_ENCRYPTION", "nip04");
+
+            using var http = new HttpClient();
+            var svc = new LightningEnable.Mcp.Services.NwcWalletService(http);
+            svc.GetConfig()!.Encryption.Should().Be("nip04",
+                "explicit env-var pin must persist literally, not get rewritten to auto");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", prevConn);
+            Environment.SetEnvironmentVariable("NWC_ENCRYPTION", prevEnc);
+        }
     }
 
     [Fact]
@@ -530,7 +643,7 @@ public class NwcWalletServiceTests
     public void NwcWalletService_ConstructedWithInvalidEncryptionEnvVar_FallsBackToDefault()
     {
         // Typos must not silently disable the wallet — fall back to the documented
-        // default (nip04) and warn via stderr (verified by no exception).
+        // default ("auto") and warn via stderr (verified by no exception).
         var prevConn = Environment.GetEnvironmentVariable("NWC_CONNECTION_STRING");
         var prevEnc = Environment.GetEnvironmentVariable("NWC_ENCRYPTION");
         try
@@ -540,7 +653,7 @@ public class NwcWalletServiceTests
 
             using var http = new HttpClient();
             var svc = new LightningEnable.Mcp.Services.NwcWalletService(http);
-            svc.GetConfig()!.Encryption.Should().Be("nip04",
+            svc.GetConfig()!.Encryption.Should().Be("auto",
                 "an invalid override must fall back to the default rather than silently ship a broken value");
         }
         finally
@@ -562,7 +675,7 @@ public class NwcWalletServiceTests
 
             using var http = new HttpClient();
             var svc = new LightningEnable.Mcp.Services.NwcWalletService(http);
-            svc.GetConfig()!.Encryption.Should().Be("nip04");
+            svc.GetConfig()!.Encryption.Should().Be("auto");
         }
         finally
         {

@@ -53,6 +53,22 @@ public class NwcWalletService : IWalletService, IDisposable
     private readonly HttpClient _httpClient;
     private bool _disposed;
 
+    // Auto-detect cache. When _config.Encryption == "auto", the first call to
+    // SendNwcRequestAsync triggers a one-time fetch of the wallet's NIP-47 INFO
+    // event (kind 13194); the resolved scheme ("nip04" or "nip44_v2") is stored
+    // here and reused for the lifetime of the service instance. The lock
+    // serialises concurrent first-request fetches so we don't open N relay
+    // connections at startup.
+    private string? _resolvedAutoEncryption;
+    private readonly SemaphoreSlim _autoResolveLock = new(1, 1);
+
+    /// <summary>
+    /// How long to wait for the NIP-47 INFO event before falling back to NIP-04.
+    /// Made internal so tests can override with reflection. Kept short so a missing
+    /// or stale relay never delays a real request by more than a few seconds.
+    /// </summary>
+    internal static TimeSpan AutoResolveTimeout = TimeSpan.FromSeconds(3);
+
     public NwcWalletService(HttpClient httpClient, IBudgetConfigurationService? budgetConfigService = null)
     {
         _httpClient = httpClient;
@@ -429,6 +445,172 @@ public class NwcWalletService : IWalletService, IDisposable
     internal const string FailKindProtocol = "protocol_error";
     internal const string FailKindUnknown = "unknown";
 
+    /// <summary>
+    /// Picks the strongest encryption scheme advertised in <paramref name="encryptionTagValue"/>,
+    /// which is the value of the NIP-47 INFO event's <c>encryption</c> tag (a space-separated
+    /// list of supported schemes per the spec, e.g. <c>"nip04 nip44_v2"</c>).
+    /// Prefers <see cref="NwcEncryption.Nip44V2"/> when both are listed; otherwise picks
+    /// <see cref="NwcEncryption.Nip04"/>; falls back to <see cref="NwcEncryption.Nip04"/>
+    /// when the tag is empty/missing/unknown (NIP-04 is the original NIP-47 default so it's
+    /// the safest fallback for spec-pre-13194 wallets).
+    /// Pulled out as a static method so it can be unit-tested without a relay.
+    /// </summary>
+    internal static string PickEncryptionFromInfoTag(string? encryptionTagValue)
+    {
+        if (string.IsNullOrWhiteSpace(encryptionTagValue))
+            return NwcEncryption.Nip04;
+
+        var schemes = encryptionTagValue
+            .Split(new[] { ' ', '\t', ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(s => s.ToLowerInvariant())
+            .ToHashSet();
+
+        if (schemes.Contains(NwcEncryption.Nip44V2)) return NwcEncryption.Nip44V2;
+        if (schemes.Contains(NwcEncryption.Nip04)) return NwcEncryption.Nip04;
+        return NwcEncryption.Nip04;
+    }
+
+    /// <summary>
+    /// Resolves the outbound encryption scheme by fetching the wallet's NIP-47 INFO
+    /// event (kind 13194). Caches on the service instance — subsequent calls return
+    /// the cached choice without a relay round trip. On any failure (relay unreachable,
+    /// timeout, malformed event) falls back to <see cref="NwcEncryption.Nip04"/>, which
+    /// is the original NIP-47 default and what every spec-pre-13194 wallet expects.
+    /// </summary>
+    /// <remarks>
+    /// Concurrent first calls are serialised by <see cref="_autoResolveLock"/> so we
+    /// don't open N relay connections for N parallel first-requests at startup.
+    /// </remarks>
+    internal async Task<string> ResolveAutoEncryptionAsync(CancellationToken cancellationToken)
+    {
+        // Fast-path cache check (volatile read is fine — single-writer once initialised)
+        if (_resolvedAutoEncryption != null)
+            return _resolvedAutoEncryption;
+
+        await _autoResolveLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            // Double-check after acquiring the lock — another caller may have populated it.
+            if (_resolvedAutoEncryption != null)
+                return _resolvedAutoEncryption;
+
+            var resolved = await FetchEncryptionFromInfoEventAsync(cancellationToken).ConfigureAwait(false);
+            _resolvedAutoEncryption = resolved;
+            Console.Error.WriteLine($"[NWC] Auto-detect resolved outbound encryption: {resolved}");
+            return resolved;
+        }
+        finally
+        {
+            _autoResolveLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// One-shot WebSocket REQ for the wallet's kind 13194 (NIP-47 INFO) event,
+    /// reads the <c>encryption</c> tag, and returns the picked scheme. Always returns
+    /// a value — exceptions and timeouts are translated to the NIP-04 fallback.
+    /// </summary>
+    private async Task<string> FetchEncryptionFromInfoEventAsync(CancellationToken cancellationToken)
+    {
+        if (_config == null) return NwcEncryption.Nip04;
+
+        using var ws = new ClientWebSocket();
+        try
+        {
+            using var timeout = new CancellationTokenSource(AutoResolveTimeout);
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
+
+            var relayUri = new Uri(_config.RelayUrl);
+            await ws.ConnectAsync(relayUri, linked.Token).ConfigureAwait(false);
+
+            // Subscribe to the wallet's INFO event. NIP-47 says the wallet service
+            // SHOULD publish kind 13194 — relays usually have it stored, so this
+            // returns quickly with EVENT then EOSE. If the wallet hasn't published
+            // one (older implementation), we hit EOSE without an EVENT and fall back.
+            var subId = Guid.NewGuid().ToString("N")[..8];
+            var reqMessage = new JsonArray
+            {
+                "REQ",
+                subId,
+                new JsonObject
+                {
+                    ["kinds"] = new JsonArray { 13194 },
+                    ["authors"] = new JsonArray { _config.WalletPubkey },
+                    ["limit"] = 1
+                }
+            };
+            var reqBytes = Encoding.UTF8.GetBytes(reqMessage.ToJsonString(NostrJsonOptions));
+            await ws.SendAsync(reqBytes, WebSocketMessageType.Text, true, linked.Token).ConfigureAwait(false);
+
+            var buffer = new byte[8192];
+            var sb = new StringBuilder();
+            while (ws.State == WebSocketState.Open)
+            {
+                var result = await ws.ReceiveAsync(buffer, linked.Token).ConfigureAwait(false);
+                if (result.MessageType == WebSocketMessageType.Close) break;
+                sb.Append(Encoding.UTF8.GetString(buffer, 0, result.Count));
+                if (!result.EndOfMessage) continue;
+
+                var message = sb.ToString();
+                sb.Clear();
+
+                var parsed = JsonNode.Parse(message)?.AsArray();
+                if (parsed == null || parsed.Count < 2) continue;
+
+                var msgType = parsed[0]?.GetValue<string>();
+                if (msgType == "EVENT" && parsed.Count >= 3)
+                {
+                    var ev = parsed[2]?.AsObject();
+                    if (ev?["kind"]?.GetValue<int>() == 13194)
+                    {
+                        var encTagValue = ev["tags"]?.AsArray()
+                            .Select(t => t?.AsArray())
+                            .Where(t => t != null && t.Count >= 2 && t[0]?.GetValue<string>() == "encryption")
+                            .Select(t => t![1]?.GetValue<string>())
+                            .FirstOrDefault();
+                        return PickEncryptionFromInfoTag(encTagValue);
+                    }
+                }
+                else if (msgType == "EOSE")
+                {
+                    // No INFO event in stored history — older wallet that never
+                    // published 13194. Fall back to NIP-04.
+                    Console.Error.WriteLine("[NWC] No NIP-47 INFO event found; falling back to NIP-04");
+                    return NwcEncryption.Nip04;
+                }
+            }
+
+            Console.Error.WriteLine("[NWC] WS closed before INFO event arrived; falling back to NIP-04");
+            return NwcEncryption.Nip04;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Caller cancellation must propagate untouched so awaiting tasks can shut
+            // down cleanly. The outer SendNwcRequestAsync wrapper translates this to
+            // a cancelled outcome.
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            // Internal AutoResolveTimeout fired; safe fallback.
+            Console.Error.WriteLine($"[NWC] INFO-event fetch timed out after {AutoResolveTimeout.TotalSeconds}s; falling back to NIP-04");
+            return NwcEncryption.Nip04;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[NWC] INFO-event fetch failed ({ex.GetType().Name}: {ex.Message}); falling back to NIP-04");
+            return NwcEncryption.Nip04;
+        }
+        finally
+        {
+            if (ws.State == WebSocketState.Open)
+            {
+                try { await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Done", CancellationToken.None).ConfigureAwait(false); }
+                catch { /* best-effort close */ }
+            }
+        }
+    }
+
     private async Task<NwcSendOutcome> SendNwcRequestAsync(JsonObject request, CancellationToken cancellationToken, byte[]? expectedPaymentHash = null)
     {
         if (_config == null || _privateKey == null || _publicKey == null || _myPubkeyHex == null)
@@ -470,18 +652,33 @@ public class NwcWalletService : IWalletService, IDisposable
             return NwcSendOutcome.Fail(FailKindConnect, $"WebSocket connection to {_config.RelayUrl} failed: {ex.Message}");
         }
 
+        // Resolve the effective encryption scheme up front so both the send path and
+        // the no-response error path can reference it (the latter quotes it back to
+        // the user with a swap hint). When config is "auto" (the default) we fetch
+        // the wallet's NIP-47 INFO event once and cache the choice. Explicit
+        // "nip04"/"nip44_v2" skip the fetch entirely.
+        string effectiveEncryption;
+        try
+        {
+            effectiveEncryption = _config.Encryption == NwcEncryption.Auto
+                ? await ResolveAutoEncryptionAsync(cancellationToken).ConfigureAwait(false)
+                : _config.Encryption;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return NwcSendOutcome.Fail(FailKindCancelled, "Cancelled while resolving wallet's NIP-47 capabilities");
+        }
+
         try
         {
             var createdAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             var requestJson = request.ToJsonString();
 
-            // Encrypt outbound. Default is NIP-04 (widest wallet compatibility); users
-            // with wallets that require NIP-44 v2 opt in via NWC_ENCRYPTION=nip44_v2.
-            // Inbound auto-detects, so this only affects outbound.
+            // Inbound auto-detects, so the effectiveEncryption above only affects outbound.
             var walletPubkeyBytes = Convert.FromHexString(_config.WalletPubkey);
             string content;
             JsonArray tags;
-            if (_config.Encryption == NwcEncryption.Nip44V2)
+            if (effectiveEncryption == NwcEncryption.Nip44V2)
             {
                 content = EncryptNip44(requestJson, walletPubkeyBytes, _privateKey);
                 tags = new JsonArray { new JsonArray { "p", _config.WalletPubkey }, new JsonArray { "encryption", "nip44_v2" } };
@@ -667,10 +864,11 @@ public class NwcWalletService : IWalletService, IDisposable
             // Connect succeeded but the wallet never sent a matching reply within 30s.
             // Most common cause is encryption mismatch — Primal/CoinOS silently drop
             // events tagged "encryption=nip44_v2"; Alby Hub silently drops NIP-04.
-            // Tell the user how to opt into the other scheme.
-            var altScheme = _config.Encryption == NwcEncryption.Nip44V2 ? NwcEncryption.Nip04 : NwcEncryption.Nip44V2;
+            // We quote effectiveEncryption (the actually-used scheme, post-auto-resolve)
+            // so the hint points at the *real* mismatch direction.
+            var altScheme = effectiveEncryption == NwcEncryption.Nip44V2 ? NwcEncryption.Nip04 : NwcEncryption.Nip44V2;
             return NwcSendOutcome.Fail(FailKindNoResponse,
-                $"Wallet did not respond within 30s using {_config.Encryption} encryption. " +
+                $"Wallet did not respond within 30s using {effectiveEncryption} encryption. " +
                 $"Most common cause: encryption mismatch — try setting NWC_ENCRYPTION={altScheme} " +
                 $"if your wallet (e.g. Alby Hub for nip44_v2; Primal/CoinOS for nip04) requires the other scheme.");
         }
@@ -686,13 +884,13 @@ public class NwcWalletService : IWalletService, IDisposable
             {
                 Console.Error.WriteLine("[NWC] Caller cancellation observed");
                 return NwcSendOutcome.Fail(FailKindCancelled,
-                    $"Operation cancelled by caller after sending request (encryption={_config.Encryption}).");
+                    $"Operation cancelled by caller after sending request (encryption={effectiveEncryption}).");
             }
 
             Console.Error.WriteLine("[NWC] 30s receive-loop timeout — no matching response from wallet");
-            var altScheme = _config.Encryption == NwcEncryption.Nip44V2 ? NwcEncryption.Nip04 : NwcEncryption.Nip44V2;
+            var altScheme = effectiveEncryption == NwcEncryption.Nip44V2 ? NwcEncryption.Nip04 : NwcEncryption.Nip44V2;
             return NwcSendOutcome.Fail(FailKindNoResponse,
-                $"Wallet did not respond within 30s using {_config.Encryption} encryption. " +
+                $"Wallet did not respond within 30s using {effectiveEncryption} encryption. " +
                 $"Most common cause: encryption mismatch — try setting NWC_ENCRYPTION={altScheme} " +
                 $"if your wallet (e.g. Alby Hub for nip44_v2; Primal/CoinOS for nip04) requires the other scheme.");
         }
@@ -704,7 +902,7 @@ public class NwcWalletService : IWalletService, IDisposable
             // unexpected errors, etc.) is genuinely unclassified.
             Console.Error.WriteLine($"[NWC] Exception: {ex.Message}");
             return NwcSendOutcome.Fail(FailKindUnknown,
-                $"Unexpected error after WebSocket connect (encryption={_config.Encryption}): {ex.Message}");
+                $"Unexpected error after WebSocket connect (encryption={effectiveEncryption}): {ex.Message}");
         }
         finally
         {

@@ -474,4 +474,283 @@ public class NwcWalletServiceTests
 
     #endregion
 
+    #region Encryption-default + NWC_ENCRYPTION env-var override (PR fix)
+
+    private const string TestNwcUri =
+        "nostr+walletconnect://0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" +
+        "?relay=wss://relay.example.com" +
+        "&secret=fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+
+    [Fact]
+    public void NwcConfig_DefaultEncryption_IsNip04()
+    {
+        // Default outbound encryption should be NIP-04 — widest wallet compatibility.
+        // Primal/CoinOS/Mutiny silently drop NIP-44 v2 events; the previous default
+        // of nip44_v2 caused 30s "Failed to connect to NWC relay" failures with no
+        // actual connect failure.
+        var config = LightningEnable.Mcp.Models.NwcConfig.Parse(TestNwcUri);
+
+        config.Encryption.Should().Be("nip04");
+        LightningEnable.Mcp.Models.NwcEncryption.Default.Should().Be("nip04");
+    }
+
+    [Fact]
+    public void NwcEncryption_IsValid_AcceptsKnownSchemesOnly()
+    {
+        LightningEnable.Mcp.Models.NwcEncryption.IsValid("nip04").Should().BeTrue();
+        LightningEnable.Mcp.Models.NwcEncryption.IsValid("nip44_v2").Should().BeTrue();
+        LightningEnable.Mcp.Models.NwcEncryption.IsValid("nip44").Should().BeFalse("nip44_v2 is the only NIP-44 variant we support");
+        LightningEnable.Mcp.Models.NwcEncryption.IsValid("").Should().BeFalse();
+        LightningEnable.Mcp.Models.NwcEncryption.IsValid(null).Should().BeFalse();
+    }
+
+    [Fact]
+    public void NwcWalletService_ConstructedWithNip44EnvVar_HonorsOverride()
+    {
+        // Explicit opt-in for users with wallets that require NIP-44 v2 (Alby Hub).
+        var prevConn = Environment.GetEnvironmentVariable("NWC_CONNECTION_STRING");
+        var prevEnc = Environment.GetEnvironmentVariable("NWC_ENCRYPTION");
+        try
+        {
+            Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", TestNwcUri);
+            Environment.SetEnvironmentVariable("NWC_ENCRYPTION", "nip44_v2");
+
+            using var http = new HttpClient();
+            var svc = new LightningEnable.Mcp.Services.NwcWalletService(http);
+            svc.GetConfig()!.Encryption.Should().Be("nip44_v2");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", prevConn);
+            Environment.SetEnvironmentVariable("NWC_ENCRYPTION", prevEnc);
+        }
+    }
+
+    [Fact]
+    public void NwcWalletService_ConstructedWithInvalidEncryptionEnvVar_FallsBackToDefault()
+    {
+        // Typos must not silently disable the wallet — fall back to the documented
+        // default (nip04) and warn via stderr (verified by no exception).
+        var prevConn = Environment.GetEnvironmentVariable("NWC_CONNECTION_STRING");
+        var prevEnc = Environment.GetEnvironmentVariable("NWC_ENCRYPTION");
+        try
+        {
+            Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", TestNwcUri);
+            Environment.SetEnvironmentVariable("NWC_ENCRYPTION", "nip-something-bogus");
+
+            using var http = new HttpClient();
+            var svc = new LightningEnable.Mcp.Services.NwcWalletService(http);
+            svc.GetConfig()!.Encryption.Should().Be("nip04",
+                "an invalid override must fall back to the default rather than silently ship a broken value");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", prevConn);
+            Environment.SetEnvironmentVariable("NWC_ENCRYPTION", prevEnc);
+        }
+    }
+
+    [Fact]
+    public void NwcWalletService_ConstructedWithoutEncryptionEnvVar_UsesDefault()
+    {
+        var prevConn = Environment.GetEnvironmentVariable("NWC_CONNECTION_STRING");
+        var prevEnc = Environment.GetEnvironmentVariable("NWC_ENCRYPTION");
+        try
+        {
+            Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", TestNwcUri);
+            Environment.SetEnvironmentVariable("NWC_ENCRYPTION", null);
+
+            using var http = new HttpClient();
+            var svc = new LightningEnable.Mcp.Services.NwcWalletService(http);
+            svc.GetConfig()!.Encryption.Should().Be("nip04");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", prevConn);
+            Environment.SetEnvironmentVariable("NWC_ENCRYPTION", prevEnc);
+        }
+    }
+
+    [Fact]
+    public void EncryptNip04_DerivesKeyAsSha256OfSharedX_NotRawSharedX()
+    {
+        // Regression test for the NIP-04 key-derivation bug Copilot caught on this PR:
+        // EncryptNip04/DecryptNip04 previously used `aes.Key = sharedX` directly. The
+        // round-trip tests passed because both sides shared the bug, but on-the-wire
+        // ciphertext was incompatible with every other NIP-04 implementation
+        // (Python port in this repo, Primal NWC, CoinOS, Mutiny, etc.).
+        //
+        // This pin guards against regressing back to raw-sharedX: we encrypt with our
+        // implementation, then independently decrypt using AES-256-CBC keyed by
+        // SHA256(sharedX) and assert the round-trip works. If someone ever changes
+        // EncryptNip04 to use a different key derivation, this test will fail.
+        var (alicePriv, alicePub) = GenerateKeyPair();
+        var (bobPriv, bobPub) = GenerateKeyPair();
+        const string plaintext = "{\"method\":\"get_balance\",\"params\":{}}";
+
+        // Reproduce the ECDH that EncryptNip04 does internally. We rely on the
+        // public DecryptContent path being correct; the assertion below also pins
+        // that the encrypt side is symmetric with the spec-compliant decrypt.
+        var encrypted = NwcWalletService.EncryptNip04(plaintext, bobPub, alicePriv);
+        var decrypted = NwcWalletService.DecryptContent(encrypted, alicePub, bobPriv);
+        decrypted.Should().Be(plaintext);
+
+        // Independently parse the base64 IV + ciphertext blob and verify it can be
+        // decrypted with sha256(shared_x) but NOT with raw shared_x. This catches
+        // a future regression that flips back to raw-key on either the encrypt or
+        // decrypt side.
+        var parts = encrypted.Split("?iv=");
+        parts.Length.Should().Be(2);
+        var ciphertextBytes = Convert.FromBase64String(parts[0]);
+        var iv = Convert.FromBase64String(parts[1]);
+
+        // Recompute ECDH shared_x the same way the implementation does
+        var fullPubkeyBytes = new byte[33];
+        fullPubkeyBytes[0] = 0x02;
+        bobPub.CopyTo(fullPubkeyBytes, 1);
+        NBitcoin.Secp256k1.ECPubKey.TryCreate(fullPubkeyBytes, NBitcoin.Secp256k1.Context.Instance, out _, out var bobPubKey);
+        var sharedPoint = bobPubKey!.GetSharedPubkey(alicePriv);
+        var sharedX = sharedPoint.ToBytes()[1..33];
+
+        // sha256(shared_x) must successfully decrypt
+        using (var aes = System.Security.Cryptography.Aes.Create())
+        {
+            aes.Key = System.Security.Cryptography.SHA256.HashData(sharedX);
+            aes.IV = iv;
+            aes.Mode = System.Security.Cryptography.CipherMode.CBC;
+            aes.Padding = System.Security.Cryptography.PaddingMode.PKCS7;
+            using var dec = aes.CreateDecryptor();
+            var roundTrip = Encoding.UTF8.GetString(dec.TransformFinalBlock(ciphertextBytes, 0, ciphertextBytes.Length));
+            roundTrip.Should().Be(plaintext, "spec-compliant key derivation must decrypt successfully");
+        }
+
+        // Raw shared_x must NOT decrypt successfully — proving we're not in the buggy
+        // state. AES-CBC with the wrong key + PKCS7 padding throws CryptographicException
+        // with overwhelming probability.
+        using (var aes = System.Security.Cryptography.Aes.Create())
+        {
+            aes.Key = sharedX;
+            aes.IV = iv;
+            aes.Mode = System.Security.Cryptography.CipherMode.CBC;
+            aes.Padding = System.Security.Cryptography.PaddingMode.PKCS7;
+            using var dec = aes.CreateDecryptor();
+            var act = () => dec.TransformFinalBlock(ciphertextBytes, 0, ciphertextBytes.Length);
+            act.Should().Throw<System.Security.Cryptography.CryptographicException>(
+                "raw-shared_x must no longer decrypt — that was the bug we just fixed");
+        }
+    }
+
+    [Fact]
+    public async Task GetBalanceAsync_OnConnectFailure_BubblesSpecificFailureKind()
+    {
+        // Regression test for the "Failed to connect to NWC relay" string that
+        // collapsed every failure mode into a single misleading message.
+        // The new contract: error message must include the failure kind so users
+        // can distinguish connect failures from no-response (encryption mismatch)
+        // from cancellations.
+        const string unreachable =
+            "nostr+walletconnect://0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" +
+            "?relay=ws://127.0.0.1:1" + // port 1 is reserved/unbindable — connect must fail
+            "&secret=fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+
+        var prevConn = Environment.GetEnvironmentVariable("NWC_CONNECTION_STRING");
+        try
+        {
+            Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", unreachable);
+
+            using var http = new HttpClient();
+            var svc = new LightningEnable.Mcp.Services.NwcWalletService(http);
+
+            // Cap the wait so the test stays fast; ConnectAsync should throw quickly.
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+            var act = async () => await svc.GetBalanceAsync(cts.Token);
+
+            var ex = await act.Should().ThrowAsync<InvalidOperationException>();
+            ex.Which.Message.Should().Contain("NWC request failed",
+                "the new error contract prefixes failures with 'NWC request failed (<kind>)'");
+            ex.Which.Message.Should().Contain("connect_failed",
+                "an unreachable relay should classify as connect_failed, not the generic old 'Failed to connect to NWC relay'");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", prevConn);
+        }
+    }
+
+    [Fact]
+    public async Task GetBalanceAsync_OnCallerCancellation_ReportsCancelledNotConnectFailed()
+    {
+        // Caller cancellation must round-trip as `cancelled`, not get swallowed as
+        // a connect failure. We use an unreachable relay (port 1) and cancel the
+        // CancellationToken before connect can complete. ConnectAsync raises
+        // OperationCanceledException keyed off the caller's token; the connect-time
+        // catch must pick that up via the `when (cancellationToken.IsCancellationRequested)`
+        // filter and report cancelled.
+        const string unreachable =
+            "nostr+walletconnect://0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" +
+            "?relay=ws://127.0.0.1:1" +
+            "&secret=fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+
+        var prevConn = Environment.GetEnvironmentVariable("NWC_CONNECTION_STRING");
+        try
+        {
+            Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", unreachable);
+            using var http = new HttpClient();
+            var svc = new LightningEnable.Mcp.Services.NwcWalletService(http);
+
+            using var cts = new CancellationTokenSource();
+            cts.Cancel(); // Pre-cancel — ConnectAsync will throw immediately.
+            var act = async () => await svc.GetBalanceAsync(cts.Token);
+
+            var ex = await act.Should().ThrowAsync<InvalidOperationException>();
+            ex.Which.Message.Should().Contain("NWC request failed");
+            ex.Which.Message.Should().Contain("cancelled",
+                "caller cancellation must surface as cancelled, distinct from no_response");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", prevConn);
+        }
+    }
+
+    [Fact]
+    public async Task GetBalanceAsync_OnMalformedRelayUri_ClassifiesAsConnectFailedNotUnhandledException()
+    {
+        // NwcConfig.Parse already rejects most invalid URIs; this guards against the
+        // case where a string passes shallow URL parsing but fails at Uri construction
+        // time inside SendNwcRequestAsync. The contract: a malformed URL must flow
+        // through the structured outcome (connect_failed), never escape as an
+        // unhandled UriFormatException.
+        //
+        // We use a non-ws:// scheme with all required NWC params — the regex-style
+        // checks in NwcConfig accept it, but Uri rejects ws/wss-only scheme is handled
+        // by ClientWebSocket itself, so we choose an outright invalid URI.
+        const string brokenUri =
+            "nostr+walletconnect://0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" +
+            "?relay=ht%tp://broken%%%" +
+            "&secret=fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+
+        var prevConn = Environment.GetEnvironmentVariable("NWC_CONNECTION_STRING");
+        try
+        {
+            Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", brokenUri);
+            using var http = new HttpClient();
+            var svc = new LightningEnable.Mcp.Services.NwcWalletService(http);
+
+            // If NwcConfig.Parse already rejected the URI, the service is
+            // unconfigured and GetBalanceAsync throws a "not configured" message.
+            // If it accepted it, SendNwcRequestAsync hits the Uri throw path.
+            // Either way the failure must be controlled — never UriFormatException.
+            var act = async () => await svc.GetBalanceAsync();
+            var ex = await act.Should().ThrowAsync<InvalidOperationException>();
+            ex.Which.Should().NotBeOfType<UriFormatException>();
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", prevConn);
+        }
+    }
+
+    #endregion
+
 }

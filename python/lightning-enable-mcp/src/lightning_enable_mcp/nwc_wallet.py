@@ -160,6 +160,54 @@ def _compute_event_id(event: dict[str, Any]) -> str:
     return _sha256(serialized.encode()).hex()
 
 
+def _verify_nostr_event_signature(event: dict[str, Any]) -> bool:
+    """
+    Verify a Nostr event's BIP340 Schnorr signature against its claimed pubkey.
+
+    Returns True only if the recomputed event id matches the event's ``id`` field
+    AND the ``sig`` field is a valid BIP340 signature of that id under the claimed
+    ``pubkey``. Used by the INFO-event auto-detect path so a malicious relay can't
+    forge an INFO event attributed to the wallet pubkey and force an encryption
+    downgrade. Returns False on any malformed input (defensive).
+    """
+    try:
+        id_hex = event.get("id")
+        pubkey_hex = event.get("pubkey")
+        sig_hex = event.get("sig")
+        if (
+            not id_hex
+            or not pubkey_hex
+            or not sig_hex
+            or len(id_hex) != 64
+            or len(pubkey_hex) != 64
+            or len(sig_hex) != 128
+        ):
+            return False
+
+        # Recompute the event id from the canonical serialisation. Tampering
+        # with any field (including the encryption tag we're about to read)
+        # produces a different id.
+        recomputed_id = _compute_event_id(event)
+        if recomputed_id.lower() != id_hex.lower():
+            return False
+
+        from secp256k1 import PublicKey
+
+        pubkey_bytes = bytes.fromhex(pubkey_hex)
+        sig_bytes = bytes.fromhex(sig_hex)
+        id_bytes = bytes.fromhex(id_hex)
+
+        # secp256k1.PublicKey takes a 33-byte compressed pubkey; x-only pubkey is
+        # 32 bytes so we prefix 0x02 (assume even y, NIP-340 convention).
+        compressed = b"\x02" + pubkey_bytes
+        pubkey = PublicKey(compressed, raw=True)
+        # schnorr_verify takes (msg, sig, raw=True). Returns True iff valid.
+        return bool(pubkey.schnorr_verify(id_bytes, sig_bytes, None, raw=True))
+    except Exception:
+        # Defensive: any parsing/crypto exception → treat as unverified.
+        return False
+
+
 def _sign_event(event: dict[str, Any], secret_key: bytes) -> str:
     """
     Sign a Nostr event using secp256k1.
@@ -751,10 +799,24 @@ class NWCWallet:
                     if event.get("kind") != 13194:
                         continue
 
-                    # Defence in depth: also verify the event was published by
-                    # the wallet pubkey we're talking to.
+                    # Defence in depth: verify the event was published by the
+                    # wallet pubkey we're talking to.
                     pubkey_hex = event.get("pubkey", "")
                     if pubkey_hex.lower() != self.config.wallet_pubkey.lower():
+                        continue
+
+                    # Cryptographic verification of the event signature.
+                    # Without this, a malicious relay could forge a kind 13194
+                    # event attributed to the wallet pubkey and force an
+                    # encryption downgrade or DoS. Recomputes the event id
+                    # from the canonical serialisation and verifies the BIP340
+                    # Schnorr signature against the claimed pubkey — any
+                    # tampered tag (including the encryption tag we're about
+                    # to read) breaks verification.
+                    if not _verify_nostr_event_signature(event):
+                        logger.info(
+                            "NWC INFO event signature verification failed; ignoring"
+                        )
                         continue
 
                     enc_tag_value: str | None = None

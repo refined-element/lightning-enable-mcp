@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json.Nodes;
 using LightningEnable.Mcp.Services;
 using NBitcoin.Secp256k1;
 
@@ -523,6 +524,117 @@ public class NwcWalletServiceTests
         // fall back to nip04 for missing/unknown tag values.
         LightningEnable.Mcp.Services.NwcWalletService.PickEncryptionFromInfoTag(tagValue)
             .Should().Be(expected);
+    }
+
+    [Fact]
+    public void VerifyNostrEventSignature_ValidEvent_ReturnsTrue()
+    {
+        // Sign-then-verify round trip. Builds a kind 13194 INFO-shaped event,
+        // signs it with the wallet keypair, then verifies. Establishes the
+        // baseline that genuine events pass.
+        var (privKey, pubKeyBytes) = GenerateKeyPair();
+        var pubkeyHex = Convert.ToHexString(pubKeyBytes).ToLowerInvariant();
+        var ev = BuildSignedInfoEvent(privKey, pubkeyHex, "nip04 nip44_v2");
+
+        LightningEnable.Mcp.Services.NwcWalletService.VerifyNostrEventSignature(ev)
+            .Should().BeTrue("a correctly signed event must verify");
+    }
+
+    [Fact]
+    public void VerifyNostrEventSignature_TamperedEncryptionTag_ReturnsFalse()
+    {
+        // The core security guarantee: a relay-injected event with a forged
+        // encryption tag (but otherwise looking like the wallet's INFO event)
+        // must fail verification. Tamper after signing — the recomputed event
+        // id won't match the claimed id, so verification fails.
+        var (privKey, pubKeyBytes) = GenerateKeyPair();
+        var pubkeyHex = Convert.ToHexString(pubKeyBytes).ToLowerInvariant();
+        var ev = BuildSignedInfoEvent(privKey, pubkeyHex, "nip04 nip44_v2");
+
+        // Mutate the encryption tag to force a downgrade. Without sig verify,
+        // the auto-detect path would happily read this and switch encryption.
+        ev["tags"]!.AsArray()
+            .Where(t => t?.AsArray()?[0]?.GetValue<string>() == "encryption")
+            .Select(t => t!.AsArray())
+            .First()[1] = "nip04";
+
+        LightningEnable.Mcp.Services.NwcWalletService.VerifyNostrEventSignature(ev)
+            .Should().BeFalse("tampering with the encryption tag must invalidate the signature");
+    }
+
+    [Fact]
+    public void VerifyNostrEventSignature_WrongSignature_ReturnsFalse()
+    {
+        // Substitute a signature from a different keypair — pubkey unchanged
+        // but sig signed by attacker's key. Must fail.
+        var (alicePriv, alicePubBytes) = GenerateKeyPair();
+        var (bobPriv, _) = GenerateKeyPair();
+        var alicePubHex = Convert.ToHexString(alicePubBytes).ToLowerInvariant();
+
+        // Alice's event with Bob's signature
+        var ev = BuildSignedInfoEvent(alicePriv, alicePubHex, "nip04 nip44_v2");
+        var idBytes = Convert.FromHexString(ev["id"]!.GetValue<string>());
+        bobPriv.TrySignBIP340(idBytes, null, out var fakeSig);
+        ev["sig"] = Convert.ToHexString(fakeSig!.ToBytes()).ToLowerInvariant();
+
+        LightningEnable.Mcp.Services.NwcWalletService.VerifyNostrEventSignature(ev)
+            .Should().BeFalse("a signature from the wrong key must not verify");
+    }
+
+    [Fact]
+    public void VerifyNostrEventSignature_MalformedFields_ReturnsFalse()
+    {
+        // Defensive checks — malformed/missing fields must not throw.
+        LightningEnable.Mcp.Services.NwcWalletService.VerifyNostrEventSignature(new JsonObject())
+            .Should().BeFalse("empty event");
+
+        var ev = new JsonObject
+        {
+            ["id"] = "not-hex",
+            ["pubkey"] = "also-not-hex",
+            ["sig"] = "neither",
+            ["created_at"] = 1L,
+            ["kind"] = 13194,
+            ["tags"] = new JsonArray(),
+            ["content"] = ""
+        };
+        LightningEnable.Mcp.Services.NwcWalletService.VerifyNostrEventSignature(ev)
+            .Should().BeFalse("malformed hex must not throw");
+    }
+
+    private static JsonObject BuildSignedInfoEvent(ECPrivKey privKey, string pubkeyHex, string encryptionTagValue)
+    {
+        var createdAt = 1700000000L;
+        var tags = new JsonArray
+        {
+            new JsonArray { "encryption", encryptionTagValue }
+        };
+        var content = "Wallet capabilities: pay_invoice get_balance";
+
+        // Compute the canonical event id the same way ComputeEventId does
+        // (private — replicated here so the test is self-contained).
+        var eventArray = new JsonArray
+        {
+            0, pubkeyHex, createdAt, 13194,
+            JsonNode.Parse(tags.ToJsonString())!,
+            content
+        };
+        var serialized = eventArray.ToJsonString();
+        var hash = System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(serialized));
+        var id = Convert.ToHexString(hash).ToLowerInvariant();
+
+        privKey.TrySignBIP340(hash, null, out var sig);
+
+        return new JsonObject
+        {
+            ["id"] = id,
+            ["pubkey"] = pubkeyHex,
+            ["created_at"] = createdAt,
+            ["kind"] = 13194,
+            ["tags"] = JsonNode.Parse(tags.ToJsonString()),
+            ["content"] = content,
+            ["sig"] = Convert.ToHexString(sig!.ToBytes()).ToLowerInvariant()
+        };
     }
 
     [Fact]

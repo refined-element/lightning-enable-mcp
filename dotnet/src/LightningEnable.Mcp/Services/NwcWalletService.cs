@@ -584,12 +584,24 @@ public class NwcWalletService : IWalletService, IDisposable
                     var ev = parsed[2]?.AsObject();
                     if (ev?["kind"]?.GetValue<int>() != 13194) continue;
 
-                    // Defence in depth: also verify the event was published by the
-                    // wallet pubkey we're talking to. If a relay replays an unrelated
-                    // 13194 from another author under our subscription id, ignore it.
+                    // Defence in depth: verify the event was published by the wallet
+                    // pubkey we're talking to.
                     var pubkeyHex = ev["pubkey"]?.GetValue<string>();
                     if (!string.Equals(pubkeyHex, _config.WalletPubkey, StringComparison.OrdinalIgnoreCase))
                         continue;
+
+                    // Cryptographic verification of the event signature. Without this,
+                    // a malicious relay could forge a kind 13194 event attributed to
+                    // the wallet pubkey and force an encryption downgrade or DoS.
+                    // VerifyNostrEventSignature recomputes the event id from the
+                    // canonical serialisation and verifies the BIP340 Schnorr signature
+                    // against the claimed pubkey — so any tampered tag (including the
+                    // encryption tag we're about to read) breaks verification.
+                    if (!VerifyNostrEventSignature(ev))
+                    {
+                        Console.Error.WriteLine("[NWC] INFO event signature verification failed; ignoring");
+                        continue;
+                    }
 
                     var encTagValue = ev["tags"]?.AsArray()
                         .Select(t => t?.AsArray())
@@ -1015,6 +1027,58 @@ public class NwcWalletService : IWalletService, IDisposable
         var serialized = eventArray.ToJsonString(NostrJsonOptions);
         var hash = System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(serialized));
         return Convert.ToHexString(hash).ToLowerInvariant();
+    }
+
+    /// <summary>
+    /// Verifies a Nostr event's BIP340 Schnorr signature against its claimed pubkey.
+    /// Returns true only if the recomputed event id matches the event's <c>id</c> field
+    /// AND the <c>sig</c> field is a valid BIP340 signature of that id under the
+    /// claimed <c>pubkey</c>. Used by the INFO-event auto-detect path so a malicious
+    /// relay can't forge an INFO event attributed to the wallet pubkey and force an
+    /// encryption downgrade. Returns false on any malformed input.
+    /// </summary>
+    internal static bool VerifyNostrEventSignature(JsonObject ev)
+    {
+        try
+        {
+            var idHex = ev["id"]?.GetValue<string>();
+            var pubkeyHex = ev["pubkey"]?.GetValue<string>();
+            var sigHex = ev["sig"]?.GetValue<string>();
+            var createdAt = ev["created_at"]?.GetValue<long>();
+            var kind = ev["kind"]?.GetValue<int>();
+            var tags = ev["tags"]?.AsArray();
+            var content = ev["content"]?.GetValue<string>();
+
+            if (idHex == null || pubkeyHex == null || sigHex == null
+                || createdAt == null || kind == null || tags == null || content == null)
+                return false;
+            if (idHex.Length != 64 || pubkeyHex.Length != 64 || sigHex.Length != 128)
+                return false;
+
+            // Recompute the event id from the canonical serialisation. If the event
+            // was tampered with (e.g. relay swapped the encryption tag), the recomputed
+            // id won't match the claimed id.
+            var recomputedId = ComputeEventId(pubkeyHex, createdAt.Value, kind.Value, tags, content);
+            if (!string.Equals(recomputedId, idHex, StringComparison.OrdinalIgnoreCase))
+                return false;
+
+            var pubkeyBytes = Convert.FromHexString(pubkeyHex);
+            var sigBytes = Convert.FromHexString(sigHex);
+            var idBytes = Convert.FromHexString(idHex);
+
+            if (!ECXOnlyPubKey.TryCreate(pubkeyBytes, out var pubkey) || pubkey == null)
+                return false;
+            if (!SecpSchnorrSignature.TryCreate(sigBytes, out var sig) || sig == null)
+                return false;
+
+            // BIP340 Schnorr verify. Returns false on signature mismatch.
+            return pubkey.SigVerifyBIP340(sig, idBytes);
+        }
+        catch
+        {
+            // Defensive: any parsing/crypto exception → treat as unverified.
+            return false;
+        }
     }
 
     /// <summary>

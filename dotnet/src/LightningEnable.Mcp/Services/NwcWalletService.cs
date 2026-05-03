@@ -69,6 +69,16 @@ public class NwcWalletService : IWalletService, IDisposable
     /// </summary>
     internal static TimeSpan AutoResolveTimeout = TimeSpan.FromSeconds(3);
 
+    /// <summary>
+    /// Test-only instrumentation. Incremented every time
+    /// <see cref="FetchEncryptionFromInfoEventAsync"/> is actually invoked
+    /// (i.e., NOT when the cache short-circuits). Tests assert this stays at 1
+    /// across multiple <see cref="ResolveAutoEncryptionAsync"/> calls to verify
+    /// the cache is working — preferred over wall-clock timing thresholds which
+    /// flake on busy CI agents.
+    /// </summary>
+    internal int InfoEventFetchCount;
+
     public NwcWalletService(HttpClient httpClient, IBudgetConfigurationService? budgetConfigService = null)
     {
         _httpClient = httpClient;
@@ -513,6 +523,10 @@ public class NwcWalletService : IWalletService, IDisposable
     private async Task<string> FetchEncryptionFromInfoEventAsync(CancellationToken cancellationToken)
     {
         if (_config == null) return NwcEncryption.Nip04;
+
+        // Test-only: count actual fetcher invocations so cache-hit tests can
+        // assert this stays at 1 instead of relying on wall-clock thresholds.
+        System.Threading.Interlocked.Increment(ref InfoEventFetchCount);
 
         using var ws = new ClientWebSocket();
         try
@@ -1344,6 +1358,10 @@ public class NwcWalletService : IWalletService, IDisposable
     {
         if (!_disposed)
         {
+            // SemaphoreSlim is IDisposable — its underlying wait handle leaks if
+            // we don't release it explicitly. Matters for long-running processes
+            // that recreate the wallet service (e.g. config reload).
+            _autoResolveLock?.Dispose();
             _disposed = true;
         }
     }

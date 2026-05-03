@@ -538,9 +538,14 @@ public class NwcWalletServiceTests
             "&secret=fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
 
         var prevConn = Environment.GetEnvironmentVariable("NWC_CONNECTION_STRING");
+        var prevEnc = Environment.GetEnvironmentVariable("NWC_ENCRYPTION");
         try
         {
             Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", unreachable);
+            // Force "auto" mode regardless of what the dev/CI env has pinned —
+            // an env-var-pinned NWC_ENCRYPTION would skip the resolver entirely
+            // and break the test's intent.
+            Environment.SetEnvironmentVariable("NWC_ENCRYPTION", null);
             using var http = new HttpClient();
             var svc = new LightningEnable.Mcp.Services.NwcWalletService(http);
 
@@ -553,42 +558,47 @@ public class NwcWalletServiceTests
         finally
         {
             Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", prevConn);
+            Environment.SetEnvironmentVariable("NWC_ENCRYPTION", prevEnc);
         }
     }
 
     [Fact]
     public async Task ResolveAutoEncryptionAsync_CachesResultAcrossCalls()
     {
-        // The first call may pay the relay round-trip; subsequent calls must hit
-        // the in-instance cache and return immediately. Verified by timing: even
-        // the second call against an unreachable relay should be instant because
-        // the first call already populated the cache with the nip04 fallback.
+        // First call resolves via the relay (or fallback); the second call must
+        // be served from the in-instance cache without re-running the fetcher.
+        // Asserted via the InfoEventFetchCount instrumentation counter rather
+        // than wall-clock timing — busy CI agents can violate timing thresholds
+        // even when the cache is working correctly.
         const string unreachable =
             "nostr+walletconnect://0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" +
             "?relay=ws://127.0.0.1:1" +
             "&secret=fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
 
         var prevConn = Environment.GetEnvironmentVariable("NWC_CONNECTION_STRING");
+        var prevEnc = Environment.GetEnvironmentVariable("NWC_ENCRYPTION");
         try
         {
             Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", unreachable);
+            Environment.SetEnvironmentVariable("NWC_ENCRYPTION", null);
             using var http = new HttpClient();
             var svc = new LightningEnable.Mcp.Services.NwcWalletService(http);
 
             using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+
+            svc.InfoEventFetchCount.Should().Be(0, "fetcher hasn't been invoked yet");
             var first = await svc.ResolveAutoEncryptionAsync(cts.Token);
+            svc.InfoEventFetchCount.Should().Be(1, "first call must invoke the fetcher exactly once");
 
-            var sw = System.Diagnostics.Stopwatch.StartNew();
             var second = await svc.ResolveAutoEncryptionAsync(cts.Token);
-            sw.Stop();
-
+            svc.InfoEventFetchCount.Should().Be(1,
+                "second call must hit the cache — fetcher count must NOT increment");
             second.Should().Be(first, "cached result must equal first resolution");
-            sw.ElapsedMilliseconds.Should().BeLessThan(50,
-                "second call must hit the cache, not redo the relay round-trip");
         }
         finally
         {
             Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", prevConn);
+            Environment.SetEnvironmentVariable("NWC_ENCRYPTION", prevEnc);
         }
     }
 

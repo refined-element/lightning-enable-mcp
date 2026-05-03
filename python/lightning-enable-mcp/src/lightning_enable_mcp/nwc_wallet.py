@@ -682,11 +682,19 @@ class NWCWallet:
         NIP-04 fallback so a flaky relay or older wallet doesn't make every
         future request fail.
         """
+        # Wall-clock deadline for the whole fetch. The previous implementation
+        # decremented a synthetic ``deadline_remaining`` constant per recv() loop
+        # which both overshot the budget when recv was slow and undershot when
+        # many small messages arrived quickly. We track real elapsed time via
+        # time.monotonic() so the cap is faithfully enforced regardless of
+        # message rate or system load.
+        deadline = time.monotonic() + NWC_AUTO_RESOLVE_TIMEOUT_SECONDS
         ws = None
         try:
+            connect_remaining = max(0.0, deadline - time.monotonic())
             ws = await asyncio.wait_for(
                 websockets.connect(self.config.relay_url),
-                timeout=NWC_AUTO_RESOLVE_TIMEOUT_SECONDS,
+                timeout=connect_remaining,
             )
 
             sub_id = secrets.token_hex(8)
@@ -703,20 +711,19 @@ class NWCWallet:
             )
             await ws.send(req)
 
-            # Drain messages up to the timeout. The wallet service publishes
+            # Drain messages until the deadline. The wallet service publishes
             # 13194 to the relay; relays usually have it stored, so we get
             # EVENT then EOSE quickly. Older wallets that never published
             # one trigger EOSE without an EVENT and we fall back.
-            deadline_remaining = NWC_AUTO_RESOLVE_TIMEOUT_SECONDS
             while True:
-                if deadline_remaining <= 0:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
                     logger.info(
                         "NWC INFO-event fetch timed out after %ss; falling back to NIP-04",
                         NWC_AUTO_RESOLVE_TIMEOUT_SECONDS,
                     )
                     return NWC_ENCRYPTION_NIP04
-                msg_raw = await asyncio.wait_for(ws.recv(), timeout=deadline_remaining)
-                deadline_remaining -= 0.05  # rough — receive returned, drop a bit
+                msg_raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
                 try:
                     data = json.loads(msg_raw)
                 except json.JSONDecodeError:

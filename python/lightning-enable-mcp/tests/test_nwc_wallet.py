@@ -617,12 +617,16 @@ class TestNWCEncryptionDefault:
     @pytest.mark.asyncio
     @patch("lightning_enable_mcp.nwc_wallet._get_pubkey", return_value="aa" * 32)
     async def test_resolve_auto_encryption_unreachable_relay_falls_back_to_nip04(
-        self, _mock_pubkey
+        self, _mock_pubkey, monkeypatch
     ):
         # INFO-event fetch must NEVER throw on operational failures — a missing
         # or unreachable relay falls back to nip04 so a real request can still
         # go out. Without this guarantee, every call would fail with "auto" mode
         # whenever the relay was flaky.
+        # Force "auto" mode regardless of what the dev/CI env has pinned —
+        # an env-var-pinned NWC_ENCRYPTION would skip the resolver entirely
+        # and break the test's intent.
+        monkeypatch.delenv("NWC_ENCRYPTION", raising=False)
         unreachable_uri = (
             "nostr+walletconnect://"
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -637,31 +641,36 @@ class TestNWCEncryptionDefault:
 
     @pytest.mark.asyncio
     @patch("lightning_enable_mcp.nwc_wallet._get_pubkey", return_value="aa" * 32)
-    async def test_resolve_auto_encryption_caches_result(self, _mock_pubkey):
+    async def test_resolve_auto_encryption_caches_result(
+        self, _mock_pubkey, monkeypatch
+    ):
         # Second call must be served from the cache without reaching the relay.
-        # Verified by timing — second call against an unreachable relay should
-        # be effectively instant since the first already populated the cache.
-        import time as time_mod
+        # Asserted by patching the fetcher and counting invocations rather than
+        # using wall-clock timing — busy CI agents can violate timing thresholds
+        # even when the cache is working correctly.
+        monkeypatch.delenv("NWC_ENCRYPTION", raising=False)
+        wallet = NWCWallet(_TEST_NWC_URI)
 
-        unreachable_uri = (
-            "nostr+walletconnect://"
-            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-            "?relay=ws://127.0.0.1:1"
-            "&secret=fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
-        )
-        wallet = NWCWallet(unreachable_uri)
+        # Patch the fetcher on this wallet instance to a counting stub. We don't
+        # want to actually open a WebSocket — the resolver's contract is "fetch
+        # once, cache, return cached on subsequent calls".
+        call_count = 0
+
+        async def _stub_fetch():
+            nonlocal call_count
+            call_count += 1
+            return "nip04"
+
+        monkeypatch.setattr(wallet, "_fetch_encryption_from_info_event", _stub_fetch)
 
         first = await wallet._resolve_auto_encryption()
+        assert call_count == 1, "first call must invoke the fetcher exactly once"
 
-        start = time_mod.perf_counter()
         second = await wallet._resolve_auto_encryption()
-        elapsed_ms = (time_mod.perf_counter() - start) * 1000
-
-        assert second == first, "cached result must equal first resolution"
-        assert elapsed_ms < 50, (
-            f"second call must hit the cache, not redo the relay round-trip "
-            f"(took {elapsed_ms:.1f} ms)"
+        assert call_count == 1, (
+            "second call must hit the cache — fetcher count must NOT increment"
         )
+        assert second == first, "cached result must equal first resolution"
 
     @patch("lightning_enable_mcp.nwc_wallet._get_pubkey", return_value="aa" * 32)
     def test_explicit_env_var_pin_does_not_resolve_to_auto(

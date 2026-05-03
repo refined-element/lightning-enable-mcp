@@ -439,25 +439,35 @@ public class NwcWalletService : IWalletService, IDisposable
         Console.Error.WriteLine($"[NWC] Sending request, method: {expectedResultType}, encryption: {_config.Encryption}");
 
         using var ws = new ClientWebSocket();
-        var relayUri = new Uri(_config.RelayUrl);
+        Uri relayUri;
 
         // Connect first; report a specific failure kind if the WS handshake itself fails.
         // Separating connect from send/receive lets the caller distinguish "couldn't reach
         // the relay" from "relay accepted us but the wallet never replied" — the latter
         // is the most common silent-encryption-mismatch symptom.
+        // Uri construction is included in the try because a malformed RelayUrl would
+        // throw UriFormatException; that has to flow through the structured outcome
+        // rather than escape as an unhandled exception to the caller.
         try
         {
+            relayUri = new Uri(_config.RelayUrl);
             Console.Error.WriteLine($"[NWC] Connecting to: {relayUri}");
             await ws.ConnectAsync(relayUri, cancellationToken);
             Console.Error.WriteLine($"[NWC] Connected, state: {ws.State}");
         }
-        catch (OperationCanceledException)
+        catch (UriFormatException ex)
         {
-            return NwcSendOutcome.Fail(FailKindCancelled, $"Cancelled before WebSocket connection to {relayUri} completed");
+            return NwcSendOutcome.Fail(FailKindConnect, $"Configured NWC relay URL '{_config.RelayUrl}' is not a valid URI: {ex.Message}");
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // Caller cancelled — preserve cancelled semantics. (At this point
+            // the only token in flight is the caller's; no timeout is armed yet.)
+            return NwcSendOutcome.Fail(FailKindCancelled, $"Cancelled before WebSocket connection to {_config.RelayUrl} completed");
         }
         catch (Exception ex)
         {
-            return NwcSendOutcome.Fail(FailKindConnect, $"WebSocket connection to {relayUri} failed: {ex.Message}");
+            return NwcSendOutcome.Fail(FailKindConnect, $"WebSocket connection to {_config.RelayUrl} failed: {ex.Message}");
         }
 
         try
@@ -666,14 +676,34 @@ public class NwcWalletService : IWalletService, IDisposable
         }
         catch (OperationCanceledException)
         {
-            Console.Error.WriteLine("[NWC] Operation cancelled/timeout");
-            return NwcSendOutcome.Fail(FailKindCancelled,
-                $"Operation cancelled or timed out after sending request (encryption={_config.Encryption}).");
+            // Both the caller's token and the 30s timeout token feed the linked CTS
+            // used for ReceiveAsync. Distinguish so that a silent-encryption-mismatch
+            // timeout (the common Primal/CoinOS/Alby case) reports as no_response
+            // with the encryption-swap hint, and an actual caller cancellation reports
+            // as cancelled. Callers can also discriminate on FailKind to decide
+            // retry/abort behavior.
+            if (cancellationToken.IsCancellationRequested)
+            {
+                Console.Error.WriteLine("[NWC] Caller cancellation observed");
+                return NwcSendOutcome.Fail(FailKindCancelled,
+                    $"Operation cancelled by caller after sending request (encryption={_config.Encryption}).");
+            }
+
+            Console.Error.WriteLine("[NWC] 30s receive-loop timeout — no matching response from wallet");
+            var altScheme = _config.Encryption == NwcEncryption.Nip44V2 ? NwcEncryption.Nip04 : NwcEncryption.Nip44V2;
+            return NwcSendOutcome.Fail(FailKindNoResponse,
+                $"Wallet did not respond within 30s using {_config.Encryption} encryption. " +
+                $"Most common cause: encryption mismatch — try setting NWC_ENCRYPTION={altScheme} " +
+                $"if your wallet (e.g. Alby Hub for nip44_v2; Primal/CoinOS for nip04) requires the other scheme.");
         }
         catch (Exception ex)
         {
+            // Unknown bucket — protocol_error is reserved for confirmed parse/decrypt
+            // issues, which the receive loop catches and `continue`s rather than
+            // letting bubble. Anything that escapes to here (socket send failures,
+            // unexpected errors, etc.) is genuinely unclassified.
             Console.Error.WriteLine($"[NWC] Exception: {ex.Message}");
-            return NwcSendOutcome.Fail(FailKindProtocol,
+            return NwcSendOutcome.Fail(FailKindUnknown,
                 $"Unexpected error after WebSocket connect (encryption={_config.Encryption}): {ex.Message}");
         }
         finally
@@ -780,13 +810,19 @@ public class NwcWalletService : IWalletService, IDisposable
         var sharedPoint = recipientPubKey.GetSharedPubkey(senderPrivKey);
         var sharedX = sharedPoint.ToBytes()[1..33]; // Take x-coordinate only
 
-        // Encrypt with AES-256-CBC
+        // Encrypt with AES-256-CBC.
+        // Per NIP-04 spec the AES key is sha256(shared_x), NOT raw shared_x.
+        // The raw-shared_x form previously used here was internally consistent
+        // (encrypt + decrypt agreed) but incompatible with every other NIP-04
+        // implementation (Python port in this repo, Primal, CoinOS, Mutiny, etc.)
+        // which would mean ciphertext we send under nip04 wasn't decryptable by
+        // any real wallet. Fixed before flipping the default to nip04.
         var plaintextBytes = Encoding.UTF8.GetBytes(plaintext);
         var iv = new byte[16];
         RandomNumberGenerator.Fill(iv);
 
         using var aes = Aes.Create();
-        aes.Key = sharedX; // Use raw x-coordinate as key (NIP-04 spec)
+        aes.Key = System.Security.Cryptography.SHA256.HashData(sharedX);
         aes.IV = iv;
         aes.Mode = CipherMode.CBC;
         aes.Padding = PaddingMode.PKCS7;
@@ -926,9 +962,11 @@ public class NwcWalletService : IWalletService, IDisposable
         var sharedPoint = senderPubKey.GetSharedPubkey(recipientPrivKey);
         var sharedX = sharedPoint.ToBytes()[1..33]; // Take x-coordinate only
 
-        // Decrypt with AES-256-CBC
+        // Decrypt with AES-256-CBC. NIP-04 derives the key as sha256(shared_x);
+        // see EncryptNip04 for context on why the previous raw-shared_x form was
+        // wrong and why this is symmetric with the encrypt side.
         using var aes = Aes.Create();
-        aes.Key = sharedX; // Use raw x-coordinate as key (NIP-04 spec)
+        aes.Key = System.Security.Cryptography.SHA256.HashData(sharedX);
         aes.IV = iv;
         aes.Mode = CipherMode.CBC;
         aes.Padding = PaddingMode.PKCS7;

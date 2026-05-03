@@ -2,6 +2,7 @@
 Tests for NWC Wallet
 """
 
+import asyncio
 import base64
 import hashlib
 import hmac
@@ -585,6 +586,61 @@ class TestNWCEncryptionDefault:
         assert any(
             "nip-something-bogus" in rec.getMessage() for rec in caplog.records
         )
+
+    def test_encrypt_content_returns_string_not_none(self):
+        # Regression test for the dead-try fall-through bug: ``_encrypt_content``
+        # used to return None when pycryptodome (``Crypto``) was importable, because
+        # the only ``return`` lived inside the ``except ImportError`` fallback.
+        # The post-fix invariant: the function always returns a NIP-04-shaped
+        # string. Skipped when ``secp256k1`` (a C lib) isn't installed locally;
+        # CI has it.
+        secp = pytest.importorskip("secp256k1")
+        from lightning_enable_mcp.nwc_wallet import _encrypt_content
+
+        secret = bytes.fromhex(
+            "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
+        )
+        # Bob's pubkey: secp256k1 generator point x-coordinate (a known-valid
+        # x-only pubkey we can hardcode without re-deriving in the test).
+        recipient_pubkey = (
+            "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+        )
+
+        result = _encrypt_content("hello", secret, recipient_pubkey)
+        assert isinstance(result, str), (
+            "must always return a string — None means the dead-try fall-through "
+            "bug regressed"
+        )
+        assert "?iv=" in result, "NIP-04 ciphertext must use the ?iv= separator"
+        ciphertext_b64, iv_b64 = result.split("?iv=", 1)
+        assert ciphertext_b64
+        assert iv_b64
+
+    @pytest.mark.asyncio
+    @patch("lightning_enable_mcp.nwc_wallet._get_pubkey", return_value="aa" * 32)
+    async def test_connect_propagates_asyncio_cancelled_error(
+        self, _mock_pubkey, monkeypatch
+    ):
+        # Regression test for the broad-except wrapping CancelledError. Caller-driven
+        # cancellation (e.g. MCP request cancellation, server shutdown) must
+        # propagate as ``asyncio.CancelledError`` — not get wrapped as a
+        # ``connect_failed`` ``NWCConnectionError``, which would break standard
+        # task-cancellation semantics.
+        from lightning_enable_mcp.nwc_wallet import NWCWallet
+
+        wallet = NWCWallet(_TEST_NWC_URI)
+
+        async def _cancelling_connect(*_args, **_kwargs):
+            raise asyncio.CancelledError()
+
+        # Patch websockets.connect to raise CancelledError mid-connect. If the
+        # ``except asyncio.CancelledError: raise`` re-raise is missing, the broad
+        # except will wrap it and we'll see NWCConnectionError instead.
+        monkeypatch.setattr(
+            "lightning_enable_mcp.nwc_wallet.websockets.connect", _cancelling_connect
+        )
+        with pytest.raises(asyncio.CancelledError):
+            await wallet.connect()
 
     @pytest.mark.asyncio
     @patch("lightning_enable_mcp.nwc_wallet._get_pubkey", return_value="aa" * 32)

@@ -169,7 +169,7 @@ def _get_pubkey(secret_key: bytes) -> str:
 
 def _encrypt_content(plaintext: str, secret_key: bytes, recipient_pubkey: str) -> str:
     """
-    Encrypt content using NIP-04 (shared secret + AES-256-CBC).
+    Encrypt content using NIP-04 (ECDH + sha256 + AES-256-CBC).
 
     Args:
         plaintext: Content to encrypt
@@ -179,43 +179,40 @@ def _encrypt_content(plaintext: str, secret_key: bytes, recipient_pubkey: str) -
     Returns:
         Encrypted content in NIP-04 format: base64(ciphertext)?iv=base64(iv)
     """
+    # The previous implementation had a try/except ImportError block that
+    # only returned a value inside the except branch — when pycryptodome
+    # (``Crypto``) WAS installed, the function fell through and returned
+    # None, producing an invalid Nostr event content. ``cryptography`` is
+    # already a hard dependency of this package (see pyproject.toml) so
+    # there is no reason to branch; collapsed to a single code path.
     import base64
     import os
     from hashlib import sha256
 
-    try:
-        from secp256k1 import PrivateKey, PublicKey
-        from Crypto.Cipher import AES
-        from Crypto.Util.Padding import pad
-    except ImportError:
-        # Fallback to cryptography library
-        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-        from cryptography.hazmat.backends import default_backend
-        from secp256k1 import PrivateKey, PublicKey
+    from cryptography.hazmat.backends import default_backend
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    from secp256k1 import PrivateKey, PublicKey  # noqa: F401  (PrivateKey not used here, kept for parity)
 
-        # Compute shared secret
-        privkey = PrivateKey(secret_key)
-        recipient_bytes = bytes.fromhex(recipient_pubkey)
-        # Add prefix for compressed pubkey
-        if len(recipient_bytes) == 32:
-            recipient_bytes = b"\x02" + recipient_bytes
-        pubkey = PublicKey(recipient_bytes, raw=True)
-        shared_point = pubkey.tweak_mul(secret_key)
-        shared_secret = sha256(shared_point.serialize()[1:33]).digest()
+    # Compute shared secret. Per NIP-04: AES key = sha256(shared_x).
+    recipient_bytes = bytes.fromhex(recipient_pubkey)
+    if len(recipient_bytes) == 32:
+        # Add prefix for compressed pubkey (assume even y-coordinate)
+        recipient_bytes = b"\x02" + recipient_bytes
+    pubkey = PublicKey(recipient_bytes, raw=True)
+    shared_point = pubkey.tweak_mul(secret_key)
+    shared_secret = sha256(shared_point.serialize()[1:33]).digest()
 
-        # Generate IV and encrypt
-        iv = os.urandom(16)
-        cipher = Cipher(algorithms.AES(shared_secret), modes.CBC(iv), backend=default_backend())
-        encryptor = cipher.encryptor()
+    # Generate IV and encrypt with AES-256-CBC + PKCS7 padding
+    iv = os.urandom(16)
+    cipher = Cipher(algorithms.AES(shared_secret), modes.CBC(iv), backend=default_backend())
+    encryptor = cipher.encryptor()
 
-        # PKCS7 padding
-        plaintext_bytes = plaintext.encode("utf-8")
-        padding_len = 16 - (len(plaintext_bytes) % 16)
-        padded = plaintext_bytes + bytes([padding_len] * padding_len)
+    plaintext_bytes = plaintext.encode("utf-8")
+    padding_len = 16 - (len(plaintext_bytes) % 16)
+    padded = plaintext_bytes + bytes([padding_len] * padding_len)
 
-        ciphertext = encryptor.update(padded) + encryptor.finalize()
-
-        return f"{base64.b64encode(ciphertext).decode()}?iv={base64.b64encode(iv).decode()}"
+    ciphertext = encryptor.update(padded) + encryptor.finalize()
+    return f"{base64.b64encode(ciphertext).decode()}?iv={base64.b64encode(iv).decode()}"
 
 
 def _calc_padded_len(unpadded_len: int) -> int:
@@ -528,6 +525,12 @@ class NWCWallet:
             self._connected = True
             self._response_task = asyncio.create_task(self._handle_responses())
             logger.info(f"Connected to NWC relay: {self.config.relay_url}")
+        except asyncio.CancelledError:
+            # Cancellation must propagate untouched — wrapping it as a
+            # connect_failed NWCConnectionError would break standard task
+            # cancellation semantics for callers (e.g. MCP request cancellations,
+            # server shutdown). The broad except below would otherwise swallow it.
+            raise
         except Exception as e:
             raise NWCConnectionError(
                 f"NWC request failed ({NWC_FAIL_CONNECT}): "

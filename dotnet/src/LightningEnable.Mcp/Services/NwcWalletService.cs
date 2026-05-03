@@ -113,7 +113,7 @@ public class NwcWalletService : IWalletService, IDisposable
                 }
                 else
                 {
-                    Console.Error.WriteLine($"[NWC] Ignoring invalid NWC_ENCRYPTION='{encOverride}' (allowed: nip04, nip44_v2). Falling back to default '{NwcEncryption.Default}'.");
+                    Console.Error.WriteLine($"[NWC] Ignoring invalid NWC_ENCRYPTION='{encOverride}' (allowed: {NwcEncryption.AllowedValuesCsv}). Falling back to default '{NwcEncryption.Default}'.");
                 }
             }
 
@@ -574,19 +574,35 @@ public class NwcWalletService : IWalletService, IDisposable
                 var msgType = parsed[0]?.GetValue<string>();
                 if (msgType == "EVENT" && parsed.Count >= 3)
                 {
+                    // Validate the subscription id matches the one we just generated.
+                    // A relay (or hostile peer) could otherwise inject an unsolicited
+                    // EVENT we'd treat as the wallet's INFO event and silently downgrade
+                    // (or upgrade) the encryption scheme used for real NIP-47 calls.
+                    var rcvSubId = parsed[1]?.GetValue<string>();
+                    if (rcvSubId != subId) continue;
+
                     var ev = parsed[2]?.AsObject();
-                    if (ev?["kind"]?.GetValue<int>() == 13194)
-                    {
-                        var encTagValue = ev["tags"]?.AsArray()
-                            .Select(t => t?.AsArray())
-                            .Where(t => t != null && t.Count >= 2 && t[0]?.GetValue<string>() == "encryption")
-                            .Select(t => t![1]?.GetValue<string>())
-                            .FirstOrDefault();
-                        return PickEncryptionFromInfoTag(encTagValue);
-                    }
+                    if (ev?["kind"]?.GetValue<int>() != 13194) continue;
+
+                    // Defence in depth: also verify the event was published by the
+                    // wallet pubkey we're talking to. If a relay replays an unrelated
+                    // 13194 from another author under our subscription id, ignore it.
+                    var pubkeyHex = ev["pubkey"]?.GetValue<string>();
+                    if (!string.Equals(pubkeyHex, _config.WalletPubkey, StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    var encTagValue = ev["tags"]?.AsArray()
+                        .Select(t => t?.AsArray())
+                        .Where(t => t != null && t.Count >= 2 && t[0]?.GetValue<string>() == "encryption")
+                        .Select(t => t![1]?.GetValue<string>())
+                        .FirstOrDefault();
+                    return PickEncryptionFromInfoTag(encTagValue);
                 }
                 else if (msgType == "EOSE")
                 {
+                    // EOSE is sub-id-scoped too — ignore EOSEs for other subscriptions.
+                    var rcvSubId = parsed[1]?.GetValue<string>();
+                    if (rcvSubId != subId) continue;
                     // No INFO event in stored history — older wallet that never
                     // published 13194. Fall back to NIP-04.
                     Console.Error.WriteLine("[NWC] No NIP-47 INFO event found; falling back to NIP-04");

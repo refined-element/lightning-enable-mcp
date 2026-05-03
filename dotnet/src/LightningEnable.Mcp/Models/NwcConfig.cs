@@ -39,6 +39,12 @@ public static class NwcEncryption
 
     public static bool IsValid(string? value) =>
         value == Nip04 || value == Nip44V2 || value == Auto;
+
+    /// <summary>
+    /// Comma-separated list of all valid encryption values. Used in user-facing
+    /// warning text so the message can never drift from <see cref="IsValid"/>.
+    /// </summary>
+    public static string AllowedValuesCsv => $"{Auto}, {Nip04}, {Nip44V2}";
 }
 
 /// <summary>
@@ -69,15 +75,20 @@ public record NwcConfig
 
     /// <summary>
     /// Outbound encryption scheme for NIP-47 requests sent to the wallet.
+    /// Default is <c>"auto"</c> — see <see cref="NwcEncryption.Default"/>.
     /// <list type="bullet">
-    ///   <item><c>"nip04"</c> (default) — widest compatibility. Required by Primal NWC, CoinOS, Mutiny, ZBD.
-    ///   These wallets accept the relay event but the wallet service silently drops events tagged
-    ///   <c>encryption=nip44_v2</c>, leading to a 30-second timeout with no response.</item>
-    ///   <item><c>"nip44_v2"</c> — required by some modern wallets like Alby Hub. Use this if your wallet
-    ///   never replies under the default.</item>
+    ///   <item><c>"auto"</c> (default) — fetch the wallet's NIP-47 INFO event (kind 13194)
+    ///   on first request, read the <c>encryption</c> tag, and pick the strongest
+    ///   advertised scheme. Falls back to <c>"nip04"</c> when the INFO event isn't
+    ///   available within ~3s. Result is cached on the service instance so subsequent
+    ///   requests have no extra round-trip.</item>
+    ///   <item><c>"nip04"</c> — original NIP-47 default. Compatible with Primal NWC,
+    ///   CoinOS, Mutiny, ZBD, and most other deployed wallets. Not accepted by Alby Hub.</item>
+    ///   <item><c>"nip44_v2"</c> — required by Alby Hub. Silently dropped by older wallets.</item>
     /// </list>
-    /// Inbound responses are auto-detected (NIP-04 by <c>?iv=</c> marker, NIP-44 v2 otherwise) regardless
-    /// of this setting. Override at runtime with the <c>NWC_ENCRYPTION</c> env var.
+    /// Inbound responses are auto-detected (NIP-04 by <c>?iv=</c> marker, NIP-44 v2 otherwise)
+    /// regardless of this setting — only outbound encoding is governed here.
+    /// Override at runtime with the <c>NWC_ENCRYPTION</c> env var.
     /// </summary>
     public string Encryption { get; init; } = NwcEncryption.Default;
 

@@ -521,10 +521,13 @@ class NWCWallet:
         Args:
             connection_string: nostr+walletconnect:// URI
 
-        Reads ``NWC_ENCRYPTION`` env var for outbound encryption override
-        (``nip04`` default; ``nip44_v2`` for wallets that require it, e.g. Alby Hub).
-        Invalid values fall back to the documented default with a warning so a typo
-        doesn't silently disable a previously-working wallet.
+        Reads ``NWC_ENCRYPTION`` env var for outbound encryption override.
+        Allowed values: ``auto`` (default — fetches the wallet's NIP-47 INFO
+        event and picks the strongest advertised scheme; falls back to ``nip04``
+        when no INFO event is available), ``nip04`` (force NIP-04), and
+        ``nip44_v2`` (force NIP-44 v2; required by some wallets like Alby Hub).
+        Invalid values fall back to the documented default with a warning so a
+        typo doesn't silently disable a previously-working wallet.
         """
         self.config = NWCConfig.from_uri(connection_string)
 
@@ -537,10 +540,14 @@ class NWCWallet:
                     "NWC outbound encryption overridden via NWC_ENCRYPTION: %s", normalized
                 )
             else:
+                # Allowed list is derived from the source of truth so it can never
+                # drift from _VALID_NWC_ENCRYPTIONS / IsValid contract.
+                allowed_csv = ", ".join(sorted(_VALID_NWC_ENCRYPTIONS))
                 logger.warning(
-                    "Ignoring invalid NWC_ENCRYPTION=%r (allowed: nip04, nip44_v2). "
+                    "Ignoring invalid NWC_ENCRYPTION=%r (allowed: %s). "
                     "Falling back to default %r.",
                     encryption_override,
+                    allowed_csv,
                     NWC_ENCRYPTION_DEFAULT,
                 )
 
@@ -732,9 +739,24 @@ class NWCWallet:
                     continue
                 msg_type = data[0]
                 if msg_type == "EVENT" and len(data) >= 3:
+                    # Validate subscription id matches the one we just generated.
+                    # A relay (or hostile peer) could otherwise inject an
+                    # unsolicited EVENT we'd treat as the wallet's INFO event
+                    # and silently downgrade/upgrade encryption for real calls.
+                    rcv_sub_id = data[1] if len(data) > 1 else None
+                    if rcv_sub_id != sub_id:
+                        continue
+
                     event = data[2]
                     if event.get("kind") != 13194:
                         continue
+
+                    # Defence in depth: also verify the event was published by
+                    # the wallet pubkey we're talking to.
+                    pubkey_hex = event.get("pubkey", "")
+                    if pubkey_hex.lower() != self.config.wallet_pubkey.lower():
+                        continue
+
                     enc_tag_value: str | None = None
                     for tag in event.get("tags", []):
                         if (
@@ -746,6 +768,10 @@ class NWCWallet:
                             break
                     return _pick_encryption_from_info_tag(enc_tag_value)
                 elif msg_type == "EOSE":
+                    rcv_sub_id = data[1] if len(data) > 1 else None
+                    if rcv_sub_id != sub_id:
+                        # EOSE for a different subscription — ignore.
+                        continue
                     logger.info(
                         "NWC INFO event not in relay history; falling back to NIP-04"
                     )

@@ -526,6 +526,20 @@ public class NwcWalletServiceTests
     }
 
     [Fact]
+    public void NwcEncryption_AllowedValuesCsv_DerivesFromConstants()
+    {
+        // The user-facing warning text in NwcWalletService quotes this CSV when an
+        // invalid NWC_ENCRYPTION is supplied. Pinning it here means: if someone
+        // adds a fourth scheme without updating IsValid + this property, the test
+        // fails. Defends against drift between the warning text and the actual
+        // accepted set.
+        var csv = LightningEnable.Mcp.Models.NwcEncryption.AllowedValuesCsv;
+        csv.Should().Contain("auto");
+        csv.Should().Contain("nip04");
+        csv.Should().Contain("nip44_v2");
+    }
+
+    [Fact]
     public async Task ResolveAutoEncryptionAsync_OnUnreachableRelay_FallsBackToNip04()
     {
         // INFO-event fetch must NEVER throw on operational failures — a missing or

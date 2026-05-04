@@ -1,7 +1,11 @@
 name: CodeQL
 
-# Static analysis for the .NET MCP server + Python port. Runs on every PR + push
-# to main, and weekly to catch CVEs in deps that surface after merge.
+# Static analysis for the .NET MCP server + Python port. Runs on PRs (catches
+# new findings before merge) and weekly (catches query-pack updates flagging
+# things on the existing code). Skipped on push to main — the PR already
+# scanned that exact code; running again on the merge commit just adds 10+
+# minutes to every release. NOTE: CodeQL does NOT report vulnerable NuGet/
+# npm/PyPI versions — that is Dependabot's job.
 #
 # Findings post to the repo's Security tab → Code scanning alerts. We don't fail
 # PRs on findings yet — first sweep is for triage; tighten the gate after the
@@ -9,8 +13,6 @@ name: CodeQL
 # repo / vault priority-backlog.md item #0).
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
   schedule:

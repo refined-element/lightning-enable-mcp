@@ -24,7 +24,11 @@ jobs:
   semgrep:
     runs-on: ubuntu-latest
     container:
-      image: semgrep/semgrep:latest
+      # Pinned to a specific Semgrep release for reproducibility — `latest`
+      # would silently change rule behaviour and CLI flags between runs. Bump
+      # this tag intentionally when picking up a new Semgrep version, after a
+      # quick local re-run to confirm finding stability.
+      image: semgrep/semgrep:1.108.0
     timeout-minutes: 20
 
     steps:
@@ -35,7 +39,15 @@ jobs:
         # Multi-language coverage — both .NET and Python live in this repo.
         # p/python + p/csharp + p/dotnet are language-specific rule packs;
         # p/owasp-top-ten + p/security-audit + p/secrets are language-agnostic.
+        #
+        # Exit code handling (Copilot review on PR #16):
+        #   0 = clean scan, no findings
+        #   1 = findings present (report-only mode — don't fail the workflow yet)
+        #   any other code = real execution failure (config download, rule
+        #     compilation, CLI crash) — must fail the workflow so we don't
+        #     silently stop scanning. The previous `|| echo` masked all errors.
         run: |
+          set +e
           semgrep scan \
             --config=p/owasp-top-ten \
             --config=p/security-audit \
@@ -45,8 +57,17 @@ jobs:
             --config=p/python \
             --json \
             --output=semgrep-results.json \
-            --metrics=off \
-            || echo "semgrep scan completed with findings (report-only mode)"
+            --metrics=off
+          ec=$?
+          set -e
+          if [ "$ec" -eq 0 ]; then
+            echo "Semgrep clean — no findings."
+          elif [ "$ec" -eq 1 ]; then
+            echo "Semgrep findings present (report-only mode, exit code 1 ignored)."
+          else
+            echo "::error::Semgrep failed with exit code $ec — real execution error, not findings."
+            exit $ec
+          fi
 
       - name: Surface finding summary
         if: always()

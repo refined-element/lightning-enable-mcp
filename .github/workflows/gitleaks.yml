@@ -19,7 +19,9 @@ on:
 
 permissions:
   contents: read
-  pull-requests: write
+  # No `pull-requests: write`: Copilot review on PR #16 noted the broader scope
+  # is unnecessary — gitleaks-action only checks out the repo and runs the
+  # binary; it does not post PR comments. Stay least-privilege.
 
 jobs:
   scan:

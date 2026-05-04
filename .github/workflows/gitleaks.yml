@@ -1,0 +1,40 @@
+name: gitleaks
+
+# Secret-scan the working tree + full git history. Important for this repo
+# specifically because we deal with NWC connection strings, LND macaroons,
+# and Strike API keys — all easy to fat-finger into a commit.
+#
+# Unlike CodeQL/Semgrep (report-only initially), gitleaks DOES fail the PR on
+# any finding. False-positive rate is very low and a leaked credential is a
+# rotate-everything event we want to block before merge, not after.
+#
+# To allow a known false positive, add the path/rule to .gitleaks.toml at the
+# repo root.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: true
+          GITLEAKS_ENABLE_SUMMARY: true

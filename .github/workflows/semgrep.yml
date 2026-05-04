@@ -1,0 +1,66 @@
+name: Semgrep
+
+# Third-party SAST that complements CodeQL — different rule set, catches things
+# CodeQL misses (auth context leaks, race conditions, weak HMAC). Runs
+# anonymously (no Semgrep account / token required) using their published rule
+# packs. Covers both the .NET and Python ports.
+#
+# Currently report-only (no --error). After the initial backlog of findings is
+# triaged, switch to --error so it gates PRs. Tracked under issue #14 / vault
+# priority-backlog.md item #0.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 7 * * 0'  # Sundays 07:00 UTC, after CodeQL
+
+permissions:
+  contents: read
+
+jobs:
+  semgrep:
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep:latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Semgrep
+        # Multi-language coverage — both .NET and Python live in this repo.
+        # p/python + p/csharp + p/dotnet are language-specific rule packs;
+        # p/owasp-top-ten + p/security-audit + p/secrets are language-agnostic.
+        run: |
+          semgrep scan \
+            --config=p/owasp-top-ten \
+            --config=p/security-audit \
+            --config=p/secrets \
+            --config=p/csharp \
+            --config=p/dotnet \
+            --config=p/python \
+            --json \
+            --output=semgrep-results.json \
+            --metrics=off \
+            || echo "semgrep scan completed with findings (report-only mode)"
+
+      - name: Surface finding summary
+        if: always()
+        run: |
+          if [ -f semgrep-results.json ]; then
+            count=$(jq '.results | length' semgrep-results.json)
+            echo "Semgrep findings: $count"
+            jq -r '.results[] | "[\(.extra.severity)] \(.check_id) — \(.path):\(.start.line)"' semgrep-results.json | head -50
+          fi
+
+      - name: Upload findings artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-results
+          path: semgrep-results.json
+          retention-days: 30

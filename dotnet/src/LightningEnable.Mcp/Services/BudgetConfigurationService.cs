@@ -256,19 +256,26 @@ public class BudgetConfigurationService : IBudgetConfigurationService
                 CreateNoWindow = true
             };
             using var p = System.Diagnostics.Process.Start(psi);
-            if (p != null)
+            if (p == null)
             {
-                if (!p.WaitForExit(5_000))
-                {
-                    p.Kill(entireProcessTree: true);
-                    Console.Error.WriteLine($"[Lightning Enable] Warning: icacls timeout restricting {path}");
-                    return;
-                }
-                if (p.ExitCode != 0)
-                {
-                    var err = p.StandardError.ReadToEnd().Trim();
-                    Console.Error.WriteLine($"[Lightning Enable] Warning: icacls rc={p.ExitCode} on {path}: {err}");
-                }
+                // Copilot review on PR #21: previously silent. Surface a
+                // warning so operators know the config file's perms were
+                // not actually restricted on this run.
+                Console.Error.WriteLine(
+                    $"[Lightning Enable] Warning: icacls did not start (Process.Start returned null) — "
+                    + $"perms NOT restricted on {path}. Run `icacls {path} /inheritance:r /grant {Environment.UserName}:F` manually.");
+                return;
+            }
+            if (!p.WaitForExit(5_000))
+            {
+                p.Kill(entireProcessTree: true);
+                Console.Error.WriteLine($"[Lightning Enable] Warning: icacls timeout restricting {path}");
+                return;
+            }
+            if (p.ExitCode != 0)
+            {
+                var err = p.StandardError.ReadToEnd().Trim();
+                Console.Error.WriteLine($"[Lightning Enable] Warning: icacls rc={p.ExitCode} on {path}: {err}");
             }
         }
         catch (Exception ex)

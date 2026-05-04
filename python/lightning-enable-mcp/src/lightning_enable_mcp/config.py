@@ -480,9 +480,9 @@ class ConfigurationService:
             # F-12: lock down permissions on the config file. It can hold
             # wallet credentials in plaintext (NWC connection strings, LND
             # macaroon, Strike API key) — default 0644 leaves them
-            # world-readable on shared machines / CI runners. chmod is a no-op
-            # on Windows but the file inherits the parent dir ACL, which the
-            # ACL block below tightens further.
+            # world-readable on shared machines / CI runners. The helper
+            # handles both POSIX (chmod 0600) and Windows (icacls
+            # inheritance:r + grant current user full) paths internally.
             _restrict_file_permissions(self._config_file_path)
 
             # Print first-run setup message

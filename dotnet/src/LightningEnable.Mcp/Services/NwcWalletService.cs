@@ -833,22 +833,12 @@ public class NwcWalletService : IWalletService, IDisposable
                             if (kind == 23195) // NIP-47 response
                             {
                                 // F-11: defence-in-depth on top of the NIP-04/44 encryption
-                                // layer. The encryption already authenticates the sender (only
-                                // the wallet's private key can produce ciphertext we can
-                                // decrypt), but verifying the claimed pubkey + BIP340 sig
-                                // catches malformed events earlier and rejects any future
-                                // spec extension that decouples sender identity from the
-                                // encryption ECDH. Mirror of the Python _process_message.
-                                var eventPubkey = responseEvent["pubkey"]?.GetValue<string>();
-                                if (!string.Equals(eventPubkey, _config.WalletPubkey, StringComparison.OrdinalIgnoreCase))
+                                // layer. See IsResponseEventTrustworthy for the policy +
+                                // rationale; extracted to keep the gate independently
+                                // unit-testable (Copilot review on PR #21).
+                                if (!IsResponseEventTrustworthy(responseEvent, _config.WalletPubkey, out var rejectionReason))
                                 {
-                                    Console.Error.WriteLine($"[NWC] Response event pubkey mismatch ({eventPubkey?[..Math.Min(16, eventPubkey.Length)]}...); ignoring");
-                                    continue;
-                                }
-
-                                if (!VerifyNostrEventSignature(responseEvent))
-                                {
-                                    Console.Error.WriteLine("[NWC] Response event signature verification failed; ignoring");
+                                    Console.Error.WriteLine($"[NWC] Response event rejected: {rejectionReason}");
                                     continue;
                                 }
 
@@ -1061,7 +1051,41 @@ public class NwcWalletService : IWalletService, IDisposable
     /// relay can't forge an INFO event attributed to the wallet pubkey and force an
     /// encryption downgrade. Returns false on any malformed input.
     /// </summary>
-    internal static bool VerifyNostrEventSignature(JsonObject ev)
+    internal static bool VerifyNostrEventSignature(JsonObject ev) =>
+        VerifyNostrEventSignatureImpl(ev);
+
+    /// <summary>
+    /// F-11 gate for kind-23195 (NIP-47 response) events: rejects any event
+    /// whose <c>pubkey</c> doesn't match the configured wallet OR whose BIP340
+    /// signature fails verification. Defence-in-depth on top of NIP-04/44 ECDH
+    /// encryption — see comment at the call site in the response loop.
+    ///
+    /// Extracted from the response loop so it's directly unit-testable
+    /// (Copilot review on PR #21 noted no test coverage for the gate).
+    /// </summary>
+    internal static bool IsResponseEventTrustworthy(JsonObject ev, string expectedWalletPubkey, out string rejectionReason)
+    {
+        var eventPubkey = ev["pubkey"]?.GetValue<string>();
+        if (!string.Equals(eventPubkey, expectedWalletPubkey, StringComparison.OrdinalIgnoreCase))
+        {
+            var preview = eventPubkey != null
+                ? eventPubkey[..Math.Min(16, eventPubkey.Length)] + "..."
+                : "<null>";
+            rejectionReason = $"pubkey mismatch ({preview})";
+            return false;
+        }
+
+        if (!VerifyNostrEventSignatureImpl(ev))
+        {
+            rejectionReason = "BIP340 signature verification failed";
+            return false;
+        }
+
+        rejectionReason = string.Empty;
+        return true;
+    }
+
+    private static bool VerifyNostrEventSignatureImpl(JsonObject ev)
     {
         try
         {

@@ -13,9 +13,10 @@ Default OS permissions can leave it world-readable on shared machines.
 
 from __future__ import annotations
 
-import json
+import asyncio
 import os
 import stat
+import urllib.parse
 from pathlib import Path
 from unittest.mock import patch
 
@@ -25,7 +26,10 @@ from lightning_enable_mcp.config import (
     ConfigurationService,
     _restrict_file_permissions,
 )
-from lightning_enable_mcp.nwc_wallet import _verify_nostr_event_signature
+from lightning_enable_mcp.nwc_wallet import (
+    NWCWallet,
+    _verify_nostr_event_signature,
+)
 
 
 # ─── F-11 tests ───────────────────────────────────────────────────────────
@@ -94,6 +98,93 @@ class TestF11NwcEventSignatureVerification:
 
 
 # ─── F-12 tests ───────────────────────────────────────────────────────────
+
+# ─── F-11 gate tests (added in PR #21 round-2) ────────────────────────────
+
+class TestF11ProcessMessageRejectsForgedEvents:
+    """End-to-end gate test for F-11: kind-23195 events whose pubkey doesn't
+    match the configured wallet OR whose BIP340 sig is invalid must NOT
+    resolve a pending request future. Helper-level coverage above is
+    necessary but not sufficient — Copilot review on PR #21 noted there's
+    no proof the *gate inside _process_message* actually invokes the helper.
+
+    Constructing an NWCWallet calls _get_pubkey which requires the secp256k1
+    native extension; skip the whole class if it's not installed in the test
+    env (CI installs it via dev deps).
+    """
+
+    pytestmark = pytest.mark.skipif(
+        __import__("importlib").util.find_spec("secp256k1") is None,
+        reason="secp256k1 native extension not installed in this env",
+    )
+
+    @staticmethod
+    def _make_nwc_uri(wallet_pubkey_hex: str) -> str:
+        # Construct a valid-shaped NWC URI without actually connecting. The
+        # secret can be any 64-hex-char string for ctor purposes.
+        secret_hex = "1" * 64
+        relay = urllib.parse.quote("wss://relay.example.invalid", safe="")
+        return f"nostr+walletconnect://{wallet_pubkey_hex}?relay={relay}&secret={secret_hex}"
+
+    @pytest.mark.asyncio
+    async def test_forged_pubkey_does_not_resolve_pending_future(self):
+        # Wallet expects events from this pubkey
+        expected_wallet_pubkey = "a" * 64
+        wallet = NWCWallet(self._make_nwc_uri(expected_wallet_pubkey))
+
+        # Register a pending request the forged event tries to resolve
+        request_id = "deadbeef" * 8  # 64 hex chars
+        future: asyncio.Future = asyncio.get_event_loop().create_future()
+        wallet._pending_requests[request_id] = future
+
+        # Forged event: kind 23195 but pubkey != wallet's
+        forged_event = {
+            "id": "0" * 64,
+            "pubkey": "b" * 64,  # WRONG — attacker pubkey
+            "sig": "0" * 128,
+            "kind": 23195,
+            "created_at": 1700000000,
+            "tags": [
+                ["p", wallet._pubkey],  # addressed to us
+                ["e", request_id],
+            ],
+            "content": "ciphertext-irrelevant",
+        }
+
+        await wallet._process_message(["EVENT", "subid", forged_event])
+
+        assert not future.done(), \
+            "F-11 — forged event with wrong pubkey must not resolve our pending future"
+
+    @pytest.mark.asyncio
+    async def test_invalid_signature_does_not_resolve_pending_future(self):
+        # Wallet expects events from THIS pubkey; the forged event matches the
+        # pubkey but has a bogus signature.
+        expected_wallet_pubkey = "a" * 64
+        wallet = NWCWallet(self._make_nwc_uri(expected_wallet_pubkey))
+
+        request_id = "cafef00d" * 8
+        future: asyncio.Future = asyncio.get_event_loop().create_future()
+        wallet._pending_requests[request_id] = future
+
+        forged_event = {
+            "id": "0" * 64,           # Won't match recomputed id either
+            "pubkey": expected_wallet_pubkey,
+            "sig": "0" * 128,         # Invalid sig
+            "kind": 23195,
+            "created_at": 1700000000,
+            "tags": [
+                ["p", wallet._pubkey],
+                ["e", request_id],
+            ],
+            "content": "ciphertext-irrelevant",
+        }
+
+        await wallet._process_message(["EVENT", "subid", forged_event])
+
+        assert not future.done(), \
+            "F-11 — forged event with invalid sig must not resolve our pending future"
+
 
 @pytest.mark.skipif(os.name != "posix",
                     reason="POSIX-only — Windows uses icacls (process spawn)")

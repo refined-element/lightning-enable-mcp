@@ -40,12 +40,15 @@ jobs:
         # p/python + p/csharp + p/dotnet are language-specific rule packs;
         # p/owasp-top-ten + p/security-audit + p/secrets are language-agnostic.
         #
-        # Exit code handling (Copilot review on PR #16):
-        #   0 = clean scan, no findings
-        #   1 = findings present (report-only mode — don't fail the workflow yet)
-        #   any other code = real execution failure (config download, rule
-        #     compilation, CLI crash) — must fail the workflow so we don't
-        #     silently stop scanning. The previous `|| echo` masked all errors.
+        # Exit-code policy (Copilot review on PR #16, refined after first
+        # observed exit 7 in the wild):
+        #   - If semgrep produced valid JSON output, the scan completed —
+        #     even if exit code is non-zero (e.g. exit 7 = parse warnings on
+        #     a few files). Treat as report-only success.
+        #   - If no JSON output, semgrep didn't actually scan (bad config,
+        #     missing rules, CLI crash). Fail the workflow.
+        # This is more robust than enumerating exit codes — semgrep adds new
+        # ones over time and the original `|| echo` mask was too lenient.
         run: |
           set +e
           semgrep scan \
@@ -60,12 +63,16 @@ jobs:
             --metrics=off
           ec=$?
           set -e
-          if [ "$ec" -eq 0 ]; then
-            echo "Semgrep clean — no findings."
-          elif [ "$ec" -eq 1 ]; then
-            echo "Semgrep findings present (report-only mode, exit code 1 ignored)."
+          if [ -s semgrep-results.json ] && jq empty semgrep-results.json 2>/dev/null; then
+            count=$(jq '.results | length' semgrep-results.json)
+            errors=$(jq '[.errors[]?] | length' semgrep-results.json)
+            if [ "$ec" -eq 0 ]; then
+              echo "Semgrep clean — no findings."
+            else
+              echo "Semgrep completed (exit $ec): $count findings, $errors parse warnings (report-only mode)."
+            fi
           else
-            echo "::error::Semgrep failed with exit code $ec — real execution error, not findings."
+            echo "::error::Semgrep produced no valid JSON output (exit $ec) — real execution failure."
             exit $ec
           fi
 

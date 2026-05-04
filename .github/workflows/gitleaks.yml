@@ -19,9 +19,13 @@ on:
 
 permissions:
   contents: read
-  # No `pull-requests: write`: Copilot review on PR #16 noted the broader scope
-  # is unnecessary — gitleaks-action only checks out the repo and runs the
-  # binary; it does not post PR comments. Stay least-privilege.
+  # `pull-requests: read` (not write) — gitleaks-action needs READ to
+  # enumerate PR commits for the diff scan (without it the action 403s on
+  # `GET /repos/{}/pulls/{}/commits`). Original spec on PR #16 was `write`
+  # which is over-broad; round-2 dropped it entirely. This MCP PR happened
+  # to squeak through with no commits API call (small PR), but LE PR #74
+  # hit the 403. Mirroring LE's round-3 fix: read-only is the actual minimum.
+  pull-requests: read
 
 jobs:
   scan:

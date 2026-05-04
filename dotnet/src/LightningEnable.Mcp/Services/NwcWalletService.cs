@@ -832,6 +832,26 @@ public class NwcWalletService : IWalletService, IDisposable
                             Console.Error.WriteLine($"[NWC] Event kind: {kind}");
                             if (kind == 23195) // NIP-47 response
                             {
+                                // F-11: defence-in-depth on top of the NIP-04/44 encryption
+                                // layer. The encryption already authenticates the sender (only
+                                // the wallet's private key can produce ciphertext we can
+                                // decrypt), but verifying the claimed pubkey + BIP340 sig
+                                // catches malformed events earlier and rejects any future
+                                // spec extension that decouples sender identity from the
+                                // encryption ECDH. Mirror of the Python _process_message.
+                                var eventPubkey = responseEvent["pubkey"]?.GetValue<string>();
+                                if (!string.Equals(eventPubkey, _config.WalletPubkey, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    Console.Error.WriteLine($"[NWC] Response event pubkey mismatch ({eventPubkey?[..Math.Min(16, eventPubkey.Length)]}...); ignoring");
+                                    continue;
+                                }
+
+                                if (!VerifyNostrEventSignature(responseEvent))
+                                {
+                                    Console.Error.WriteLine("[NWC] Response event signature verification failed; ignoring");
+                                    continue;
+                                }
+
                                 // Verify this response is for our specific request via e tag
                                 var responseTags = responseEvent["tags"]?.AsArray();
                                 var responseETag = responseTags?

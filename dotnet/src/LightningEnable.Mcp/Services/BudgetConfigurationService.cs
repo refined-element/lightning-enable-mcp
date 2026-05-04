@@ -112,6 +112,13 @@ public class BudgetConfigurationService : IBudgetConfigurationService
             var json = JsonSerializer.Serialize(defaultConfig, JsonOptions);
             File.WriteAllText(_configFilePath, json);
 
+            // F-12: lock down config-file permissions. The file may hold
+            // wallet credentials in plaintext (NWC connection strings, LND
+            // macaroon, Strike API key) — default OS perms (0644 on Unix,
+            // ACL inheritance on Windows) leave them readable by other
+            // accounts on shared machines / CI runners.
+            RestrictFilePermissions(_configFilePath);
+
             Console.Error.WriteLine();
             Console.Error.WriteLine("╔══════════════════════════════════════════════════════════════════╗");
             Console.Error.WriteLine("║          Lightning Enable MCP - First Run Setup                  ║");
@@ -217,5 +224,56 @@ public class BudgetConfigurationService : IBudgetConfigurationService
             ? config.Limits.MaxPerSession.Value.ToString("C")
             : "unlimited";
         Console.Error.WriteLine($"[Lightning Enable] Limits: max/payment={maxPayment}, max/session={maxSession}");
+    }
+
+    /// <summary>
+    /// Restrict file permissions so only the current user can read/write the
+    /// config file. POSIX: 0600 via UnixFileMode (.NET 7+). Windows:
+    /// best-effort via icacls (no pywin32-style hard dep). Failures are
+    /// logged but non-fatal — the file is already on disk and we don't want
+    /// permission-tightening failure to hard-block first-run setup.
+    /// </summary>
+    internal static void RestrictFilePermissions(string path)
+    {
+        try
+        {
+            if (!OperatingSystem.IsWindows())
+            {
+                File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                return;
+            }
+
+            // Windows: use icacls. /inheritance:r removes inherited permissions
+            // and /grant gives the current user full control.
+            var user = Environment.UserName;
+            var psi = new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "icacls",
+                ArgumentList = { path, "/inheritance:r", "/grant", $"{user}:F" },
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+            using var p = System.Diagnostics.Process.Start(psi);
+            if (p != null)
+            {
+                if (!p.WaitForExit(5_000))
+                {
+                    p.Kill(entireProcessTree: true);
+                    Console.Error.WriteLine($"[Lightning Enable] Warning: icacls timeout restricting {path}");
+                    return;
+                }
+                if (p.ExitCode != 0)
+                {
+                    var err = p.StandardError.ReadToEnd().Trim();
+                    Console.Error.WriteLine($"[Lightning Enable] Warning: icacls rc={p.ExitCode} on {path}: {err}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[Lightning Enable] Warning: could not restrict permissions on {path}: {ex.Message}");
+        }
     }
 }

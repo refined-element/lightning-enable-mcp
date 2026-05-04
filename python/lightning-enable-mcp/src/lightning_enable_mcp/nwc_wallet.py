@@ -680,7 +680,30 @@ class NWCWallet:
         if event.get("kind") != 23195:  # NIP-47 response kind
             return
 
-        # Check if this is for us
+        # F-11: defence-in-depth on top of the NIP-04/44 encryption layer.
+        # The encryption itself authenticates the sender (only the wallet's
+        # private key can produce ciphertext we can decrypt), but verifying the
+        # claimed pubkey + BIP340 signature catches malformed/garbage events
+        # earlier and rejects any future spec extension that decouples sender
+        # identity from the encryption ECDH (e.g. relayed delegated responses).
+        # Mirror of the .NET handler in NwcWalletService.cs.
+        event_pubkey = event.get("pubkey", "").lower()
+        wallet_pubkey = self.config.wallet_pubkey.lower()
+        if event_pubkey != wallet_pubkey:
+            logger.warning(
+                "NWC response event pubkey mismatch (event=%s, expected=%s); ignoring",
+                event_pubkey[:16] if event_pubkey else "<empty>",
+                wallet_pubkey[:16],
+            )
+            return
+
+        if not _verify_nostr_event_signature(event):
+            logger.warning(
+                "NWC response event signature verification failed; ignoring"
+            )
+            return
+
+        # Check this response is addressed to us and references one of our requests
         p_tag = None
         e_tag = None
         for tag in event.get("tags", []):

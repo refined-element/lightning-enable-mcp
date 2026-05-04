@@ -1,0 +1,94 @@
+name: Semgrep
+
+# Third-party SAST that complements CodeQL — different rule set, catches things
+# CodeQL misses (auth context leaks, race conditions, weak HMAC). Runs
+# anonymously (no Semgrep account / token required) using their published rule
+# packs. Covers both the .NET and Python ports.
+#
+# Currently report-only (no --error). After the initial backlog of findings is
+# triaged, switch to --error so it gates PRs. Tracked under issue #14 / vault
+# priority-backlog.md item #0.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 7 * * 0'  # Sundays 07:00 UTC, after CodeQL
+
+permissions:
+  contents: read
+
+jobs:
+  semgrep:
+    runs-on: ubuntu-latest
+    container:
+      # Pinned to a specific Semgrep release for reproducibility — `latest`
+      # would silently change rule behaviour and CLI flags between runs. Bump
+      # this tag intentionally when picking up a new Semgrep version, after a
+      # quick local re-run to confirm finding stability.
+      image: semgrep/semgrep:1.108.0
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Semgrep
+        # Multi-language coverage — both .NET and Python live in this repo.
+        # p/python + p/csharp + p/dotnet are language-specific rule packs;
+        # p/owasp-top-ten + p/security-audit + p/secrets are language-agnostic.
+        #
+        # Exit-code policy (Copilot review on PR #16, refined after first
+        # observed exit 7 in the wild):
+        #   - If semgrep produced valid JSON output, the scan completed —
+        #     even if exit code is non-zero (e.g. exit 7 = parse warnings on
+        #     a few files). Treat as report-only success.
+        #   - If no JSON output, semgrep didn't actually scan (bad config,
+        #     missing rules, CLI crash). Fail the workflow.
+        # This is more robust than enumerating exit codes — semgrep adds new
+        # ones over time and the original `|| echo` mask was too lenient.
+        run: |
+          set +e
+          semgrep scan \
+            --config=p/owasp-top-ten \
+            --config=p/security-audit \
+            --config=p/secrets \
+            --config=p/csharp \
+            --config=p/dotnet \
+            --config=p/python \
+            --json \
+            --output=semgrep-results.json \
+            --metrics=off
+          ec=$?
+          set -e
+          if [ -s semgrep-results.json ] && jq empty semgrep-results.json 2>/dev/null; then
+            count=$(jq '.results | length' semgrep-results.json)
+            errors=$(jq '[.errors[]?] | length' semgrep-results.json)
+            if [ "$ec" -eq 0 ]; then
+              echo "Semgrep clean — no findings."
+            else
+              echo "Semgrep completed (exit $ec): $count findings, $errors parse warnings (report-only mode)."
+            fi
+          else
+            echo "::error::Semgrep produced no valid JSON output (exit $ec) — real execution failure."
+            exit $ec
+          fi
+
+      - name: Surface finding summary
+        if: always()
+        run: |
+          if [ -f semgrep-results.json ]; then
+            count=$(jq '.results | length' semgrep-results.json)
+            echo "Semgrep findings: $count"
+            jq -r '.results[] | "[\(.extra.severity)] \(.check_id) — \(.path):\(.start.line)"' semgrep-results.json | head -50
+          fi
+
+      - name: Upload findings artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: semgrep-results
+          path: semgrep-results.json
+          retention-days: 30

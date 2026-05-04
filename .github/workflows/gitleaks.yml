@@ -1,0 +1,46 @@
+name: gitleaks
+
+# Secret-scan the working tree + full git history. Important for this repo
+# specifically because we deal with NWC connection strings, LND macaroons,
+# and Strike API keys — all easy to fat-finger into a commit.
+#
+# Unlike CodeQL/Semgrep (report-only initially), gitleaks DOES fail the PR on
+# any finding. False-positive rate is very low and a leaked credential is a
+# rotate-everything event we want to block before merge, not after.
+#
+# To allow a known false positive, add the path/rule to .gitleaks.toml at the
+# repo root.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  # `pull-requests: read` (not write) — gitleaks-action needs READ to
+  # enumerate PR commits for the diff scan (without it the action 403s on
+  # `GET /repos/{}/pulls/{}/commits`). Original spec on PR #16 was `write`
+  # which is over-broad; round-2 dropped it entirely. This MCP PR happened
+  # to squeak through with no commits API call (small PR), but LE PR #74
+  # hit the 403. Mirroring LE's round-3 fix: read-only is the actual minimum.
+  pull-requests: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: true
+          GITLEAKS_ENABLE_SUMMARY: true

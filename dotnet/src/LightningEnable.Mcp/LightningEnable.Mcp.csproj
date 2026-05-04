@@ -12,7 +12,7 @@
 
     <!-- NuGet Package Metadata -->
     <PackageId>LightningEnable.Mcp</PackageId>
-    <Version>1.12.7</Version>
+    <Version>1.12.8</Version>
     <AssemblyVersion>1.9.0.0</AssemblyVersion>
     <FileVersion>1.9.0.0</FileVersion>
     <Authors>Lightning Enable</Authors>
@@ -24,7 +24,7 @@
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <!-- <PackageIcon>icon.png</PackageIcon> -->
 
-    <PackageReleaseNotes>v1.12.7: Python dependency security update — bumps `aiohttp` to >=3.13.4 (10 HIGH CVEs in 3.13.3 series, including request smuggling and header injection) and `cryptography` to >=46.0.7 (CVE-2026-26007, CVE-2026-34073, CVE-2026-39892). .NET package has no functional changes; version bumped to keep parity with the Python release. (sec audit F-13)</PackageReleaseNotes>
+    <PackageReleaseNotes>v1.12.8: Security hardening for NWC + on-disk config (sec audit F-11, F-12). NWC kind-23195 response events are now BIP340 sig-verified before content is trusted (defence-in-depth on top of NIP-04/44 ECDH; rejects relay-forged events earlier and guards against future spec extensions that decouple identity from encryption). The config file at ~/.lightning-enable/config.json is created with restrictive permissions on first run (chmod 0600 on POSIX, icacls user-only on Windows) so wallet credentials aren't world-readable on shared machines or CI runners.</PackageReleaseNotes>
 
     <!-- MIT License -->
     <PackageLicenseExpression>MIT</PackageLicenseExpression>

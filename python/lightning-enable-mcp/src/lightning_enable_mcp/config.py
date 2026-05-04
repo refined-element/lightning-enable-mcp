@@ -8,6 +8,7 @@ Configuration is READ-ONLY at runtime - AI agents CANNOT modify it.
 import json
 import logging
 import os
+import stat
 import sys
 from dataclasses import dataclass, field
 from decimal import Decimal
@@ -16,6 +17,51 @@ from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger("lightning-enable-mcp.config")
+
+
+def _restrict_file_permissions(path: Path) -> None:
+    """
+    Restrict file permissions so only the current user can read/write.
+    POSIX: 0600. Windows: best-effort via icacls (the actual ACL change
+    happens out-of-process; we don't want to take a hard dep on pywin32 just
+    for first-run config). Failures here are logged but non-fatal — the
+    config still gets written, the user just gets a warning.
+    """
+    try:
+        if os.name == "posix":
+            os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)  # 0600
+            return
+
+        # Windows: clear inherited ACEs and grant the current user full
+        # control. Use icacls because it ships with every Windows install.
+        import getpass
+        import subprocess
+
+        user = os.environ.get("USERNAME") or getpass.getuser()
+        # /inheritance:r removes inherited permissions; /grant gives the
+        # current user full control. Errors here are surfaced as a warning,
+        # not raised — the file is already on disk and we don't want
+        # config-file-permission failure to hard-block first-run setup.
+        result = subprocess.run(
+            ["icacls", str(path), "/inheritance:r", "/grant", f"{user}:F"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            logger.warning(
+                "Could not restrict permissions on %s via icacls (rc=%d): %s",
+                path,
+                result.returncode,
+                (result.stderr or "").strip(),
+            )
+    except Exception as ex:  # noqa: BLE001 — best-effort hardening
+        logger.warning(
+            "Could not restrict permissions on %s: %s",
+            path,
+            ex,
+        )
 
 
 class ApprovalLevel(Enum):
@@ -430,6 +476,14 @@ class ConfigurationService:
 
             with open(self._config_file_path, "w", encoding="utf-8") as f:
                 f.write(json_data)
+
+            # F-12: lock down permissions on the config file. It can hold
+            # wallet credentials in plaintext (NWC connection strings, LND
+            # macaroon, Strike API key) — default 0644 leaves them
+            # world-readable on shared machines / CI runners. The helper
+            # handles both POSIX (chmod 0600) and Windows (icacls
+            # inheritance:r + grant current user full) paths internally.
+            _restrict_file_permissions(self._config_file_path)
 
             # Print first-run setup message
             print("", file=sys.stderr)

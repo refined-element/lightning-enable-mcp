@@ -832,6 +832,16 @@ public class NwcWalletService : IWalletService, IDisposable
                             Console.Error.WriteLine($"[NWC] Event kind: {kind}");
                             if (kind == 23195) // NIP-47 response
                             {
+                                // F-11: defence-in-depth on top of the NIP-04/44 encryption
+                                // layer. See IsResponseEventTrustworthy for the policy +
+                                // rationale; extracted to keep the gate independently
+                                // unit-testable (Copilot review on PR #21).
+                                if (!IsResponseEventTrustworthy(responseEvent, _config.WalletPubkey, out var rejectionReason))
+                                {
+                                    Console.Error.WriteLine($"[NWC] Response event rejected: {rejectionReason}");
+                                    continue;
+                                }
+
                                 // Verify this response is for our specific request via e tag
                                 var responseTags = responseEvent["tags"]?.AsArray();
                                 var responseETag = responseTags?
@@ -1041,7 +1051,41 @@ public class NwcWalletService : IWalletService, IDisposable
     /// relay can't forge an INFO event attributed to the wallet pubkey and force an
     /// encryption downgrade. Returns false on any malformed input.
     /// </summary>
-    internal static bool VerifyNostrEventSignature(JsonObject ev)
+    internal static bool VerifyNostrEventSignature(JsonObject ev) =>
+        VerifyNostrEventSignatureImpl(ev);
+
+    /// <summary>
+    /// F-11 gate for kind-23195 (NIP-47 response) events: rejects any event
+    /// whose <c>pubkey</c> doesn't match the configured wallet OR whose BIP340
+    /// signature fails verification. Defence-in-depth on top of NIP-04/44 ECDH
+    /// encryption — see comment at the call site in the response loop.
+    ///
+    /// Extracted from the response loop so it's directly unit-testable
+    /// (Copilot review on PR #21 noted no test coverage for the gate).
+    /// </summary>
+    internal static bool IsResponseEventTrustworthy(JsonObject ev, string expectedWalletPubkey, out string rejectionReason)
+    {
+        var eventPubkey = ev["pubkey"]?.GetValue<string>();
+        if (!string.Equals(eventPubkey, expectedWalletPubkey, StringComparison.OrdinalIgnoreCase))
+        {
+            var preview = eventPubkey != null
+                ? eventPubkey[..Math.Min(16, eventPubkey.Length)] + "..."
+                : "<null>";
+            rejectionReason = $"pubkey mismatch ({preview})";
+            return false;
+        }
+
+        if (!VerifyNostrEventSignatureImpl(ev))
+        {
+            rejectionReason = "BIP340 signature verification failed";
+            return false;
+        }
+
+        rejectionReason = string.Empty;
+        return true;
+    }
+
+    private static bool VerifyNostrEventSignatureImpl(JsonObject ev)
     {
         try
         {

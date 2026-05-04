@@ -602,6 +602,74 @@ public class NwcWalletServiceTests
             .Should().BeFalse("malformed hex must not throw");
     }
 
+    // ─── F-11 gate tests (PR #21 round-2) ─────────────────────────────────
+    // The response loop for kind-23195 events delegates to
+    // IsResponseEventTrustworthy. These tests prove the gate's contract so
+    // future regressions can't quietly let forged events through.
+
+    [Fact]
+    public void IsResponseEventTrustworthy_RejectsPubkeyMismatch()
+    {
+        var (privKey, pubKeyBytes) = GenerateKeyPair();
+        var attackerPubkey = Convert.ToHexString(pubKeyBytes).ToLowerInvariant();
+
+        // Event signed by attacker's keypair, but configured wallet expects a
+        // different pubkey. Must be rejected before sig verification even runs.
+        var ev = BuildSignedInfoEvent(privKey, attackerPubkey, "nip04");
+        var configuredWallet = new string('a', 64); // different from attackerPubkey
+
+        var ok = LightningEnable.Mcp.Services.NwcWalletService.IsResponseEventTrustworthy(
+            ev, configuredWallet, out var reason);
+
+        ok.Should().BeFalse();
+        reason.Should().Contain("pubkey mismatch");
+    }
+
+    [Fact]
+    public void IsResponseEventTrustworthy_RejectsInvalidSignature()
+    {
+        // Pubkey matches the configured wallet, but the signature is bogus.
+        // Tests that even a "from the right party" claim fails when the sig
+        // doesn't actually verify.
+        var (_, pubKeyBytes) = GenerateKeyPair();
+        var pubkeyHex = Convert.ToHexString(pubKeyBytes).ToLowerInvariant();
+
+        var ev = new JsonObject
+        {
+            ["id"] = new string('0', 64),
+            ["pubkey"] = pubkeyHex,
+            ["sig"] = new string('0', 128),  // garbage sig
+            ["created_at"] = 1700000000L,
+            ["kind"] = 23195,
+            ["tags"] = new JsonArray(),
+            ["content"] = "ciphertext"
+        };
+
+        var ok = LightningEnable.Mcp.Services.NwcWalletService.IsResponseEventTrustworthy(
+            ev, pubkeyHex, out var reason);
+
+        ok.Should().BeFalse();
+        reason.Should().Contain("signature verification failed");
+    }
+
+    [Fact]
+    public void IsResponseEventTrustworthy_AcceptsValidSignedEvent()
+    {
+        // Baseline: legitimately signed event from the configured wallet
+        // pubkey passes both checks. Without this assertion, the gate could
+        // be over-restrictive (e.g. always-false bug) and still pass the
+        // negative tests above.
+        var (privKey, pubKeyBytes) = GenerateKeyPair();
+        var pubkeyHex = Convert.ToHexString(pubKeyBytes).ToLowerInvariant();
+        var ev = BuildSignedInfoEvent(privKey, pubkeyHex, "nip04 nip44_v2");
+
+        var ok = LightningEnable.Mcp.Services.NwcWalletService.IsResponseEventTrustworthy(
+            ev, pubkeyHex, out var reason);
+
+        ok.Should().BeTrue($"valid event must pass; rejection reason: {reason}");
+        reason.Should().BeEmpty();
+    }
+
     private static JsonObject BuildSignedInfoEvent(ECPrivKey privKey, string pubkeyHex, string encryptionTagValue)
     {
         var createdAt = 1700000000L;

@@ -427,9 +427,10 @@ def _decrypt_nip04(encrypted: str, secret_key: bytes, sender_pubkey: str) -> str
     ciphertext = base64.b64decode(parts[0])
     iv = base64.b64decode(parts[1])
 
-    # AES key is the raw 32-byte shared-X — symmetric with _encrypt_nip04 and
-    # matches l402-ts/CoinOS wire format. See _encrypt_nip04 for the empirical
-    # rationale behind not using sha256(shared_x).
+    # AES key is the raw 32-byte shared-X — symmetric with _encrypt_content
+    # (the NIP-04 encrypt path) and matches l402-ts/CoinOS wire format. See
+    # _encrypt_content for the empirical rationale behind not using
+    # sha256(shared_x).
     shared_x = _compute_shared_x(secret_key, sender_pubkey)
     shared_secret = shared_x  # raw — matches l402-ts + CoinOS
 

@@ -23,16 +23,28 @@ class TestLightningEnableServer:
 
     @pytest.mark.asyncio
     async def test_list_tools_returns_all_tools(self):
-        """Test that list_tools returns all expected tools."""
+        """Test that the list_tools handler is registered on the underlying MCP Server."""
         server = LightningEnableServer()
 
-        # Get the list_tools handler
-        handlers = server.server._tool_handlers
-        assert "list_tools" in [h for h in dir(server.server)]
-
-        # The tools should be registered
-        # We can check this by examining the server's internal state
-        # or by calling the handler if exposed
+        # The @self.server.list_tools() decorator in _setup_handlers registers
+        # a handler in the underlying mcp Server's request_handlers dict.
+        # An earlier version of this test referenced a private `_tool_handlers`
+        # attribute that doesn't exist on the current mcp library — that test
+        # never actually ran in CI (no test workflow existed), so the bug
+        # went unnoticed. Now we just smoke-test that list_tools is exposed
+        # on the server (the decorator method is what the @ above hangs off
+        # of, so its presence confirms the library shape we depend on).
+        assert "list_tools" in dir(server.server), (
+            "list_tools decorator method must be exposed on the underlying mcp Server"
+        )
+        # And confirm at least one request handler was registered by
+        # _setup_handlers (the list_tools decorator stores its handler there).
+        assert hasattr(server.server, "request_handlers"), (
+            "underlying mcp Server should expose request_handlers"
+        )
+        assert len(server.server.request_handlers) > 0, (
+            "_setup_handlers should have registered at least one request handler"
+        )
 
     @pytest.mark.asyncio
     async def test_services_not_initialized_without_nwc(self):

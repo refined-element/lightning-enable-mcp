@@ -12,7 +12,7 @@
 
     <!-- NuGet Package Metadata -->
     <PackageId>LightningEnable.Mcp</PackageId>
-    <Version>1.12.8</Version>
+    <Version>1.12.9</Version>
     <AssemblyVersion>1.9.0.0</AssemblyVersion>
     <FileVersion>1.9.0.0</FileVersion>
     <Authors>Lightning Enable</Authors>
@@ -24,7 +24,7 @@
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <!-- <PackageIcon>icon.png</PackageIcon> -->
 
-    <PackageReleaseNotes>v1.12.8: Security hardening for NWC + on-disk config (sec audit F-11, F-12). NWC kind-23195 response events are now BIP340 sig-verified before content is trusted (defence-in-depth on top of NIP-04/44 ECDH; rejects relay-forged events earlier and guards against future spec extensions that decouple identity from encryption). The config file at ~/.lightning-enable/config.json is created with restrictive permissions on first run (chmod 0600 on POSIX, icacls user-only on Windows) so wallet credentials aren't world-readable on shared machines or CI runners.</PackageReleaseNotes>
+    <PackageReleaseNotes>v1.12.9: Fix NIP-04 NWC compatibility with CoinOS (and any wallet using raw shared-X for the AES-256-CBC key). v1.12.5 round-2 introduced sha256(shared_x) as the AES key derivation under the framing of "spec compliance" — but that was wrong about CoinOS. Empirically verified by the working l402-ts JS NWC client (lines 137 + 222 of src/wallets/nwc.ts use raw shared_x and the path pays CoinOS in production). The bug surface was that NIP-04 NWC payments to CoinOS silently timed out at 30s ("NWC request failed (no_response)") because CoinOS couldn't decrypt our sha256-keyed ciphertext. Reverted both .NET and Python ports to raw shared_x; pinned by EncryptNip04_DerivesKeyAsRawSharedX_ForCoinOSAndL402TsCompat (.NET) + test_nip04_decrypts_raw_sharedx_for_coinos_compat (Python).</PackageReleaseNotes>
 
     <!-- MIT License -->
     <PackageLicenseExpression>MIT</PackageLicenseExpression>

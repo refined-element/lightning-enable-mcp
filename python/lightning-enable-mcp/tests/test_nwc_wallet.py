@@ -27,9 +27,14 @@ from lightning_enable_mcp.nwc_wallet import (
 # ---------- Deterministic test keys (no secp256k1 needed) ----------
 # We use a fixed 32-byte "shared_x" value to bypass ECDH in tests.
 # This lets us test all the symmetric crypto without the secp256k1 C library.
+# Must be exactly 32 bytes (64 hex chars) — used directly as the AES-256 key.
+# Earlier this fixture was 31 bytes; it appeared to work only because the
+# previous sha256(shared_x) key derivation hashed any input down to 32 bytes,
+# masking the size error. After the raw-shared_x fix, length matters.
 _FIXED_SHARED_X = bytes.fromhex(
-    "4b6a0c7e8f9d2e1a3c5b7d9f0e2a4c6b8d0f1e3a5c7b9d1f0e2a4c6b8d0f1e"
+    "4b6a0c7e8f9d2e1a3c5b7d9f0e2a4c6b8d0f1e3a5c7b9d1f0e2a4c6b8d0f1e3a"
 )
+assert len(_FIXED_SHARED_X) == 32, "Fixed shared_x must be exactly 32 bytes for AES-256"
 _DUMMY_SECRET_KEY = b"\x01" * 32
 _DUMMY_PUBKEY_HEX = "02" + "ab" * 32  # Won't be used for actual ECDH
 
@@ -37,11 +42,17 @@ _DUMMY_PUBKEY_HEX = "02" + "ab" * 32  # Won't be used for actual ECDH
 def _nip04_encrypt_with_shared_x(plaintext: str, shared_x: bytes) -> str:
     """
     Encrypt using NIP-04 with a pre-computed shared_x (bypasses ECDH).
+
+    Uses raw shared_x as the AES key — matches l402-ts/CoinOS wire format and
+    the production _encrypt_content implementation (the NIP-04 encrypt path
+    in nwc_wallet.py). Test fixtures encrypted by this helper must round-trip
+    through _decrypt_nip04, which is the contract that nip-04 NWC interop
+    with CoinOS depends on.
     """
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
     from cryptography.hazmat.backends import default_backend
 
-    shared_secret = hashlib.sha256(shared_x).digest()
+    shared_secret = shared_x  # raw 32-byte X — matches l402-ts + CoinOS
     iv = os.urandom(16)
 
     plaintext_bytes = plaintext.encode("utf-8")
@@ -208,6 +219,82 @@ class TestNIP04Decryption:
         encrypted = _nip04_encrypt_with_shared_x(plaintext, _FIXED_SHARED_X)
         decrypted = _decrypt_nip04(encrypted, _DUMMY_SECRET_KEY, _DUMMY_PUBKEY_HEX)
         assert decrypted == plaintext
+
+    @patch(
+        "lightning_enable_mcp.nwc_wallet._compute_shared_x",
+        return_value=_FIXED_SHARED_X,
+    )
+    def test_nip04_decrypts_raw_sharedx_for_coinos_compat(self, mock_shared_x):
+        """
+        Pin the NIP-04 wire format: AES key is raw shared_x (NOT sha256).
+
+        l402-ts/src/wallets/nwc.ts (lines 137 + 222) uses raw shared_x as the
+        AES-256-CBC key and is empirically verified working against CoinOS in
+        production. An earlier version of _encrypt_content / _decrypt_nip04
+        used sha256(shared_x) which silently broke CoinOS NIP-04 NWC — symptom
+        was a 30s "NWC request failed (no_response)" because CoinOS couldn't
+        read ciphertext we keyed with sha256.
+
+        This test is the explicit pin: anyone flipping back to sha256 must also
+        delete this test, which forces them to confront why it exists.
+        """
+        from cryptography.exceptions import InvalidTag
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        from cryptography.hazmat.backends import default_backend
+
+        plaintext = '{"result_type":"pay_invoice","result":{"preimage":"deadbeef"}}'
+
+        # _nip04_encrypt_with_shared_x now uses raw shared_x (the contract).
+        # Production _decrypt_nip04 must accept it.
+        encrypted = _nip04_encrypt_with_shared_x(plaintext, _FIXED_SHARED_X)
+        decrypted = _decrypt_nip04(encrypted, _DUMMY_SECRET_KEY, _DUMMY_PUBKEY_HEX)
+        assert decrypted == plaintext, (
+            "raw-shared_x ciphertext must decrypt; if this fails, the production "
+            "implementation has likely regressed back to sha256(shared_x)"
+        )
+
+        # Negative assertion: feeding sha256(shared_x)-keyed ciphertext to the
+        # production decrypt must NOT round-trip. PKCS7 padding will almost
+        # always reject (probability of a wrong-key padding-look-valid is
+        # ~1/256, not asserted exactly — just that the round-trip fails).
+        wrong_key = hashlib.sha256(_FIXED_SHARED_X).digest()
+        wrong_iv = os.urandom(16)
+        plaintext_bytes = plaintext.encode("utf-8")
+        padding_len = 16 - (len(plaintext_bytes) % 16)
+        padded = plaintext_bytes + bytes([padding_len] * padding_len)
+        wrong_cipher = Cipher(
+            algorithms.AES(wrong_key), modes.CBC(wrong_iv), backend=default_backend()
+        )
+        # Single encryptor instance — calling .encryptor() twice would yield two
+        # separate contexts where the first never gets finalize()'d. update()
+        # and finalize() must be on the SAME instance to produce a valid CBC
+        # ciphertext (Copilot review on PR #26).
+        encryptor = wrong_cipher.encryptor()
+        wrong_ct = encryptor.update(padded) + encryptor.finalize()
+        sha256_keyed_encrypted = (
+            f"{base64.b64encode(wrong_ct).decode()}?iv={base64.b64encode(wrong_iv).decode()}"
+        )
+
+        # Production decrypt should NOT recover the plaintext from sha256-keyed
+        # input. We catch the specific exceptions the cryptography library
+        # raises on bad padding/tag — NOT bare Exception, which would also
+        # swallow an AssertionError from `assert wrong_decrypted != plaintext`
+        # and silently let a regression through (Copilot review on PR #26).
+        try:
+            wrong_decrypted = _decrypt_nip04(
+                sha256_keyed_encrypted, _DUMMY_SECRET_KEY, _DUMMY_PUBKEY_HEX
+            )
+        except (ValueError, InvalidTag):
+            # Padding/tag rejection on the wrong key is the expected outcome —
+            # this is the pin's contract.
+            return
+        # Decrypt didn't throw — make sure it didn't accidentally produce the
+        # original plaintext (which would mean the production code is using
+        # sha256(shared_x), the very regression we're guarding against).
+        assert wrong_decrypted != plaintext, (
+            "production decrypt accepted sha256-keyed ciphertext — "
+            "implementation may be using sha256(shared_x) instead of raw"
+        )
 
     def test_nip04_invalid_format_raises(self):
         """Test that NIP-04 decrypt raises on missing ?iv= separator."""

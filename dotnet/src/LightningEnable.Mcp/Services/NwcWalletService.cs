@@ -1150,19 +1150,29 @@ public class NwcWalletService : IWalletService, IDisposable
         var sharedPoint = recipientPubKey.GetSharedPubkey(senderPrivKey);
         var sharedX = sharedPoint.ToBytes()[1..33]; // Take x-coordinate only
 
-        // Encrypt with AES-256-CBC.
-        // Per NIP-04 spec the AES key is sha256(shared_x), NOT raw shared_x.
-        // The raw-shared_x form previously used here was internally consistent
-        // (encrypt + decrypt agreed) but incompatible with every other NIP-04
-        // implementation (Python port in this repo, Primal, CoinOS, Mutiny, etc.)
-        // which would mean ciphertext we send under nip04 wasn't decryptable by
-        // any real wallet. Fixed before flipping the default to nip04.
+        // Encrypt with AES-256-CBC using raw shared-X as the AES key.
+        //
+        // The NIP-04 spec text is genuinely ambiguous on the key derivation —
+        // some readings call for sha256(shared_x), others for raw shared_x. v1.12.5
+        // round-2 (commit e572f57) flipped this to sha256(shared_x) under the framing
+        // of "spec compliance," but the framing's claim that CoinOS / Primal / Mutiny
+        // also used sha256 turned out to be wrong about CoinOS — empirically verified
+        // by `l402-ts/src/wallets/nwc.ts` which uses raw shared-X (lines 137 + 222)
+        // and is confirmed working against CoinOS in production. After v1.12.5
+        // shipped, NIP-04 NWC payments to CoinOS started silently timing out at 30s
+        // (NWC request failed (no_response)) because CoinOS couldn't decrypt the
+        // sha256-keyed ciphertext we were sending.
+        //
+        // This is now pinned by `EncryptNip04_DerivesKeyAsRawSharedX_ForCoinOSAndL402TsCompat`
+        // which encrypts independently with raw shared-X and asserts our DecryptContent
+        // reads it. Don't flip back to sha256 without empirically verifying compatibility
+        // against the wallets we care about (CoinOS confirmed raw, others to-be-tested).
         var plaintextBytes = Encoding.UTF8.GetBytes(plaintext);
         var iv = new byte[16];
         RandomNumberGenerator.Fill(iv);
 
         using var aes = Aes.Create();
-        aes.Key = System.Security.Cryptography.SHA256.HashData(sharedX);
+        aes.Key = sharedX; // raw 32-byte X coordinate — matches l402-ts + CoinOS
         aes.IV = iv;
         aes.Mode = CipherMode.CBC;
         aes.Padding = PaddingMode.PKCS7;
@@ -1302,11 +1312,11 @@ public class NwcWalletService : IWalletService, IDisposable
         var sharedPoint = senderPubKey.GetSharedPubkey(recipientPrivKey);
         var sharedX = sharedPoint.ToBytes()[1..33]; // Take x-coordinate only
 
-        // Decrypt with AES-256-CBC. NIP-04 derives the key as sha256(shared_x);
-        // see EncryptNip04 for context on why the previous raw-shared_x form was
-        // wrong and why this is symmetric with the encrypt side.
+        // Decrypt with AES-256-CBC using raw shared-X. Symmetric with EncryptNip04
+        // — see the longer comment there for the empirical evidence (l402-ts uses
+        // raw shared-X and works against CoinOS) that drove this away from sha256.
         using var aes = Aes.Create();
-        aes.Key = System.Security.Cryptography.SHA256.HashData(sharedX);
+        aes.Key = sharedX; // raw 32-byte X coordinate — matches l402-ts + CoinOS
         aes.IV = iv;
         aes.Mode = CipherMode.CBC;
         aes.Padding = PaddingMode.PKCS7;

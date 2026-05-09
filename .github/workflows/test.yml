@@ -89,6 +89,9 @@ jobs:
       - name: Run pytest
         working-directory: python/lightning-enable-mcp
         # --tb=short keeps stack traces grep-able without truncating to one
-        # line. -q quiet mode trims per-test progress dots; failure detail
-        # still surfaces in full.
-        run: pytest --tb=short -q
+        # line. We deliberately don't pass -q: pyproject.toml's [tool.pytest]
+        # addopts already pins `-v --cov=... --cov-report=term-missing`, which
+        # overrides -q anyway and emits coverage regardless. Letting coverage
+        # surface in CI logs is intentional — a per-PR view of coverage drift
+        # is worth the longer log.
+        run: pytest --tb=short

@@ -801,7 +801,10 @@ class TestNWCEncryptionDefault:
 
     @staticmethod
     def _new_keypair():
-        pytest.importorskip("secp256k1")
+        # importorskip returns the imported module — earlier code dropped the
+        # binding and then referenced bare `secp` (NameError). The test was
+        # never run in CI before so the bug went unnoticed.
+        secp = pytest.importorskip("secp256k1")
         privkey_bytes = b"\x01" + b"\x42" * 31  # deterministic but valid scalar
         pk = secp.PrivateKey(privkey_bytes)
         # x-only pubkey (drop the leading 02/03 byte from compressed form)
@@ -843,7 +846,7 @@ class TestNWCEncryptionDefault:
     def test_verify_nostr_event_signature_wrong_signature_returns_false(self):
         # Substitute a signature from a different keypair — pubkey unchanged
         # but sig signed by attacker's key. Must fail.
-        pytest.importorskip("secp256k1")
+        secp = pytest.importorskip("secp256k1")
         from lightning_enable_mcp.nwc_wallet import (
             _sign_event,
             _verify_nostr_event_signature,

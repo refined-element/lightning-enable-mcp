@@ -253,7 +253,7 @@ def _get_pubkey(secret_key: bytes) -> str:
 
 def _encrypt_content(plaintext: str, secret_key: bytes, recipient_pubkey: str) -> str:
     """
-    Encrypt content using NIP-04 (ECDH + sha256 + AES-256-CBC).
+    Encrypt content using NIP-04 (ECDH + AES-256-CBC) with raw shared-X as key.
 
     Args:
         plaintext: Content to encrypt
@@ -262,6 +262,16 @@ def _encrypt_content(plaintext: str, secret_key: bytes, recipient_pubkey: str) -
 
     Returns:
         Encrypted content in NIP-04 format: base64(ciphertext)?iv=base64(iv)
+
+    Note on the NIP-04 key derivation: the spec text is genuinely ambiguous —
+    some readings call for sha256(shared_x), others for raw shared_x. This
+    implementation uses raw shared_x to match l402-ts/src/wallets/nwc.ts (the
+    working JS NWC client confirmed against CoinOS in production) and the
+    sister .NET port. An earlier version of this file derived the key as
+    sha256(shared_x), which broke compatibility with CoinOS — symptom was a
+    silent 30s NWC timeout (request ciphertext unreadable by the wallet).
+    Don't flip back to sha256 without empirically verifying the wallets we
+    care about.
     """
     # The previous implementation had a try/except ImportError block that
     # only returned a value inside the except branch — when pycryptodome
@@ -271,20 +281,19 @@ def _encrypt_content(plaintext: str, secret_key: bytes, recipient_pubkey: str) -
     # there is no reason to branch; collapsed to a single code path.
     import base64
     import os
-    from hashlib import sha256
 
     from cryptography.hazmat.backends import default_backend
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
     from secp256k1 import PrivateKey, PublicKey  # noqa: F401  (PrivateKey not used here, kept for parity)
 
-    # Compute shared secret. Per NIP-04: AES key = sha256(shared_x).
+    # Compute ECDH shared point; AES key is the raw 32-byte X coordinate.
     recipient_bytes = bytes.fromhex(recipient_pubkey)
     if len(recipient_bytes) == 32:
         # Add prefix for compressed pubkey (assume even y-coordinate)
         recipient_bytes = b"\x02" + recipient_bytes
     pubkey = PublicKey(recipient_bytes, raw=True)
     shared_point = pubkey.tweak_mul(secret_key)
-    shared_secret = sha256(shared_point.serialize()[1:33]).digest()
+    shared_secret = shared_point.serialize()[1:33]  # raw shared-X — matches l402-ts + CoinOS
 
     # Generate IV and encrypt with AES-256-CBC + PKCS7 padding
     iv = os.urandom(16)
@@ -406,7 +415,6 @@ def _decrypt_nip04(encrypted: str, secret_key: bytes, sender_pubkey: str) -> str
         Decrypted plaintext
     """
     import base64
-    from hashlib import sha256
 
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
     from cryptography.hazmat.backends import default_backend
@@ -419,9 +427,11 @@ def _decrypt_nip04(encrypted: str, secret_key: bytes, sender_pubkey: str) -> str
     ciphertext = base64.b64decode(parts[0])
     iv = base64.b64decode(parts[1])
 
-    # Compute shared secret: SHA256 of shared x-coordinate (NIP-04 specific)
+    # AES key is the raw 32-byte shared-X — symmetric with _encrypt_nip04 and
+    # matches l402-ts/CoinOS wire format. See _encrypt_nip04 for the empirical
+    # rationale behind not using sha256(shared_x).
     shared_x = _compute_shared_x(secret_key, sender_pubkey)
-    shared_secret = sha256(shared_x).digest()
+    shared_secret = shared_x  # raw — matches l402-ts + CoinOS
 
     # Decrypt
     cipher = Cipher(algorithms.AES(shared_secret), modes.CBC(iv), backend=default_backend())

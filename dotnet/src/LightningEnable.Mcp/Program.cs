@@ -1,4 +1,5 @@
 using LightningEnable.Mcp.Services;
+using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using ModelContextProtocol.Server;
@@ -68,17 +69,38 @@ public class Program
             }
         });
 
-        var builder = Host.CreateApplicationBuilder(args);
+        // Transport selection. Default is stdio (local / Claude Desktop / Claude Code).
+        // Opt into Streamable HTTP — for remote hosting (mobile, Connectors Directory) —
+        // with MCP_TRANSPORT=http. Both transports register the SAME services; only the
+        // host type, the MCP transport, and the run call differ. We register through a
+        // shared IServiceCollection so the wallet/L402/agent/budget wiring below is
+        // byte-identical for both paths.
+        var transport = (Environment.GetEnvironmentVariable("MCP_TRANSPORT") ?? "stdio")
+            .Trim().ToLowerInvariant();
+
+        WebApplicationBuilder? webBuilder = null;
+        HostApplicationBuilder? hostBuilder = null;
+        IServiceCollection services;
+        if (transport == "http")
+        {
+            webBuilder = WebApplication.CreateBuilder(args);
+            services = webBuilder.Services;
+        }
+        else
+        {
+            hostBuilder = Host.CreateApplicationBuilder(args);
+            services = hostBuilder.Services;
+        }
 
         // Register budget configuration FIRST (needed by wallet services for config file fallback)
-        builder.Services.AddSingleton<IBudgetConfigurationService, BudgetConfigurationService>();
+        services.AddSingleton<IBudgetConfigurationService, BudgetConfigurationService>();
 
         // Load config to check for wallet settings
         var configService = new BudgetConfigurationService();
         var config = configService.Configuration;
 
         // Register HTTP client for L402
-        builder.Services.AddHttpClient<IL402HttpClient, L402HttpClient>();
+        services.AddHttpClient<IL402HttpClient, L402HttpClient>();
 
         // Register wallet service
         // Default priority for L402: LND > NWC > Strike > OpenNode
@@ -113,21 +135,21 @@ public class Program
         {
             Console.Error.WriteLine("Using LND wallet backend (priority override)");
             Console.Error.WriteLine("LND always returns preimage - L402 fully supported");
-            builder.Services.AddHttpClient<IWalletService, LndWalletService>();
+            services.AddHttpClient<IWalletService, LndWalletService>();
             walletRegistered = true;
         }
         else if (walletPriority == "nwc" && !string.IsNullOrEmpty(nwcConnection))
         {
             Console.Error.WriteLine("Using NWC wallet backend (priority override)");
             Console.Error.WriteLine("NWC returns preimage - L402 fully supported");
-            builder.Services.AddHttpClient<IWalletService, NwcWalletService>();
+            services.AddHttpClient<IWalletService, NwcWalletService>();
             walletRegistered = true;
         }
         else if (walletPriority == "strike" && !string.IsNullOrEmpty(strikeApiKey))
         {
             Console.Error.WriteLine("Using Strike wallet backend (priority override)");
             Console.Error.WriteLine("Strike returns preimage - L402 fully supported");
-            builder.Services.AddHttpClient<IWalletService, StrikeWalletService>();
+            services.AddHttpClient<IWalletService, StrikeWalletService>();
             walletRegistered = true;
         }
         else if (walletPriority == "opennode" && !string.IsNullOrEmpty(openNodeApiKey))
@@ -135,7 +157,7 @@ public class Program
             var environment = Environment.GetEnvironmentVariable("OPENNODE_ENVIRONMENT") ?? "production";
             Console.Error.WriteLine($"Using OpenNode wallet backend ({environment}) (priority override)");
             Console.Error.WriteLine("WARNING: OpenNode does NOT return preimage - L402 will not work");
-            builder.Services.AddHttpClient<IWalletService, OpenNodeWalletService>();
+            services.AddHttpClient<IWalletService, OpenNodeWalletService>();
             walletRegistered = true;
         }
 
@@ -147,26 +169,26 @@ public class Program
             {
                 Console.Error.WriteLine("Using LND wallet backend");
                 Console.Error.WriteLine("LND always returns preimage - L402 fully supported");
-                builder.Services.AddHttpClient<IWalletService, LndWalletService>();
+                services.AddHttpClient<IWalletService, LndWalletService>();
             }
             else if (!string.IsNullOrEmpty(nwcConnection))
             {
                 Console.Error.WriteLine("Using NWC wallet backend");
                 Console.Error.WriteLine("NWC returns preimage - L402 fully supported");
-                builder.Services.AddHttpClient<IWalletService, NwcWalletService>();
+                services.AddHttpClient<IWalletService, NwcWalletService>();
             }
             else if (!string.IsNullOrEmpty(strikeApiKey))
             {
                 Console.Error.WriteLine("Using Strike wallet backend");
                 Console.Error.WriteLine("Strike returns preimage - L402 fully supported");
-                builder.Services.AddHttpClient<IWalletService, StrikeWalletService>();
+                services.AddHttpClient<IWalletService, StrikeWalletService>();
             }
             else if (!string.IsNullOrEmpty(openNodeApiKey))
             {
                 var environment = Environment.GetEnvironmentVariable("OPENNODE_ENVIRONMENT") ?? "production";
                 Console.Error.WriteLine($"Using OpenNode wallet backend ({environment})");
                 Console.Error.WriteLine("WARNING: OpenNode does NOT return preimage - L402 will not work");
-                builder.Services.AddHttpClient<IWalletService, OpenNodeWalletService>();
+                services.AddHttpClient<IWalletService, OpenNodeWalletService>();
             }
             else
             {
@@ -183,31 +205,50 @@ public class Program
                 Console.Error.WriteLine("Note: For L402 auto-pay, use LND, NWC, or Strike (they return preimage).");
                 Console.Error.WriteLine("      OpenNode works for direct payments but not L402.");
                 // Register a default that will report "not configured" errors
-                builder.Services.AddHttpClient<IWalletService, NwcWalletService>();
+                services.AddHttpClient<IWalletService, NwcWalletService>();
             }
         }
 
         // Register Lightning Enable API service for L402 producer tools
-        builder.Services.AddHttpClient<ILightningEnableApiService, LightningEnableApiService>();
+        services.AddHttpClient<ILightningEnableApiService, LightningEnableApiService>();
 
         // Register price service for USD/sats conversion
-        builder.Services.AddHttpClient<IPriceService, PriceService>();
+        services.AddHttpClient<IPriceService, PriceService>();
 
         // Register agent service for ASA (Agent Service Agreement) operations
-        builder.Services.AddHttpClient<IAgentService, AgentService>();
+        services.AddHttpClient<IAgentService, AgentService>();
 
         // Register singleton services
-        builder.Services.AddSingleton<IBudgetService, BudgetService>();
-        builder.Services.AddSingleton<IPaymentHistoryService, PaymentHistoryService>();
-        builder.Services.AddSingleton<IRateLimiter, RateLimiter>();
+        services.AddSingleton<IBudgetService, BudgetService>();
+        services.AddSingleton<IPaymentHistoryService, PaymentHistoryService>();
+        services.AddSingleton<IRateLimiter, RateLimiter>();
 
-        // Configure MCP server with stdio transport
-        builder.Services
-            .AddMcpServer()
-            .WithStdioServerTransport()
-            .WithToolsFromAssembly();
+        // Configure the MCP server. Tools are identical across transports; only the
+        // transport differs (stdio for local, Streamable HTTP for remote).
+        var mcp = services.AddMcpServer().WithToolsFromAssembly();
+        if (transport == "http")
+            mcp.WithHttpTransport();
+        else
+            mcp.WithStdioServerTransport();
 
-        var host = builder.Build();
-        await host.RunAsync();
+        if (transport == "http")
+        {
+            // Streamable HTTP — for remote hosting (mobile, Connectors Directory).
+            // Listen address via ASPNETCORE_URLS (defaults to http://localhost:5000).
+            // WARNING: there is NO authentication here yet. This is for local/dev use
+            // only — OAuth + per-user wallet connection must land before any networked
+            // deployment, since these tools move money.
+            var app = webBuilder!.Build();
+            app.MapMcp();
+            Console.Error.WriteLine(
+                "[Lightning Enable MCP] Transport: Streamable HTTP (MapMcp). " +
+                "No auth configured — local/dev use only until auth lands.");
+            await app.RunAsync();
+        }
+        else
+        {
+            var host = hostBuilder!.Build();
+            await host.RunAsync();
+        }
     }
 }

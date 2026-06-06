@@ -157,17 +157,34 @@ public class BudgetService : IBudgetService
 
     public BudgetCheckResult CheckBudget(long amountSats)
     {
-        // Synchronous wrapper for backward compatibility
+        // Synchronous wrapper. CRITICAL: this path has NO interactive
+        // confirmation / nonce flow (unlike pay_invoice / pay_l402_challenge),
+        // and is used by send_onchain, settle_agent_service, and L402 auto-pay.
+        // So a payment the tier logic says "requires confirmation"
+        // (FormConfirm/UrlConfirm) MUST be denied here, not silently allowed —
+        // only AutoApprove/LogAndApprove may proceed. (C-1: this previously
+        // mapped any non-Deny result to Allow, silently skipping confirmation
+        // on the most dangerous tools, including irreversible on-chain sends.)
         var result = CheckApprovalLevelAsync(amountSats).GetAwaiter().GetResult();
 
+        var remaining = (long)(result.RemainingSessionBudgetUsd * 100); // rough sats
+        var maxPerRequest = _maxPerPaymentSats > 0 ? _maxPerPaymentSats : 100000;
+
+        if (result.RequiresConfirmation)
+        {
+            var detail = string.IsNullOrEmpty(result.ConfirmationMessage)
+                ? "This payment exceeds the auto-approve limit."
+                : result.ConfirmationMessage;
+            return BudgetCheckResult.Deny(
+                $"{detail} It requires explicit confirmation and cannot be auto-approved on this path. " +
+                "Use pay_invoice / pay_l402_challenge (which support the confirmation flow), or raise the " +
+                "auto-approve limit in ~/.lightning-enable/config.json.",
+                remaining, maxPerRequest);
+        }
+
         return result.CanProceed
-            ? BudgetCheckResult.Allow(
-                (long)(result.RemainingSessionBudgetUsd * 100), // Rough sats conversion
-                _maxPerPaymentSats > 0 ? _maxPerPaymentSats : 100000)
-            : BudgetCheckResult.Deny(
-                result.DenialReason ?? "Payment denied",
-                (long)(result.RemainingSessionBudgetUsd * 100),
-                _maxPerPaymentSats > 0 ? _maxPerPaymentSats : 100000);
+            ? BudgetCheckResult.Allow(remaining, maxPerRequest)
+            : BudgetCheckResult.Deny(result.DenialReason ?? "Payment denied", remaining, maxPerRequest);
     }
 
     public void RecordSpend(long amountSats)

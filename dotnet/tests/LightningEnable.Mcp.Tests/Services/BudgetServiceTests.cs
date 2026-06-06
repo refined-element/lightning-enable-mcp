@@ -107,6 +107,45 @@ public class BudgetServiceTests
 
     #endregion
 
+    #region C-1 — Sync CheckBudget confirmation gate
+
+    [Fact]
+    public void CheckBudget_ConfirmationTierAmount_IsDenied_NotSilentlyAllowed()
+    {
+        // C-1 regression. The synchronous CheckBudget path is used by
+        // send_onchain, settle_agent_service, and L402 auto-pay — none of which
+        // have a confirmation/nonce flow. A payment the tier logic says
+        // "requires confirmation" (FormConfirm/UrlConfirm) must therefore be
+        // DENIED here, not silently allowed. Before the fix, CheckBudget mapped
+        // any non-Deny result to Allow, so a $5 (FormConfirm-tier) payment was
+        // auto-approved with no confirmation at all.
+        SetupConfigurationWithLimits(500m, 100m);
+        var service = new BudgetService(_configServiceMock.Object, _priceServiceMock.Object);
+
+        // 500,000 sats = $5.00 at 100k USD/BTC → FormConfirm tier (>$1, <=$10).
+        var result = service.CheckBudget(500_000);
+
+        result.Allowed.Should().BeFalse(
+            "a payment requiring confirmation must not be auto-approved on the synchronous budget path (C-1)");
+    }
+
+    [Fact]
+    public void CheckBudget_AutoApproveTierAmount_StillAllowed()
+    {
+        // Regression guard for the C-1 fix: auto-approve-tier payments must
+        // still proceed on the sync path (we only deny the confirmation tiers).
+        SetupConfigurationWithLimits(500m, 100m);
+        var service = new BudgetService(_configServiceMock.Object, _priceServiceMock.Object);
+
+        // 5,000 sats = $0.05 at 100k USD/BTC → AutoApprove tier (<=$0.10).
+        var result = service.CheckBudget(5_000);
+
+        result.Allowed.Should().BeTrue(
+            "auto-approve-tier payments still proceed without interactive confirmation");
+    }
+
+    #endregion
+
     #region Approval Level Tests
 
     [Fact]

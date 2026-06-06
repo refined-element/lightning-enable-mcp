@@ -257,7 +257,20 @@ public class Program
             // non-loopback address (reachable beyond this machine) AND no
             // MCP_AUTH_TOKEN is set, REFUSE to start rather than silently run an
             // open, money-moving endpoint. A warning is not enough.
-            var listenUrls = Environment.GetEnvironmentVariable("ASPNETCORE_URLS");
+            // Resolve the listen address from ALL of ASP.NET Core's binding sources, not
+            // just the ASPNETCORE_URLS env var. A non-loopback bind can also arrive via the
+            // --urls command-line arg or the "urls" config key (both surface as
+            // Configuration["urls"]), or a Kestrel:Endpoints config section. Gather them all
+            // so the fail-closed check below can't be bypassed by a non-env binding source.
+            var urlSources = new List<string?>
+            {
+                app.Configuration["urls"],
+                Environment.GetEnvironmentVariable("ASPNETCORE_URLS")
+            };
+            foreach (var ep in app.Configuration.GetSection("Kestrel:Endpoints").GetChildren())
+                urlSources.Add(ep["Url"]);
+            var listenUrls = string.Join(';', urlSources.Where(u => !string.IsNullOrWhiteSpace(u)));
+
             if (string.IsNullOrEmpty(authToken) && IsNonLoopbackBind(listenUrls))
             {
                 Console.Error.WriteLine(
@@ -338,11 +351,12 @@ public class Program
     }
 
     /// <summary>
-    /// Returns true if the configured listen address (ASPNETCORE_URLS) is reachable
-    /// beyond this machine (any host other than localhost / 127.0.0.1 / ::1 — e.g.
-    /// 0.0.0.0, +, *, a real IP, or a hostname). Unset URLs mean the framework's
-    /// default localhost bind, which is loopback-only (safe). Biased fail-closed:
-    /// anything not provably loopback is treated as non-loopback.
+    /// Returns true if any configured listen address (gathered from ASPNETCORE_URLS,
+    /// the --urls / "urls" config key, and Kestrel:Endpoints — joined with ';') is
+    /// reachable beyond this machine (any host other than localhost / 127.0.0.1 / ::1
+    /// — e.g. 0.0.0.0, +, *, a real IP, or a hostname). An empty value means the
+    /// framework's default localhost bind, which is loopback-only (safe). Biased
+    /// fail-closed: anything not provably loopback is treated as non-loopback.
     /// </summary>
     private static bool IsNonLoopbackBind(string? aspnetcoreUrls)
     {

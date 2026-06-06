@@ -246,6 +246,11 @@ public class Program
             // proxy / for controlled clients); full OAuth — what Claude's connector UI
             // uses for a polished remote connect — is the next increment.
             var authToken = Environment.GetEnvironmentVariable("MCP_AUTH_TOKEN");
+            // Treat a whitespace-only token as NOT set — otherwise a value like " "
+            // would satisfy the fail-closed check below and enable the auth middleware
+            // with a trivially guessable token. Trim so an env var carrying a stray
+            // trailing newline still matches the token the client sends.
+            authToken = string.IsNullOrWhiteSpace(authToken) ? null : authToken.Trim();
 
             // FAIL-CLOSED. The single most important guard against a misconfigured
             // deploy draining a wallet: if the server is set to listen on a
@@ -280,8 +285,11 @@ public class Program
                 {
                     var header = context.Request.Headers.Authorization.ToString();
                     const string prefix = "Bearer ";
-                    var presented = header.StartsWith(prefix, StringComparison.Ordinal)
-                        ? header[prefix.Length..]
+                    // RFC 9110: the auth scheme is case-insensitive. Accept Bearer/bearer/…
+                    // and trim the token so a trailing space/newline in the header doesn't
+                    // cause a spurious 401.
+                    var presented = header.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                        ? header[prefix.Length..].Trim()
                         : null;
                     if (presented is null || !ConstantTimeEquals(presented, authToken))
                     {

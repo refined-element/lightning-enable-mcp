@@ -100,8 +100,9 @@ public interface IBudgetService
     /// </summary>
     /// <param name="nonce">The confirmation code.</param>
     /// <param name="expectedAmountSats">The amount about to be paid; must equal the approved amount.</param>
-    /// <returns>The confirmed pending confirmation, or null if invalid / amount-mismatched.</returns>
-    PendingConfirmation? ValidateAndConsumeConfirmation(string nonce, long expectedAmountSats);
+    /// <param name="expectedToolName">The tool consuming the code; must equal the tool the confirmation was created for (prevents cross-tool replay).</param>
+    /// <returns>The confirmed pending confirmation, or null if invalid / amount- or tool-mismatched.</returns>
+    PendingConfirmation? ValidateAndConsumeConfirmation(string nonce, long expectedAmountSats, string expectedToolName);
 
     /// <summary>
     /// Purges expired pending confirmations from memory.

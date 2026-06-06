@@ -665,25 +665,29 @@ public class BudgetServiceTests
 
     #endregion
 
-    #region C-3 — confirmation is bound to the approved amount
+    #region C-3 — confirmation is bound to the approved amount AND tool
 
     [Fact]
-    public void Confirmation_AmountMismatch_IsRejected_AndNonceNotConsumed()
+    public void Confirmation_BoundToAmountAndTool_RejectsMismatches_AndNonceNotConsumed()
     {
         SetupConfigurationWithLimits(500m, 100m);
         var service = new BudgetService(_configServiceMock.Object, _priceServiceMock.Object);
         var pending = service.CreatePendingConfirmation(1000, 0.01m, "pay_invoice", "inv...");
 
-        // A code approved for 1,000 sats must NOT authorize a 1,000,000-sat payment...
-        service.ValidateAndConsumeConfirmation(pending.Nonce, 1_000_000).Should().BeNull();
+        // Wrong AMOUNT (right tool) → rejected; a 1,000-sat approval can't authorize 1,000,000.
+        service.ValidateAndConsumeConfirmation(pending.Nonce, 1_000_000, "pay_invoice").Should().BeNull();
 
-        // ...and the mismatch must NOT have consumed it — the correct amount still works.
-        var ok = service.ValidateAndConsumeConfirmation(pending.Nonce, 1000);
+        // Wrong TOOL (right amount) → rejected; a pay_invoice code can't authorize send_onchain
+        // (no cross-tool replay).
+        service.ValidateAndConsumeConfirmation(pending.Nonce, 1000, "send_onchain").Should().BeNull();
+
+        // Neither mismatch consumed the nonce — the correct (amount, tool) still works.
+        var ok = service.ValidateAndConsumeConfirmation(pending.Nonce, 1000, "pay_invoice");
         ok.Should().NotBeNull();
         ok!.AmountSats.Should().Be(1000);
 
-        // One-time use: a second consume (even correct amount) fails.
-        service.ValidateAndConsumeConfirmation(pending.Nonce, 1000).Should().BeNull();
+        // One-time use: a second consume fails.
+        service.ValidateAndConsumeConfirmation(pending.Nonce, 1000, "pay_invoice").Should().BeNull();
     }
 
     #endregion

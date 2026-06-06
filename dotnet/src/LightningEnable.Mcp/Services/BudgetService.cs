@@ -398,7 +398,7 @@ public class BudgetService : IBudgetService
         }
     }
 
-    public PendingConfirmation? ValidateAndConsumeConfirmation(string nonce, long expectedAmountSats)
+    public PendingConfirmation? ValidateAndConsumeConfirmation(string nonce, long expectedAmountSats, string expectedToolName)
     {
         if (string.IsNullOrWhiteSpace(nonce))
             return null;
@@ -414,15 +414,17 @@ public class BudgetService : IBudgetService
                 return null;
             }
 
-            // C-3: bind the approval to the EXACT amount it was created for. A code
-            // approved for X sats must not authorize a payment of a different amount
-            // (a small approval could otherwise be reused for a large payment within
-            // the 2-minute window). On mismatch we do NOT consume — the nonce stays
-            // valid so a correct-amount retry still works, but THIS amount is refused.
+            // C-3: bind the approval to the EXACT amount AND tool it was created for.
+            // A code approved for X sats on pay_invoice must not authorize a different
+            // amount, NOR a different tool (e.g. send_onchain) even if the sats match.
+            // On mismatch we do NOT consume — the nonce stays valid so the correct
+            // (amount, tool) retry still works, but this request is refused.
             if (confirmation.AmountSats != expectedAmountSats)
                 return null;
+            if (!string.Equals(confirmation.ToolName, expectedToolName, StringComparison.Ordinal))
+                return null;
 
-            // Amount matches — consume (one-time use).
+            // Amount + tool match — consume (one-time use).
             _pendingConfirmations.Remove(nonce);
             return confirmation;
         }

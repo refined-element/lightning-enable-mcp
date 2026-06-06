@@ -124,7 +124,7 @@ public static class PayInvoiceTool
                     // Check if a confirmed nonce was provided
                     if (!string.IsNullOrWhiteSpace(confirmationNonce))
                     {
-                        var confirmation = budgetService.ValidateAndConsumeConfirmation(confirmationNonce.Trim().ToUpperInvariant(), approvalResult.AmountSats);
+                        var confirmation = budgetService.ValidateAndConsumeConfirmation(confirmationNonce.Trim().ToUpperInvariant(), approvalResult.AmountSats, "pay_invoice");
                         if (confirmation == null)
                         {
                             return JsonSerializer.Serialize(new

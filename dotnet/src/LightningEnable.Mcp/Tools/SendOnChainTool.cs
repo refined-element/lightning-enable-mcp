@@ -106,7 +106,7 @@ public static class SendOnChainTool
             if (!string.IsNullOrWhiteSpace(confirmationNonce))
             {
                 var confirmation = budgetService.ValidateAndConsumeConfirmation(
-                    confirmationNonce.Trim().ToUpperInvariant(), amountSats);
+                    confirmationNonce.Trim().ToUpperInvariant(), amountSats, "send_onchain");
                 if (confirmation == null)
                 {
                     return JsonSerializer.Serialize(new

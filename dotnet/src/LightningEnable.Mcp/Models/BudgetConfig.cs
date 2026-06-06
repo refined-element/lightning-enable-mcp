@@ -43,17 +43,20 @@ public class BudgetConfig
     public bool IsBudgetExhausted => SessionSpent >= MaxSatsPerSession;
 
     /// <summary>
-    /// Informational mirror of the effective per-request cap in sats (NOT a separate,
-    /// independently enforced ceiling — that claim used to be here and was false). The
-    /// real protections are the USD per-payment / per-session limits, the approval
-    /// tiers, out-of-band confirmation for large amounts, the tighten-only runtime caps,
-    /// and fail-closed-when-no-BTC-price.
+    /// Informational mirror of the CONFIG-derived per-request sats cap (the USD
+    /// maxPerPayment converted to sats). NOTE: this is NOT a separate, independently
+    /// enforced ceiling, and it does NOT reflect any tighter runtime cap set via
+    /// configure_budget (see <see cref="RuntimeMaxPerRequestSats"/>) — the actual
+    /// effective cap is the most-restrictive of this and the runtime cap. Real
+    /// protections are the USD limits, approval tiers, out-of-band confirmation,
+    /// the tighten-only runtime caps, and fail-closed-when-no-BTC-price.
     /// </summary>
     public long HardMaxSatsPerRequest { get; set; } = 10000;
 
     /// <summary>
-    /// Informational mirror of the effective per-session cap in sats. See the note on
-    /// <see cref="HardMaxSatsPerRequest"/> — this is not a separately enforced ceiling.
+    /// Informational mirror of the CONFIG-derived per-session sats cap. See the note on
+    /// <see cref="HardMaxSatsPerRequest"/> — not a separately enforced ceiling, and does
+    /// not reflect a tighter runtime cap (<see cref="RuntimeMaxPerSessionSats"/>).
     /// </summary>
     public long HardMaxSatsPerSession { get; set; } = 100000;
 

@@ -21,6 +21,7 @@ logger = logging.getLogger("lightning-enable-mcp.tools.send_onchain")
 async def send_onchain(
     address: str,
     amount_sats: int,
+    confirmed: bool = False,
     wallet: "Union[StrikeWallet, LndWallet, None]" = None,
     budget_service: "BudgetService | None" = None,
 ) -> str:
@@ -33,6 +34,9 @@ async def send_onchain(
     Args:
         address: Bitcoin address to send to (e.g., bc1q...)
         amount_sats: Amount to send in satoshis
+        confirmed: Set to True to confirm this irreversible on-chain send.
+            On-chain payments cannot be undone, so the first call always returns
+            requiresConfirmation; call again with confirmed=True to proceed.
         wallet: Strike or LND wallet instance
         budget_service: BudgetService for spending limits
 
@@ -43,6 +47,19 @@ async def send_onchain(
         return json.dumps({
             "success": False,
             "error": "Bitcoin address is required"
+        })
+
+    # PY-C2: validate the address before anything else. On-chain sends are
+    # irreversible, so a typo'd, garbage, or wrong-network address must be
+    # rejected here rather than risk broadcasting funds to an unrecoverable
+    # destination. Only valid mainnet addresses pass.
+    from ..bitcoin_address import is_valid_mainnet
+    if not is_valid_mainnet(address):
+        return json.dumps({
+            "success": False,
+            "error": "Invalid Bitcoin address. Provide a valid mainnet Bitcoin address "
+                     "(starts with bc1, 1, or 3). The address failed validation and was "
+                     "NOT sent — on-chain payments are irreversible."
         })
 
     if amount_sats <= 0:
@@ -69,18 +86,39 @@ async def send_onchain(
             "hint": "Set STRIKE_API_KEY or LND_REST_HOST+LND_MACAROON_HEX for on-chain payments."
         })
 
-    # Check budget if configured
+    # Budget check — FAIL CLOSED (PY-FAILOPEN fix). Previously an exception here
+    # was swallowed and the payment proceeded with NO budget enforcement; for an
+    # irreversible on-chain send that is unacceptable, so a budget-check error
+    # now REFUSES the send.
     if budget_service:
         try:
             budget_result = await budget_service.check_approval_level(amount_sats)
-            from ..config import ApprovalLevel
-            if budget_result.level == ApprovalLevel.DENY:
-                return json.dumps({
-                    "success": False,
-                    "error": f"Budget check failed: {budget_result.denial_reason}",
-                })
         except Exception as e:
-            logger.warning(f"Budget check failed: {e}")
+            logger.warning(f"Budget check error; refusing on-chain send (fail-closed): {e}")
+            return json.dumps({
+                "success": False,
+                "error": "Could not verify spending budget, so the on-chain send was refused "
+                         "(fail-closed). Check the wallet / price service and try again.",
+            })
+
+        from ..config import ApprovalLevel
+        if budget_result.level == ApprovalLevel.DENY:
+            return json.dumps({
+                "success": False,
+                "error": f"Budget check failed: {budget_result.denial_reason}",
+            })
+
+    # PY-C1: on-chain sends are irreversible, so ALWAYS require explicit
+    # confirmation regardless of amount/tier. (Previously the requires_confirmation
+    # tiers fell through and paid with no confirmation at all.)
+    if not confirmed:
+        return json.dumps({
+            "success": False,
+            "requiresConfirmation": True,
+            "error": "On-chain sends are irreversible and require explicit confirmation.",
+            "message": f"Confirm sending {amount_sats:,} sats to {address}? This cannot be undone.",
+            "howToConfirm": f'Call: send_onchain(address="{address}", amount_sats={amount_sats}, confirmed=True)',
+        })
 
     try:
         result = await wallet.send_onchain(address.strip(), amount_sats)

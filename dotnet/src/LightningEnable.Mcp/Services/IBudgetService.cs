@@ -32,6 +32,19 @@ public interface IBudgetService
     void RecordSpend(long amountSats);
 
     /// <summary>
+    /// Applies tighten-only runtime spending caps (sats). An agent may only LOWER
+    /// its effective per-request / per-session limits, never raise them above the
+    /// operator-set config-file limits (or an existing tighter runtime cap). This is
+    /// the .NET counterpart of the Python configure_budget tool — a prompt-injected
+    /// agent must not be able to loosen its own caps and then drain the wallet.
+    /// </summary>
+    /// <param name="perRequestSats">Requested per-request cap in satoshis.</param>
+    /// <param name="perSessionSats">Requested per-session cap in satoshis.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Result indicating success (and the new effective caps) or rejection.</returns>
+    Task<ConfigureBudgetResult> ConfigureBudgetAsync(long perRequestSats, long perSessionSats, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Gets the current budget configuration (runtime state).
     /// </summary>
     BudgetConfig GetConfig();

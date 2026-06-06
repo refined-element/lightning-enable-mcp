@@ -53,6 +53,43 @@ public class BudgetConfig
     /// This is a system-enforced limit that cannot be exceeded at runtime.
     /// </summary>
     public long HardMaxSatsPerSession { get; set; } = 100000;
+
+    /// <summary>
+    /// Runtime per-request cap (sats) set by the agent via configure_budget.
+    /// Null when no runtime cap is in effect. Can only TIGHTEN (lower) the
+    /// effective limit — never raise it above the operator's config-file limits.
+    /// </summary>
+    public long? RuntimeMaxPerRequestSats { get; set; }
+
+    /// <summary>
+    /// Runtime per-session cap (sats) set by the agent via configure_budget.
+    /// Null when no runtime cap is in effect. Tighten-only.
+    /// </summary>
+    public long? RuntimeMaxPerSessionSats { get; set; }
+}
+
+/// <summary>
+/// Result of a configure_budget (tighten-only) operation.
+/// </summary>
+public record ConfigureBudgetResult
+{
+    /// <summary>Whether the new (tighter) limits were applied.</summary>
+    public bool Success { get; init; }
+
+    /// <summary>Reason the request was rejected (e.g. an attempt to raise limits).</summary>
+    public string? Error { get; init; }
+
+    /// <summary>Effective per-request cap (sats) after the operation.</summary>
+    public long EffectivePerRequestSats { get; init; }
+
+    /// <summary>Effective per-session cap (sats) after the operation.</summary>
+    public long EffectivePerSessionSats { get; init; }
+
+    public static ConfigureBudgetResult Ok(long perRequest, long perSession) =>
+        new() { Success = true, EffectivePerRequestSats = perRequest, EffectivePerSessionSats = perSession };
+
+    public static ConfigureBudgetResult Fail(string error) =>
+        new() { Success = false, Error = error };
 }
 
 /// <summary>

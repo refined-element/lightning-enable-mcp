@@ -179,6 +179,100 @@ public class BudgetServiceTests
 
     #endregion
 
+    #region configure_budget — tighten-only runtime caps (decision C)
+
+    [Fact]
+    public async Task ConfigureBudget_TightensBelowConfig_Succeeds()
+    {
+        // Config caps are large ($500/$100 → 50M/10M sats at the mock rate), so
+        // tightening to 1000/5000 sats is allowed.
+        SetupConfigurationWithLimits(500m, 100m);
+        var service = new BudgetService(_configServiceMock.Object, _priceServiceMock.Object);
+
+        var result = await service.ConfigureBudgetAsync(1000, 5000);
+
+        result.Success.Should().BeTrue();
+        result.EffectivePerRequestSats.Should().Be(1000);
+        result.EffectivePerSessionSats.Should().Be(5000);
+        var cfg = service.GetConfig();
+        cfg.RuntimeMaxPerRequestSats.Should().Be(1000);
+        cfg.RuntimeMaxPerSessionSats.Should().Be(5000);
+    }
+
+    [Fact]
+    public async Task ConfigureBudget_AttemptToRaiseAboveConfig_IsRejected()
+    {
+        // Config caps $0.01/$0.01 → 1000 sats each at the mock rate. Asking for 5000
+        // tries to RAISE above the operator's limit — must be refused.
+        SetupConfigurationWithLimits(0.01m, 0.01m);
+        var service = new BudgetService(_configServiceMock.Object, _priceServiceMock.Object);
+
+        var result = await service.ConfigureBudgetAsync(5000, 5000);
+
+        result.Success.Should().BeFalse();
+        result.Error.Should().Contain("can only LOWER");
+    }
+
+    [Fact]
+    public async Task ConfigureBudget_CannotRaiseAboveExistingRuntimeCap()
+    {
+        SetupConfigurationWithLimits(500m, 100m);
+        var service = new BudgetService(_configServiceMock.Object, _priceServiceMock.Object);
+
+        (await service.ConfigureBudgetAsync(2000, 4000)).Success.Should().BeTrue();
+        // Now try to raise the per-request cap back up to 3000 — must be refused.
+        var result = await service.ConfigureBudgetAsync(3000, 4000);
+
+        result.Success.Should().BeFalse();
+        result.Error.Should().Contain("can only LOWER");
+    }
+
+    [Fact]
+    public async Task ConfigureBudget_PerRequestCap_IsEnforcedInApprovalCheck()
+    {
+        SetupConfigurationWithLimits(500m, 100m);
+        var service = new BudgetService(_configServiceMock.Object, _priceServiceMock.Object);
+        await service.ConfigureBudgetAsync(1000, 5000);
+
+        // 2000 sats exceeds the 1000-sat runtime per-request cap → Deny.
+        var result = await service.CheckApprovalLevelAsync(2000);
+
+        result.Level.Should().Be(ApprovalLevel.Deny);
+        result.DenialReason.Should().Contain("runtime per-request cap");
+    }
+
+    [Fact]
+    public async Task ConfigureBudget_PerSessionCap_IsEnforcedInApprovalCheck()
+    {
+        SetupConfigurationWithLimits(500m, 100m);
+        var service = new BudgetService(_configServiceMock.Object, _priceServiceMock.Object);
+        await service.ConfigureBudgetAsync(10000, 10000);
+        service.RecordSpend(7000);
+
+        // 7000 already spent + 5000 = 12000 > 10000 runtime session cap → Deny.
+        var result = await service.CheckApprovalLevelAsync(5000);
+
+        result.Level.Should().Be(ApprovalLevel.Deny);
+        result.DenialReason.Should().Contain("runtime per-session cap");
+    }
+
+    [Theory]
+    [InlineData(0, 5000)]      // per_request must be positive
+    [InlineData(-1, 5000)]     // per_request must be positive
+    [InlineData(1000, 0)]      // per_session must be positive
+    [InlineData(6000, 5000)]   // per_request cannot exceed per_session
+    public async Task ConfigureBudget_InvalidInputs_AreRejected(long perRequest, long perSession)
+    {
+        SetupConfigurationWithLimits(500m, 100m);
+        var service = new BudgetService(_configServiceMock.Object, _priceServiceMock.Object);
+
+        var result = await service.ConfigureBudgetAsync(perRequest, perSession);
+
+        result.Success.Should().BeFalse();
+    }
+
+    #endregion
+
     #region Approval Level Tests
 
     [Fact]

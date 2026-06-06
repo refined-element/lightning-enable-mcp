@@ -78,6 +78,20 @@ public class Program
         var transport = (Environment.GetEnvironmentVariable("MCP_TRANSPORT") ?? "stdio")
             .Trim().ToLowerInvariant();
 
+        // Fail fast on a typo'd transport rather than silently running stdio. Setting
+        // MCP_TRANSPORT=htt (meaning http) would otherwise start a local-only server
+        // with no error — a confusing, hard-to-detect misconfiguration for someone
+        // who intended a remote endpoint.
+        if (transport != "stdio" && transport != "http")
+        {
+            Console.Error.WriteLine(
+                $"[Lightning Enable MCP] FATAL: unrecognized MCP_TRANSPORT='{transport}'. " +
+                "Valid values: 'stdio' (default, local) or 'http' (Streamable HTTP, remote). " +
+                "Refusing to start rather than silently falling back to a transport you did not request.");
+            Environment.Exit(78); // EX_CONFIG
+            return;
+        }
+
         WebApplicationBuilder? webBuilder = null;
         HostApplicationBuilder? hostBuilder = null;
         IServiceCollection services;

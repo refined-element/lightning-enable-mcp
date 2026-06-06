@@ -41,8 +41,13 @@
 
   <ItemGroup>
     <PackageReference Include="ModelContextProtocol" Version="1.4.0" />
-    <!-- Streamable HTTP server transport, opt-in via MCP_TRANSPORT=http. Brings the
-         ASP.NET Core shared framework, used by the WebApplication host path below. -->
+    <!-- Streamable HTTP server transport, opt-in at runtime via MCP_TRANSPORT=http.
+         NOTE: the FrameworkReference below makes the ASP.NET Core shared runtime a
+         HARD requirement for EVERY install of this tool — including stdio-only users
+         who never set MCP_TRANSPORT=http. The HTTP host code is only *executed* on the
+         opt-in path, but the runtime must be *present* regardless. This is an accepted
+         tradeoff of shipping both transports in one package; splitting HTTP into a
+         separate package would be the way to avoid it if the stdio footprint matters. -->
     <PackageReference Include="ModelContextProtocol.AspNetCore" Version="1.4.0" />
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="9.0.0" />

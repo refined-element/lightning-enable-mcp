@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "lightning-enable-mcp"
-version = "1.12.10"
+version = "1.12.11"
 description = "Part of Lightning Enable — infrastructure for agent commerce over Lightning. MCP server for L402 Lightning payments, API discovery, and agent commerce."
 readme = "README.md"
 license = "MIT"
@@ -44,13 +44,21 @@ dependencies = [
     "aiohttp>=3.13.4",
     "pydantic>=2.0.0",
     "bolt11>=2.0.0",
-    "secp256k1>=0.14.0",
     "websockets>=12.0",
     "bech32>=1.2.0",
     "cryptography>=46.0.7",
 ]
 
 [project.optional-dependencies]
+# NWC (Nostr Wallet Connect) wallets need secp256k1 for pubkey derivation + Schnorr/ECDH.
+# It is a C-extension with no prebuilt Windows wheel, so it is OPTIONAL here: a plain
+# `pip install lightning-enable-mcp` then works on every platform with no build toolchain.
+# Add this extra only if you use an NWC wallet:  pip install lightning-enable-mcp[nwc]
+# (LND, Strike and OpenNode wallets do not need it). The code raises a clear error if an
+# NWC wallet is used without it.
+nwc = [
+    "secp256k1>=0.14.0",
+]
 dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",

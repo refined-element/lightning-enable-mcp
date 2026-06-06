@@ -12,7 +12,7 @@
 
     <!-- NuGet Package Metadata -->
     <PackageId>LightningEnable.Mcp</PackageId>
-    <Version>1.12.10</Version>
+    <Version>1.12.11</Version>
     <AssemblyVersion>1.9.0.0</AssemblyVersion>
     <FileVersion>1.9.0.0</FileVersion>
     <Authors>Lightning Enable</Authors>
@@ -24,7 +24,7 @@
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <!-- <PackageIcon>icon.png</PackageIcon> -->
 
-    <PackageReleaseNotes>v1.12.10: Funds-safety hardening of the agent payment path. (1) Out-of-band confirmation — the confirmation code for above-threshold payments is now printed only to the server console/stderr (visible to the human operator), never returned in a tool result, so a prompt-injected agent cannot read and self-approve its own payment. (2) send_onchain (irreversible) ALWAYS requires confirmation and fails closed if the budget service is unavailable. (3) Confirmation codes are bound to the exact amount AND tool they approved (no cross-tool / cross-amount replay). (4) configure_budget added to .NET, tighten-only — an agent can lower its caps but never raise them above the operator's ~/.lightning-enable/config.json limits. (5) Budget checks fail closed when the BTC price feed is unavailable (3 sources, no stale fallback). (6) NWC response preimage no longer logged.</PackageReleaseNotes>
+    <PackageReleaseNotes>v1.12.11: (Python packaging) secp256k1 is now an OPTIONAL dependency — `pip install lightning-enable-mcp` works on every platform with no build toolchain (it was failing on Windows because secp256k1 is a C-extension with no Windows wheel). NWC wallet users add the extra: `pip install lightning-enable-mcp[nwc]`. .NET is unaffected (managed crypto). No functional change vs 1.12.10. — v1.12.10: Funds-safety hardening of the agent payment path. (1) Out-of-band confirmation — the confirmation code for above-threshold payments is now printed only to the server console/stderr (visible to the human operator), never returned in a tool result, so a prompt-injected agent cannot read and self-approve its own payment. (2) send_onchain (irreversible) ALWAYS requires confirmation and fails closed if the budget service is unavailable. (3) Confirmation codes are bound to the exact amount AND tool they approved (no cross-tool / cross-amount replay). (4) configure_budget added to .NET, tighten-only — an agent can lower its caps but never raise them above the operator's ~/.lightning-enable/config.json limits. (5) Budget checks fail closed when the BTC price feed is unavailable (3 sources, no stale fallback). (6) NWC response preimage no longer logged.</PackageReleaseNotes>
 
     <!-- MIT License -->
     <PackageLicenseExpression>MIT</PackageLicenseExpression>

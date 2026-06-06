@@ -227,7 +227,10 @@ def _sign_event(event: dict[str, Any], secret_key: bytes) -> str:
         sig = privkey.schnorr_sign(event_id_bytes, None, raw=True)
         return sig.hex()
     except ImportError:
-        raise ImportError("secp256k1 library required for signing")
+        raise ImportError(
+            "secp256k1 is required for NWC (Nostr Wallet Connect) signing. "
+            "Install it with:  pip install lightning-enable-mcp[nwc]"
+        )
 
 
 def _get_pubkey(secret_key: bytes) -> str:
@@ -248,7 +251,10 @@ def _get_pubkey(secret_key: bytes) -> str:
         # Return x-only pubkey (skip the prefix byte)
         return pubkey[1:33].hex() if len(pubkey) == 33 else pubkey[:32].hex()
     except ImportError:
-        raise ImportError("secp256k1 library required")
+        raise ImportError(
+            "secp256k1 is required for NWC (Nostr Wallet Connect) wallets. "
+            "Install it with:  pip install lightning-enable-mcp[nwc]"
+        )
 
 
 def _encrypt_content(plaintext: str, secret_key: bytes, recipient_pubkey: str) -> str:

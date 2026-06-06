@@ -246,6 +246,34 @@ public class Program
             // proxy / for controlled clients); full OAuth — what Claude's connector UI
             // uses for a polished remote connect — is the next increment.
             var authToken = Environment.GetEnvironmentVariable("MCP_AUTH_TOKEN");
+
+            // FAIL-CLOSED. The single most important guard against a misconfigured
+            // deploy draining a wallet: if the server is set to listen on a
+            // non-loopback address (reachable beyond this machine) AND no
+            // MCP_AUTH_TOKEN is set, REFUSE to start rather than silently run an
+            // open, money-moving endpoint. A warning is not enough.
+            var listenUrls = Environment.GetEnvironmentVariable("ASPNETCORE_URLS");
+            if (string.IsNullOrEmpty(authToken) && IsNonLoopbackBind(listenUrls))
+            {
+                Console.Error.WriteLine(
+                    $"[Lightning Enable MCP] FATAL: refusing to start. HTTP transport is set to listen on a " +
+                    $"non-loopback address (ASPNETCORE_URLS={listenUrls}) with NO authentication.");
+                Console.Error.WriteLine(
+                    "[Lightning Enable MCP] This would expose money-moving tools (pay_invoice, send_onchain, " +
+                    "settle_agent_service, ...) to anyone who can reach the endpoint.");
+                Console.Error.WriteLine(
+                    "[Lightning Enable MCP] Fix: set MCP_AUTH_TOKEN to a strong secret AND terminate TLS in front; " +
+                    "or bind to localhost only (unset ASPNETCORE_URLS / use 127.0.0.1) for local-only use.");
+                Environment.Exit(78); // EX_CONFIG
+                return;
+            }
+            if (!string.IsNullOrEmpty(authToken) && IsNonLoopbackBind(listenUrls))
+            {
+                Console.Error.WriteLine(
+                    "[Lightning Enable MCP] NOTE: serving on a non-loopback address. Ensure TLS terminates in " +
+                    "front of this endpoint — the Bearer token and all traffic must never cross the network in cleartext.");
+            }
+
             if (!string.IsNullOrEmpty(authToken))
             {
                 app.Use(async (context, next) =>
@@ -299,5 +327,45 @@ public class Program
         var ba = System.Text.Encoding.UTF8.GetBytes(a);
         var bb = System.Text.Encoding.UTF8.GetBytes(b);
         return System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(ba, bb);
+    }
+
+    /// <summary>
+    /// Returns true if the configured listen address (ASPNETCORE_URLS) is reachable
+    /// beyond this machine (any host other than localhost / 127.0.0.1 / ::1 — e.g.
+    /// 0.0.0.0, +, *, a real IP, or a hostname). Unset URLs mean the framework's
+    /// default localhost bind, which is loopback-only (safe). Biased fail-closed:
+    /// anything not provably loopback is treated as non-loopback.
+    /// </summary>
+    private static bool IsNonLoopbackBind(string? aspnetcoreUrls)
+    {
+        if (string.IsNullOrWhiteSpace(aspnetcoreUrls))
+            return false; // default bind is localhost (loopback)
+
+        foreach (var raw in aspnetcoreUrls.Split(';',
+                     StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var s = raw;
+            var schemeIdx = s.IndexOf("://", StringComparison.Ordinal);
+            if (schemeIdx >= 0) s = s[(schemeIdx + 3)..];
+
+            string host;
+            if (s.StartsWith('['))
+            {
+                // IPv6 literal, e.g. [::1]:5000
+                var end = s.IndexOf(']');
+                host = end > 0 ? s[1..end] : s;
+            }
+            else
+            {
+                var cut = s.IndexOfAny(new[] { ':', '/' });
+                host = cut >= 0 ? s[..cut] : s;
+            }
+            host = host.Trim().ToLowerInvariant();
+
+            var loopback = host is "localhost" or "127.0.0.1" or "::1";
+            if (!loopback)
+                return true; // any non-loopback entry in the list = network-exposed
+        }
+        return false;
     }
 }

@@ -130,9 +130,10 @@ public static class PayInvoiceTool
                             return JsonSerializer.Serialize(new
                             {
                                 success = false,
-                                error = "Invalid, expired, or already-used confirmation nonce",
-                                message = "The nonce may have expired (2 minute limit) or was already used. " +
-                                          "Request a new confirmation by calling pay_invoice without a nonce."
+                                error = "Confirmation code is invalid, expired, already used, or does not match THIS " +
+                                        "payment's amount and tool. Codes are bound to the exact amount + tool approved.",
+                                message = "The code may have expired (2-minute limit), been used already, or been issued for a " +
+                                          "different amount/tool. Request a new confirmation by calling pay_invoice without a confirmationNonce."
                             });
                         }
 

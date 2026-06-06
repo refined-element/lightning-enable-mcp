@@ -95,4 +95,23 @@ public class SendOnChainToolTests
         json.RootElement.GetProperty("success").GetBoolean().Should().BeFalse();
         json.RootElement.GetProperty("error").GetString().Should().Contain("Invalid Bitcoin address");
     }
+
+    [Fact]
+    public async Task SendOnChain_NullBudgetService_FailsClosed_DoesNotSend()
+    {
+        // On-chain is irreversible: with no budget/confirmation service, refuse rather than
+        // bypass the gate and send.
+        var wallet = ConfiguredWallet();
+
+        var result = await SendOnChainTool.SendOnChain(
+            address: ValidAddress,
+            amountSats: 5000,
+            walletService: wallet.Object,
+            budgetService: null);
+
+        var json = JsonDocument.Parse(result);
+        json.RootElement.GetProperty("success").GetBoolean().Should().BeFalse();
+        json.RootElement.GetProperty("error").GetString().Should().Contain("fail-closed");
+        wallet.Verify(w => w.SendOnChainAsync(It.IsAny<string>(), It.IsAny<long>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
 }

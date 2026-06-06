@@ -91,7 +91,18 @@ public static class SendOnChainTool
         // code is printed to stderr, never to the model). Budget limits are still
         // enforced: an over-limit amount (or a price outage) is refused outright, since
         // confirmation must not authorize a payment beyond the configured ceiling.
-        if (budgetService != null)
+        // FAIL CLOSED: an irreversible on-chain send must never bypass the confirmation
+        // gate. If the budget/confirmation service isn't available, refuse rather than send.
+        if (budgetService == null)
+        {
+            return JsonSerializer.Serialize(new
+            {
+                success = false,
+                error = "Budget/confirmation service is unavailable, so this on-chain send was refused " +
+                        "(fail-closed). On-chain payments are irreversible and must go through the confirmation gate."
+            });
+        }
+
         {
             var approval = await budgetService.CheckApprovalLevelAsync(amountSats, cancellationToken);
             if (approval.Level == ApprovalLevel.Deny)
@@ -112,8 +123,9 @@ public static class SendOnChainTool
                     return JsonSerializer.Serialize(new
                     {
                         success = false,
-                        error = "Invalid, expired, already-used, or amount-mismatched confirmation code",
-                        message = "Request a fresh confirmation by calling send_onchain again without a confirmationNonce."
+                        error = "Confirmation code is invalid, expired, already used, or does not match THIS " +
+                                "send's amount and tool. Codes are bound to the exact amount + tool they were approved for.",
+                        message = "Request a fresh confirmation by calling send_onchain again without a confirmationNonce, then supply the new code."
                     });
                 }
                 Console.Error.WriteLine($"[Lightning Enable] On-chain send of {amountSats:N0} sats to {address} confirmed.");

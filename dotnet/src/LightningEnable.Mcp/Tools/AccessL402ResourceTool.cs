@@ -128,9 +128,10 @@ public static class AccessL402ResourceTool
                         return JsonSerializer.Serialize(new
                         {
                             success = false,
-                            error = "Invalid, expired, or already-used confirmation nonce",
-                            message = "The nonce may have expired (2 minute limit) or was already used. " +
-                                      "Request a new confirmation by calling access_l402_resource without a nonce."
+                            error = "Confirmation code is invalid, expired, already used, or does not match THIS " +
+                                    "request's amount and tool. Codes are bound to the exact amount + tool approved.",
+                            message = "The code may have expired (2-minute limit), been used already, or been issued for a " +
+                                      "different amount/tool. Request a new confirmation by calling access_l402_resource without a confirmationNonce."
                         });
                     }
 

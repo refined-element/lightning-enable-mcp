@@ -167,7 +167,12 @@ public class BudgetService : IBudgetService
         // on the most dangerous tools, including irreversible on-chain sends.)
         var result = CheckApprovalLevelAsync(amountSats).GetAwaiter().GetResult();
 
-        var remaining = (long)(result.RemainingSessionBudgetUsd * 100); // rough sats
+        // Rough "remaining" figure for the caller. Clamp to avoid OverflowException
+        // when no session limit is configured (RemainingSessionBudgetUsd is then
+        // ~decimal.MaxValue, and *100 would overflow). Informational only.
+        var remaining = result.RemainingSessionBudgetUsd >= (decimal)long.MaxValue / 100m
+            ? long.MaxValue
+            : (long)(result.RemainingSessionBudgetUsd * 100);
         var maxPerRequest = _maxPerPaymentSats > 0 ? _maxPerPaymentSats : 100000;
 
         if (result.RequiresConfirmation)

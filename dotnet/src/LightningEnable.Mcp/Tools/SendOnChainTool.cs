@@ -37,6 +37,11 @@ public static class SendOnChainTool
             });
         }
 
+        // Normalize once so validation and the actual send use the SAME value
+        // (the validator trims internally; without this an input like " bc1…"
+        // would pass validation but a different string would reach the wallet).
+        address = address.Trim();
+
         // C-2: validate the address before doing anything else. On-chain sends are
         // irreversible, so a typo'd, garbage, or wrong-network address must be
         // rejected here rather than risk broadcasting funds to an unrecoverable

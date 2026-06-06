@@ -43,14 +43,17 @@ public class BudgetConfig
     public bool IsBudgetExhausted => SessionSpent >= MaxSatsPerSession;
 
     /// <summary>
-    /// Hard maximum satoshis allowed per individual request.
-    /// This is a system-enforced limit that cannot be exceeded at runtime.
+    /// Informational mirror of the effective per-request cap in sats (NOT a separate,
+    /// independently enforced ceiling — that claim used to be here and was false). The
+    /// real protections are the USD per-payment / per-session limits, the approval
+    /// tiers, out-of-band confirmation for large amounts, the tighten-only runtime caps,
+    /// and fail-closed-when-no-BTC-price.
     /// </summary>
     public long HardMaxSatsPerRequest { get; set; } = 10000;
 
     /// <summary>
-    /// Hard maximum satoshis allowed for the entire session.
-    /// This is a system-enforced limit that cannot be exceeded at runtime.
+    /// Informational mirror of the effective per-session cap in sats. See the note on
+    /// <see cref="HardMaxSatsPerRequest"/> — this is not a separately enforced ceiling.
     /// </summary>
     public long HardMaxSatsPerSession { get; set; } = 100000;
 

@@ -52,6 +52,29 @@ public class BudgetService : IBudgetService
         long amountSats,
         CancellationToken cancellationToken = default)
     {
+        // FAIL CLOSED on a price outage. The budget limits/tiers are USD-denominated,
+        // so without a BTC price we cannot evaluate the payment safely. Three sources
+        // are tried in parallel (first wins) and there is no stale-price fallback, so
+        // all-down is rare — but when it happens we REFUSE the payment rather than
+        // guess. Priming the price here (60s cache) means the conversions below reuse
+        // the same value instead of re-hitting the network.
+        try
+        {
+            await _priceService.GetBtcPriceAsync(cancellationToken);
+        }
+        catch (PriceUnavailableException)
+        {
+            return new ApprovalCheckResult
+            {
+                Level = ApprovalLevel.Deny,
+                AmountSats = amountSats,
+                AmountUsd = 0,
+                DenialReason = "BTC price is currently unavailable (all price sources failed), so this " +
+                               "payment cannot be checked against your budget and was refused. Please retry shortly.",
+                RemainingSessionBudgetUsd = 0
+            };
+        }
+
         await UpdateThresholdsIfNeededAsync(cancellationToken);
 
         var config = _configService.Configuration;

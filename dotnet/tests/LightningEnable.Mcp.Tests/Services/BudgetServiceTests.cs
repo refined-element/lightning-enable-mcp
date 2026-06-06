@@ -25,6 +25,10 @@ public class BudgetServiceTests
             .ReturnsAsync((long sats, CancellationToken _) => sats / 100000m);
         _priceServiceMock.Setup(p => p.UsdToSatsAsync(It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((decimal usd, CancellationToken _) => (long)(usd * 100000));
+        // A live price is required by the fail-closed guard at the top of
+        // CheckApprovalLevelAsync; default to "available" so existing tests run.
+        _priceServiceMock.Setup(p => p.GetBtcPriceAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(100000m);
     }
 
     private void SetupDefaultConfiguration()
@@ -269,6 +273,39 @@ public class BudgetServiceTests
         var result = await service.ConfigureBudgetAsync(perRequest, perSession);
 
         result.Success.Should().BeFalse();
+    }
+
+    #endregion
+
+    #region fail-closed when BTC price is unavailable (H-1)
+
+    [Fact]
+    public async Task CheckApprovalLevel_PriceUnavailable_FailsClosed_Denies()
+    {
+        SetupConfigurationWithLimits(500m, 100m);
+        _priceServiceMock.Setup(p => p.GetBtcPriceAsync(It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new PriceUnavailableException("all sources failed"));
+        var service = new BudgetService(_configServiceMock.Object, _priceServiceMock.Object);
+
+        var result = await service.CheckApprovalLevelAsync(5000);
+
+        result.Level.Should().Be(ApprovalLevel.Deny);
+        result.CanProceed.Should().BeFalse();
+        result.DenialReason.Should().Contain("price");
+    }
+
+    [Fact]
+    public void CheckBudget_PriceUnavailable_FailsClosed_NotAllowed()
+    {
+        // The sync path (send_onchain / L402 auto-pay) must also refuse, not throw.
+        SetupConfigurationWithLimits(500m, 100m);
+        _priceServiceMock.Setup(p => p.GetBtcPriceAsync(It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new PriceUnavailableException("all sources failed"));
+        var service = new BudgetService(_configServiceMock.Object, _priceServiceMock.Object);
+
+        var result = service.CheckBudget(5000);
+
+        result.Allowed.Should().BeFalse();
     }
 
     #endregion

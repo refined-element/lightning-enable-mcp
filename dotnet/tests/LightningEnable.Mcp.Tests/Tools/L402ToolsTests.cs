@@ -212,15 +212,16 @@ public class L402ToolsTests
             budgetService: budgetServiceMock.Object,
             priceService: priceServiceMock.Object);
 
-        // Assert — should return nonce-based fallback
+        // Assert — confirmation requested, but the code must NOT leak into the result
+        // (it goes to stderr only — the core out-of-band security property).
         var json = JsonDocument.Parse(result);
         json.RootElement.GetProperty("success").GetBoolean().Should().BeFalse();
         json.RootElement.GetProperty("requiresConfirmation").GetBoolean().Should().BeTrue();
-        json.RootElement.GetProperty("nonce").GetString().Should().Be("L4C123");
+        json.RootElement.TryGetProperty("nonce", out _).Should().BeFalse("the code must never be in the result");
+        result.Should().NotContain("L4C123", "the confirmation code must not leak into the model-visible result");
         json.RootElement.TryGetProperty("howToConfirm", out _).Should().BeTrue();
         json.RootElement.GetProperty("expiresInSeconds").GetInt32().Should().Be(120);
         json.RootElement.GetProperty("amount").GetProperty("maxSats").GetInt32().Should().Be(1000);
-        json.RootElement.GetProperty("amount").GetProperty("usd").GetDecimal().Should().Be(5.00m);
     }
 
     [Fact]
@@ -261,11 +262,12 @@ public class L402ToolsTests
             budgetService: budgetServiceMock.Object,
             priceService: priceServiceMock.Object);
 
-        // Assert — should return nonce-based fallback
+        // Assert — confirmation requested, but the code must NOT leak into the result.
         var json = JsonDocument.Parse(result);
         json.RootElement.GetProperty("success").GetBoolean().Should().BeFalse();
         json.RootElement.GetProperty("requiresConfirmation").GetBoolean().Should().BeTrue();
-        json.RootElement.GetProperty("nonce").GetString().Should().Be("PLC456");
+        json.RootElement.TryGetProperty("nonce", out _).Should().BeFalse("the code must never be in the result");
+        result.Should().NotContain("PLC456", "the confirmation code must not leak into the model-visible result");
         json.RootElement.TryGetProperty("howToConfirm", out _).Should().BeTrue();
         json.RootElement.GetProperty("expiresInSeconds").GetInt32().Should().Be(120);
         json.RootElement.GetProperty("amount").GetProperty("sats").GetInt64().Should().Be(50); // lnbc500n = 50 sats

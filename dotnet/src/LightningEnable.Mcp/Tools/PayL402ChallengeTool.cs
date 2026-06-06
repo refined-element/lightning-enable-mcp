@@ -127,15 +127,25 @@ public static class PayL402ChallengeTool
                                 "pay_l402_challenge",
                                 invoicePrefix);
 
+                            // OUT-OF-BAND CONFIRMATION: code to STDERR only (human sees the server
+                            // console/logs; the model only sees tool results). An injected agent
+                            // can't read it to self-approve. The code MUST NOT appear in the result.
+                            Console.Error.WriteLine(
+                                "[Lightning Enable] *** L402 CHALLENGE PAYMENT CONFIRMATION REQUIRED ***\n" +
+                                $"  pay_l402_challenge — {approvalResult.AmountUsd:C} ({budgetCheckAmount:N0} sats), invoice {invoicePrefix}\n" +
+                                $"  Confirmation code: {pending.Nonce}\n" +
+                                "  To approve, give this code to the agent. Expires in 120s.");
+
                             return JsonSerializer.Serialize(new
                             {
                                 success = false,
                                 requiresConfirmation = true,
-                                error = "L402 challenge payment requires your confirmation",
-                                message = $"This payment of {approvalResult.AmountUsd:C} ({budgetCheckAmount:N0} sats) exceeds the auto-approve threshold.",
-                                nonce = pending.Nonce,
-                                howToConfirm = $"Step 1: Call confirm_payment(nonce: \"{pending.Nonce}\") to approve.\n" +
-                                               $"Step 2: Call pay_l402_challenge(invoice=\"...\", macaroon=\"...\", confirmationNonce=\"{pending.Nonce}\") to proceed.",
+                                error = "L402 challenge payment requires human confirmation",
+                                message = $"This payment of {approvalResult.AmountUsd:C} ({budgetCheckAmount:N0} sats) exceeds the auto-approve threshold. " +
+                                          "A confirmation code was printed to the server console/logs — visible to the human operator, NOT to you. " +
+                                          "Ask the human to read that code and give it to you.",
+                                howToConfirm = "Ask the human operator for the confirmation code shown in the server console, then call " +
+                                               "pay_l402_challenge(invoice=\"...\", macaroon=\"...\", confirmationNonce=\"<code-from-human>\").",
                                 expiresInSeconds = 120,
                                 amount = new
                                 {
@@ -145,7 +155,7 @@ public static class PayL402ChallengeTool
                                 thresholds = new
                                 {
                                     autoApprove = budgetService.GetUserConfiguration().Tiers.AutoApprove,
-                                    note = "Payments above this require confirmation via confirm_payment tool"
+                                    note = "Payments above this require a human-supplied confirmation code"
                                 }
                             });
                         }

@@ -157,15 +157,25 @@ public static class AccessL402ResourceTool
                             "access_l402_resource",
                             urlDisplay);
 
+                        // OUT-OF-BAND CONFIRMATION: code to STDERR only (human sees the server
+                        // console/logs; the model only sees tool results). An injected agent
+                        // can't read it to self-approve. The code MUST NOT appear in the result.
+                        Console.Error.WriteLine(
+                            "[Lightning Enable] *** L402 PAYMENT CONFIRMATION REQUIRED ***\n" +
+                            $"  access_l402_resource — up to {approvalResult.AmountUsd:C} ({maxSats:N0} sats), {urlDisplay}\n" +
+                            $"  Confirmation code: {pending.Nonce}\n" +
+                            "  To approve, give this code to the agent. Expires in 120s.");
+
                         return JsonSerializer.Serialize(new
                         {
                             success = false,
                             requiresConfirmation = true,
-                            error = "L402 payment requires your confirmation",
-                            message = $"This L402 request may cost up to {approvalResult.AmountUsd:C} ({maxSats:N0} sats), which exceeds the auto-approve threshold.",
-                            nonce = pending.Nonce,
-                            howToConfirm = $"Step 1: Call confirm_payment(nonce: \"{pending.Nonce}\") to approve.\n" +
-                                           $"Step 2: Call access_l402_resource(url=\"{url}\", confirmationNonce=\"{pending.Nonce}\") to proceed.",
+                            error = "L402 payment requires human confirmation",
+                            message = $"This L402 request may cost up to {approvalResult.AmountUsd:C} ({maxSats:N0} sats), which exceeds the auto-approve threshold. " +
+                                      "A confirmation code was printed to the server console/logs — visible to the human operator, NOT to you. " +
+                                      "Ask the human to read that code and give it to you.",
+                            howToConfirm = "Ask the human operator for the confirmation code shown in the server console, then call " +
+                                           "access_l402_resource(url=\"...\", confirmationNonce=\"<code-from-human>\").",
                             expiresInSeconds = 120,
                             amount = new
                             {
@@ -175,7 +185,7 @@ public static class AccessL402ResourceTool
                             thresholds = new
                             {
                                 autoApprove = budgetService.GetUserConfiguration().Tiers.AutoApprove,
-                                note = "Payments above this require confirmation via confirm_payment tool"
+                                note = "Payments above this require a human-supplied confirmation code"
                             }
                         });
                     }

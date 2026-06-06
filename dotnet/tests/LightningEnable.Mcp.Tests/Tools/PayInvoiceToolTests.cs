@@ -528,10 +528,10 @@ public class PayInvoiceToolTests
 
     #endregion
 
-    #region Nonce Fallback Tests
+    #region Out-of-band confirmation Tests
 
     [Fact]
-    public async Task PayInvoice_RequiresConfirmation_ElicitationFails_ReturnsNonceFallback()
+    public async Task PayInvoice_RequiresConfirmation_DoesNotLeakCodeInResult()
     {
         // Arrange — budget says RequiresConfirmation, elicitation unavailable (no server)
         _walletServiceMock.Setup(w => w.IsConfigured).Returns(true);
@@ -558,22 +558,25 @@ public class PayInvoiceToolTests
         _budgetServiceMock.Setup(b => b.GetUserConfiguration())
             .Returns(new UserBudgetConfiguration());
 
-        // Act — no McpServer, so elicitation can't work
+        // Act — no McpServer, so elicitation can't work → out-of-band (stderr) path
         var result = await PayInvoiceTool.PayInvoice(
             invoice: TestInvoice,
             walletService: _walletServiceMock.Object,
             budgetService: _budgetServiceMock.Object,
             priceService: _priceServiceMock.Object);
 
-        // Assert — should return nonce-based fallback, not an error
+        // Assert — confirmation is requested, but the CODE must NOT appear anywhere in
+        // the model-visible result (it goes to stderr only). This is the core security
+        // property: a prompt-injected agent can't read its own confirmation code.
         var json = JsonDocument.Parse(result);
         json.RootElement.GetProperty("success").GetBoolean().Should().BeFalse();
         json.RootElement.GetProperty("requiresConfirmation").GetBoolean().Should().BeTrue();
-        json.RootElement.GetProperty("nonce").GetString().Should().Be("ABC123");
+        json.RootElement.TryGetProperty("nonce", out _).Should().BeFalse("the code must never be in the result");
+        result.Should().NotContain("ABC123", "the confirmation code must not leak into the model-visible result");
         json.RootElement.TryGetProperty("howToConfirm", out _).Should().BeTrue();
+        json.RootElement.GetProperty("howToConfirm").GetString().Should().NotContain("ABC123");
         json.RootElement.GetProperty("expiresInSeconds").GetInt32().Should().Be(120);
         json.RootElement.GetProperty("amount").GetProperty("sats").GetInt64().Should().Be(100); // lnbc1000n = 100 sats
-        json.RootElement.GetProperty("amount").GetProperty("usd").GetDecimal().Should().Be(5.00m);
     }
 
     #endregion

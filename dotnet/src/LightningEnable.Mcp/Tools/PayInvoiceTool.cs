@@ -160,15 +160,27 @@ public static class PayInvoiceTool
                                 "pay_invoice",
                                 invoicePrefix);
 
+                            // OUT-OF-BAND CONFIRMATION: the code is written to STDERR only —
+                            // the human sees the server console/logs; the model does NOT (it
+                            // only sees tool results). So a prompt-injected agent cannot read
+                            // the code to self-approve; only a human watching the output can
+                            // relay it. The code MUST NEVER appear in the tool result below.
+                            Console.Error.WriteLine(
+                                "[Lightning Enable] *** PAYMENT CONFIRMATION REQUIRED ***\n" +
+                                $"  pay_invoice — {approvalResult.AmountUsd:C} ({amountSats.Value:N0} sats), invoice {invoicePrefix}\n" +
+                                $"  Confirmation code: {pending.Nonce}\n" +
+                                "  To approve, give this code to the agent. Expires in 120s.");
+
                             return JsonSerializer.Serialize(new
                             {
                                 success = false,
                                 requiresConfirmation = true,
-                                error = "Payment requires your confirmation",
-                                message = $"This payment of {approvalResult.AmountUsd:C} ({amountSats.Value:N0} sats) exceeds the auto-approve threshold.",
-                                nonce = pending.Nonce,
-                                howToConfirm = $"Step 1: Call confirm_payment(nonce: \"{pending.Nonce}\") to approve.\n" +
-                                               $"Step 2: Call pay_invoice(invoice=\"...\", confirmationNonce=\"{pending.Nonce}\") to proceed.",
+                                error = "Payment requires human confirmation",
+                                message = $"This payment of {approvalResult.AmountUsd:C} ({amountSats.Value:N0} sats) exceeds the auto-approve threshold. " +
+                                          "A confirmation code was printed to the server console/logs — visible to the human operator, NOT to you. " +
+                                          "Ask the human to read that code and give it to you.",
+                                howToConfirm = "Ask the human operator for the confirmation code shown in the server console, then call " +
+                                               "pay_invoice(invoice=\"...\", confirmationNonce=\"<code-from-human>\").",
                                 expiresInSeconds = 120,
                                 amount = new
                                 {
@@ -178,7 +190,7 @@ public static class PayInvoiceTool
                                 thresholds = new
                                 {
                                     autoApprove = budgetService.GetUserConfiguration().Tiers.AutoApprove,
-                                    note = "Payments above this require confirmation via confirm_payment tool"
+                                    note = "Payments above this require a human-supplied confirmation code"
                                 }
                             });
                         }

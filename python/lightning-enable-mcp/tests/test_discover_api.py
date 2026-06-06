@@ -6,6 +6,20 @@ import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+# Reach the SUBMODULE explicitly via importlib, NOT via attribute access on
+# the parent package. The package's __init__.py does
+# `from .discover_api import discover_api`, which binds the FUNCTION to the
+# `tools.discover_api` attribute — shadowing the submodule. So both
+# `patch("lightning_enable_mcp.tools.discover_api.httpx")` and
+# `import lightning_enable_mcp.tools.discover_api as alias` resolve to the
+# function (which has no `httpx` attribute → AttributeError on Python 3.10;
+# 3.12's mock.patch handles it differently and happens to pass).
+# `importlib.import_module` looks the submodule up in `sys.modules` and
+# returns the genuine module object regardless of what name the parent
+# package binds. patch.object on that reference works on every supported
+# Python version.
+import importlib
+discover_api_module = importlib.import_module("lightning_enable_mcp.tools.discover_api")
 from lightning_enable_mcp.tools.discover_api import (
     discover_api,
     _get_registry_base_url,
@@ -141,7 +155,7 @@ class TestDiscoverApi:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("lightning_enable_mcp.tools.discover_api.httpx") as mock_httpx:
+        with patch.object(discover_api_module, "httpx") as mock_httpx:
             mock_httpx.AsyncClient.return_value = mock_client
 
             result = await discover_api(query="weather")
@@ -164,7 +178,7 @@ class TestDiscoverApi:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("lightning_enable_mcp.tools.discover_api.httpx") as mock_httpx:
+        with patch.object(discover_api_module, "httpx") as mock_httpx:
             mock_httpx.AsyncClient.return_value = mock_client
 
             result = await discover_api(query="test")
@@ -193,7 +207,7 @@ class TestDiscoverApi:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("lightning_enable_mcp.tools.discover_api.httpx") as mock_httpx:
+        with patch.object(discover_api_module, "httpx") as mock_httpx:
             mock_httpx.AsyncClient.return_value = mock_client
 
             result = await discover_api(url="https://api.example.com")
@@ -215,7 +229,7 @@ class TestDiscoverApi:
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
         mock_client.__aexit__ = AsyncMock(return_value=False)
 
-        with patch("lightning_enable_mcp.tools.discover_api.httpx") as mock_httpx:
+        with patch.object(discover_api_module, "httpx") as mock_httpx:
             mock_httpx.AsyncClient.return_value = mock_client
 
             result = await discover_api(url="https://no-manifest.example.com")
@@ -228,7 +242,7 @@ class TestDiscoverApi:
     @pytest.mark.asyncio
     async def test_httpx_not_available(self):
         """Test error when httpx is not installed."""
-        with patch("lightning_enable_mcp.tools.discover_api.httpx", None):
+        with patch.object(discover_api_module, "httpx", None):
             result = await discover_api(query="test")
             parsed = json.loads(result)
             assert parsed["success"] is False

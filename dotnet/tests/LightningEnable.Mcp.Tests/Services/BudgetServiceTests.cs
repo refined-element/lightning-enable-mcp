@@ -18,7 +18,9 @@ public class BudgetServiceTests
         // Default configuration
         SetupDefaultConfiguration();
 
-        // Default price service (100k USD/BTC)
+        // Mock price service — a fixed, deterministic conversion of 100,000 sats = $1.00.
+        // This is a SIMPLIFIED test rate chosen so the tier math is easy to read; it is
+        // NOT a real BTC price. All "$X (mock rate)" comments below refer to this rate.
         _priceServiceMock.Setup(p => p.SatsToUsdAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((long sats, CancellationToken _) => sats / 100000m);
         _priceServiceMock.Setup(p => p.UsdToSatsAsync(It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
@@ -107,6 +109,76 @@ public class BudgetServiceTests
 
     #endregion
 
+    #region C-1 — Sync CheckBudget confirmation gate
+
+    [Fact]
+    public void CheckBudget_ConfirmationTierAmount_IsDenied_NotSilentlyAllowed()
+    {
+        // C-1 regression. The synchronous CheckBudget path is used by
+        // send_onchain, settle_agent_service, and L402 auto-pay — none of which
+        // have a confirmation/nonce flow. A payment the tier logic says
+        // "requires confirmation" (FormConfirm/UrlConfirm) must therefore be
+        // DENIED here, not silently allowed. Before the fix, CheckBudget mapped
+        // any non-Deny result to Allow, so a $5 (FormConfirm-tier) payment was
+        // auto-approved with no confirmation at all.
+        SetupConfigurationWithLimits(500m, 100m);
+        var service = new BudgetService(_configServiceMock.Object, _priceServiceMock.Object);
+
+        // 500,000 sats = $5.00 (mock rate) → FormConfirm tier (>$1, <=$10).
+        var result = service.CheckBudget(500_000);
+
+        result.Allowed.Should().BeFalse(
+            "a payment requiring confirmation must not be auto-approved on the synchronous budget path (C-1)");
+    }
+
+    [Fact]
+    public void CheckBudget_AutoApproveTierAmount_StillAllowed()
+    {
+        // Regression guard for the C-1 fix: auto-approve-tier payments must
+        // still proceed on the sync path (we only deny the confirmation tiers).
+        SetupConfigurationWithLimits(500m, 100m);
+        var service = new BudgetService(_configServiceMock.Object, _priceServiceMock.Object);
+
+        // 5,000 sats = $0.05 (mock rate) → AutoApprove tier (<=$0.10).
+        var result = service.CheckBudget(5_000);
+
+        result.Allowed.Should().BeTrue(
+            "auto-approve-tier payments still proceed without interactive confirmation");
+    }
+
+    [Fact]
+    public void CheckBudget_NoSessionLimit_DoesNotOverflow()
+    {
+        // Regression guard: with no session limit configured, the remaining-session
+        // budget is ~decimal.MaxValue, and the old "rough sats" conversion (* 100)
+        // overflowed when cast to long (Copilot review of PR #30). The clamp must
+        // keep CheckBudget from throwing and still allow an auto-approve-tier spend.
+        _configServiceMock.Setup(c => c.Configuration).Returns(new UserBudgetConfiguration
+        {
+            Currency = "USD",
+            Tiers = new TierThresholds
+            {
+                AutoApprove = 0.10m,
+                LogAndApprove = 1.00m,
+                FormConfirm = 10.00m,
+                UrlConfirm = 100.00m
+            },
+            Limits = new PaymentLimits { MaxPerPayment = null, MaxPerSession = null },
+            Session = new SessionSettings { RequireApprovalForFirstPayment = false, CooldownSeconds = 0 }
+        });
+        var service = new BudgetService(_configServiceMock.Object, _priceServiceMock.Object);
+
+        // 5,000 sats = $0.05 (mock rate) → AutoApprove; must not throw despite no limits.
+        BudgetCheckResult result = null!;
+        var act = () => result = service.CheckBudget(5_000);
+
+        act.Should().NotThrow();
+        result.Allowed.Should().BeTrue();
+        result.RemainingSessionBudget.Should().BeGreaterThan(0);
+    }
+
+    #endregion
+
     #region Approval Level Tests
 
     [Fact]
@@ -116,7 +188,7 @@ public class BudgetServiceTests
         SetupConfigurationWithLimits(500m, 100m);
         var service = new BudgetService(_configServiceMock.Object, _priceServiceMock.Object);
 
-        // 5 sats = $0.00005 at 100k/BTC - well below $0.10 auto-approve
+        // 5 sats = $0.00005 (mock rate) - well below $0.10 auto-approve
         // Act
         var result = await service.CheckApprovalLevelAsync(5);
 
@@ -132,7 +204,7 @@ public class BudgetServiceTests
         SetupConfigurationWithLimits(500m, 100m);
         var service = new BudgetService(_configServiceMock.Object, _priceServiceMock.Object);
 
-        // 50000 sats = $0.50 at 100k/BTC - above $0.10, below $1.00
+        // 50000 sats = $0.50 (mock rate) - above $0.10, below $1.00
         // Act
         var result = await service.CheckApprovalLevelAsync(50000);
 
@@ -148,7 +220,7 @@ public class BudgetServiceTests
         SetupConfigurationWithLimits(500m, 100m);
         var service = new BudgetService(_configServiceMock.Object, _priceServiceMock.Object);
 
-        // 500000 sats = $5.00 at 100k/BTC - above $1.00, below $10.00
+        // 500000 sats = $5.00 (mock rate) - above $1.00, below $10.00
         // Act
         var result = await service.CheckApprovalLevelAsync(500000);
 
@@ -164,7 +236,7 @@ public class BudgetServiceTests
         SetupConfigurationWithLimits(1.00m, 100m);
         var service = new BudgetService(_configServiceMock.Object, _priceServiceMock.Object);
 
-        // 200000 sats = $2.00 at 100k/BTC - exceeds $1.00 limit
+        // 200000 sats = $2.00 (mock rate) - exceeds $1.00 limit
         // Act
         var result = await service.CheckApprovalLevelAsync(200000);
 
@@ -182,7 +254,7 @@ public class BudgetServiceTests
         var service = new BudgetService(_configServiceMock.Object, _priceServiceMock.Object);
 
         // Record some spending first
-        service.RecordSpend(3000); // $0.03 at 100k/BTC
+        service.RecordSpend(3000); // $0.03 (mock rate)
 
         // Now try to spend 5000 more sats ($0.05) - would exceed $0.05 session limit
         // Act
@@ -221,7 +293,7 @@ public class BudgetServiceTests
         var service = new BudgetService(_configServiceMock.Object, _priceServiceMock.Object);
 
         // Act
-        var result = service.CheckBudget(5000); // $0.05 at 100k/BTC
+        var result = service.CheckBudget(5000); // $0.05 (mock rate)
 
         // Assert
         result.Allowed.Should().BeTrue();
@@ -236,7 +308,7 @@ public class BudgetServiceTests
         var service = new BudgetService(_configServiceMock.Object, _priceServiceMock.Object);
 
         // Act
-        var result = service.CheckBudget(5000); // $0.05 at 100k/BTC - exceeds $0.01
+        var result = service.CheckBudget(5000); // $0.05 (mock rate) - exceeds $0.01
 
         // Assert
         result.Allowed.Should().BeFalse();
@@ -392,7 +464,7 @@ public class BudgetServiceTests
     [Fact]
     public async Task IsBudgetExhausted_WhenExhausted_ReturnsTrue()
     {
-        // Arrange - set max session to $0.01 (1000 sats at 100k/BTC)
+        // Arrange - set max session to $0.01 (= 1000 sats at the mock rate)
         SetupConfigurationWithLimits(500m, 0.01m);
         var service = new BudgetService(_configServiceMock.Object, _priceServiceMock.Object);
 

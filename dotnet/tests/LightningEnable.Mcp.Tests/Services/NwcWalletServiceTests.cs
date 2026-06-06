@@ -889,39 +889,39 @@ public class NwcWalletServiceTests
     }
 
     [Fact]
-    public void EncryptNip04_DerivesKeyAsSha256OfSharedX_NotRawSharedX()
+    public void EncryptNip04_DerivesKeyAsRawSharedX_ForCoinOSAndL402TsCompat()
     {
-        // Regression test for the NIP-04 key-derivation bug Copilot caught on this PR:
-        // EncryptNip04/DecryptNip04 previously used `aes.Key = sharedX` directly. The
-        // round-trip tests passed because both sides shared the bug, but on-the-wire
-        // ciphertext was incompatible with every other NIP-04 implementation
-        // (Python port in this repo, Primal NWC, CoinOS, Mutiny, etc.).
+        // Empirical wire-format pin: l402-ts/src/wallets/nwc.ts (the working JS NWC
+        // client that pays against CoinOS in production) uses raw shared-X as the
+        // AES-256-CBC key — no sha256 wrapper. See lines 137 + 222 of that file:
+        // both encrypt and decrypt importKey("raw", sharedX, ...) directly.
         //
-        // This pin guards against regressing back to raw-sharedX: we encrypt with our
-        // implementation, then independently decrypt using AES-256-CBC keyed by
-        // SHA256(sharedX) and assert the round-trip works. If someone ever changes
-        // EncryptNip04 to use a different key derivation, this test will fail.
+        // The previous version of this test pinned the OPPOSITE behavior
+        // (sha256(sharedX)) under the framing of "NIP-04 spec compliance" — a
+        // claim that turned out to be wrong about CoinOS. After v1.12.5 round-2
+        // shipped that change (commit e572f57, May 3 2026), .NET MCP NIP-04
+        // payments stopped working against CoinOS — encrypted with sha256-keyed
+        // AES, CoinOS attempted to decrypt with raw-keyed AES, got garbage,
+        // silently dropped the event, leading to the user-visible
+        // "NWC request failed (no_response)" 30s timeout.
+        //
+        // This pin guards against regressing in the other direction — anyone
+        // who tries to "spec comply" by flipping back to sha256 will fail this
+        // test against an independently-encrypted ciphertext.
         var (alicePriv, alicePub) = GenerateKeyPair();
         var (bobPriv, bobPub) = GenerateKeyPair();
         const string plaintext = "{\"method\":\"get_balance\",\"params\":{}}";
 
-        // Reproduce the ECDH that EncryptNip04 does internally. We rely on the
-        // public DecryptContent path being correct; the assertion below also pins
-        // that the encrypt side is symmetric with the spec-compliant decrypt.
+        // Round-trip via NwcWalletService — basic sanity that encrypt + decrypt
+        // agree internally (would pass with EITHER key derivation, hence the
+        // independent-encrypt assertion below).
         var encrypted = NwcWalletService.EncryptNip04(plaintext, bobPub, alicePriv);
         var decrypted = NwcWalletService.DecryptContent(encrypted, alicePub, bobPriv);
         decrypted.Should().Be(plaintext);
 
-        // Independently parse the base64 IV + ciphertext blob and verify it can be
-        // decrypted with sha256(shared_x) but NOT with raw shared_x. This catches
-        // a future regression that flips back to raw-key on either the encrypt or
-        // decrypt side.
-        var parts = encrypted.Split("?iv=");
-        parts.Length.Should().Be(2);
-        var ciphertextBytes = Convert.FromBase64String(parts[0]);
-        var iv = Convert.FromBase64String(parts[1]);
-
-        // Recompute ECDH shared_x the same way the implementation does
+        // Independently encrypt the same plaintext using RAW sharedX as the AES key
+        // (the l402-ts / CoinOS wire format) and assert NwcWalletService.DecryptContent
+        // can read it. This is the test that fails on the buggy sha256 implementation.
         var fullPubkeyBytes = new byte[33];
         fullPubkeyBytes[0] = 0x02;
         bobPub.CopyTo(fullPubkeyBytes, 1);
@@ -929,31 +929,46 @@ public class NwcWalletServiceTests
         var sharedPoint = bobPubKey!.GetSharedPubkey(alicePriv);
         var sharedX = sharedPoint.ToBytes()[1..33];
 
-        // sha256(shared_x) must successfully decrypt
-        using (var aes = System.Security.Cryptography.Aes.Create())
-        {
-            aes.Key = System.Security.Cryptography.SHA256.HashData(sharedX);
-            aes.IV = iv;
-            aes.Mode = System.Security.Cryptography.CipherMode.CBC;
-            aes.Padding = System.Security.Cryptography.PaddingMode.PKCS7;
-            using var dec = aes.CreateDecryptor();
-            var roundTrip = Encoding.UTF8.GetString(dec.TransformFinalBlock(ciphertextBytes, 0, ciphertextBytes.Length));
-            roundTrip.Should().Be(plaintext, "spec-compliant key derivation must decrypt successfully");
-        }
+        var iv = new byte[16];
+        System.Security.Cryptography.RandomNumberGenerator.Fill(iv);
 
-        // Raw shared_x must NOT decrypt successfully — proving we're not in the buggy
-        // state. AES-CBC with the wrong key + PKCS7 padding throws CryptographicException
-        // with overwhelming probability.
+        byte[] independentCiphertext;
         using (var aes = System.Security.Cryptography.Aes.Create())
         {
-            aes.Key = sharedX;
+            aes.Key = sharedX; // raw — what l402-ts and CoinOS use
             aes.IV = iv;
             aes.Mode = System.Security.Cryptography.CipherMode.CBC;
             aes.Padding = System.Security.Cryptography.PaddingMode.PKCS7;
+            using var enc = aes.CreateEncryptor();
+            var ptBytes = Encoding.UTF8.GetBytes(plaintext);
+            independentCiphertext = enc.TransformFinalBlock(ptBytes, 0, ptBytes.Length);
+        }
+        var independentEncrypted = Convert.ToBase64String(independentCiphertext)
+            + "?iv=" + Convert.ToBase64String(iv);
+
+        // The fix proves itself here: NwcWalletService must decrypt raw-sharedX
+        // ciphertext (the l402-ts / CoinOS wire format).
+        var independentDecrypted = NwcWalletService.DecryptContent(independentEncrypted, alicePub, bobPriv);
+        independentDecrypted.Should().Be(plaintext,
+            "DecryptContent must accept raw-sharedX NIP-04 — l402-ts confirmed working against CoinOS uses this wire format");
+
+        // Symmetric assertion: ciphertext WE produce must be readable with raw sharedX.
+        // CoinOS and other raw-sharedX wallets receive our outgoing requests this way.
+        var parts = encrypted.Split("?iv=");
+        parts.Length.Should().Be(2);
+        var ourCiphertext = Convert.FromBase64String(parts[0]);
+        var ourIv = Convert.FromBase64String(parts[1]);
+
+        using (var aes = System.Security.Cryptography.Aes.Create())
+        {
+            aes.Key = sharedX; // raw
+            aes.IV = ourIv;
+            aes.Mode = System.Security.Cryptography.CipherMode.CBC;
+            aes.Padding = System.Security.Cryptography.PaddingMode.PKCS7;
             using var dec = aes.CreateDecryptor();
-            var act = () => dec.TransformFinalBlock(ciphertextBytes, 0, ciphertextBytes.Length);
-            act.Should().Throw<System.Security.Cryptography.CryptographicException>(
-                "raw-shared_x must no longer decrypt — that was the bug we just fixed");
+            var roundTrip = Encoding.UTF8.GetString(dec.TransformFinalBlock(ourCiphertext, 0, ourCiphertext.Length));
+            roundTrip.Should().Be(plaintext,
+                "ciphertext we emit must be readable by raw-sharedX wallets like CoinOS");
         }
     }
 

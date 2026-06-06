@@ -339,6 +339,14 @@ class LightningEnableServer:
                                 "type": "integer",
                                 "description": "Amount to send in satoshis",
                             },
+                            "confirmed": {
+                                "type": "boolean",
+                                "description": (
+                                    "Set to true to confirm this irreversible on-chain send. "
+                                    "The first call returns requiresConfirmation; call again with "
+                                    "confirmed=true to proceed."
+                                ),
+                            },
                         },
                         "required": ["address", "amount_sats"],
                     },
@@ -566,6 +574,7 @@ class LightningEnableServer:
                     result = await send_onchain(
                         address=arguments.get("address", ""),
                         amount_sats=arguments.get("amount_sats", 0),
+                        confirmed=arguments.get("confirmed", False),
                         wallet=onchain_wallet,
                         budget_service=self.budget_service,
                     )

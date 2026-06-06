@@ -222,6 +222,7 @@ public class L402ToolsTests
         json.RootElement.TryGetProperty("howToConfirm", out _).Should().BeTrue();
         json.RootElement.GetProperty("expiresInSeconds").GetInt32().Should().Be(120);
         json.RootElement.GetProperty("amount").GetProperty("maxSats").GetInt32().Should().Be(1000);
+        json.RootElement.GetProperty("amount").GetProperty("usd").GetDecimal().Should().Be(5.00m); // contract: USD still surfaced
     }
 
     [Fact]

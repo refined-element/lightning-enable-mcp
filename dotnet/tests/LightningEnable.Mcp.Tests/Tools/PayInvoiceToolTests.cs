@@ -577,6 +577,7 @@ public class PayInvoiceToolTests
         json.RootElement.GetProperty("howToConfirm").GetString().Should().NotContain("ABC123");
         json.RootElement.GetProperty("expiresInSeconds").GetInt32().Should().Be(120);
         json.RootElement.GetProperty("amount").GetProperty("sats").GetInt64().Should().Be(100); // lnbc1000n = 100 sats
+        json.RootElement.GetProperty("amount").GetProperty("usd").GetDecimal().Should().Be(5.00m); // contract: USD still surfaced
     }
 
     #endregion

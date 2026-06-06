@@ -664,4 +664,27 @@ public class BudgetServiceTests
     }
 
     #endregion
+
+    #region C-3 — confirmation is bound to the approved amount
+
+    [Fact]
+    public void Confirmation_AmountMismatch_IsRejected_AndNonceNotConsumed()
+    {
+        SetupConfigurationWithLimits(500m, 100m);
+        var service = new BudgetService(_configServiceMock.Object, _priceServiceMock.Object);
+        var pending = service.CreatePendingConfirmation(1000, 0.01m, "pay_invoice", "inv...");
+
+        // A code approved for 1,000 sats must NOT authorize a 1,000,000-sat payment...
+        service.ValidateAndConsumeConfirmation(pending.Nonce, 1_000_000).Should().BeNull();
+
+        // ...and the mismatch must NOT have consumed it — the correct amount still works.
+        var ok = service.ValidateAndConsumeConfirmation(pending.Nonce, 1000);
+        ok.Should().NotBeNull();
+        ok!.AmountSats.Should().Be(1000);
+
+        // One-time use: a second consume (even correct amount) fails.
+        service.ValidateAndConsumeConfirmation(pending.Nonce, 1000).Should().BeNull();
+    }
+
+    #endregion
 }

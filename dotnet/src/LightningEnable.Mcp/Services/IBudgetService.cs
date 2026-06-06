@@ -91,12 +91,17 @@ public interface IBudgetService
     PendingConfirmation? ValidateConfirmation(string nonce);
 
     /// <summary>
-    /// Validates a nonce, checks expiry, and consumes it (one-time use).
-    /// Returns null if the nonce is invalid, expired, or already consumed.
+    /// Validates a nonce, checks expiry, verifies the approved amount matches the
+    /// amount about to be paid (C-3 binding), and consumes it (one-time use).
+    /// Returns null if the nonce is invalid, expired, already consumed, OR the amount
+    /// does not match what was approved. On an amount mismatch the nonce is NOT
+    /// consumed (a correct-amount retry can still succeed); only an exact match is
+    /// consumed and returned.
     /// </summary>
-    /// <param name="nonce">The 6-character confirmation nonce.</param>
-    /// <returns>The confirmed pending confirmation, or null if invalid.</returns>
-    PendingConfirmation? ValidateAndConsumeConfirmation(string nonce);
+    /// <param name="nonce">The confirmation code.</param>
+    /// <param name="expectedAmountSats">The amount about to be paid; must equal the approved amount.</param>
+    /// <returns>The confirmed pending confirmation, or null if invalid / amount-mismatched.</returns>
+    PendingConfirmation? ValidateAndConsumeConfirmation(string nonce, long expectedAmountSats);
 
     /// <summary>
     /// Purges expired pending confirmations from memory.

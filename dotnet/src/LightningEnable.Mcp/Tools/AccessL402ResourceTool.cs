@@ -122,7 +122,7 @@ public static class AccessL402ResourceTool
                 // Check if a confirmed nonce was provided
                 if (!string.IsNullOrWhiteSpace(confirmationNonce))
                 {
-                    var confirmation = budgetService.ValidateAndConsumeConfirmation(confirmationNonce.Trim().ToUpperInvariant());
+                    var confirmation = budgetService.ValidateAndConsumeConfirmation(confirmationNonce.Trim().ToUpperInvariant(), approvalResult.AmountSats);
                     if (confirmation == null)
                     {
                         return JsonSerializer.Serialize(new

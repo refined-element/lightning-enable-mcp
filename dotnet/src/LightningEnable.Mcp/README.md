@@ -2,14 +2,14 @@
 
 # Lightning Enable MCP Server
 
-A Model Context Protocol (MCP) server that enables AI agents to make Lightning Network payments. 15 consumer tools are free with no subscription required. 2 producer tools (`create_l402_challenge`, `verify_l402_payment`) require an [Agentic Commerce subscription](https://lightningenable.com) (from $99/mo) and `LIGHTNING_ENABLE_API_KEY`.
+A Model Context Protocol (MCP) server that enables AI agents to make Lightning Network payments. 14 consumer tools are free with no subscription required. 2 producer tools (`create_l402_challenge`, `verify_l402_payment`) require an [Agentic Commerce subscription](https://lightningenable.com) (from $99/mo) and `LIGHTNING_ENABLE_API_KEY`.
 
 ## Overview
 
 This MCP server provides tools for AI agents (like Claude) to:
 
 - **Pay Lightning invoices** — Send payments to any BOLT11 invoice
-- **Manage payment budgets** — Set per-request and per-session spending limits
+- **Track payment budgets** — Review per-request and per-session spending limits (set via env vars / `~/.lightning-enable/config.json`)
 - **Track payment history** — Review all payments made during a session
 - **Check wallet balance** — Monitor your connected Lightning wallet
 - **Discover APIs** — Search the L402 API registry by keyword/category, or fetch a specific API's manifest
@@ -210,14 +210,7 @@ View current budget configuration and session spending (read-only).
 
 **Returns:** Budget tiers, limits, and current session spending
 
-### configure_budget
-
-Sets spending limits for the session.
-
-**Parameters:**
-- `perRequest`: Max sats per request. Default: 1000
-- `perSession`: Max sats for session. Default: 10000
-- `resetSession`: Reset session spending. Default: false
+> **Note:** There is no `configure_budget` tool. Spending limits are set via the `L402_MAX_SATS_PER_REQUEST` / `L402_MAX_SATS_PER_SESSION` env vars (or `~/.lightning-enable/config.json`) and read back with `get_budget_status`. Budget configuration is intentionally not agent-controllable.
 
 ### create_invoice
 
@@ -381,15 +374,17 @@ Payment verified! Here's your weather data: Temperature: 72°F, Humidity: 45%...
 
 This enables agent-to-agent commerce: any agent with an Agentic Commerce subscription can create paywalls, and any agent with a Lightning wallet can pay them.
 
-### Setting Budget Limits
+### Checking Budget Limits
+
+Budget limits are configured via environment variables (`L402_MAX_SATS_PER_REQUEST`, `L402_MAX_SATS_PER_SESSION`) or `~/.lightning-enable/config.json` — not at runtime by the agent.
 
 ```
-You: Configure the budget to allow max 500 sats per request and 5000 sats total
+You: What are my current budget limits and how much have I spent?
 
-Claude: I'll configure those budget limits.
-[Calls configure_budget with perRequest=500, perSession=5000]
+Claude: I'll check your budget status.
+[Calls get_budget_status]
 
-Budget configured:
+Budget status:
 - Max per request: 500 sats
 - Max per session: 5000 sats
 - Currently spent: 0 sats
@@ -408,7 +403,7 @@ Budget configured:
 Set one of: `STRIKE_API_KEY`, `LND_REST_HOST` + `LND_MACAROON_HEX`, `NWC_CONNECTION_STRING`, or `OPENNODE_API_KEY`.
 
 ### "Budget check failed"
-The requested payment exceeds your configured limits. Use `configure_budget` or `get_budget_status` to check.
+The requested payment exceeds your configured limits. Use `get_budget_status` to check current limits and session spending; adjust limits via the `L402_MAX_SATS_PER_REQUEST` / `L402_MAX_SATS_PER_SESSION` env vars or `~/.lightning-enable/config.json`.
 
 ### "Payment failed"
 Check:

@@ -14,12 +14,15 @@ namespace LightningEnable.Mcp.Tools;
 public static class ConfirmPaymentTool
 {
     /// <summary>
-    /// Confirms a pending payment using the 6-character nonce code.
-    /// Call this after a payment tool returns requiresConfirmation=true with a nonce.
+    /// Confirms a pending payment using the confirmation code that the SERVER printed to
+    /// its console/stderr (visible to the human operator, not to the model). The
+    /// payment-request tools (pay_invoice, send_onchain, ...) never return the code — the
+    /// model must obtain it from the human — which is what stops a prompt-injected agent
+    /// from self-approving. (This tool does echo the code back once you supply it.)
     /// </summary>
-    [McpServerTool(Name = "confirm_payment"), Description("Confirm a pending payment using the nonce code from a previous payment request")]
+    [McpServerTool(Name = "confirm_payment"), Description("Confirm a pending payment using the code the human operator read from the server console. The payment-request tools never return this code — you must ask the human for it.")]
     public static string ConfirmPayment(
-        [Description("The 6-character confirmation code from the payment request")] string nonce,
+        [Description("The confirmation code the human read from the server console/logs")] string nonce,
         IBudgetService? budgetService = null)
     {
         if (string.IsNullOrWhiteSpace(nonce))

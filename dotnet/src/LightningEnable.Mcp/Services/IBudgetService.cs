@@ -32,6 +32,19 @@ public interface IBudgetService
     void RecordSpend(long amountSats);
 
     /// <summary>
+    /// Applies tighten-only runtime spending caps (sats). An agent may only LOWER
+    /// its effective per-request / per-session limits, never raise them above the
+    /// operator-set config-file limits (or an existing tighter runtime cap). This is
+    /// the .NET counterpart of the Python configure_budget tool — a prompt-injected
+    /// agent must not be able to loosen its own caps and then drain the wallet.
+    /// </summary>
+    /// <param name="perRequestSats">Requested per-request cap in satoshis.</param>
+    /// <param name="perSessionSats">Requested per-session cap in satoshis.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>Result indicating success (and the new effective caps) or rejection.</returns>
+    Task<ConfigureBudgetResult> ConfigureBudgetAsync(long perRequestSats, long perSessionSats, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Gets the current budget configuration (runtime state).
     /// </summary>
     BudgetConfig GetConfig();
@@ -78,12 +91,18 @@ public interface IBudgetService
     PendingConfirmation? ValidateConfirmation(string nonce);
 
     /// <summary>
-    /// Validates a nonce, checks expiry, and consumes it (one-time use).
-    /// Returns null if the nonce is invalid, expired, or already consumed.
+    /// Validates a nonce, checks expiry, verifies the approved amount matches the
+    /// amount about to be paid (C-3 binding), and consumes it (one-time use).
+    /// Returns null if the nonce is invalid, expired, already consumed, OR the amount
+    /// does not match what was approved. On an amount mismatch the nonce is NOT
+    /// consumed (a correct-amount retry can still succeed); only an exact match is
+    /// consumed and returned.
     /// </summary>
-    /// <param name="nonce">The 6-character confirmation nonce.</param>
-    /// <returns>The confirmed pending confirmation, or null if invalid.</returns>
-    PendingConfirmation? ValidateAndConsumeConfirmation(string nonce);
+    /// <param name="nonce">The confirmation code.</param>
+    /// <param name="expectedAmountSats">The amount about to be paid; must equal the approved amount.</param>
+    /// <param name="expectedToolName">The tool consuming the code; must equal the tool the confirmation was created for (prevents cross-tool replay).</param>
+    /// <returns>The confirmed pending confirmation, or null if invalid / amount- or tool-mismatched.</returns>
+    PendingConfirmation? ValidateAndConsumeConfirmation(string nonce, long expectedAmountSats, string expectedToolName);
 
     /// <summary>
     /// Purges expired pending confirmations from memory.

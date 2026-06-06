@@ -2,7 +2,7 @@
 
 # Lightning Enable MCP Server
 
-A Model Context Protocol (MCP) server that enables AI agents to make Lightning Network payments. 15 consumer tools are free with no subscription required. 2 producer tools (`create_l402_challenge`, `verify_l402_payment`) require an [Agentic Commerce subscription](https://lightningenable.com) (from $99/mo) and `LIGHTNING_ENABLE_API_KEY`.
+A Model Context Protocol (MCP) server that enables AI agents to make Lightning Network payments. 15 tools work out of the box (free, no subscription). 8 tools require an [Agentic Commerce subscription](https://lightningenable.com) (from $99/mo) and `LIGHTNING_ENABLE_API_KEY`: 2 producer tools (`create_l402_challenge`, `verify_l402_payment`) and 6 Agent Service Agreement tools for agent-to-agent commerce over Nostr.
 
 ## Overview
 
@@ -61,8 +61,6 @@ dotnet build src/LightningEnable.Mcp
 | `NWC_CONNECTION_STRING` | If using NWC | - | Nostr Wallet Connect URI |
 | `LND_REST_HOST` | If using LND | - | LND REST API host |
 | `LND_MACAROON_HEX` | If using LND | - | LND admin macaroon in hex |
-| `L402_MAX_SATS_PER_REQUEST` | No | 1000 | Maximum sats per single request |
-| `L402_MAX_SATS_PER_SESSION` | No | 10000 | Maximum sats for entire session |
 | `LIGHTNING_ENABLE_API_KEY` | For producer tools | - | API key for `create_l402_challenge` and `verify_l402_payment`. Requires Agentic Commerce subscription. |
 
 Configure one wallet provider. If multiple are set, priority order is: LND > NWC > Strike > OpenNode.
@@ -212,12 +210,15 @@ View current budget configuration and session spending (read-only).
 
 ### configure_budget
 
-Sets spending limits for the session.
+Tightens the session spending limits. **Tighten-only:** an agent can only LOWER its
+caps — it can never raise them above the operator's `~/.lightning-enable/config.json`
+limits (or an existing tighter runtime cap). To raise limits, the operator edits the
+config file. This prevents a prompt-injected agent from loosening its own caps and
+then draining the wallet.
 
 **Parameters:**
-- `perRequest`: Max sats per request. Default: 1000
-- `perSession`: Max sats for session. Default: 10000
-- `resetSession`: Reset session spending. Default: false
+- `perRequest`: Max sats per single request. Default: 1000
+- `perSession`: Max total sats for the session. Default: 10000
 
 ### create_invoice
 

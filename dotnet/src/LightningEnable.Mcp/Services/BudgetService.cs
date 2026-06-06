@@ -30,6 +30,12 @@ public class BudgetService : IBudgetService
     private long _maxPerSessionSats;
     private DateTime _thresholdsCacheExpiry;
 
+    // Tighten-only runtime caps (sats) set by the agent via configure_budget.
+    // Null = no runtime cap. Enforced in addition to the USD config limits
+    // (most-restrictive-wins). An agent can only ever LOWER these.
+    private long? _runtimeMaxPerRequestSats;
+    private long? _runtimeMaxPerSessionSats;
+
     public BudgetService(
         IBudgetConfigurationService configService,
         IPriceService priceService)
@@ -46,6 +52,29 @@ public class BudgetService : IBudgetService
         long amountSats,
         CancellationToken cancellationToken = default)
     {
+        // FAIL CLOSED on a price outage. The budget limits/tiers are USD-denominated,
+        // so without a BTC price we cannot evaluate the payment safely. Three sources
+        // are tried in parallel (first wins) and there is no stale-price fallback, so
+        // all-down is rare — but when it happens we REFUSE the payment rather than
+        // guess. Priming the price here (60s cache) means the conversions below reuse
+        // the same value instead of re-hitting the network.
+        try
+        {
+            await _priceService.GetBtcPriceAsync(cancellationToken);
+        }
+        catch (PriceUnavailableException)
+        {
+            return new ApprovalCheckResult
+            {
+                Level = ApprovalLevel.Deny,
+                AmountSats = amountSats,
+                AmountUsd = 0,
+                DenialReason = "BTC price is currently unavailable (all price sources failed), so this " +
+                               "payment cannot be checked against your budget and was refused. Please retry shortly.",
+                RemainingSessionBudgetUsd = 0
+            };
+        }
+
         await UpdateThresholdsIfNeededAsync(cancellationToken);
 
         var config = _configService.Configuration;
@@ -84,6 +113,33 @@ public class BudgetService : IBudgetService
                     AmountUsd = amountUsd,
                     DenialReason = $"Payment of {amountUsd:C} exceeds maximum per-payment limit of {config.Limits.MaxPerPayment.Value:C}. " +
                                    "Edit ~/.lightning-enable/config.json to change limits.",
+                    RemainingSessionBudgetUsd = Math.Max(0, remainingSessionUsd)
+                };
+            }
+
+            // Runtime tighten-only caps (set via configure_budget). Sats-based, enforced
+            // on top of the USD config limits above — most-restrictive-wins.
+            if (_runtimeMaxPerRequestSats.HasValue && amountSats > _runtimeMaxPerRequestSats.Value)
+            {
+                return new ApprovalCheckResult
+                {
+                    Level = ApprovalLevel.Deny,
+                    AmountSats = amountSats,
+                    AmountUsd = amountUsd,
+                    DenialReason = $"Payment of {amountSats:N0} sats exceeds the runtime per-request cap of " +
+                                   $"{_runtimeMaxPerRequestSats.Value:N0} sats set via configure_budget.",
+                    RemainingSessionBudgetUsd = Math.Max(0, remainingSessionUsd)
+                };
+            }
+            if (_runtimeMaxPerSessionSats.HasValue && _sessionSpentSats + amountSats > _runtimeMaxPerSessionSats.Value)
+            {
+                return new ApprovalCheckResult
+                {
+                    Level = ApprovalLevel.Deny,
+                    AmountSats = amountSats,
+                    AmountUsd = amountUsd,
+                    DenialReason = $"Payment of {amountSats:N0} sats would exceed the runtime per-session cap of " +
+                                   $"{_runtimeMaxPerSessionSats.Value:N0} sats (already spent {_sessionSpentSats:N0}) set via configure_budget.",
                     RemainingSessionBudgetUsd = Math.Max(0, remainingSessionUsd)
                 };
             }
@@ -205,6 +261,49 @@ public class BudgetService : IBudgetService
         }
     }
 
+    public async Task<ConfigureBudgetResult> ConfigureBudgetAsync(
+        long perRequestSats, long perSessionSats, CancellationToken cancellationToken = default)
+    {
+        if (perRequestSats <= 0)
+            return ConfigureBudgetResult.Fail("per_request must be a positive number of sats.");
+        if (perSessionSats <= 0)
+            return ConfigureBudgetResult.Fail("per_session must be a positive number of sats.");
+        if (perRequestSats > perSessionSats)
+            return ConfigureBudgetResult.Fail("per_request cannot exceed per_session.");
+
+        // Make sure the config-derived sats caps are current before we compare.
+        await UpdateThresholdsIfNeededAsync(cancellationToken);
+
+        lock (_lock)
+        {
+            // Effective cap = most restrictive of the operator's config-file limit
+            // (USD→sats) and any existing runtime cap. A 0 config cap means "no
+            // config limit set" → treat as unlimited for this comparison.
+            long configReq = _maxPerPaymentSats > 0 ? _maxPerPaymentSats : long.MaxValue;
+            long configSess = _maxPerSessionSats > 0 ? _maxPerSessionSats : long.MaxValue;
+            long effReq = Math.Min(configReq, _runtimeMaxPerRequestSats ?? long.MaxValue);
+            long effSess = Math.Min(configSess, _runtimeMaxPerSessionSats ?? long.MaxValue);
+
+            // TIGHTEN-ONLY. An agent may only LOWER its caps. Refusing to raise them
+            // above the current effective limit is the whole point: a prompt-injected
+            // agent must not be able to loosen its own spending authority and then
+            // drain the wallet. To raise limits, the operator edits config.json.
+            if (perRequestSats > effReq || perSessionSats > effSess)
+            {
+                string Fmt(long v) => v == long.MaxValue ? "unlimited" : $"{v:N0} sats";
+                return ConfigureBudgetResult.Fail(
+                    "configure_budget can only LOWER spending limits, not raise them. " +
+                    $"Current effective caps: {Fmt(effReq)}/request, {Fmt(effSess)}/session. " +
+                    "To increase limits, the operator must edit ~/.lightning-enable/config.json — " +
+                    "an agent cannot raise its own spending authority.");
+            }
+
+            _runtimeMaxPerRequestSats = perRequestSats;
+            _runtimeMaxPerSessionSats = perSessionSats;
+            return ConfigureBudgetResult.Ok(perRequestSats, perSessionSats);
+        }
+    }
+
     public BudgetConfig GetConfig()
     {
         lock (_lock)
@@ -217,7 +316,9 @@ public class BudgetService : IBudgetService
                 RequestCount = _requestCount,
                 SessionStarted = _sessionStarted,
                 HardMaxSatsPerRequest = _maxPerPaymentSats,
-                HardMaxSatsPerSession = _maxPerSessionSats
+                HardMaxSatsPerSession = _maxPerSessionSats,
+                RuntimeMaxPerRequestSats = _runtimeMaxPerRequestSats,
+                RuntimeMaxPerSessionSats = _runtimeMaxPerSessionSats
             };
         }
     }
@@ -297,7 +398,7 @@ public class BudgetService : IBudgetService
         }
     }
 
-    public PendingConfirmation? ValidateAndConsumeConfirmation(string nonce)
+    public PendingConfirmation? ValidateAndConsumeConfirmation(string nonce, long expectedAmountSats, string expectedToolName)
     {
         if (string.IsNullOrWhiteSpace(nonce))
             return null;
@@ -307,12 +408,24 @@ public class BudgetService : IBudgetService
             if (!_pendingConfirmations.TryGetValue(nonce, out var confirmation))
                 return null;
 
-            // Always remove - one-time use
-            _pendingConfirmations.Remove(nonce);
-
             if (confirmation.IsExpired)
+            {
+                _pendingConfirmations.Remove(nonce);
+                return null;
+            }
+
+            // C-3: bind the approval to the EXACT amount AND tool it was created for.
+            // A code approved for X sats on pay_invoice must not authorize a different
+            // amount, NOR a different tool (e.g. send_onchain) even if the sats match.
+            // On mismatch we do NOT consume — the nonce stays valid so the correct
+            // (amount, tool) retry still works, but this request is refused.
+            if (confirmation.AmountSats != expectedAmountSats)
+                return null;
+            if (!string.Equals(confirmation.ToolName, expectedToolName, StringComparison.Ordinal))
                 return null;
 
+            // Amount + tool match — consume (one-time use).
+            _pendingConfirmations.Remove(nonce);
             return confirmation;
         }
     }

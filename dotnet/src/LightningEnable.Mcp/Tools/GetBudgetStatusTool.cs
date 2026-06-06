@@ -104,7 +104,12 @@ public static class GetBudgetStatusTool
                 limits = new
                 {
                     maxPerPaymentUsd = config.Limits.MaxPerPayment,
-                    maxPerSessionUsd = config.Limits.MaxPerSession
+                    maxPerSessionUsd = config.Limits.MaxPerSession,
+                    runtimeMaxPerRequestSats = runtimeConfig.RuntimeMaxPerRequestSats,
+                    runtimeMaxPerSessionSats = runtimeConfig.RuntimeMaxPerSessionSats,
+                    runtimeCapsNote = (runtimeConfig.RuntimeMaxPerRequestSats.HasValue || runtimeConfig.RuntimeMaxPerSessionSats.HasValue)
+                        ? "Tighter sats caps are set via configure_budget (enforced on top of the USD limits, most-restrictive-wins; can only be lowered further)."
+                        : "No runtime caps set; configure_budget can tighten spending further but never raise it above these limits."
                 },
                 session = new
                 {

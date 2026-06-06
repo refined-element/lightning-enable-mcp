@@ -43,16 +43,59 @@ public class BudgetConfig
     public bool IsBudgetExhausted => SessionSpent >= MaxSatsPerSession;
 
     /// <summary>
-    /// Hard maximum satoshis allowed per individual request.
-    /// This is a system-enforced limit that cannot be exceeded at runtime.
+    /// Informational mirror of the CONFIG-derived per-request sats cap (the USD
+    /// maxPerPayment converted to sats). NOTE: this is NOT a separate, independently
+    /// enforced ceiling, and it does NOT reflect any tighter runtime cap set via
+    /// configure_budget (see <see cref="RuntimeMaxPerRequestSats"/>) — the actual
+    /// effective cap is the most-restrictive of this and the runtime cap. Real
+    /// protections are the USD limits, approval tiers, out-of-band confirmation,
+    /// the tighten-only runtime caps, and fail-closed-when-no-BTC-price.
     /// </summary>
     public long HardMaxSatsPerRequest { get; set; } = 10000;
 
     /// <summary>
-    /// Hard maximum satoshis allowed for the entire session.
-    /// This is a system-enforced limit that cannot be exceeded at runtime.
+    /// Informational mirror of the CONFIG-derived per-session sats cap. See the note on
+    /// <see cref="HardMaxSatsPerRequest"/> — not a separately enforced ceiling, and does
+    /// not reflect a tighter runtime cap (<see cref="RuntimeMaxPerSessionSats"/>).
     /// </summary>
     public long HardMaxSatsPerSession { get; set; } = 100000;
+
+    /// <summary>
+    /// Runtime per-request cap (sats) set by the agent via configure_budget.
+    /// Null when no runtime cap is in effect. Can only TIGHTEN (lower) the
+    /// effective limit — never raise it above the operator's config-file limits.
+    /// </summary>
+    public long? RuntimeMaxPerRequestSats { get; set; }
+
+    /// <summary>
+    /// Runtime per-session cap (sats) set by the agent via configure_budget.
+    /// Null when no runtime cap is in effect. Tighten-only.
+    /// </summary>
+    public long? RuntimeMaxPerSessionSats { get; set; }
+}
+
+/// <summary>
+/// Result of a configure_budget (tighten-only) operation.
+/// </summary>
+public record ConfigureBudgetResult
+{
+    /// <summary>Whether the new (tighter) limits were applied.</summary>
+    public bool Success { get; init; }
+
+    /// <summary>Reason the request was rejected (e.g. an attempt to raise limits).</summary>
+    public string? Error { get; init; }
+
+    /// <summary>Effective per-request cap (sats) after the operation.</summary>
+    public long EffectivePerRequestSats { get; init; }
+
+    /// <summary>Effective per-session cap (sats) after the operation.</summary>
+    public long EffectivePerSessionSats { get; init; }
+
+    public static ConfigureBudgetResult Ok(long perRequest, long perSession) =>
+        new() { Success = true, EffectivePerRequestSats = perRequest, EffectivePerSessionSats = perSession };
+
+    public static ConfigureBudgetResult Fail(string error) =>
+        new() { Success = false, Error = error };
 }
 
 /// <summary>

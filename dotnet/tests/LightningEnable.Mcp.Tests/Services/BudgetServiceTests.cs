@@ -25,6 +25,10 @@ public class BudgetServiceTests
             .ReturnsAsync((long sats, CancellationToken _) => sats / 100000m);
         _priceServiceMock.Setup(p => p.UsdToSatsAsync(It.IsAny<decimal>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((decimal usd, CancellationToken _) => (long)(usd * 100000));
+        // A live price is required by the fail-closed guard at the top of
+        // CheckApprovalLevelAsync; default to "available" so existing tests run.
+        _priceServiceMock.Setup(p => p.GetBtcPriceAsync(It.IsAny<CancellationToken>()))
+            .ReturnsAsync(100000m);
     }
 
     private void SetupDefaultConfiguration()
@@ -175,6 +179,133 @@ public class BudgetServiceTests
         act.Should().NotThrow();
         result.Allowed.Should().BeTrue();
         result.RemainingSessionBudget.Should().BeGreaterThan(0);
+    }
+
+    #endregion
+
+    #region configure_budget — tighten-only runtime caps (decision C)
+
+    [Fact]
+    public async Task ConfigureBudget_TightensBelowConfig_Succeeds()
+    {
+        // Config caps are large ($500/$100 → 50M/10M sats at the mock rate), so
+        // tightening to 1000/5000 sats is allowed.
+        SetupConfigurationWithLimits(500m, 100m);
+        var service = new BudgetService(_configServiceMock.Object, _priceServiceMock.Object);
+
+        var result = await service.ConfigureBudgetAsync(1000, 5000);
+
+        result.Success.Should().BeTrue();
+        result.EffectivePerRequestSats.Should().Be(1000);
+        result.EffectivePerSessionSats.Should().Be(5000);
+        var cfg = service.GetConfig();
+        cfg.RuntimeMaxPerRequestSats.Should().Be(1000);
+        cfg.RuntimeMaxPerSessionSats.Should().Be(5000);
+    }
+
+    [Fact]
+    public async Task ConfigureBudget_AttemptToRaiseAboveConfig_IsRejected()
+    {
+        // Config caps $0.01/$0.01 → 1000 sats each at the mock rate. Asking for 5000
+        // tries to RAISE above the operator's limit — must be refused.
+        SetupConfigurationWithLimits(0.01m, 0.01m);
+        var service = new BudgetService(_configServiceMock.Object, _priceServiceMock.Object);
+
+        var result = await service.ConfigureBudgetAsync(5000, 5000);
+
+        result.Success.Should().BeFalse();
+        result.Error.Should().Contain("can only LOWER");
+    }
+
+    [Fact]
+    public async Task ConfigureBudget_CannotRaiseAboveExistingRuntimeCap()
+    {
+        SetupConfigurationWithLimits(500m, 100m);
+        var service = new BudgetService(_configServiceMock.Object, _priceServiceMock.Object);
+
+        (await service.ConfigureBudgetAsync(2000, 4000)).Success.Should().BeTrue();
+        // Now try to raise the per-request cap back up to 3000 — must be refused.
+        var result = await service.ConfigureBudgetAsync(3000, 4000);
+
+        result.Success.Should().BeFalse();
+        result.Error.Should().Contain("can only LOWER");
+    }
+
+    [Fact]
+    public async Task ConfigureBudget_PerRequestCap_IsEnforcedInApprovalCheck()
+    {
+        SetupConfigurationWithLimits(500m, 100m);
+        var service = new BudgetService(_configServiceMock.Object, _priceServiceMock.Object);
+        await service.ConfigureBudgetAsync(1000, 5000);
+
+        // 2000 sats exceeds the 1000-sat runtime per-request cap → Deny.
+        var result = await service.CheckApprovalLevelAsync(2000);
+
+        result.Level.Should().Be(ApprovalLevel.Deny);
+        result.DenialReason.Should().Contain("runtime per-request cap");
+    }
+
+    [Fact]
+    public async Task ConfigureBudget_PerSessionCap_IsEnforcedInApprovalCheck()
+    {
+        SetupConfigurationWithLimits(500m, 100m);
+        var service = new BudgetService(_configServiceMock.Object, _priceServiceMock.Object);
+        await service.ConfigureBudgetAsync(10000, 10000);
+        service.RecordSpend(7000);
+
+        // 7000 already spent + 5000 = 12000 > 10000 runtime session cap → Deny.
+        var result = await service.CheckApprovalLevelAsync(5000);
+
+        result.Level.Should().Be(ApprovalLevel.Deny);
+        result.DenialReason.Should().Contain("runtime per-session cap");
+    }
+
+    [Theory]
+    [InlineData(0, 5000)]      // per_request must be positive
+    [InlineData(-1, 5000)]     // per_request must be positive
+    [InlineData(1000, 0)]      // per_session must be positive
+    [InlineData(6000, 5000)]   // per_request cannot exceed per_session
+    public async Task ConfigureBudget_InvalidInputs_AreRejected(long perRequest, long perSession)
+    {
+        SetupConfigurationWithLimits(500m, 100m);
+        var service = new BudgetService(_configServiceMock.Object, _priceServiceMock.Object);
+
+        var result = await service.ConfigureBudgetAsync(perRequest, perSession);
+
+        result.Success.Should().BeFalse();
+    }
+
+    #endregion
+
+    #region fail-closed when BTC price is unavailable (H-1)
+
+    [Fact]
+    public async Task CheckApprovalLevel_PriceUnavailable_FailsClosed_Denies()
+    {
+        SetupConfigurationWithLimits(500m, 100m);
+        _priceServiceMock.Setup(p => p.GetBtcPriceAsync(It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new PriceUnavailableException("all sources failed"));
+        var service = new BudgetService(_configServiceMock.Object, _priceServiceMock.Object);
+
+        var result = await service.CheckApprovalLevelAsync(5000);
+
+        result.Level.Should().Be(ApprovalLevel.Deny);
+        result.CanProceed.Should().BeFalse();
+        result.DenialReason.Should().Contain("price");
+    }
+
+    [Fact]
+    public void CheckBudget_PriceUnavailable_FailsClosed_NotAllowed()
+    {
+        // The sync path (send_onchain / L402 auto-pay) must also refuse, not throw.
+        SetupConfigurationWithLimits(500m, 100m);
+        _priceServiceMock.Setup(p => p.GetBtcPriceAsync(It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new PriceUnavailableException("all sources failed"));
+        var service = new BudgetService(_configServiceMock.Object, _priceServiceMock.Object);
+
+        var result = service.CheckBudget(5000);
+
+        result.Allowed.Should().BeFalse();
     }
 
     #endregion
@@ -530,6 +661,33 @@ public class BudgetServiceTests
 
         // Assert
         elapsed.Should().BeFalse();
+    }
+
+    #endregion
+
+    #region C-3 — confirmation is bound to the approved amount AND tool
+
+    [Fact]
+    public void Confirmation_BoundToAmountAndTool_RejectsMismatches_AndNonceNotConsumed()
+    {
+        SetupConfigurationWithLimits(500m, 100m);
+        var service = new BudgetService(_configServiceMock.Object, _priceServiceMock.Object);
+        var pending = service.CreatePendingConfirmation(1000, 0.01m, "pay_invoice", "inv...");
+
+        // Wrong AMOUNT (right tool) → rejected; a 1,000-sat approval can't authorize 1,000,000.
+        service.ValidateAndConsumeConfirmation(pending.Nonce, 1_000_000, "pay_invoice").Should().BeNull();
+
+        // Wrong TOOL (right amount) → rejected; a pay_invoice code can't authorize send_onchain
+        // (no cross-tool replay).
+        service.ValidateAndConsumeConfirmation(pending.Nonce, 1000, "send_onchain").Should().BeNull();
+
+        // Neither mismatch consumed the nonce — the correct (amount, tool) still works.
+        var ok = service.ValidateAndConsumeConfirmation(pending.Nonce, 1000, "pay_invoice");
+        ok.Should().NotBeNull();
+        ok!.AmountSats.Should().Be(1000);
+
+        // One-time use: a second consume fails.
+        service.ValidateAndConsumeConfirmation(pending.Nonce, 1000, "pay_invoice").Should().BeNull();
     }
 
     #endregion

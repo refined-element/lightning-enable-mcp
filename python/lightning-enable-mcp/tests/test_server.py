@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import json
 
 from lightning_enable_mcp.server import LightningEnableServer
+from lightning_enable_mcp.nwc_wallet import NWCWallet
 
 
 class TestLightningEnableServer:
@@ -116,22 +117,47 @@ class TestLightningEnableServer:
             "&secret=71a8c14c1407c113601079c4302dab36460f0ccd0ad506f1f2dc73b5100e4f3c"
         )
 
-        with patch.dict("os.environ", {"NWC_CONNECTION_STRING": nwc_uri}):
+        # Set NWC and explicitly clear every OTHER wallet env var. Otherwise an
+        # ambient STRIKE_API_KEY / LND_* on the test machine would let
+        # _initialize_services pick a higher-priority backend (LND > NWC > Strike
+        # > OpenNode) and still satisfy a bare "wallet is not None" assertion —
+        # testing the wrong thing.
+        wallet_env_vars = {
+            "NWC_CONNECTION_STRING": nwc_uri,
+            "LND_REST_HOST": "",
+            "LND_MACAROON_HEX": "",
+            "STRIKE_API_KEY": "",
+            "OPENNODE_API_KEY": "",
+        }
+        with patch.dict("os.environ", wallet_env_vars, clear=False):
             server = LightningEnableServer()
 
-            # Patch both the pubkey derivation (avoids the optional secp256k1 C
-            # library, mirroring the rest of the suite) and the relay connect so
-            # the real wallet object is built and wired up without network I/O.
+            # Patch the pubkey derivation (avoids the optional secp256k1 C library,
+            # mirroring the rest of the suite) and the relay connect so the real
+            # wallet object is built without network I/O. Pin the config-file
+            # fallback to all-None too, so a local ~/.lightning-enable/config.json
+            # can't inject a different backend.
             with patch(
+                "lightning_enable_mcp.config.get_config_service"
+            ) as mock_get_config, patch(
                 "lightning_enable_mcp.nwc_wallet._get_pubkey",
                 return_value="aa" * 32,
             ), patch(
                 "lightning_enable_mcp.nwc_wallet.NWCWallet.connect",
                 new_callable=AsyncMock,
             ):
+                mock_get_config.return_value.configuration.wallets = MagicMock(
+                    lnd_rest_host=None,
+                    lnd_macaroon_hex=None,
+                    nwc_connection_string=None,
+                    strike_api_key=None,
+                    opennode_api_key=None,
+                    priority=None,
+                )
                 await server._initialize_services()
 
-                assert server.wallet is not None
+                # Assert it's specifically the NWC backend, not just "a wallet".
+                assert isinstance(server.wallet, NWCWallet)
                 assert server.l402_client is not None
                 assert server.budget_manager is not None
 

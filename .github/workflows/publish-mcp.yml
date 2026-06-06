@@ -228,7 +228,26 @@ jobs:
         run: ./mcp-publisher login github-oidc
 
       - name: Publish to MCP Registry
-        run: ./mcp-publisher publish --file=server.json
+        run: |
+          # Tolerate a duplicate version the same way the NuGet (--skip-duplicate)
+          # and PyPI (--skip-existing) steps do. The publish workflow triggers on any
+          # change to the csproj/pyproject/Dockerfile — not only version bumps — so a
+          # non-version-bump change (e.g. adding a PackageReference) would otherwise
+          # hard-fail this job with "cannot publish duplicate version" even though the
+          # package jobs correctly no-op. Only the duplicate case is swallowed; any
+          # other failure still fails the job.
+          set +e
+          OUT=$(./mcp-publisher publish --file=server.json 2>&1)
+          CODE=$?
+          echo "$OUT"
+          if [ $CODE -ne 0 ]; then
+            if echo "$OUT" | grep -qi "duplicate version"; then
+              echo "::notice::MCP Registry already has this version — skipping (parity with NuGet/PyPI skip-duplicate)."
+              exit 0
+            fi
+            echo "::error::mcp-publisher failed for a non-duplicate reason."
+            exit $CODE
+          fi
 
   summary:
     runs-on: ubuntu-latest

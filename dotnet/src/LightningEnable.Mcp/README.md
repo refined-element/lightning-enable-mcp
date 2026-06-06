@@ -2,14 +2,14 @@
 
 # Lightning Enable MCP Server
 
-A Model Context Protocol (MCP) server that enables AI agents to make Lightning Network payments. 14 consumer tools are free with no subscription required. 2 producer tools (`create_l402_challenge`, `verify_l402_payment`) require an [Agentic Commerce subscription](https://lightningenable.com) (from $99/mo) and `LIGHTNING_ENABLE_API_KEY`.
+A Model Context Protocol (MCP) server that enables AI agents to make Lightning Network payments. 14 consumer tools are free with no subscription required. 8 tools require an [Agentic Commerce subscription](https://lightningenable.com) (from $99/mo) and `LIGHTNING_ENABLE_API_KEY`: 2 producer tools (`create_l402_challenge`, `verify_l402_payment`) and 6 Agent Service Agreement tools (`publish_agent_capability`, `request_agent_service`, `settle_agent_service`, `discover_agent_services`, `get_agent_reputation`, `publish_agent_attestation`) for agent-to-agent commerce over Nostr.
 
 ## Overview
 
 This MCP server provides tools for AI agents (like Claude) to:
 
 - **Pay Lightning invoices** — Send payments to any BOLT11 invoice
-- **Track payment budgets** — Review per-request and per-session spending limits (set via env vars / `~/.lightning-enable/config.json`)
+- **Track payment budgets** — Review per-payment and per-session spending limits (set in `~/.lightning-enable/config.json`)
 - **Track payment history** — Review all payments made during a session
 - **Check wallet balance** — Monitor your connected Lightning wallet
 - **Discover APIs** — Search the L402 API registry by keyword/category, or fetch a specific API's manifest
@@ -61,8 +61,6 @@ dotnet build src/LightningEnable.Mcp
 | `NWC_CONNECTION_STRING` | If using NWC | - | Nostr Wallet Connect URI |
 | `LND_REST_HOST` | If using LND | - | LND REST API host |
 | `LND_MACAROON_HEX` | If using LND | - | LND admin macaroon in hex |
-| `L402_MAX_SATS_PER_REQUEST` | No | 1000 | Maximum sats per single request |
-| `L402_MAX_SATS_PER_SESSION` | No | 10000 | Maximum sats for entire session |
 | `LIGHTNING_ENABLE_API_KEY` | For producer tools | - | API key for `create_l402_challenge` and `verify_l402_payment`. Requires Agentic Commerce subscription. |
 
 Configure one wallet provider. If multiple are set, priority order is: LND > NWC > Strike > OpenNode.
@@ -210,7 +208,7 @@ View current budget configuration and session spending (read-only).
 
 **Returns:** Budget tiers, limits, and current session spending
 
-> **Note:** There is no `configure_budget` tool. Spending limits are set via the `L402_MAX_SATS_PER_REQUEST` / `L402_MAX_SATS_PER_SESSION` env vars (or `~/.lightning-enable/config.json`) and read back with `get_budget_status`. Budget configuration is intentionally not agent-controllable.
+> **Note:** There is no `configure_budget` tool in the .NET server. Spending limits are set in `~/.lightning-enable/config.json` (USD-denominated tiers and per-payment / per-session limits) and read back with `get_budget_status`. Budget configuration is intentionally not agent-controllable.
 
 ### create_invoice
 
@@ -376,7 +374,7 @@ This enables agent-to-agent commerce: any agent with an Agentic Commerce subscri
 
 ### Checking Budget Limits
 
-Budget limits are configured via environment variables (`L402_MAX_SATS_PER_REQUEST`, `L402_MAX_SATS_PER_SESSION`) or `~/.lightning-enable/config.json` — not at runtime by the agent.
+Budget limits are configured in `~/.lightning-enable/config.json` (USD-denominated) — not at runtime by the agent.
 
 ```
 You: What are my current budget limits and how much have I spent?
@@ -385,9 +383,11 @@ Claude: I'll check your budget status.
 [Calls get_budget_status]
 
 Budget status:
-- Max per request: 500 sats
-- Max per session: 5000 sats
-- Currently spent: 0 sats
+- Auto-approve under: $0.10
+- Max per payment: $500.00
+- Max per session: $100.00
+- Spent this session: 0 sats ($0.00)
+- Remaining this session: $100.00
 ```
 
 ## Security Considerations
@@ -403,7 +403,7 @@ Budget status:
 Set one of: `STRIKE_API_KEY`, `LND_REST_HOST` + `LND_MACAROON_HEX`, `NWC_CONNECTION_STRING`, or `OPENNODE_API_KEY`.
 
 ### "Budget check failed"
-The requested payment exceeds your configured limits. Use `get_budget_status` to check current limits and session spending; adjust limits via the `L402_MAX_SATS_PER_REQUEST` / `L402_MAX_SATS_PER_SESSION` env vars or `~/.lightning-enable/config.json`.
+The requested payment exceeds your configured limits. Use `get_budget_status` to check current limits and session spending; adjust limits by editing `~/.lightning-enable/config.json`.
 
 ### "Payment failed"
 Check:

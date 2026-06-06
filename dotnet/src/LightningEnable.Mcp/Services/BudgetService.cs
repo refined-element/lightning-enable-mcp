@@ -335,9 +335,18 @@ public class BudgetService : IBudgetService
 
     private static string GenerateNonce()
     {
+        // C-4: cryptographically-random nonce. Previously used System.Random,
+        // which is predictable (time-seeded PRNG) — a weak basis for a payment
+        // confirmation token. NOTE: even a strong nonce does NOT protect against
+        // the agent itself, because confirm_payment is a model-callable tool; the
+        // nonce only guards against accidental auto-approval. True out-of-band
+        // confirmation (MCP elicitation / a URL the model can't read) is the
+        // deeper fix and a separate design decision.
         const string chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-        var random = new Random();
-        return new string(Enumerable.Range(0, 6).Select(_ => chars[random.Next(chars.Length)]).ToArray());
+        var buf = new char[6];
+        for (int i = 0; i < buf.Length; i++)
+            buf[i] = chars[System.Security.Cryptography.RandomNumberGenerator.GetInt32(chars.Length)];
+        return new string(buf);
     }
 
     private async Task UpdateThresholdsIfNeededAsync(CancellationToken cancellationToken)

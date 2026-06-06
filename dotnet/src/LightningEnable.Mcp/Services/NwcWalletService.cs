@@ -862,7 +862,10 @@ public class NwcWalletService : IWalletService, IDisposable
                                     var senderPubkeyHex = responseEvent["pubkey"]?.GetValue<string>() ?? _config.WalletPubkey;
                                     var senderPubkeyBytes = Convert.FromHexString(senderPubkeyHex);
                                     var decrypted = DecryptContent(encryptedContent, senderPubkeyBytes, _privateKey);
-                                    Console.Error.WriteLine($"[NWC] Decrypted: {decrypted}");
+                                    // H-3: NEVER log the decrypted NWC response — it contains the
+                                    // preimage and wallet balance (engineering standard #5: never log
+                                    // preimages/credentials). Log only that decryption succeeded.
+                                    Console.Error.WriteLine("[NWC] Response decrypted OK");
 
                                     var responseObj = JsonNode.Parse(decrypted)?.AsObject();
                                     var resultType = responseObj?["result_type"]?.GetValue<string>();

@@ -1,5 +1,6 @@
 using LightningEnable.Mcp.Services;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using ModelContextProtocol.Server;
@@ -233,16 +234,51 @@ public class Program
 
         if (transport == "http")
         {
-            // Streamable HTTP — for remote hosting (mobile, Connectors Directory).
+            // Streamable HTTP — for remote hosting (self-host remote / mobile).
             // Listen address via ASPNETCORE_URLS (defaults to http://localhost:5000).
-            // WARNING: there is NO authentication here yet. This is for local/dev use
-            // only — OAuth + per-user wallet connection must land before any networked
-            // deployment, since these tools move money.
             var app = webBuilder!.Build();
+
+            // Auth gate. These tools move money, so a network-exposed endpoint must
+            // not be open. If MCP_AUTH_TOKEN is set, require a matching Bearer token
+            // (constant-time compare — engineering standard #7). If it's NOT set, run
+            // open but log a loud local/dev-only warning. This Bearer gate is the
+            // safety floor (never ship an open money endpoint; usable behind an auth
+            // proxy / for controlled clients); full OAuth — what Claude's connector UI
+            // uses for a polished remote connect — is the next increment.
+            var authToken = Environment.GetEnvironmentVariable("MCP_AUTH_TOKEN");
+            if (!string.IsNullOrEmpty(authToken))
+            {
+                app.Use(async (context, next) =>
+                {
+                    var header = context.Request.Headers.Authorization.ToString();
+                    const string prefix = "Bearer ";
+                    var presented = header.StartsWith(prefix, StringComparison.Ordinal)
+                        ? header[prefix.Length..]
+                        : null;
+                    if (presented is null || !ConstantTimeEquals(presented, authToken))
+                    {
+                        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                        context.Response.Headers.WWWAuthenticate = "Bearer";
+                        await context.Response.WriteAsJsonAsync(new
+                        {
+                            error = "unauthorized",
+                            message = "A valid Bearer token is required. Set MCP_AUTH_TOKEN on the server and send 'Authorization: Bearer <token>'."
+                        });
+                        return;
+                    }
+                    await next();
+                });
+                Console.Error.WriteLine("[Lightning Enable MCP] HTTP auth: Bearer token required (MCP_AUTH_TOKEN set).");
+            }
+            else
+            {
+                Console.Error.WriteLine(
+                    "[Lightning Enable MCP] WARNING: HTTP transport is UNAUTHENTICATED (MCP_AUTH_TOKEN not set). " +
+                    "These tools move money — local/dev ONLY; never expose this to a network without auth.");
+            }
+
             app.MapMcp();
-            Console.Error.WriteLine(
-                "[Lightning Enable MCP] Transport: Streamable HTTP (MapMcp). " +
-                "No auth configured — local/dev use only until auth lands.");
+            Console.Error.WriteLine("[Lightning Enable MCP] Transport: Streamable HTTP (MapMcp).");
             await app.RunAsync();
         }
         else
@@ -250,5 +286,18 @@ public class Program
             var host = hostBuilder!.Build();
             await host.RunAsync();
         }
+    }
+
+    /// <summary>
+    /// Constant-time comparison for the HTTP auth token. Uses
+    /// <see cref="System.Security.Cryptography.CryptographicOperations.FixedTimeEquals"/>
+    /// so a wrong token cannot be reconstructed via timing (engineering standard #7).
+    /// Returns false on a length mismatch without leaking via content comparison.
+    /// </summary>
+    private static bool ConstantTimeEquals(string a, string b)
+    {
+        var ba = System.Text.Encoding.UTF8.GetBytes(a);
+        var bb = System.Text.Encoding.UTF8.GetBytes(b);
+        return System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(ba, bb);
     }
 }

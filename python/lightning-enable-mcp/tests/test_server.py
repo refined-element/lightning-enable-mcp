@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import json
 
 from lightning_enable_mcp.server import LightningEnableServer
+from lightning_enable_mcp.nwc_wallet import NWCWallet
 
 
 class TestLightningEnableServer:
@@ -23,58 +24,140 @@ class TestLightningEnableServer:
 
     @pytest.mark.asyncio
     async def test_list_tools_returns_all_tools(self):
-        """Test that the list_tools handler is registered on the underlying MCP Server."""
+        """Test that list_tools returns all expected tools.
+
+        The MCP SDK (>=1.x) no longer exposes a ``Server._tool_handlers``
+        attribute. Handlers registered via the ``@server.list_tools()``
+        decorator are stored in the public ``Server.request_handlers``
+        registry, keyed by request type. We invoke the registered
+        ``ListToolsRequest`` handler directly — the same code path the SDK
+        uses when a client sends a ``tools/list`` request — and assert the
+        full expected tool set is returned.
+        """
+        from mcp.types import ListToolsRequest
+
         server = LightningEnableServer()
 
-        # The @self.server.list_tools() decorator in _setup_handlers registers
-        # a handler in the underlying mcp Server's request_handlers dict.
-        # An earlier version of this test referenced a private `_tool_handlers`
-        # attribute that doesn't exist on the current mcp library — that test
-        # never actually ran in CI (no test workflow existed), so the bug
-        # went unnoticed. Now we just smoke-test that list_tools is exposed
-        # on the server (the decorator method is what the @ above hangs off
-        # of, so its presence confirms the library shape we depend on).
-        assert "list_tools" in dir(server.server), (
-            "list_tools decorator method must be exposed on the underlying mcp Server"
-        )
-        # And confirm at least one request handler was registered by
-        # _setup_handlers (the list_tools decorator stores its handler there).
-        assert hasattr(server.server, "request_handlers"), (
-            "underlying mcp Server should expose request_handlers"
-        )
-        assert len(server.server.request_handlers) > 0, (
-            "_setup_handlers should have registered at least one request handler"
-        )
+        # The list_tools handler is registered in the public request_handlers map.
+        assert ListToolsRequest in server.server.request_handlers
+
+        handler = server.server.request_handlers[ListToolsRequest]
+        result = await handler(ListToolsRequest(method="tools/list"))
+
+        # Handler returns a ServerResult wrapping a ListToolsResult.
+        tools = result.root.tools
+        tool_names = {tool.name for tool in tools}
+
+        expected_tools = {
+            "access_l402_resource",
+            "pay_l402_challenge",
+            "check_wallet_balance",
+            "get_payment_history",
+            "configure_budget",
+            "pay_invoice",
+            "create_invoice",
+            "check_invoice_status",
+            "get_all_balances",
+            "get_btc_price",
+            "exchange_currency",
+            "send_onchain",
+            "get_budget_status",
+            "create_l402_challenge",
+            "verify_l402_payment",
+            "confirm_payment",
+            "discover_api",
+        }
+
+        assert tool_names == expected_tools
 
     @pytest.mark.asyncio
     async def test_services_not_initialized_without_nwc(self):
-        """Test services aren't initialized without NWC connection."""
-        with patch.dict("os.environ", {}, clear=True):
+        """Test services aren't initialized without a wallet configured.
+
+        Only the wallet-related env vars are cleared (not the entire
+        environment) so that config-file home-directory resolution still
+        works. With no wallet credentials present, ``_initialize_services``
+        should leave ``server.wallet`` as ``None``.
+        """
+        wallet_env_vars = {
+            "LND_REST_HOST": "",
+            "LND_MACAROON_HEX": "",
+            "NWC_CONNECTION_STRING": "",
+            "STRIKE_API_KEY": "",
+            "OPENNODE_API_KEY": "",
+        }
+        with patch.dict("os.environ", wallet_env_vars, clear=False):
             server = LightningEnableServer()
-            await server._initialize_services()
+
+            # Prevent the config-file fallback from supplying credentials, so
+            # this asserts behavior purely on the "no wallet configured" path.
+            with patch(
+                "lightning_enable_mcp.config.get_config_service"
+            ) as mock_get_config:
+                wallets = MagicMock(
+                    lnd_rest_host=None,
+                    lnd_macaroon_hex=None,
+                    nwc_connection_string=None,
+                    strike_api_key=None,
+                    opennode_api_key=None,
+                    priority=None,
+                )
+                mock_get_config.return_value.configuration.wallets = wallets
+
+                await server._initialize_services()
 
             assert server.wallet is None
 
     @pytest.mark.asyncio
     async def test_services_initialized_with_nwc(self):
-        """Test services are initialized with NWC connection."""
+        """Test services are initialized with an NWC connection."""
         nwc_uri = (
             "nostr+walletconnect://b889ff5b1513b641e2a139f661a661364979c5beee91842f8f0ef42ab558e9d4"
             "?relay=wss://relay.getalby.com/v1"
             "&secret=71a8c14c1407c113601079c4302dab36460f0ccd0ad506f1f2dc73b5100e4f3c"
         )
 
-        with patch.dict("os.environ", {"NWC_CONNECTION_STRING": nwc_uri}):
+        # Set NWC and explicitly clear every OTHER wallet env var. Otherwise an
+        # ambient STRIKE_API_KEY / LND_* on the test machine would let
+        # _initialize_services pick a higher-priority backend (LND > NWC > Strike
+        # > OpenNode) and still satisfy a bare "wallet is not None" assertion —
+        # testing the wrong thing.
+        wallet_env_vars = {
+            "NWC_CONNECTION_STRING": nwc_uri,
+            "LND_REST_HOST": "",
+            "LND_MACAROON_HEX": "",
+            "STRIKE_API_KEY": "",
+            "OPENNODE_API_KEY": "",
+        }
+        with patch.dict("os.environ", wallet_env_vars, clear=False):
             server = LightningEnableServer()
 
-            # Mock the wallet connect
+            # Patch the pubkey derivation (avoids the optional secp256k1 C library,
+            # mirroring the rest of the suite) and the relay connect so the real
+            # wallet object is built without network I/O. Pin the config-file
+            # fallback to all-None too, so a local ~/.lightning-enable/config.json
+            # can't inject a different backend.
             with patch(
+                "lightning_enable_mcp.config.get_config_service"
+            ) as mock_get_config, patch(
+                "lightning_enable_mcp.nwc_wallet._get_pubkey",
+                return_value="aa" * 32,
+            ), patch(
                 "lightning_enable_mcp.nwc_wallet.NWCWallet.connect",
                 new_callable=AsyncMock,
             ):
+                mock_get_config.return_value.configuration.wallets = MagicMock(
+                    lnd_rest_host=None,
+                    lnd_macaroon_hex=None,
+                    nwc_connection_string=None,
+                    strike_api_key=None,
+                    opennode_api_key=None,
+                    priority=None,
+                )
                 await server._initialize_services()
 
-                assert server.wallet is not None
+                # Assert it's specifically the NWC backend, not just "a wallet".
+                assert isinstance(server.wallet, NWCWallet)
                 assert server.l402_client is not None
                 assert server.budget_manager is not None
 

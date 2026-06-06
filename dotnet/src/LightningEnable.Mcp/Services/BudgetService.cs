@@ -157,17 +157,39 @@ public class BudgetService : IBudgetService
 
     public BudgetCheckResult CheckBudget(long amountSats)
     {
-        // Synchronous wrapper for backward compatibility
+        // Synchronous wrapper. CRITICAL: this path has NO interactive
+        // confirmation / nonce flow (unlike pay_invoice / pay_l402_challenge),
+        // and is used by send_onchain, settle_agent_service, and L402 auto-pay.
+        // So a payment the tier logic says "requires confirmation"
+        // (FormConfirm/UrlConfirm) MUST be denied here, not silently allowed —
+        // only AutoApprove/LogAndApprove may proceed. (C-1: this previously
+        // mapped any non-Deny result to Allow, silently skipping confirmation
+        // on the most dangerous tools, including irreversible on-chain sends.)
         var result = CheckApprovalLevelAsync(amountSats).GetAwaiter().GetResult();
 
+        // Rough "remaining" figure for the caller. Clamp to avoid OverflowException
+        // when no session limit is configured (RemainingSessionBudgetUsd is then
+        // ~decimal.MaxValue, and *100 would overflow). Informational only.
+        var remaining = result.RemainingSessionBudgetUsd >= (decimal)long.MaxValue / 100m
+            ? long.MaxValue
+            : (long)(result.RemainingSessionBudgetUsd * 100);
+        var maxPerRequest = _maxPerPaymentSats > 0 ? _maxPerPaymentSats : 100000;
+
+        if (result.RequiresConfirmation)
+        {
+            var detail = string.IsNullOrEmpty(result.ConfirmationMessage)
+                ? "This payment exceeds the auto-approve limit."
+                : result.ConfirmationMessage;
+            return BudgetCheckResult.Deny(
+                $"{detail} It requires explicit confirmation and cannot be auto-approved on this path. " +
+                "Use pay_invoice / pay_l402_challenge (which support the confirmation flow), or raise the " +
+                "auto-approve limit in ~/.lightning-enable/config.json.",
+                remaining, maxPerRequest);
+        }
+
         return result.CanProceed
-            ? BudgetCheckResult.Allow(
-                (long)(result.RemainingSessionBudgetUsd * 100), // Rough sats conversion
-                _maxPerPaymentSats > 0 ? _maxPerPaymentSats : 100000)
-            : BudgetCheckResult.Deny(
-                result.DenialReason ?? "Payment denied",
-                (long)(result.RemainingSessionBudgetUsd * 100),
-                _maxPerPaymentSats > 0 ? _maxPerPaymentSats : 100000);
+            ? BudgetCheckResult.Allow(remaining, maxPerRequest)
+            : BudgetCheckResult.Deny(result.DenialReason ?? "Payment denied", remaining, maxPerRequest);
     }
 
     public void RecordSpend(long amountSats)
@@ -318,9 +340,18 @@ public class BudgetService : IBudgetService
 
     private static string GenerateNonce()
     {
+        // C-4: cryptographically-random nonce. Previously used System.Random,
+        // which is predictable (time-seeded PRNG) — a weak basis for a payment
+        // confirmation token. NOTE: even a strong nonce does NOT protect against
+        // the agent itself, because confirm_payment is a model-callable tool; the
+        // nonce only guards against accidental auto-approval. True out-of-band
+        // confirmation (MCP elicitation / a URL the model can't read) is the
+        // deeper fix and a separate design decision.
         const string chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-        var random = new Random();
-        return new string(Enumerable.Range(0, 6).Select(_ => chars[random.Next(chars.Length)]).ToArray());
+        var buf = new char[6];
+        for (int i = 0; i < buf.Length; i++)
+            buf[i] = chars[System.Security.Cryptography.RandomNumberGenerator.GetInt32(chars.Length)];
+        return new string(buf);
     }
 
     private async Task UpdateThresholdsIfNeededAsync(CancellationToken cancellationToken)

@@ -45,6 +45,8 @@
     <PackageReference Include="Microsoft.Extensions.Http" Version="9.0.0" />
     <PackageReference Include="Microsoft.Extensions.Caching.Memory" Version="9.0.0" />
     <PackageReference Include="NBitcoin.Secp256k1" Version="3.1.5" />
+    <!-- Battle-tested Bitcoin address parsing for on-chain send validation (C-2). -->
+    <PackageReference Include="NBitcoin" Version="7.0.42" />
   </ItemGroup>
 
   <ItemGroup>

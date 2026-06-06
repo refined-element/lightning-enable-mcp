@@ -37,6 +37,21 @@ public static class SendOnChainTool
             });
         }
 
+        // C-2: validate the address before doing anything else. On-chain sends are
+        // irreversible, so a typo'd, garbage, or wrong-network address must be
+        // rejected here rather than risk broadcasting funds to an unrecoverable
+        // destination. Only valid mainnet addresses pass.
+        if (!BitcoinAddressValidator.IsValidMainnet(address))
+        {
+            return JsonSerializer.Serialize(new
+            {
+                success = false,
+                error = "Invalid Bitcoin address. Provide a valid mainnet Bitcoin address " +
+                        "(starts with bc1, 1, or 3). The address failed validation and was NOT sent — " +
+                        "on-chain payments are irreversible, so a malformed or wrong-network address is rejected."
+            });
+        }
+
         if (amountSats <= 0)
         {
             return JsonSerializer.Serialize(new

@@ -888,9 +888,9 @@ class TestNWCEncryptionDefault:
         # used to return None when pycryptodome (``Crypto``) was importable, because
         # the only ``return`` lived inside the ``except ImportError`` fallback.
         # The post-fix invariant: the function always returns a NIP-04-shaped
-        # string. Skipped when ``coincurve`` isn't installed locally;
-        # CI has it.
-        import coincurve  # noqa: F401  (required dep — fail loudly if missing)
+        # string. ``coincurve`` is a required base dependency, so this imports it
+        # directly — the test fails loudly (not skips) if it's ever missing.
+        import coincurve  # noqa: F401
         from lightning_enable_mcp.nwc_wallet import _encrypt_content
 
         secret = bytes.fromhex(

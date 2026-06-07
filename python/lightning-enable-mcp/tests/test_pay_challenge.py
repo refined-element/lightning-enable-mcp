@@ -323,3 +323,44 @@ class TestPayL402ChallengeNoAmountRejection:
         assert result["success"] is True
         budget.check_approval_level.assert_awaited_once_with(100)
         budget.record_spend.assert_called_once_with(100)
+
+
+class TestPayL402ChallengeNoPreimage:
+    """Funds-safety: a falsy preimage means the payment did not settle — never record it."""
+
+    @pytest.mark.asyncio
+    async def test_no_preimage_does_not_record_spend_or_history(self):
+        mock_wallet = AsyncMock()
+        mock_wallet.pay_invoice = AsyncMock(return_value=None)  # wallet returned no preimage
+        budget = MagicMock()
+        approval = MagicMock()
+        approval.level = ApprovalLevel.AUTO_APPROVE
+        approval.requires_confirmation = False
+        approval.amount_usd = Decimal("0.10")
+        approval.denial_reason = None
+        budget.check_approval_level = AsyncMock(return_value=approval)
+        budget.record_spend = MagicMock()
+        budget.record_payment_time = MagicMock()
+        history = MagicMock()
+
+        mock_decoded = MagicMock()
+        mock_decoded.amount_msat = 100000
+        mock_decoded.amount = 100
+
+        with patch(
+            "lightning_enable_mcp.tools.pay_challenge.decode_bolt11",
+            return_value=mock_decoded,
+        ):
+            result = json.loads(
+                await pay_l402_challenge(
+                    invoice="lnbc100n1pjtest",
+                    wallet=mock_wallet,
+                    budget_service=budget,
+                    payment_history_service=history,
+                )
+            )
+
+        assert result["success"] is False
+        assert "no preimage" in result["error"].lower()
+        budget.record_spend.assert_not_called()
+        history.record_payment.assert_not_called()

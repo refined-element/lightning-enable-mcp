@@ -167,6 +167,15 @@ async def pay_l402_challenge(
         logger.info(f"Paying {protocol} invoice for {amount_sats} sats")
         preimage = await wallet.pay_invoice(invoice)
 
+        # A falsy preimage means the payment did NOT settle. Do not record spend/history
+        # or return a success response with an invalid Authorization header.
+        if not preimage:
+            return json.dumps({
+                "success": False,
+                "error": f"{protocol} payment failed — the wallet returned no preimage.",
+                "amount_sats": amount_sats,
+            })
+
         # Record payment
         if budget_service and amount_sats:
             budget_service.record_spend(amount_sats)

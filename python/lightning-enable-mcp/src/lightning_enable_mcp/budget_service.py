@@ -14,6 +14,7 @@ This module provides the BudgetService class that combines:
 import asyncio
 import logging
 import secrets
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
@@ -144,6 +145,11 @@ class BudgetService:
         # Out-of-band confirmation store (code -> PendingConfirmation). The code is
         # printed to stderr by the pay tools and never returned in a tool result.
         self._pending_confirmations: dict[str, PendingConfirmation] = {}
+        # The confirmation methods are SYNC (called from async tools), so the async
+        # self._lock can't guard them. Use a re-entrant threading lock so create/validate/
+        # consume are atomic even under a thread pool / multi-worker (hosted) server — and
+        # so create_pending_confirmation can call _clean_expired_confirmations while held.
+        self._confirmation_lock = threading.RLock()
 
         # Cached sats thresholds (updated when price changes significantly)
         self._auto_approve_sats: int = 0
@@ -454,25 +460,26 @@ class BudgetService:
         NOT include it in the tool result — that is what stops a prompt-injected agent from
         reading the code and self-approving.
         """
-        self._clean_expired_confirmations()
-        # Regenerate on the (astronomically unlikely) chance of a collision with a
-        # still-live confirmation, so a new code can never overwrite — and thereby
-        # silently re-bind — an outstanding human-approved one.
-        code = "".join(secrets.choice(self._CONFIRMATION_CODE_CHARS) for _ in range(6))
-        while code in self._pending_confirmations:
+        with self._confirmation_lock:
+            self._clean_expired_confirmations()
+            # Regenerate on the (astronomically unlikely) chance of a collision with a
+            # still-live confirmation, so a new code can never overwrite — and thereby
+            # silently re-bind — an outstanding human-approved one.
             code = "".join(secrets.choice(self._CONFIRMATION_CODE_CHARS) for _ in range(6))
-        now = datetime.now(timezone.utc)
-        pc = PendingConfirmation(
-            nonce=code,
-            amount_sats=amount_sats,
-            amount_usd=amount_usd,
-            tool_name=tool_name,
-            description=description,
-            created_at=now,
-            expires_at=now + timedelta(minutes=2),
-        )
-        self._pending_confirmations[code] = pc
-        return pc
+            while code in self._pending_confirmations:
+                code = "".join(secrets.choice(self._CONFIRMATION_CODE_CHARS) for _ in range(6))
+            now = datetime.now(timezone.utc)
+            pc = PendingConfirmation(
+                nonce=code,
+                amount_sats=amount_sats,
+                amount_usd=amount_usd,
+                tool_name=tool_name,
+                description=description,
+                created_at=now,
+                expires_at=now + timedelta(minutes=2),
+            )
+            self._pending_confirmations[code] = pc
+            return pc
 
     def validate_confirmation(self, nonce: str) -> Optional[PendingConfirmation]:
         """Peek at a confirmation by code WITHOUT consuming it (used by confirm_payment).
@@ -481,13 +488,14 @@ class BudgetService:
         """
         if not nonce:
             return None
-        pc = self._pending_confirmations.get(nonce)
-        if pc is None:
-            return None
-        if pc.is_expired:
-            self._pending_confirmations.pop(nonce, None)
-            return None
-        return pc
+        with self._confirmation_lock:
+            pc = self._pending_confirmations.get(nonce)
+            if pc is None:
+                return None
+            if pc.is_expired:
+                self._pending_confirmations.pop(nonce, None)
+                return None
+            return pc
 
     def validate_and_consume_confirmation(
         self,
@@ -504,29 +512,32 @@ class BudgetService:
         """
         if not nonce:
             return None
-        pc = self._pending_confirmations.get(nonce)
-        if pc is None:
-            return None
-        if pc.is_expired:
+        with self._confirmation_lock:
+            pc = self._pending_confirmations.get(nonce)
+            if pc is None:
+                return None
+            if pc.is_expired:
+                self._pending_confirmations.pop(nonce, None)
+                return None
+            # C-3: bind to the EXACT amount AND tool the code was approved for.
+            if pc.amount_sats != expected_amount_sats:
+                return None
+            if pc.tool_name != expected_tool_name:
+                return None
+            # Amount + tool match -> consume (one-time use).
             self._pending_confirmations.pop(nonce, None)
-            return None
-        # C-3: bind to the EXACT amount AND tool the code was approved for.
-        if pc.amount_sats != expected_amount_sats:
-            return None
-        if pc.tool_name != expected_tool_name:
-            return None
-        # Amount + tool match -> consume (one-time use).
-        self._pending_confirmations.pop(nonce, None)
-        return pc
+            return pc
 
     def clean_expired_confirmations(self) -> None:
         """Purge expired pending confirmations."""
         self._clean_expired_confirmations()
 
     def _clean_expired_confirmations(self) -> None:
-        expired = [code for code, pc in self._pending_confirmations.items() if pc.is_expired]
-        for code in expired:
-            self._pending_confirmations.pop(code, None)
+        # Re-entrant: create_pending_confirmation calls this while holding the lock.
+        with self._confirmation_lock:
+            expired = [code for code, pc in self._pending_confirmations.items() if pc.is_expired]
+            for code in expired:
+                self._pending_confirmations.pop(code, None)
 
     def get_user_configuration(self) -> UserBudgetConfiguration:
         """

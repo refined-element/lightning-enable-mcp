@@ -14,7 +14,7 @@ BudgetManager has been removed.
 import json
 import logging
 from . import sanitize_error
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -114,6 +114,11 @@ async def get_payment_history(
                         "error": f"Invalid timestamp format: {since}. Use ISO format.",
                     }
                 )
+            # An ISO string without an offset parses as naive; assume UTC so it can be
+            # compared to the UTC-aware record timestamps (otherwise get_history raises
+            # TypeError on naive-vs-aware comparison).
+            if since_dt.tzinfo is None:
+                since_dt = since_dt.replace(tzinfo=timezone.utc)
 
         payments = payment_history_service.get_history(limit=limit, since=since_dt)
         total_payments = payment_history_service.total_payments

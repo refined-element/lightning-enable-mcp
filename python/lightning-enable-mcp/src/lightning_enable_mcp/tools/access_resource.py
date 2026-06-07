@@ -39,10 +39,17 @@ def _redact_url_for_display(url: str, limit: int = 50) -> str:
         dropped = bool(parts.query or parts.fragment or parts.username or parts.password)
         safe = urlunsplit((parts.scheme, netloc, parts.path, "", ""))
         if dropped:
-            safe = f"{safe} (query redacted)"
+            # Neutral marker — what was dropped may be a query, fragment, OR userinfo.
+            safe = f"{safe} (redacted)"
     except Exception:
-        # If parsing fails, fall back to scheme+host heuristics rather than the raw URL.
+        # If parsing fails, fall back to stripping query, fragment, AND userinfo by hand
+        # rather than leaking the raw URL — the fallback must not leave `user:pass@host`.
         safe = url.split("?", 1)[0].split("#", 1)[0]
+        if "//" in safe:
+            scheme_sep, rest = safe.split("//", 1)
+            if "@" in rest:
+                rest = rest.split("@", 1)[1]  # drop userinfo
+            safe = scheme_sep + "//" + rest
     return safe[:limit] + "..." if len(safe) > limit else safe
 
 

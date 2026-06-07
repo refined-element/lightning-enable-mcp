@@ -6,12 +6,32 @@ import json
 import pytest
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from lightning_enable_mcp.tools.pay_invoice import pay_invoice
 from lightning_enable_mcp.budget import BudgetManager, BudgetExceededError
 from lightning_enable_mcp.budget_service import PendingConfirmation
 from lightning_enable_mcp.config import ApprovalLevel
+
+
+# pay_invoice now decodes the BOLT11 amount and budgets against IT (not max_sats).
+# The test invoices are placeholders that don't really decode, so patch decode_bolt11
+# to a per-test amount. A test that cares about the paid amount sets _DECODE_SATS["v"]
+# at its top; everything else uses the small default. (Resets each test via the fixture.)
+_DECODE_SATS = {"v": 10}
+
+
+@pytest.fixture(autouse=True)
+def _patch_decode():
+    def fake_decode(_invoice):
+        m = MagicMock()
+        m.amount_msat = _DECODE_SATS["v"] * 1000
+        m.amount = _DECODE_SATS["v"]
+        return m
+
+    with patch("lightning_enable_mcp.tools.pay_invoice.decode_bolt11", side_effect=fake_decode):
+        _DECODE_SATS["v"] = 10  # default for tests that don't care about the amount
+        yield
 
 
 class TestPayInvoice:
@@ -70,6 +90,7 @@ class TestPayInvoice:
     @pytest.mark.asyncio
     async def test_exceeds_budget_returns_error(self):
         """Test that exceeding budget returns an error."""
+        _DECODE_SATS["v"] = 100  # decoded invoice amount under test
         # Create a budget manager with low limits
         budget_manager = BudgetManager(max_per_request=100, max_per_session=100)
         budget_manager.session_spent = 90  # Almost exhausted
@@ -92,6 +113,7 @@ class TestPayInvoice:
     @pytest.mark.asyncio
     async def test_exceeds_per_request_limit_returns_error(self):
         """Test that exceeding per-request limit returns an error."""
+        _DECODE_SATS["v"] = 500  # decoded invoice amount under test
         # Create a budget manager with low per-request limit
         budget_manager = BudgetManager(max_per_request=100, max_per_session=10000)
 
@@ -133,6 +155,7 @@ class TestPayInvoice:
     @pytest.mark.asyncio
     async def test_successful_payment_records_to_budget(self):
         """Test that successful payment is recorded in budget manager."""
+        _DECODE_SATS["v"] = 500  # decoded invoice amount under test
         wallet = AsyncMock()
         wallet.pay_invoice = AsyncMock(return_value="preimage123")
 
@@ -265,6 +288,7 @@ class TestPayInvoice:
     @pytest.mark.asyncio
     async def test_default_max_sats(self):
         """Test that default max_sats is 1000."""
+        _DECODE_SATS["v"] = 600  # decoded invoice amount under test
         wallet = AsyncMock()
         wallet.pay_invoice = AsyncMock(return_value="preimage")
 
@@ -284,6 +308,7 @@ class TestPayInvoice:
     @pytest.mark.asyncio
     async def test_custom_max_sats(self):
         """Test that custom max_sats is respected."""
+        _DECODE_SATS["v"] = 100  # decoded invoice amount under test
         wallet = AsyncMock()
         wallet.pay_invoice = AsyncMock(return_value="preimage")
 
@@ -358,6 +383,71 @@ class TestPayInvoice:
         assert data["preimage"] == "preimage"
 
 
+class TestPayInvoiceAmountDecoding:
+    """Funds-safety: pay_invoice must budget against the DECODED invoice amount, not the
+    caller's max_sats cap. Otherwise a tiny max_sats auto-approves a large payment."""
+
+    @pytest.mark.asyncio
+    async def test_invoice_amount_exceeding_max_sats_is_rejected(self):
+        """A large invoice with a small max_sats cap must be refused before any payment —
+        this is the budget-bypass an attacker would use (small cap → auto-approve)."""
+        _DECODE_SATS["v"] = 50000
+        wallet = AsyncMock()
+        wallet.pay_invoice = AsyncMock(return_value="preimage")
+
+        result = await pay_invoice(invoice="lnbc500u1...", max_sats=100, wallet=wallet)
+        data = json.loads(result)
+
+        assert data["success"] is False
+        assert "exceeds the maximum" in data["error"]
+        assert data["amount_sats"] == 50000
+        wallet.pay_invoice.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_amountless_invoice_is_rejected(self):
+        """No-amount invoices can't be budget-checked, so they're refused (parity with .NET / pay_challenge)."""
+        _DECODE_SATS["v"] = 0  # fake_decode -> amount_msat/amount falsy -> no amount
+        wallet = AsyncMock()
+        wallet.pay_invoice = AsyncMock(return_value="preimage")
+
+        result = await pay_invoice(invoice="lnbc1...", max_sats=1000, wallet=wallet)
+        data = json.loads(result)
+
+        assert data["success"] is False
+        assert "no amount" in data["error"].lower()
+        wallet.pay_invoice.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_budget_is_checked_against_decoded_amount_not_max_sats(self):
+        """The budget approval + spend must use the decoded amount (50000), never max_sats (100000)."""
+        _DECODE_SATS["v"] = 50000
+        wallet = AsyncMock()
+        wallet.pay_invoice = AsyncMock(return_value="preimage")
+
+        budget = MagicMock()
+        approval = MagicMock()
+        approval.level = ApprovalLevel.AUTO_APPROVE
+        approval.requires_confirmation = False
+        approval.amount_usd = Decimal("25.00")
+        approval.denial_reason = None
+        approval.remaining_session_budget_usd = Decimal("100.00")
+        budget.check_approval_level = AsyncMock(return_value=approval)
+        budget.record_spend = MagicMock()
+        budget.record_payment_time = MagicMock()
+        budget.get_status = MagicMock(return_value={
+            "session": {"spentSats": 50000, "spentUsd": 25.0, "remainingUsd": 75.0, "requestCount": 1}
+        })
+
+        result = await pay_invoice(
+            invoice="lnbc500u1...", max_sats=100000, wallet=wallet, budget_service=budget,
+        )
+        data = json.loads(result)
+
+        assert data["success"] is True
+        budget.check_approval_level.assert_awaited_once_with(50000)
+        budget.record_spend.assert_called_once_with(50000)
+
+
 def _confirming_budget(code: str = "ABC123", sats: int = 50000):
     """A BudgetService mock whose check returns requires_confirmation=True."""
     budget = MagicMock()
@@ -390,6 +480,7 @@ class TestPayInvoiceOutOfBandConfirmation:
     @pytest.mark.asyncio
     async def test_above_threshold_requests_confirmation_and_does_not_leak_code(self):
         """The confirmation code must NEVER appear in the model-visible tool result."""
+        _DECODE_SATS["v"] = 50000  # invoice decodes to the above-threshold amount
         wallet = AsyncMock()
         wallet.pay_invoice = AsyncMock(return_value="preimage")
         budget = _confirming_budget(code="ZZZ999")
@@ -413,6 +504,7 @@ class TestPayInvoiceOutOfBandConfirmation:
     @pytest.mark.asyncio
     async def test_human_relayed_code_unlocks_the_payment(self):
         """With a valid human-relayed code (bound to amount+tool), the payment proceeds."""
+        _DECODE_SATS["v"] = 50000  # invoice decodes to the above-threshold amount
         wallet = AsyncMock()
         wallet.pay_invoice = AsyncMock(return_value="preimage123")
         budget = _confirming_budget(code="ABC123", sats=50000)
@@ -434,6 +526,7 @@ class TestPayInvoiceOutOfBandConfirmation:
     @pytest.mark.asyncio
     async def test_bad_code_is_rejected_and_not_paid(self):
         """A code that fails validation (wrong/expired/replayed) must refuse to pay."""
+        _DECODE_SATS["v"] = 50000  # invoice decodes to the above-threshold amount
         wallet = AsyncMock()
         wallet.pay_invoice = AsyncMock(return_value="preimage")
         budget = _confirming_budget()
@@ -455,6 +548,7 @@ class TestPayInvoiceOutOfBandConfirmation:
     @pytest.mark.asyncio
     async def test_legacy_budget_manager_fails_closed_above_threshold(self):
         """The legacy BudgetManager has no confirmation flow — it must refuse, not self-approve."""
+        _DECODE_SATS["v"] = 50000  # invoice decodes to the above-threshold amount
         wallet = AsyncMock()
         wallet.pay_invoice = AsyncMock(return_value="preimage")
         budget_manager = BudgetManager(max_per_request=100000, max_per_session=1000000)

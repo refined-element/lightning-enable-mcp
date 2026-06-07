@@ -16,6 +16,8 @@ if TYPE_CHECKING:
     from ..nwc_wallet import NWCWallet
     from ..opennode_wallet import OpenNodeWallet
 
+from bolt11 import decode as decode_bolt11
+
 from ..config import ApprovalLevel
 from . import sanitize_error
 
@@ -79,10 +81,41 @@ async def pay_invoice(
                 "error": "Invalid invoice format. Must be a BOLT11 invoice starting with 'lnbc' (mainnet) or 'lntb' (testnet)"
             })
 
+        # Decode the ACTUAL amount encoded in the invoice and enforce the budget against
+        # IT, not max_sats. The wallet pays the encoded amount, so checking only max_sats
+        # would let a tiny cap auto-approve a large payment (budget bypass + mis-counted
+        # spend). Mirrors pay_l402_challenge and the .NET PayInvoiceTool.
+        try:
+            decoded = decode_bolt11(normalized_invoice)
+        except Exception:
+            return json.dumps({
+                "success": False,
+                "error": "Could not decode the BOLT11 invoice."
+            })
+
+        amount_sats = None
+        if getattr(decoded, "amount_msat", None):
+            amount_sats = -(-decoded.amount_msat // 1000)  # ceil; sub-sat rounds up to 1
+        elif getattr(decoded, "amount", None):
+            amount_sats = decoded.amount
+
+        if amount_sats is None or amount_sats <= 0:
+            return json.dumps({
+                "success": False,
+                "error": "Invoice has no amount specified. For security, only invoices with an explicit amount are supported."
+            })
+
+        if amount_sats > max_sats:
+            return json.dumps({
+                "success": False,
+                "error": f"Invoice amount {amount_sats:,} sats exceeds the maximum {max_sats:,} sats you allowed.",
+                "amount_sats": amount_sats,
+            })
+
         # Use new BudgetService if available, otherwise fall back to legacy BudgetManager
         if budget_service:
-            # Check approval level using new multi-tier system
-            result = await budget_service.check_approval_level(max_sats)
+            # Check approval level against the DECODED invoice amount (what will be paid)
+            result = await budget_service.check_approval_level(amount_sats)
 
             if result.level == ApprovalLevel.DENY:
                 return json.dumps({
@@ -90,7 +123,7 @@ async def pay_invoice(
                     "error": "Payment denied by budget policy",
                     "denialReason": result.denial_reason,
                     "budget": {
-                        "requestedSats": max_sats,
+                        "requestedSats": amount_sats,
                         "requestedUsd": float(result.amount_usd),
                         "remainingSessionUsd": float(result.remaining_session_budget_usd),
                     },
@@ -104,7 +137,7 @@ async def pay_invoice(
             if result.requires_confirmation:
                 if confirmation_nonce:
                     confirmation = budget_service.validate_and_consume_confirmation(
-                        confirmation_nonce.strip().upper(), max_sats, "pay_invoice"
+                        confirmation_nonce.strip().upper(), amount_sats, "pay_invoice"
                     )
                     if confirmation is None:
                         return json.dumps({
@@ -121,11 +154,11 @@ async def pay_invoice(
                     # Human-relayed code validated (amount + tool bound) — fall through and pay.
                 else:
                     pending = budget_service.create_pending_confirmation(
-                        max_sats, result.amount_usd, "pay_invoice", normalized_invoice[:30] + "..."
+                        amount_sats, result.amount_usd, "pay_invoice", normalized_invoice[:30] + "..."
                     )
                     print(
                         "[Lightning Enable] *** PAYMENT CONFIRMATION REQUIRED ***\n"
-                        f"  pay_invoice — ${result.amount_usd:.2f} ({max_sats:,} sats), "
+                        f"  pay_invoice — ${result.amount_usd:.2f} ({amount_sats:,} sats), "
                         f"invoice {normalized_invoice[:30]}...\n"
                         f"  Confirmation code: {pending.nonce}\n"
                         "  To approve, give this code to the agent. Expires in 120s.",
@@ -138,7 +171,7 @@ async def pay_invoice(
                         "approvalLevel": result.level.value,
                         "error": "Payment requires human confirmation",
                         "message": (
-                            f"This payment of ${result.amount_usd:.2f} ({max_sats:,} sats) exceeds the "
+                            f"This payment of ${result.amount_usd:.2f} ({amount_sats:,} sats) exceeds the "
                             "auto-approve threshold. A confirmation code was printed to the server console/logs "
                             "— visible to the human operator, NOT to you. Ask the human to read that code and "
                             "give it to you."
@@ -147,25 +180,25 @@ async def pay_invoice(
                             "Ask the human operator for the confirmation code shown in the server console, then "
                             'call pay_invoice(invoice="...", confirmation_nonce="<code-from-human>").'
                         ),
-                        "amount": {"sats": max_sats, "usd": float(result.amount_usd)},
+                        "amount": {"sats": amount_sats, "usd": float(result.amount_usd)},
                         "expiresInSeconds": 120,
                         "budget": {"remainingSessionUsd": float(result.remaining_session_budget_usd)},
                     })
 
             # LOG_AND_APPROVE: Log for user awareness but proceed
             if result.level == ApprovalLevel.LOG_AND_APPROVE:
-                logger.info(f"Log-and-approve payment: {max_sats} sats (${result.amount_usd:.2f})")
+                logger.info(f"Log-and-approve payment: {amount_sats} sats (${result.amount_usd:.2f})")
 
         elif budget_manager:
             # Legacy budget manager fallback
             try:
-                budget_manager.check_payment(max_sats)
+                budget_manager.check_payment(amount_sats)
             except Exception as e:
                 return json.dumps({
                     "success": False,
                     "error": sanitize_error(str(e)),
                     "budget": {
-                        "requested_sats": max_sats,
+                        "requested_sats": amount_sats,
                         "remaining_sats": budget_manager.max_per_session - budget_manager.session_spent
                     }
                 })
@@ -175,17 +208,17 @@ async def pay_invoice(
             # self-confirm. Use the BudgetService path (~/.lightning-enable/config.json) for
             # above-threshold payments.
             auto_approve_sats = getattr(budget_manager, 'auto_approve_sats', 1000)
-            if max_sats > auto_approve_sats:
-                estimated_usd = max_sats * 0.001
+            if amount_sats > auto_approve_sats:
+                estimated_usd = amount_sats * 0.001
                 return json.dumps({
                     "success": False,
                     "error": (
-                        f"Payment of ~${estimated_usd:.2f} ({max_sats:,} sats) exceeds the auto-approve threshold "
+                        f"Payment of ~${estimated_usd:.2f} ({amount_sats:,} sats) exceeds the auto-approve threshold "
                         f"of {auto_approve_sats:,} sats, and the legacy budget manager cannot confirm it. "
                         "Configure ~/.lightning-enable/config.json so the BudgetService handles confirmation."
                     ),
                     "amount": {
-                        "sats": max_sats,
+                        "sats": amount_sats,
                         "estimatedUsd": round(estimated_usd, 2)
                     },
                     "thresholds": {"autoApprove": auto_approve_sats},
@@ -200,7 +233,7 @@ async def pay_invoice(
             if budget_manager:
                 budget_manager.record_payment(
                     url="direct-invoice",
-                    amount_sats=max_sats,
+                    amount_sats=amount_sats,
                     invoice=normalized_invoice,
                     preimage="",
                     status="failed",
@@ -212,7 +245,7 @@ async def pay_invoice(
 
         # Record the payment
         if budget_service:
-            budget_service.record_spend(max_sats)
+            budget_service.record_spend(amount_sats)
             budget_service.record_payment_time()
 
             # Get updated session info
@@ -226,7 +259,7 @@ async def pay_invoice(
         elif budget_manager:
             budget_manager.record_payment(
                 url="direct-invoice",
-                amount_sats=max_sats,
+                amount_sats=amount_sats,
                 invoice=normalized_invoice,
                 preimage=preimage,
                 status="success",

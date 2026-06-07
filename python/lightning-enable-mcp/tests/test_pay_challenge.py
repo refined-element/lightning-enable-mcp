@@ -111,6 +111,33 @@ class TestPayL402ChallengeOutOfBandConfirmation:
         assert "amount and tool" in data["error"]
         mock_wallet.pay_invoice.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_legacy_budget_manager_fails_closed_above_threshold(self):
+        """The legacy BudgetManager path must refuse above-threshold challenge payments
+        (no confirmation flow), matching pay_invoice — not silently auto-approve them."""
+        from lightning_enable_mcp.budget import BudgetManager
+
+        mock_wallet = AsyncMock()
+        mock_wallet.pay_invoice = AsyncMock(return_value="preimage")
+        mock_decoded = MagicMock()
+        mock_decoded.amount_msat = 2_000_000  # 2000 sats, above the 1000 auto-approve floor
+        mock_decoded.amount = 2000
+        bm = BudgetManager(max_per_request=100000, max_per_session=1000000)
+
+        with patch(
+            "lightning_enable_mcp.tools.pay_challenge.decode_bolt11",
+            return_value=mock_decoded,
+        ):
+            result = await pay_l402_challenge(
+                invoice="lnbc20u1pjtest", macaroon="mac123", max_sats=5000,
+                wallet=mock_wallet, budget_manager=bm,
+            )
+        data = json.loads(result)
+
+        assert data["success"] is False
+        assert "auto-approve threshold" in data["error"]
+        mock_wallet.pay_invoice.assert_not_called()
+
 
 class TestPayL402ChallengeNoAmountRejection:
     """Tests that pay_l402_challenge rejects invoices without an explicit amount."""
@@ -296,9 +323,10 @@ class TestPayL402ChallengeNoAmountRejection:
         mock_wallet.pay_invoice = AsyncMock(return_value="preimage789")
         mock_budget = MagicMock()
         mock_budget.check_payment = MagicMock()  # no exception = within budget
+        mock_budget.auto_approve_sats = 1000  # realistic int (a real BudgetManager exposes one)
         mock_decoded = MagicMock()
         mock_decoded.amount_msat = 100000
-        mock_decoded.amount = 100
+        mock_decoded.amount = 100  # 100 sats, below the 1000 floor — still auto-approves
 
         with patch(
             "lightning_enable_mcp.tools.pay_challenge.decode_bolt11",

@@ -171,6 +171,22 @@ async def pay_l402_challenge(
                     {"success": False, "error": sanitize_error(str(e)), "amount_sats": amount_sats}
                 )
 
+            # Above the auto-approve threshold the legacy BudgetManager has no
+            # out-of-band confirmation flow, so it FAILS CLOSED rather than
+            # silently auto-approve an above-threshold challenge payment (parity
+            # with pay_invoice). Use the BudgetService path for confirmation.
+            auto_approve_sats = getattr(budget_manager, "auto_approve_sats", 1000)
+            if amount_sats > auto_approve_sats:
+                return json.dumps({
+                    "success": False,
+                    "error": (
+                        f"Payment of {amount_sats:,} sats exceeds the auto-approve threshold of "
+                        f"{auto_approve_sats:,} sats, and the legacy budget manager cannot confirm it. "
+                        "Configure ~/.lightning-enable/config.json so the BudgetService handles confirmation."
+                    ),
+                    "amount_sats": amount_sats,
+                })
+
         # Pay the invoice
         protocol = "MPP" if is_mpp else "L402"
         logger.info(f"Paying {protocol} invoice for {amount_sats} sats")

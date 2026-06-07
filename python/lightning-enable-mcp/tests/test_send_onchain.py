@@ -115,7 +115,7 @@ class TestSendOnchain:
         assert "does not support on-chain" in parsed["error"]
 
     @pytest.mark.asyncio
-    async def test_requires_confirmation_without_confirmed_flag(self):
+    async def test_requires_confirmation_without_nonce(self):
         """PY-C1: on-chain is irreversible — first call must require confirmation, not send."""
         wallet = _make_strike_wallet_mock()
         wallet.send_onchain = AsyncMock()

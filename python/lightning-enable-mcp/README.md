@@ -2,7 +2,7 @@
 
 # Lightning Enable MCP Server (Python)
 
-An MCP (Model Context Protocol) server that enables AI agents to make Lightning Network payments. 23 tools total: 15 work out of the box (free, no subscription). 8 tools require an [Agentic Commerce subscription](https://lightningenable.com) (from $99/mo) and `LIGHTNING_ENABLE_API_KEY`: 2 producer tools (`create_l402_challenge`, `verify_l402_payment`) and 6 Agent Service Agreement tools for agent-to-agent commerce over Nostr.
+An MCP (Model Context Protocol) server that enables AI agents to make Lightning Network payments. The Python package exposes **17 tools**: 15 work out of the box (free, no subscription), and 2 producer tools (`create_l402_challenge`, `verify_l402_payment`) unlock with an [Agentic Commerce subscription](https://lightningenable.com) (from $99/mo) and `LIGHTNING_ENABLE_API_KEY`. (The .NET package additionally ships 6 Agent Service Agreement tools for agent-to-agent commerce over Nostr; those are not in the Python package yet.)
 
 ## Overview
 
@@ -55,9 +55,11 @@ docker pull refinedelement/lightning-enable-mcp:latest
 | `OPENNODE_ENVIRONMENT` | No | production | `production` or `dev` for testnet |
 | `LND_REST_HOST` | If using LND | - | LND REST API host |
 | `LND_MACAROON_HEX` | If using LND | - | LND admin macaroon in hex |
+| `L402_MAX_SATS_PER_REQUEST` | No | 1000 | Per-request sats cap for the runtime budget manager (what `configure_budget` can tighten) |
+| `L402_MAX_SATS_PER_SESSION` | No | 10000 | Per-session sats cap for the runtime budget manager |
 | `LIGHTNING_ENABLE_API_KEY` | For producer tools | - | API key for `create_l402_challenge` and `verify_l402_payment`. Requires Agentic Commerce subscription. |
 
-Spending limits are read from `~/.lightning-enable/config.json` (the operator's per-request and per-session caps). See `configure_budget` and `get_budget_status` below.
+The server uses two budget layers, and the **most restrictive wins**: (1) USD-based approval tiers from `~/.lightning-enable/config.json` — these drive the out-of-band confirmation flow; and (2) the sats caps above (`L402_MAX_SATS_PER_REQUEST` / `L402_MAX_SATS_PER_SESSION`), which `configure_budget` can tighten at runtime. See `configure_budget` and `get_budget_status` below.
 
 Configure one wallet provider. If multiple are set, priority order is: LND > NWC > Strike > OpenNode.
 
@@ -232,16 +234,17 @@ List recent payments made during this session.
 
 ### configure_budget
 
-Tighten the session spending limits. **Tighten-only:** an agent can only LOWER its
-caps — it can never raise them above the operator's `~/.lightning-enable/config.json`
-limits (or an existing tighter runtime cap). To raise limits, the operator edits the
-config file. This prevents a prompt-injected agent from loosening its own caps and then
-draining the wallet.
+Tighten the runtime sats spending limits. **Tighten-only:** an agent can only LOWER its
+caps — it can never raise them above the limits the server started with (the env vars
+`L402_MAX_SATS_PER_REQUEST` / `L402_MAX_SATS_PER_SESSION`, defaults 1000 / 10000) or an
+existing tighter runtime cap. To raise limits, the operator restarts the server with
+higher env values. This prevents a prompt-injected agent from loosening its own caps and
+then draining the wallet.
 
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
-| `per_request` | integer | No | 1000 | Maximum sats per individual request (cannot exceed the operator's configured cap) |
-| `per_session` | integer | No | 10000 | Maximum total sats for the session (cannot exceed the operator's configured cap) |
+| `per_request` | integer | No | 1000 | Maximum sats per individual request (cannot exceed the runtime cap above) |
+| `per_session` | integer | No | 10000 | Maximum total sats for the session (cannot exceed the runtime cap above) |
 
 **Returns:** Confirmation of the (tightened) new limits
 
@@ -361,10 +364,11 @@ This MCP server handles steps 2-5 automatically when you use `access_l402_resour
   `pay_invoice`, `access_l402_resource`, and `pay_l402_challenge`. `send_onchain` always
   requires confirmation because it is irreversible, and fails closed if no budget service is
   configured.
-- **Budget Limits**: Always set appropriate spending limits for your use case. Budget caps
-  are read from `~/.lightning-enable/config.json`; agents can tighten them at runtime via
-  `configure_budget` but can never raise them above the operator's configured limits. Budget
-  checks fail closed if the BTC price feed is unavailable.
+- **Budget Limits**: Always set appropriate spending limits for your use case. Two layers
+  apply, most-restrictive-wins: USD approval tiers from `~/.lightning-enable/config.json`
+  (these drive the out-of-band confirmation flow and fail closed if the BTC price feed is
+  unavailable), and the runtime sats caps (`L402_MAX_SATS_*`). Agents can only *tighten* the
+  sats caps via `configure_budget`, never raise them above the operator's startup values.
 - **Wallet Credentials**: Keep your NWC connection string, API keys, and macaroons secure
 - **Session Isolation**: Each server instance maintains its own budget and payment history
 - **Invoice Verification**: The server verifies invoice amounts before paying

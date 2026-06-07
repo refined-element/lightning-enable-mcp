@@ -55,6 +55,23 @@ def test_expired_confirmation_is_rejected():
     assert svc.validate_and_consume_confirmation(pc.nonce, 1000, "pay_invoice") is None
 
 
+def test_create_pending_confirmation_regenerates_on_collision(monkeypatch):
+    import lightning_enable_mcp.budget_service as bs
+
+    svc = _service()
+    existing = svc.create_pending_confirmation(1000, Decimal("0.01"), "pay_invoice", "a")
+
+    # Force the next code to first collide with the live one, then resolve to ZZZZZZ.
+    seq = iter(list(existing.nonce) + list("ZZZZZZ"))
+    monkeypatch.setattr(bs.secrets, "choice", lambda _chars: next(seq))
+
+    new = svc.create_pending_confirmation(2000, Decimal("0.02"), "send_onchain", "b")
+    assert new.nonce == "ZZZZZZ"
+    assert new.nonce != existing.nonce
+    # The original human-approved confirmation must survive — never overwritten.
+    assert svc.validate_confirmation(existing.nonce) is existing
+
+
 def test_blank_or_unknown_code_returns_none():
     svc = _service()
     assert svc.validate_confirmation("") is None

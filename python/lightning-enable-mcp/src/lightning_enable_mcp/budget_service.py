@@ -319,7 +319,12 @@ class BudgetService:
         reading the code and self-approving.
         """
         self._clean_expired_confirmations()
+        # Regenerate on the (astronomically unlikely) chance of a collision with a
+        # still-live confirmation, so a new code can never overwrite — and thereby
+        # silently re-bind — an outstanding human-approved one.
         code = "".join(secrets.choice(self._CONFIRMATION_CODE_CHARS) for _ in range(6))
+        while code in self._pending_confirmations:
+            code = "".join(secrets.choice(self._CONFIRMATION_CODE_CHARS) for _ in range(6))
         now = datetime.now(timezone.utc)
         pc = PendingConfirmation(
             nonce=code,

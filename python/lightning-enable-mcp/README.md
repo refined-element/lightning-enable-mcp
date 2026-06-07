@@ -353,8 +353,9 @@ This MCP server handles steps 2-5 automatically when you use `access_l402_resour
 - **Out-of-band confirmation**: Any payment above the auto-approve threshold requires
   human confirmation. The server prints a confirmation code to its **console / stderr** —
   where the human operator can see it — and **never** returns the code in a tool result.
-  The agent must ask the **human** for the code and supply it via the `confirm_payment` tool
-  (its `nonce` parameter) to proceed. This closes a self-approval hole: a prompt-injected
+  The agent must ask the **human** for the code, then re-call the original payment tool with
+  its `confirmation_nonce` parameter to proceed. (The separate `confirm_payment` tool only
+  *verifies* a code — it does not execute the payment.) This closes a self-approval hole: a prompt-injected
   agent cannot read or generate its own confirmation code. Codes are bound to the exact
   amount **and** tool approved, so they can't be reused across a different payment. Applies to
   `pay_invoice`, `access_l402_resource`, and `pay_l402_challenge`. `send_onchain` always

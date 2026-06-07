@@ -1,17 +1,25 @@
 """
 Budget Tools
 
-Configure spending limits and view payment history.
+Tighten (lower) session spending limits and view payment history.
+
+These repoint onto the single source of truth:
+- configure_budget  -> BudgetService.configure_budget (tighten-only runtime caps)
+- get_payment_history -> PaymentHistoryService (separate audit trail)
+
+This mirrors the .NET split (BudgetService + PaymentHistoryService); the legacy
+BudgetManager has been removed.
 """
 
 import json
 import logging
 from . import sanitize_error
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..budget import BudgetManager
+    from ..budget_service import BudgetService
+    from ..payment_history_service import PaymentHistoryService
 
 logger = logging.getLogger("lightning-enable-mcp.tools.budget")
 
@@ -19,97 +27,53 @@ logger = logging.getLogger("lightning-enable-mcp.tools.budget")
 async def configure_budget(
     per_request: int = 1000,
     per_session: int = 10000,
-    budget_manager: "BudgetManager | None" = None,
+    budget_service: "BudgetService | None" = None,
 ) -> str:
     """
-    Set spending limits for the session.
+    TIGHTEN (lower) the session spending limits, in sats.
+
+    An agent can only LOWER its caps — never raise them above the operator's
+    config-file limits (or an existing tighter runtime cap). To raise limits,
+    the operator edits ~/.lightning-enable/config.json.
 
     Args:
-        per_request: Maximum satoshis per individual request
-        per_session: Maximum total satoshis for the entire session
-        budget_manager: Budget manager instance
+        per_request: Maximum satoshis per individual request.
+        per_session: Maximum total satoshis for the entire session.
+        budget_service: BudgetService (single source of truth for limits).
 
     Returns:
-        JSON with confirmation of limits set
+        JSON with the new effective caps, or an error.
     """
-    if not budget_manager:
+    if not budget_service:
         return json.dumps(
-            {"success": False, "error": "Budget manager not initialized"}
+            {"success": False, "error": "Budget service not initialized"}
         )
 
     try:
-        # Validate inputs
-        if per_request <= 0:
-            return json.dumps(
-                {"success": False, "error": "per_request must be positive"}
-            )
-
-        if per_session <= 0:
-            return json.dumps(
-                {"success": False, "error": "per_session must be positive"}
-            )
-
-        if per_request > per_session:
-            return json.dumps(
-                {
-                    "success": False,
-                    "error": "per_request cannot exceed per_session",
-                }
-            )
-
-        # SECURITY (PY-CONFIGURE): an agent must NOT be able to RAISE its own
-        # spending caps — that would let a prompt-injected agent loosen the limits
-        # and then drain the wallet. configure_budget may only TIGHTEN (lower)
-        # limits, never increase them above the operator-set values (from
-        # ~/.lightning-enable/config.json / env). To raise limits, the operator
-        # edits the config file.
-        current = budget_manager.get_status().get("limits", {})
-        current_per_request = current.get("per_request")
-        current_per_session = current.get("per_session")
-        if (current_per_request is not None and per_request > current_per_request) or (
-            current_per_session is not None and per_session > current_per_session
-        ):
-            return json.dumps(
-                {
-                    "success": False,
-                    "error": (
-                        "configure_budget can only LOWER spending limits, not raise them. "
-                        f"Current caps: {current_per_request} sats/request, "
-                        f"{current_per_session} sats/session. To increase limits, the operator "
-                        "must edit ~/.lightning-enable/config.json — an agent cannot raise its "
-                        "own spending authority."
-                    ),
-                }
-            )
-
-        # Update limits (tighten-only, validated above)
-        limits = budget_manager.configure(
-            per_request=per_request,
-            per_session=per_session,
+        result = await budget_service.configure_budget(
+            per_request_sats=per_request,
+            per_session_sats=per_session,
         )
 
-        # Get current status
-        status = budget_manager.get_status()
+        if not result.success:
+            return json.dumps({"success": False, "error": result.error})
 
-        result = {
-            "success": True,
-            "limits": {
-                "per_request": limits.per_request,
-                "per_session": limits.per_session,
+        return json.dumps(
+            {
+                "success": True,
+                "limits": {
+                    "per_request": result.effective_per_request_sats,
+                    "per_session": result.effective_per_session_sats,
+                },
+                "message": (
+                    f"Budget tightened to {result.effective_per_request_sats:,} sats/request and "
+                    f"{result.effective_per_session_sats:,} sats/session. These runtime caps can "
+                    "only be lowered further; raising them requires editing "
+                    "~/.lightning-enable/config.json."
+                ),
             },
-            "current_status": {
-                "spent": status["spent"],
-                "remaining": status["remaining"],
-                "payment_count": status["payment_count"],
-            },
-            "message": (
-                f"Budget configured: {limits.per_request} sats per request, "
-                f"{limits.per_session} sats per session. "
-                f"Remaining: {status['remaining']} sats."
-            ),
-        }
-
-        return json.dumps(result, indent=2)
+            indent=2,
+        )
 
     except Exception as e:
         logger.exception("Error configuring budget")
@@ -119,22 +83,22 @@ async def configure_budget(
 async def get_payment_history(
     limit: int = 10,
     since: str | None = None,
-    budget_manager: "BudgetManager | None" = None,
+    payment_history_service: "PaymentHistoryService | None" = None,
 ) -> str:
     """
-    List recent L402 payments made during this session.
+    List recent payments made during this session.
 
     Args:
-        limit: Maximum number of payments to return
-        since: ISO timestamp to filter payments from
-        budget_manager: Budget manager instance
+        limit: Maximum number of payments to return.
+        since: ISO timestamp to filter payments from.
+        payment_history_service: PaymentHistoryService (audit trail).
 
     Returns:
-        JSON with list of payments
+        JSON with the list of payments.
     """
-    if not budget_manager:
+    if not payment_history_service:
         return json.dumps(
-            {"success": False, "error": "Budget manager not initialized"}
+            {"success": False, "error": "Payment history service not initialized"}
         )
 
     try:
@@ -151,29 +115,24 @@ async def get_payment_history(
                     }
                 )
 
-        # Get payment history
-        payments = budget_manager.get_history(limit=limit, since=since_dt)
-
-        # Get budget status
-        status = budget_manager.get_status()
+        payments = payment_history_service.get_history(limit=limit, since=since_dt)
+        total_payments = payment_history_service.total_payments
+        total_spent = payment_history_service.total_sats_spent
 
         result = {
             "success": True,
             "payments": [p.to_dict() for p in payments],
             "count": len(payments),
-            "total_payments": status["payment_count"],
+            "total_payments": total_payments,
             "session_summary": {
-                "total_spent": status["spent"],
-                "remaining_budget": status["remaining"],
-                "per_request_limit": status["limits"]["per_request"],
-                "per_session_limit": status["limits"]["per_session"],
+                "total_spent": total_spent,
             },
         }
 
         if payments:
             result["message"] = (
-                f"Showing {len(payments)} of {status['payment_count']} payments. "
-                f"Total spent: {status['spent']} sats."
+                f"Showing {len(payments)} of {total_payments} payments. "
+                f"Total spent: {total_spent} sats."
             )
         else:
             result["message"] = "No payments recorded in this session."

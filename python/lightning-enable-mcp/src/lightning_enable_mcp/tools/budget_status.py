@@ -12,12 +12,14 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..budget_service import BudgetService
+    from ..payment_history_service import PaymentHistoryService
 
 logger = logging.getLogger("lightning-enable-mcp.tools.budget_status")
 
 
 async def get_budget_status(
     budget_service: "BudgetService | None" = None,
+    payment_history_service: "PaymentHistoryService | None" = None,
 ) -> str:
     """
     View current budget status and spending limits (read-only).
@@ -66,6 +68,10 @@ async def get_budget_status(
         status = budget_service.get_status()
         if price_error and isinstance(status.get("price"), dict):
             status["price"]["error"] = price_error
+        # Payment count comes from the separate PaymentHistoryService (mirrors the
+        # .NET GetBudgetStatusTool + PaymentHistoryService split).
+        if payment_history_service is not None and isinstance(status.get("session"), dict):
+            status["session"]["paymentCount"] = payment_history_service.total_payments
         return json.dumps({
             "success": True,
             **status,

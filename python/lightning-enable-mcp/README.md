@@ -45,9 +45,9 @@ docker pull refinedelement/lightning-enable-mcp:latest
 | `OPENNODE_ENVIRONMENT` | No | production | `production` or `dev` for testnet |
 | `LND_REST_HOST` | If using LND | - | LND REST API host |
 | `LND_MACAROON_HEX` | If using LND | - | LND admin macaroon in hex |
-| `L402_MAX_SATS_PER_REQUEST` | No | 1000 | Maximum sats per single request |
-| `L402_MAX_SATS_PER_SESSION` | No | 10000 | Maximum sats for entire session |
 | `LIGHTNING_ENABLE_API_KEY` | For producer tools | - | API key for `create_l402_challenge` and `verify_l402_payment`. Requires Agentic Commerce subscription. |
+
+> Spending limits are configured in `~/.lightning-enable/config.json` (USD-denominated tiers). An agent can tighten runtime sats caps at runtime via the `configure_budget` tool (tighten-only — it can never raise limits above the config file).
 
 Configure one wallet provider. If multiple are set, priority order is: LND > NWC > Strike > OpenNode.
 

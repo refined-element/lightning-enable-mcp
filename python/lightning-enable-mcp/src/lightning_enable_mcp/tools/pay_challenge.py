@@ -13,8 +13,8 @@ from typing import TYPE_CHECKING, Optional
 from bolt11 import decode as decode_bolt11
 
 if TYPE_CHECKING:
-    from ..budget import BudgetManager
     from ..budget_service import BudgetService
+    from ..payment_history_service import PaymentHistoryService
     from ..nwc_wallet import NWCWallet
 
 logger = logging.getLogger("lightning-enable-mcp.tools.pay")
@@ -26,8 +26,8 @@ async def pay_l402_challenge(
     max_sats: int = 1000,
     confirmation_nonce: "Optional[str]" = None,
     wallet: "NWCWallet | None" = None,
-    budget_manager: "BudgetManager | None" = None,
     budget_service: "BudgetService | None" = None,
+    payment_history_service: "PaymentHistoryService | None" = None,
 ) -> str:
     """
     Manually pay an L402 or MPP invoice and receive the authorization token.
@@ -45,8 +45,8 @@ async def pay_l402_challenge(
         confirmation_nonce: The code the human read from the server console (for payments above
             the auto-approve threshold). Omit on the first call to request one.
         wallet: NWC wallet instance
-        budget_manager: Legacy budget manager (deprecated, use budget_service)
         budget_service: BudgetService for multi-tier approval + out-of-band confirmation
+        payment_history_service: PaymentHistoryService for the session audit trail
 
     Returns:
         JSON with L402/MPP token or error message
@@ -162,31 +162,6 @@ async def pay_l402_challenge(
                         "expiresInSeconds": 120,
                     })
 
-        # Legacy budget manager fallback (deprecated, no confirmation flow).
-        elif budget_manager and amount_sats:
-            try:
-                budget_manager.check_payment(amount_sats, max_sats)
-            except Exception as e:
-                return json.dumps(
-                    {"success": False, "error": sanitize_error(str(e)), "amount_sats": amount_sats}
-                )
-
-            # Above the auto-approve threshold the legacy BudgetManager has no
-            # out-of-band confirmation flow, so it FAILS CLOSED rather than
-            # silently auto-approve an above-threshold challenge payment (parity
-            # with pay_invoice). Use the BudgetService path for confirmation.
-            auto_approve_sats = getattr(budget_manager, "auto_approve_sats", 1000)
-            if amount_sats > auto_approve_sats:
-                return json.dumps({
-                    "success": False,
-                    "error": (
-                        f"Payment of {amount_sats:,} sats exceeds the auto-approve threshold of "
-                        f"{auto_approve_sats:,} sats, and the legacy budget manager cannot confirm it. "
-                        "Configure ~/.lightning-enable/config.json so the BudgetService handles confirmation."
-                    ),
-                    "amount_sats": amount_sats,
-                })
-
         # Pay the invoice
         protocol = "MPP" if is_mpp else "L402"
         logger.info(f"Paying {protocol} invoice for {amount_sats} sats")
@@ -196,13 +171,14 @@ async def pay_l402_challenge(
         if budget_service and amount_sats:
             budget_service.record_spend(amount_sats)
             budget_service.record_payment_time()
-        elif budget_manager and amount_sats:
-            budget_manager.record_payment(
+
+        # Audit trail (separate from limits). Preimage is NEVER stored.
+        if payment_history_service and amount_sats:
+            payment_history_service.record_payment(
                 url=f"manual_{protocol.lower()}_payment",
                 amount_sats=amount_sats,
-                invoice=invoice,
-                preimage=preimage,
                 status="success",
+                invoice=invoice,
             )
 
         # Construct authorization header based on protocol

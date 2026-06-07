@@ -16,11 +16,17 @@ Available tools:
 from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
 from importlib.metadata import version as _pkg_version
 
-from .budget import BudgetManager, BudgetExceededError, PaymentRecord
 from .budget_service import (
     BudgetService,
+    ConfigureBudgetResult,
     create_budget_service,
     get_budget_service,
+)
+from .payment_history_service import (
+    PaymentHistoryService,
+    PaymentRecord,
+    create_payment_history_service,
+    get_payment_history_service,
 )
 from .config import (
     ApprovalLevel,
@@ -68,14 +74,16 @@ __all__ = [
     "NWCWallet",
     "NWCError",
     "NWCConfig",
-    # Budget (legacy)
-    "BudgetManager",
-    "BudgetExceededError",
-    "PaymentRecord",
-    # Budget Service (new, matching .NET implementation)
+    # Budget Service (single source of truth, matching .NET implementation)
     "BudgetService",
+    "ConfigureBudgetResult",
     "create_budget_service",
     "get_budget_service",
+    # Payment History Service (separate audit trail, matching .NET)
+    "PaymentHistoryService",
+    "PaymentRecord",
+    "create_payment_history_service",
+    "get_payment_history_service",
     # Configuration
     "ApprovalLevel",
     "ApprovalCheckResult",

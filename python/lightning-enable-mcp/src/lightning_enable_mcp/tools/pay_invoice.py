@@ -11,8 +11,8 @@ import sys
 from typing import TYPE_CHECKING, Optional, Union
 
 if TYPE_CHECKING:
-    from ..budget import BudgetManager
     from ..budget_service import BudgetService
+    from ..payment_history_service import PaymentHistoryService
     from ..nwc_wallet import NWCWallet
     from ..opennode_wallet import OpenNodeWallet
 
@@ -27,8 +27,8 @@ async def pay_invoice(
     max_sats: int = 1000,
     confirmation_nonce: "Optional[str]" = None,
     wallet: "Union[NWCWallet, OpenNodeWallet, None]" = None,
-    budget_manager: "BudgetManager | None" = None,
     budget_service: "BudgetService | None" = None,
+    payment_history_service: "PaymentHistoryService | None" = None,
 ) -> str:
     """
     Pay a Lightning invoice directly and get the preimage as proof of payment.
@@ -49,8 +49,8 @@ async def pay_invoice(
         confirmation_nonce: The code the human read from the server console (for payments
             above the auto-approve threshold). Omit on the first call to request one.
         wallet: Wallet instance (NWC or OpenNode)
-        budget_manager: Legacy budget manager (deprecated, use budget_service)
         budget_service: BudgetService for multi-tier approval logic
+        payment_history_service: PaymentHistoryService for the session audit trail
 
     Returns:
         JSON with payment result including preimage or error message
@@ -79,7 +79,8 @@ async def pay_invoice(
                 "error": "Invalid invoice format. Must be a BOLT11 invoice starting with 'lnbc' (mainnet) or 'lntb' (testnet)"
             })
 
-        # Use new BudgetService if available, otherwise fall back to legacy BudgetManager
+        # BudgetService is the single source of truth for spending limits + the
+        # out-of-band confirmation flow.
         if budget_service:
             # Check approval level using new multi-tier system
             result = await budget_service.check_approval_level(max_sats)
@@ -156,54 +157,18 @@ async def pay_invoice(
             if result.level == ApprovalLevel.LOG_AND_APPROVE:
                 logger.info(f"Log-and-approve payment: {max_sats} sats (${result.amount_usd:.2f})")
 
-        elif budget_manager:
-            # Legacy budget manager fallback
-            try:
-                budget_manager.check_payment(max_sats)
-            except Exception as e:
-                return json.dumps({
-                    "success": False,
-                    "error": sanitize_error(str(e)),
-                    "budget": {
-                        "requested_sats": max_sats,
-                        "remaining_sats": budget_manager.max_per_session - budget_manager.session_spent
-                    }
-                })
-
-            # Above the auto-approve threshold. The legacy BudgetManager has no out-of-band
-            # confirmation flow, so it FAILS CLOSED here rather than allow an agent-driven
-            # self-confirm. Use the BudgetService path (~/.lightning-enable/config.json) for
-            # above-threshold payments.
-            auto_approve_sats = getattr(budget_manager, 'auto_approve_sats', 1000)
-            if max_sats > auto_approve_sats:
-                estimated_usd = max_sats * 0.001
-                return json.dumps({
-                    "success": False,
-                    "error": (
-                        f"Payment of ~${estimated_usd:.2f} ({max_sats:,} sats) exceeds the auto-approve threshold "
-                        f"of {auto_approve_sats:,} sats, and the legacy budget manager cannot confirm it. "
-                        "Configure ~/.lightning-enable/config.json so the BudgetService handles confirmation."
-                    ),
-                    "amount": {
-                        "sats": max_sats,
-                        "estimatedUsd": round(estimated_usd, 2)
-                    },
-                    "thresholds": {"autoApprove": auto_approve_sats},
-                })
-
         # Pay the invoice
         logger.info(f"Paying invoice: {normalized_invoice[:30]}...")
         preimage = await wallet.pay_invoice(normalized_invoice)
 
         if not preimage:
-            # Record failed payment
-            if budget_manager:
-                budget_manager.record_payment(
+            # Record failed payment (preimage is never stored in history).
+            if payment_history_service:
+                payment_history_service.record_payment(
                     url="direct-invoice",
                     amount_sats=max_sats,
-                    invoice=normalized_invoice,
-                    preimage="",
                     status="failed",
+                    invoice=normalized_invoice,
                 )
             return json.dumps({
                 "success": False,
@@ -211,6 +176,7 @@ async def pay_invoice(
             })
 
         # Record the payment
+        session_info = None
         if budget_service:
             budget_service.record_spend(max_sats)
             budget_service.record_payment_time()
@@ -223,20 +189,15 @@ async def pay_invoice(
                 "remainingUsd": status["session"]["remainingUsd"],
                 "requestCount": status["session"]["requestCount"],
             }
-        elif budget_manager:
-            budget_manager.record_payment(
+
+        # Audit trail (separate from limits). Preimage is NEVER stored.
+        if payment_history_service:
+            payment_history_service.record_payment(
                 url="direct-invoice",
                 amount_sats=max_sats,
-                invoice=normalized_invoice,
-                preimage=preimage,
                 status="success",
+                invoice=normalized_invoice,
             )
-            session_info = {
-                "spentSats": budget_manager.session_spent,
-                "remainingSats": budget_manager.max_per_session - budget_manager.session_spent,
-            }
-        else:
-            session_info = None
 
         # Return success with preimage
         response = {
@@ -256,14 +217,13 @@ async def pay_invoice(
     except Exception as e:
         logger.exception("Error paying invoice")
 
-        # Record failed payment
-        if budget_manager:
-            budget_manager.record_payment(
+        # Record failed payment (preimage is never stored in history).
+        if payment_history_service:
+            payment_history_service.record_payment(
                 url="direct-invoice",
                 amount_sats=0,
-                invoice=invoice,
-                preimage="",
                 status="failed",
+                invoice=invoice,
             )
 
         return json.dumps({

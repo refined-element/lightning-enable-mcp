@@ -91,6 +91,11 @@ include = [
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "-v --cov=lightning_enable_mcp --cov-report=term-missing"
+# Prepend the local src/ so the test suite always exercises THIS checkout's
+# package, not whatever an editable-install .pth happens to point at (important
+# when running from a git worktree on a machine with the package installed
+# editable from another checkout).
+pythonpath = ["src"]
 
 [tool.mypy]
 python_version = "3.10"

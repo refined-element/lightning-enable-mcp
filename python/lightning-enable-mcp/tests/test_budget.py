@@ -1,226 +1,165 @@
 """
-Tests for Budget Manager
+Tests for PaymentHistoryService.
+
+The legacy BudgetManager (which combined limits + history + session tracking) was
+removed in favor of the .NET-style split: BudgetService owns spending limits and
+approval, PaymentHistoryService owns the session audit trail. The still-relevant
+history cases from the old BudgetManager tests live here now.
 """
 
-import pytest
 from datetime import datetime, timezone, timedelta
-from lightning_enable_mcp.budget import (
-    BudgetManager,
-    BudgetExceededError,
+
+from lightning_enable_mcp.payment_history_service import (
+    PaymentHistoryService,
     PaymentRecord,
+    MAX_PAYMENT_RECORDS,
 )
 
 
-class TestBudgetManager:
-    """Tests for BudgetManager."""
-
-    def test_default_limits(self):
-        """Test default budget limits are set."""
-        manager = BudgetManager()
-
-        assert manager.max_per_request == 10000
-        assert manager.max_per_session == 100000
-
-    def test_custom_limits(self):
-        """Test custom budget limits."""
-        manager = BudgetManager(max_per_request=500, max_per_session=5000)
-
-        assert manager.max_per_request == 500
-        assert manager.max_per_session == 5000
-
-    def test_check_payment_within_budget(self):
-        """Test payment check passes within budget."""
-        manager = BudgetManager(max_per_request=1000, max_per_session=10000)
-
-        # Should not raise
-        manager.check_payment(500)
-
-    def test_check_payment_exceeds_per_request(self):
-        """Test payment check fails when exceeding per-request limit."""
-        manager = BudgetManager(max_per_request=1000, max_per_session=10000)
-
-        with pytest.raises(BudgetExceededError, match="per-request limit"):
-            manager.check_payment(1500)
-
-    def test_check_payment_exceeds_session(self):
-        """Test payment check fails when exceeding session limit."""
-        manager = BudgetManager(max_per_request=1000, max_per_session=1000)
-        manager.session_spent = 800
-
-        with pytest.raises(BudgetExceededError, match="session limit"):
-            manager.check_payment(500)
-
-    def test_check_payment_with_override(self):
-        """Test payment check with per-request override."""
-        manager = BudgetManager(max_per_request=1000, max_per_session=10000)
-
-        # Should not raise with lower override
-        manager.check_payment(400, max_override=500)
-
-        # Should raise when exceeding override
-        with pytest.raises(BudgetExceededError):
-            manager.check_payment(600, max_override=500)
+class TestPaymentHistoryService:
+    """Tests for PaymentHistoryService."""
 
     def test_record_payment(self):
-        """Test recording a payment."""
-        manager = BudgetManager()
+        svc = PaymentHistoryService()
 
-        record = manager.record_payment(
+        record = svc.record_payment(
             url="https://api.example.com/data",
             amount_sats=100,
-            invoice="lnbc100n...",
-            preimage="abc123",
         )
 
         assert record.url == "https://api.example.com/data"
         assert record.amount_sats == 100
         assert record.status == "success"
-        assert manager.session_spent == 100
-        assert len(manager.payments) == 1
+        assert svc.total_payments == 1
+        assert svc.total_sats_spent == 100
 
     def test_record_multiple_payments(self):
-        """Test recording multiple payments accumulates correctly."""
-        manager = BudgetManager()
+        svc = PaymentHistoryService()
 
-        manager.record_payment(
-            url="https://api1.example.com",
-            amount_sats=100,
-            invoice="lnbc1...",
-            preimage="abc1",
-        )
-        manager.record_payment(
-            url="https://api2.example.com",
-            amount_sats=200,
-            invoice="lnbc2...",
-            preimage="abc2",
-        )
+        svc.record_payment(url="https://api1.example.com", amount_sats=100)
+        svc.record_payment(url="https://api2.example.com", amount_sats=200)
 
-        assert manager.session_spent == 300
-        assert len(manager.payments) == 2
+        assert svc.total_payments == 2
+        assert svc.total_sats_spent == 300
 
-    def test_record_failed_payment_no_accumulate(self):
-        """Test failed payments don't accumulate in session total."""
-        manager = BudgetManager()
+    def test_failed_payment_not_counted_in_spent(self):
+        svc = PaymentHistoryService()
 
-        manager.record_payment(
-            url="https://api.example.com",
-            amount_sats=100,
-            invoice="lnbc...",
-            preimage="",
-            status="failed",
-        )
+        svc.record_payment(url="https://api.example.com", amount_sats=100, status="failed")
 
-        assert manager.session_spent == 0
-        assert len(manager.payments) == 1
+        # The record is kept (for the audit trail), but failed payments don't
+        # count toward total spent.
+        assert svc.total_payments == 1
+        assert svc.total_sats_spent == 0
 
     def test_get_history_limit(self):
-        """Test payment history respects limit."""
-        manager = BudgetManager()
+        svc = PaymentHistoryService()
 
         for i in range(5):
-            manager.record_payment(
-                url=f"https://api{i}.example.com",
-                amount_sats=10,
-                invoice=f"lnbc{i}...",
-                preimage=f"pre{i}",
-            )
+            svc.record_payment(url=f"https://api{i}.example.com", amount_sats=10)
 
-        history = manager.get_history(limit=3)
-
+        history = svc.get_history(limit=3)
         assert len(history) == 3
 
+    def test_get_history_most_recent_first(self):
+        svc = PaymentHistoryService()
+
+        svc.record_payment(url="https://first.example.com", amount_sats=10)
+        svc.record_payment(url="https://second.example.com", amount_sats=10)
+
+        history = svc.get_history()
+        assert history[0].url == "https://second.example.com"
+
     def test_get_history_since_filter(self):
-        """Test payment history filters by timestamp."""
-        manager = BudgetManager()
+        svc = PaymentHistoryService()
 
-        # Add old payment
-        old_record = PaymentRecord(
-            url="https://old.example.com",
-            amount_sats=10,
-            timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
-            invoice="lnbc...",
-            preimage="old",
+        # Inject an old payment directly.
+        svc._payments.append(
+            PaymentRecord(
+                url="https://old.example.com",
+                amount_sats=10,
+                timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            )
         )
-        manager.payments.append(old_record)
+        svc.record_payment(url="https://new.example.com", amount_sats=10)
 
-        # Add new payment
-        manager.record_payment(
-            url="https://new.example.com",
-            amount_sats=10,
-            invoice="lnbc...",
-            preimage="new",
-        )
-
-        # Filter since yesterday
         since = datetime.now(timezone.utc) - timedelta(hours=1)
-        history = manager.get_history(since=since)
+        history = svc.get_history(since=since)
 
         assert len(history) == 1
         assert history[0].url == "https://new.example.com"
 
-    def test_configure_updates_limits(self):
-        """Test configuring new limits."""
-        manager = BudgetManager()
+    def test_clear(self):
+        svc = PaymentHistoryService()
+        svc.record_payment(url="https://api.example.com", amount_sats=10)
+        svc.clear()
+        assert svc.total_payments == 0
 
-        limits = manager.configure(per_request=500, per_session=5000)
+    def test_history_is_bounded(self):
+        """The in-memory list is capped so a long session can't grow unbounded."""
+        svc = PaymentHistoryService()
 
-        assert limits.per_request == 500
-        assert limits.per_session == 5000
-        assert manager.max_per_request == 500
-        assert manager.max_per_session == 5000
+        for i in range(MAX_PAYMENT_RECORDS + 50):
+            svc.record_payment(url=f"https://api{i}.example.com", amount_sats=1)
 
-    def test_get_status(self):
-        """Test getting budget status."""
-        manager = BudgetManager(max_per_request=1000, max_per_session=10000)
-        manager.record_payment(
-            url="https://api.example.com",
-            amount_sats=300,
-            invoice="lnbc...",
-            preimage="abc",
-        )
-
-        status = manager.get_status()
-
-        assert status["limits"]["per_request"] == 1000
-        assert status["limits"]["per_session"] == 10000
-        assert status["spent"] == 300
-        assert status["remaining"] == 9700
-        assert status["payment_count"] == 1
+        assert svc.total_payments == MAX_PAYMENT_RECORDS
+        # Oldest were dropped; the most recent are retained.
+        urls = {r.url for r in svc.get_history(limit=MAX_PAYMENT_RECORDS)}
+        assert f"https://api{MAX_PAYMENT_RECORDS + 49}.example.com" in urls
+        assert "https://api0.example.com" not in urls
 
 
 class TestPaymentRecord:
-    """Tests for PaymentRecord."""
+    """Tests for PaymentRecord — including the funds-safety property that the
+    preimage is never stored."""
 
-    def test_to_dict(self):
-        """Test conversion to dictionary."""
+    def test_no_preimage_field(self):
+        """FUNDS-SAFETY: PaymentRecord must not carry a preimage at all."""
+        record = PaymentRecord(
+            url="https://api.example.com",
+            amount_sats=100,
+            timestamp=datetime.now(timezone.utc),
+        )
+        assert not hasattr(record, "preimage")
+        # record_payment also has no preimage parameter.
+        import inspect
+
+        sig = inspect.signature(PaymentHistoryService.record_payment)
+        assert "preimage" not in sig.parameters
+
+    def test_to_dict_has_no_preimage(self):
         record = PaymentRecord(
             url="https://api.example.com",
             amount_sats=100,
             timestamp=datetime(2024, 6, 15, 12, 0, 0, tzinfo=timezone.utc),
             invoice="lnbc100n1...",
-            preimage="abc123",
-            status="success",
         )
-
         data = record.to_dict()
 
         assert data["url"] == "https://api.example.com"
         assert data["amount_sats"] == 100
         assert data["status"] == "success"
         assert "timestamp" in data
+        assert "preimage" not in data
 
     def test_to_dict_truncates_long_invoice(self):
-        """Test invoice is truncated in dict output."""
         long_invoice = "lnbc100n1p" + "x" * 100
         record = PaymentRecord(
             url="https://api.example.com",
             amount_sats=100,
             timestamp=datetime.now(timezone.utc),
             invoice=long_invoice,
-            preimage="abc",
         )
-
         data = record.to_dict()
 
         assert len(data["invoice"]) == 23  # 20 chars + "..."
         assert data["invoice"].endswith("...")
+
+    def test_to_dict_omits_invoice_when_absent(self):
+        record = PaymentRecord(
+            url="https://api.example.com",
+            amount_sats=100,
+            timestamp=datetime.now(timezone.utc),
+        )
+        data = record.to_dict()
+        assert "invoice" not in data

@@ -276,4 +276,56 @@ public class L402ToolsTests
     }
 
     #endregion
+
+    #region RedactUrl Tests
+
+    // RedactUrl is used everywhere the URL is printed to stderr / logged, so query
+    // strings / fragments / userinfo (where ?token=... secrets live) never reach the
+    // console or log history (engineering standard #5).
+
+    [Fact]
+    public void RedactUrl_StripsQueryString()
+    {
+        var redacted = AccessL402ResourceTool.RedactUrl("https://api.example.com/v1/data?token=SECRET&q=1");
+        redacted.Should().NotContain("SECRET");
+        redacted.Should().NotContain("token");
+        redacted.Should().Contain("api.example.com");
+        redacted.Should().Contain("redacted");
+    }
+
+    [Fact]
+    public void RedactUrl_StripsFragment()
+    {
+        var redacted = AccessL402ResourceTool.RedactUrl("https://example.com/p#access_token=SECRET");
+        redacted.Should().NotContain("SECRET");
+        redacted.Should().NotContain("access_token");
+    }
+
+    [Fact]
+    public void RedactUrl_StripsUserInfo()
+    {
+        var redacted = AccessL402ResourceTool.RedactUrl("https://user:p4ssw0rd@example.com/path");
+        redacted.Should().NotContain("p4ssw0rd");
+        redacted.Should().NotContain("user:");
+        redacted.Should().Contain("example.com/path");
+    }
+
+    [Fact]
+    public void RedactUrl_CleanUrlPassesThroughWithoutMarker()
+    {
+        var redacted = AccessL402ResourceTool.RedactUrl("https://example.com/clean/path");
+        redacted.Should().Be("https://example.com/clean/path");
+        redacted.Should().NotContain("redacted");
+    }
+
+    [Fact]
+    public void RedactUrl_PreservesNonDefaultPort_DropsCredentials()
+    {
+        var redacted = AccessL402ResourceTool.RedactUrl("https://user:pw@example.com:8443/x?k=v");
+        redacted.Should().Contain("example.com:8443");
+        redacted.Should().NotContain("pw");
+        redacted.Should().NotContain("k=v");
+    }
+
+    #endregion
 }

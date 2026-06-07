@@ -108,14 +108,16 @@ class TestF11ProcessMessageRejectsForgedEvents:
     necessary but not sufficient — Copilot review on PR #21 noted there's
     no proof the *gate inside _process_message* actually invokes the helper.
 
-    Constructing an NWCWallet calls _get_pubkey which requires the secp256k1
-    native extension; skip the whole class if it's not installed in the test
-    env (CI installs it via dev deps).
+    Constructing an NWCWallet calls _get_pubkey which requires the coincurve
+    elliptic-curve library. coincurve is now a base dependency (ships wheels for
+    every platform), so it should always be importable — this guard only fires if
+    the install is broken, in which case skipping (rather than erroring the whole
+    suite) keeps the signal localized.
     """
 
     pytestmark = pytest.mark.skipif(
-        __import__("importlib").util.find_spec("secp256k1") is None,
-        reason="secp256k1 native extension not installed in this env",
+        __import__("importlib").util.find_spec("coincurve") is None,
+        reason="coincurve not installed in this env",
     )
 
     @staticmethod

@@ -91,15 +91,16 @@ class TestSettleAgentServiceValidation:
         assert "Invalid HTTP method" in parsed["error"]
 
     @pytest.mark.asyncio
-    async def test_whitelisted_but_unsupported_method_rejected(self):
-        """HEAD passes the whitelist but the L402 client can't settle it."""
+    async def test_unsupported_method_rejected(self):
+        """HEAD (and OPTIONS/PATCH) are not in the whitelist — the L402 client can't settle them."""
         result = await settle_agent_service(
             l402_endpoint="https://example.com/l402", method="HEAD",
             l402_client=MagicMock(),
         )
         parsed = json.loads(result)
         assert parsed["success"] is False
-        assert "not supported by the L402 settlement client" in parsed["error"]
+        assert "Invalid HTTP method" in parsed["error"]
+        assert "HEAD" in parsed["error"]
 
     @pytest.mark.asyncio
     async def test_no_client_returns_error(self):

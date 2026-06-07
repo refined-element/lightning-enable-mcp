@@ -24,7 +24,7 @@ async def pay_l402_challenge(
     invoice: str,
     macaroon: str | None = None,
     max_sats: int = 1000,
-    confirmation_code: "Optional[str]" = None,
+    confirmation_nonce: "Optional[str]" = None,
     wallet: "NWCWallet | None" = None,
     budget_manager: "BudgetManager | None" = None,
     budget_service: "BudgetService | None" = None,
@@ -42,7 +42,7 @@ async def pay_l402_challenge(
         invoice: BOLT11 Lightning invoice string
         macaroon: Base64-encoded macaroon from the L402 challenge (optional; omit for MPP mode)
         max_sats: Maximum satoshis allowed for this payment
-        confirmation_code: The code the human read from the server console (for payments above
+        confirmation_nonce: The code the human read from the server console (for payments above
             the auto-approve threshold). Omit on the first call to request one.
         wallet: NWC wallet instance
         budget_manager: Legacy budget manager (deprecated, use budget_service)
@@ -114,9 +114,9 @@ async def pay_l402_challenge(
                 })
             if approval.requires_confirmation:
                 inv_prefix = invoice[:30] + "..."
-                if confirmation_code:
+                if confirmation_nonce:
                     confirmation = budget_service.validate_and_consume_confirmation(
-                        confirmation_code.strip().upper(), amount_sats, "pay_l402_challenge"
+                        confirmation_nonce.strip().upper(), amount_sats, "pay_l402_challenge"
                     )
                     if confirmation is None:
                         return json.dumps({
@@ -127,7 +127,7 @@ async def pay_l402_challenge(
                             ),
                             "message": (
                                 "Ask the human operator for the code shown in the server console, then call "
-                                "pay_l402_challenge again with confirmation_code set to it."
+                                "pay_l402_challenge again with confirmation_nonce set to it."
                             ),
                         })
                     # Human-relayed code validated — fall through and pay.
@@ -156,7 +156,7 @@ async def pay_l402_challenge(
                         ),
                         "howToConfirm": (
                             "Ask the human operator for the confirmation code shown in the server console, then "
-                            'call pay_l402_challenge(invoice="...", confirmation_code="<code-from-human>").'
+                            'call pay_l402_challenge(invoice="...", confirmation_nonce="<code-from-human>").'
                         ),
                         "amount": {"sats": amount_sats, "usd": float(approval.amount_usd)},
                         "expiresInSeconds": 120,

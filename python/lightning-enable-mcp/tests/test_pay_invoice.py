@@ -422,7 +422,7 @@ class TestPayInvoiceOutOfBandConfirmation:
             max_sats=50000,
             wallet=wallet,
             budget_service=budget,
-            confirmation_code="abc123",  # lowercase from human — tool upcases it
+            confirmation_nonce="abc123",  # lowercase from human — tool upcases it
         )
         data = json.loads(result)
 
@@ -444,7 +444,7 @@ class TestPayInvoiceOutOfBandConfirmation:
             max_sats=50000,
             wallet=wallet,
             budget_service=budget,
-            confirmation_code="WRONG1",
+            confirmation_nonce="WRONG1",
         )
         data = json.loads(result)
 

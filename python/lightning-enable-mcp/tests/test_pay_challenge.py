@@ -77,7 +77,7 @@ class TestPayL402ChallengeOutOfBandConfirmation:
             result = await pay_l402_challenge(
                 invoice="lnbc10n1pjtest", macaroon="mac123",
                 wallet=mock_wallet, budget_service=budget,
-                confirmation_code="abc123",  # tool upcases
+                confirmation_nonce="abc123",  # tool upcases
             )
         data = json.loads(result)
 
@@ -103,7 +103,7 @@ class TestPayL402ChallengeOutOfBandConfirmation:
             result = await pay_l402_challenge(
                 invoice="lnbc10n1pjtest", macaroon="mac123",
                 wallet=mock_wallet, budget_service=budget,
-                confirmation_code="WRONG1",
+                confirmation_nonce="WRONG1",
             )
         data = json.loads(result)
 

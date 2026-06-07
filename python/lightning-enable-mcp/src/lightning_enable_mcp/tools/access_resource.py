@@ -27,7 +27,7 @@ async def access_l402_resource(
     headers: dict[str, str] | None = None,
     body: str | None = None,
     max_sats: int = 1000,
-    confirmation_code: "Optional[str]" = None,
+    confirmation_nonce: "Optional[str]" = None,
     l402_client: "L402Client | None" = None,
     budget_manager: "BudgetManager | None" = None,
     budget_service: "BudgetService | None" = None,
@@ -40,7 +40,7 @@ async def access_l402_resource(
 
     L402 payments above the auto-approve threshold require OUT-OF-BAND confirmation: the
     server prints a code to its console/stderr (the human operator sees it; the model does
-    not), and you must ask the human for that code and pass it as confirmation_code. The
+    not), and you must ask the human for that code and pass it as confirmation_nonce. The
     code is never in a tool result, so a prompt-injected agent cannot self-approve.
 
     Args:
@@ -49,7 +49,7 @@ async def access_l402_resource(
         headers: Optional additional request headers
         body: Optional request body for POST/PUT requests
         max_sats: Maximum satoshis to pay for this request
-        confirmation_code: The code the human read from the server console (for payments
+        confirmation_nonce: The code the human read from the server console (for payments
             above the auto-approve threshold). Omit on the first call to request one.
         l402_client: L402 client instance
         budget_manager: Legacy budget manager (deprecated, use budget_service)
@@ -93,9 +93,9 @@ async def access_l402_resource(
             # human operator (not the model) must read it and relay it back.
             if result.requires_confirmation:
                 url_display = url[:50] + "..." if len(url) > 50 else url
-                if confirmation_code:
+                if confirmation_nonce:
                     confirmation = budget_service.validate_and_consume_confirmation(
-                        confirmation_code.strip().upper(), max_sats, "access_l402_resource"
+                        confirmation_nonce.strip().upper(), max_sats, "access_l402_resource"
                     )
                     if confirmation is None:
                         return json.dumps({
@@ -106,7 +106,7 @@ async def access_l402_resource(
                             ),
                             "message": (
                                 "Ask the human operator for the code shown in the server console, then call "
-                                "access_l402_resource again with confirmation_code set to it."
+                                "access_l402_resource again with confirmation_nonce set to it."
                             ),
                         })
                     # Human-relayed code validated (amount + tool bound) — fall through.
@@ -135,7 +135,7 @@ async def access_l402_resource(
                         ),
                         "howToConfirm": (
                             "Ask the human operator for the confirmation code shown in the server console, then call "
-                            'access_l402_resource(url="...", confirmation_code="<code-from-human>").'
+                            'access_l402_resource(url="...", confirmation_nonce="<code-from-human>").'
                         ),
                         "amount": {"maxSats": max_sats, "maxUsd": float(result.amount_usd)},
                         "expiresInSeconds": 120,

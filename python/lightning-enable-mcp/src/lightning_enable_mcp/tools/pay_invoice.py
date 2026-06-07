@@ -25,7 +25,7 @@ logger = logging.getLogger("lightning-enable-mcp.tools.pay_invoice")
 async def pay_invoice(
     invoice: str,
     max_sats: int = 1000,
-    confirmation_code: "Optional[str]" = None,
+    confirmation_nonce: "Optional[str]" = None,
     wallet: "Union[NWCWallet, OpenNodeWallet, None]" = None,
     budget_manager: "BudgetManager | None" = None,
     budget_service: "BudgetService | None" = None,
@@ -39,14 +39,14 @@ async def pay_invoice(
 
     Payments above the auto-approve threshold require OUT-OF-BAND confirmation: the
     server prints a code to its console/stderr (the human operator sees it; the model
-    does not), and you must ask the human for that code and pass it as confirmation_code.
+    does not), and you must ask the human for that code and pass it as confirmation_nonce.
     The code is never returned in a tool result, so a prompt-injected agent cannot
     self-approve.
 
     Args:
         invoice: BOLT11 Lightning invoice string to pay
         max_sats: Maximum satoshis allowed to pay. Defaults to 1000
-        confirmation_code: The code the human read from the server console (for payments
+        confirmation_nonce: The code the human read from the server console (for payments
             above the auto-approve threshold). Omit on the first call to request one.
         wallet: Wallet instance (NWC or OpenNode)
         budget_manager: Legacy budget manager (deprecated, use budget_service)
@@ -102,9 +102,9 @@ async def pay_invoice(
             # (not the model) must read it and relay it back. This is what stops a
             # prompt-injected agent from reading its own code and self-approving.
             if result.requires_confirmation:
-                if confirmation_code:
+                if confirmation_nonce:
                     confirmation = budget_service.validate_and_consume_confirmation(
-                        confirmation_code.strip().upper(), max_sats, "pay_invoice"
+                        confirmation_nonce.strip().upper(), max_sats, "pay_invoice"
                     )
                     if confirmation is None:
                         return json.dumps({
@@ -115,7 +115,7 @@ async def pay_invoice(
                             ),
                             "message": (
                                 "Ask the human operator for the code shown in the server console, then call "
-                                "pay_invoice again with confirmation_code set to it."
+                                "pay_invoice again with confirmation_nonce set to it."
                             ),
                         })
                     # Human-relayed code validated (amount + tool bound) — fall through and pay.
@@ -145,7 +145,7 @@ async def pay_invoice(
                         ),
                         "howToConfirm": (
                             "Ask the human operator for the confirmation code shown in the server console, then "
-                            'call pay_invoice(invoice="...", confirmation_code="<code-from-human>").'
+                            'call pay_invoice(invoice="...", confirmation_nonce="<code-from-human>").'
                         ),
                         "amount": {"sats": max_sats, "usd": float(result.amount_usd)},
                         "expiresInSeconds": 120,

@@ -33,7 +33,7 @@ def _approving_budget(code: str = "ABC123"):
 
     Used by tests that need to reach the actual send: send_onchain ALWAYS requires
     out-of-band confirmation and fails closed without a budget service, so a 'send'
-    test must supply one and pass a confirmation_code it will accept.
+    test must supply one and pass a confirmation_nonce it will accept.
     """
     budget = MagicMock()
     approval = MagicMock()
@@ -163,7 +163,7 @@ class TestSendOnchain:
 
         result = await send_onchain(
             address=VALID_ADDR, amount_sats=50000, wallet=wallet,
-            budget_service=_approving_budget(), confirmation_code="ABC123",
+            budget_service=_approving_budget(), confirmation_nonce="ABC123",
         )
         parsed = json.loads(result)
         assert parsed["success"] is True
@@ -188,7 +188,7 @@ class TestSendOnchain:
 
         result = await send_onchain(
             address=VALID_ADDR, amount_sats=10000, wallet=wallet,
-            budget_service=_approving_budget(), confirmation_code="ABC123",
+            budget_service=_approving_budget(), confirmation_nonce="ABC123",
         )
         parsed = json.loads(result)
         assert parsed["success"] is True
@@ -206,7 +206,7 @@ class TestSendOnchain:
 
         result = await send_onchain(
             address=VALID_ADDR, amount_sats=50000, wallet=wallet,
-            budget_service=_approving_budget(), confirmation_code="ABC123",
+            budget_service=_approving_budget(), confirmation_nonce="ABC123",
         )
         parsed = json.loads(result)
         assert parsed["success"] is False
@@ -219,7 +219,7 @@ class TestSendOnchain:
 
         result = await send_onchain(
             address=VALID_ADDR, amount_sats=1000, wallet=wallet,
-            budget_service=_approving_budget(), confirmation_code="ABC123",
+            budget_service=_approving_budget(), confirmation_nonce="ABC123",
         )
         parsed = json.loads(result)
         assert parsed["success"] is False

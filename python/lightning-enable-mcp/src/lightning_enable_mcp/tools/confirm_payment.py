@@ -27,7 +27,7 @@ async def confirm_payment(
     For payments above the auto-approve threshold, the server prints a code to its
     console/stderr (never in a tool result). The human reads it and gives it to you. This
     tool only VERIFIES the code (it does not consume it or pay) — to actually pay, call the
-    original payment tool again with confirmation_code set to the code. Codes expire after
+    original payment tool again with confirmation_nonce set to the code. Codes expire after
     2 minutes and are one-time use (consumed by the payment tool, bound to its amount+tool).
 
     Args:
@@ -66,7 +66,7 @@ async def confirm_payment(
             "message": (
                 f"Confirmation code is valid for a payment of ${float(confirmation.amount_usd):.2f} "
                 f"({confirmation.amount_sats:,} sats) via {confirmation.tool_name}. To actually pay, call "
-                "that tool again with confirmation_code set to this code (it is consumed then, one-time)."
+                "that tool again with confirmation_nonce set to this code (it is consumed then, one-time)."
             ),
             "confirmation": {
                 "nonce": confirmation.nonce,

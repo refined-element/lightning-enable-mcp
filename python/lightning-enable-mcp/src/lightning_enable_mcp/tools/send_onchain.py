@@ -22,7 +22,7 @@ logger = logging.getLogger("lightning-enable-mcp.tools.send_onchain")
 async def send_onchain(
     address: str,
     amount_sats: int,
-    confirmation_code: "Optional[str]" = None,
+    confirmation_nonce: "Optional[str]" = None,
     wallet: "Union[StrikeWallet, LndWallet, None]" = None,
     budget_service: "BudgetService | None" = None,
 ) -> str:
@@ -35,10 +35,10 @@ async def send_onchain(
     Args:
         address: Bitcoin address to send to (e.g., bc1q...)
         amount_sats: Amount to send in satoshis
-        confirmation_code: The code the human read from the server console. On-chain sends
+        confirmation_nonce: The code the human read from the server console. On-chain sends
             are irreversible and ALWAYS require confirmation: the first call prints a code
             to the server console (never in the result) and returns requiresConfirmation;
-            ask the human for the code and call again with confirmation_code set to it.
+            ask the human for the code and call again with confirmation_nonce set to it.
         wallet: Strike or LND wallet instance
         budget_service: BudgetService for spending limits
 
@@ -121,9 +121,9 @@ async def send_onchain(
     # server console (stderr) only — never in the result — so the human operator, not the
     # model, must read it and relay it back.
     address = address.strip()
-    if confirmation_code:
+    if confirmation_nonce:
         confirmation = budget_service.validate_and_consume_confirmation(
-            confirmation_code.strip().upper(), amount_sats, "send_onchain"
+            confirmation_nonce.strip().upper(), amount_sats, "send_onchain"
         )
         if confirmation is None:
             return json.dumps({
@@ -131,7 +131,7 @@ async def send_onchain(
                 "error": "Confirmation code is invalid, expired, already used, or does not match THIS "
                          "send's amount and tool. Codes are bound to the exact amount + tool approved.",
                 "message": "Ask the human operator for the code shown in the server console, then call "
-                           "send_onchain again with confirmation_code set to it.",
+                           "send_onchain again with confirmation_nonce set to it.",
             })
         # Human-relayed code validated (amount + tool bound) — fall through and send.
     else:
@@ -154,7 +154,7 @@ async def send_onchain(
                        "confirmation. A confirmation code was printed to the server console/logs — visible to the "
                        "human operator, NOT to you. Ask the human to read that code and give it to you.",
             "howToConfirm": "Ask the human operator for the confirmation code shown in the server console, then call "
-                            'send_onchain(address="...", amount_sats=..., confirmation_code="<code-from-human>").',
+                            'send_onchain(address="...", amount_sats=..., confirmation_nonce="<code-from-human>").',
             "amount": {"sats": amount_sats, "usd": float(budget_result.amount_usd)},
             "expiresInSeconds": 120,
         })

@@ -801,7 +801,7 @@ class TestNWCEncryptionDefault:
 
     @staticmethod
     def _new_keypair():
-        cc = pytest.importorskip("coincurve")
+        import coincurve as cc
         privkey_bytes = b"\x01" + b"\x42" * 31  # deterministic but valid scalar
         pk = cc.PrivateKey(privkey_bytes)
         # x-only pubkey (drop the leading 02/03 byte from compressed form)
@@ -810,7 +810,7 @@ class TestNWCEncryptionDefault:
 
     def test_verify_nostr_event_signature_valid_event_returns_true(self):
         # Sign-then-verify baseline. Establishes that genuine events pass.
-        pytest.importorskip("coincurve")
+        import coincurve  # noqa: F401  (required dep — fail loudly if missing)
         from lightning_enable_mcp.nwc_wallet import _verify_nostr_event_signature
 
         privkey, pubkey_hex = self._new_keypair()
@@ -826,7 +826,7 @@ class TestNWCEncryptionDefault:
         # encryption tag (but otherwise looking like the wallet's INFO event)
         # must fail verification. Tamper after signing — the recomputed event
         # id won't match the claimed id.
-        pytest.importorskip("coincurve")
+        import coincurve  # noqa: F401  (required dep — fail loudly if missing)
         from lightning_enable_mcp.nwc_wallet import _verify_nostr_event_signature
 
         privkey, pubkey_hex = self._new_keypair()
@@ -843,7 +843,7 @@ class TestNWCEncryptionDefault:
     def test_verify_nostr_event_signature_wrong_signature_returns_false(self):
         # Substitute a signature from a different keypair — pubkey unchanged
         # but sig signed by attacker's key. Must fail.
-        cc = pytest.importorskip("coincurve")
+        import coincurve as cc
         from lightning_enable_mcp.nwc_wallet import (
             _sign_event,
             _verify_nostr_event_signature,
@@ -890,7 +890,7 @@ class TestNWCEncryptionDefault:
         # The post-fix invariant: the function always returns a NIP-04-shaped
         # string. Skipped when ``coincurve`` isn't installed locally;
         # CI has it.
-        pytest.importorskip("coincurve")
+        import coincurve  # noqa: F401  (required dep — fail loudly if missing)
         from lightning_enable_mcp.nwc_wallet import _encrypt_content
 
         secret = bytes.fromhex(

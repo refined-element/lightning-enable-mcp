@@ -228,7 +228,8 @@ def _sign_event(event: dict[str, Any], secret_key: bytes) -> str:
     except ImportError:
         raise ImportError(
             "coincurve is required for NWC (Nostr Wallet Connect) signing. "
-            "Install it with:  pip install coincurve"
+            "It ships with this package — reinstall via:  pip install --upgrade lightning-enable-mcp "
+            "(or install it directly:  pip install 'coincurve>=20.0.0')."
         )
 
 
@@ -252,7 +253,8 @@ def _get_pubkey(secret_key: bytes) -> str:
     except ImportError:
         raise ImportError(
             "coincurve is required for NWC (Nostr Wallet Connect) wallets. "
-            "Install it with:  pip install coincurve"
+            "It ships with this package — reinstall via:  pip install --upgrade lightning-enable-mcp "
+            "(or install it directly:  pip install 'coincurve>=20.0.0')."
         )
 
 
@@ -289,17 +291,11 @@ def _encrypt_content(plaintext: str, secret_key: bytes, recipient_pubkey: str) -
 
     from cryptography.hazmat.backends import default_backend
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-    from coincurve import PublicKey
 
-    # Compute ECDH shared point; AES key is the raw 32-byte X coordinate.
-    recipient_bytes = bytes.fromhex(recipient_pubkey)
-    if len(recipient_bytes) == 32:
-        # Add prefix for compressed pubkey (assume even y-coordinate)
-        recipient_bytes = b"\x02" + recipient_bytes
-    pubkey = PublicKey(recipient_bytes)
-    shared_point = pubkey.multiply(secret_key)
-    # Uncompressed point is 0x04 || X || Y; take raw X — matches l402-ts + CoinOS.
-    shared_secret = shared_point.format(compressed=False)[1:33]
+    # AES key is the raw 32-byte ECDH shared-X. Single source of truth for the
+    # curve math (shared with the decrypt path) so the two can't drift — matches
+    # l402-ts + CoinOS.
+    shared_secret = _compute_shared_x(secret_key, recipient_pubkey)
 
     # Generate IV and encrypt with AES-256-CBC + PKCS7 padding
     iv = os.urandom(16)

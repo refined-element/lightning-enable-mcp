@@ -47,18 +47,18 @@ dependencies = [
     "websockets>=12.0",
     "bech32>=1.2.0",
     "cryptography>=46.0.7",
+    # NWC (Nostr Wallet Connect) pubkey derivation + BIP340 Schnorr + ECDH.
+    # coincurve ships prebuilt wheels for Linux, macOS AND Windows, so NWC works
+    # out of the box on every platform with no build toolchain — no extra needed.
+    # (Replaced the old `secp256k1` C-extension, which had no Windows wheel.)
+    "coincurve>=20.0.0",
 ]
 
 [project.optional-dependencies]
-# NWC (Nostr Wallet Connect) wallets need secp256k1 for pubkey derivation + Schnorr/ECDH.
-# It is a C-extension with no prebuilt Windows wheel, so it is OPTIONAL here: a plain
-# `pip install lightning-enable-mcp` then works on every platform with no build toolchain.
-# Add this extra only if you use an NWC wallet:  pip install lightning-enable-mcp[nwc]
-# (LND, Strike and OpenNode wallets do not need it). The code raises a clear error if an
-# NWC wallet is used without it.
-nwc = [
-    "secp256k1>=0.14.0",
-]
+# Back-compat no-op: `pip install lightning-enable-mcp[nwc]` still resolves. NWC
+# support is now in the base dependencies (coincurve), so this extra is empty and
+# exists only so existing install commands don't break.
+nwc = []
 dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",

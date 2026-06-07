@@ -24,9 +24,9 @@ from lightning_enable_mcp.nwc_wallet import (
 )
 
 
-# ---------- Deterministic test keys (no secp256k1 needed) ----------
+# ---------- Deterministic test keys (no elliptic-curve lib needed) ----------
 # We use a fixed 32-byte "shared_x" value to bypass ECDH in tests.
-# This lets us test all the symmetric crypto without the secp256k1 C library.
+# This lets us test all the symmetric crypto without the elliptic-curve library.
 # Must be exactly 32 bytes (64 hex chars) — used directly as the AES-256 key.
 # Earlier this fixture was 31 bytes; it appeared to work only because the
 # previous sha256(shared_x) key derivation hashed any input down to 32 bytes,
@@ -801,19 +801,16 @@ class TestNWCEncryptionDefault:
 
     @staticmethod
     def _new_keypair():
-        # importorskip returns the imported module — earlier code dropped the
-        # binding and then referenced bare `secp` (NameError). The test was
-        # never run in CI before so the bug went unnoticed.
-        secp = pytest.importorskip("secp256k1")
+        cc = pytest.importorskip("coincurve")
         privkey_bytes = b"\x01" + b"\x42" * 31  # deterministic but valid scalar
-        pk = secp.PrivateKey(privkey_bytes)
+        pk = cc.PrivateKey(privkey_bytes)
         # x-only pubkey (drop the leading 02/03 byte from compressed form)
-        pubkey_hex = pk.pubkey.serialize()[1:33].hex()
+        pubkey_hex = pk.public_key.format(compressed=True)[1:33].hex()
         return privkey_bytes, pubkey_hex
 
     def test_verify_nostr_event_signature_valid_event_returns_true(self):
         # Sign-then-verify baseline. Establishes that genuine events pass.
-        pytest.importorskip("secp256k1")
+        pytest.importorskip("coincurve")
         from lightning_enable_mcp.nwc_wallet import _verify_nostr_event_signature
 
         privkey, pubkey_hex = self._new_keypair()
@@ -829,7 +826,7 @@ class TestNWCEncryptionDefault:
         # encryption tag (but otherwise looking like the wallet's INFO event)
         # must fail verification. Tamper after signing — the recomputed event
         # id won't match the claimed id.
-        pytest.importorskip("secp256k1")
+        pytest.importorskip("coincurve")
         from lightning_enable_mcp.nwc_wallet import _verify_nostr_event_signature
 
         privkey, pubkey_hex = self._new_keypair()
@@ -846,7 +843,7 @@ class TestNWCEncryptionDefault:
     def test_verify_nostr_event_signature_wrong_signature_returns_false(self):
         # Substitute a signature from a different keypair — pubkey unchanged
         # but sig signed by attacker's key. Must fail.
-        secp = pytest.importorskip("secp256k1")
+        cc = pytest.importorskip("coincurve")
         from lightning_enable_mcp.nwc_wallet import (
             _sign_event,
             _verify_nostr_event_signature,
@@ -855,7 +852,7 @@ class TestNWCEncryptionDefault:
         alice_priv, alice_pubkey_hex = self._new_keypair()
         # Different keypair for Bob
         bob_priv = b"\x02" + b"\x37" * 31
-        secp.PrivateKey(bob_priv)  # validate
+        cc.PrivateKey(bob_priv)  # validate
 
         event = self._build_signed_info_event(
             alice_priv, alice_pubkey_hex, "nip04 nip44_v2"
@@ -891,9 +888,9 @@ class TestNWCEncryptionDefault:
         # used to return None when pycryptodome (``Crypto``) was importable, because
         # the only ``return`` lived inside the ``except ImportError`` fallback.
         # The post-fix invariant: the function always returns a NIP-04-shaped
-        # string. Skipped when ``secp256k1`` (a C lib) isn't installed locally;
+        # string. Skipped when ``coincurve`` isn't installed locally;
         # CI has it.
-        pytest.importorskip("secp256k1")
+        pytest.importorskip("coincurve")
         from lightning_enable_mcp.nwc_wallet import _encrypt_content
 
         secret = bytes.fromhex(

@@ -237,7 +237,9 @@ async def access_l402_resource(
                 }
             elif budget_manager:
                 budget_manager.record_payment(
-                    url=url,
+                    # Redacted — BudgetManager.record_payment logs this url, and the raw
+                    # query/fragment/userinfo can carry secrets (engineering standard #5).
+                    url=_redact_url_for_display(url),
                     amount_sats=amount_paid,
                     invoice="(auto-paid)",
                     preimage="(auto-paid)",

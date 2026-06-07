@@ -644,7 +644,7 @@ class LightningEnableServer:
                             },
                             "method": {
                                 "type": "string",
-                                "description": "HTTP method (GET, POST). Defaults to GET",
+                                "description": "HTTP method (GET, POST, PUT, DELETE). Defaults to GET",
                                 "default": "GET",
                             },
                             "body": {

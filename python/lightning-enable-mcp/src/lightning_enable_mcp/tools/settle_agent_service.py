@@ -27,7 +27,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger("lightning-enable-mcp.tools.settle_agent_service")
 
 # HTTP method whitelist (mirrors .NET AgentSettleTool)
-_ALLOWED_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
+# Policy restriction to what the L402 settlement client (L402Client.fetch) supports.
+_ALLOWED_METHODS = {"GET", "POST", "PUT", "DELETE"}
 _LOCALHOST_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
 
@@ -90,14 +91,6 @@ async def settle_agent_service(
             return json.dumps({
                 "success": False,
                 "error": "L402 HTTP client not available. Ensure a wallet is configured.",
-            })
-
-        # The underlying L402Client.fetch only handles GET/POST/PUT/DELETE.
-        # HEAD/OPTIONS/PATCH pass the whitelist above but cannot be settled.
-        if method not in ("GET", "POST", "PUT", "DELETE"):
-            return json.dumps({
-                "success": False,
-                "error": f"HTTP method '{method}' is allowed but not supported by the L402 settlement client. Use GET, POST, PUT, or DELETE.",
             })
 
         # Budget gating BEFORE payment (mirrors access_l402_resource)

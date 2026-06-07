@@ -327,5 +327,24 @@ public class L402ToolsTests
         redacted.Should().NotContain("k=v");
     }
 
+    [Fact]
+    public void RedactUrl_BracketsIpv6Host()
+    {
+        var redacted = AccessL402ResourceTool.RedactUrl("https://[2001:db8::1]:8443/path?token=SECRET");
+        redacted.Should().Contain("[2001:db8::1]:8443");
+        redacted.Should().NotContain("SECRET");
+    }
+
+    [Fact]
+    public void RedactUrl_CapsVeryLongUrl()
+    {
+        var longUrl = "https://example.com/" + new string('a', 200) + "?token=SECRET";
+        var redacted = AccessL402ResourceTool.RedactUrl(longUrl);
+        redacted.Should().NotContain("SECRET");
+        // URL part is capped (80) before the marker, so the whole thing stays bounded.
+        redacted.Length.Should().BeLessThan(120);
+        redacted.Should().Contain("...");
+    }
+
     #endregion
 }

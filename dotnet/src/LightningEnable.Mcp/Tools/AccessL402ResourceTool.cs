@@ -304,53 +304,65 @@ public static class AccessL402ResourceTool
     }
 
     /// <summary>
-    /// Validates URL to prevent SSRF attacks.
-    /// Blocks access to private IPs, localhost, and internal networks.
-    /// </summary>
-    /// <summary>
     /// Returns a display-safe URL with credentials stripped. The query string, fragment,
     /// and userinfo can carry secrets (e.g. <c>?token=...</c>); this keeps only
-    /// scheme://host[:port]/path and marks when anything was dropped. Use it anywhere the
-    /// URL is printed to stderr or logged so credentials never reach console/log history
-    /// (engineering standard #5). The full URL is still returned in tool results — the
-    /// caller already supplied it.
+    /// scheme://host[:port]/path, marks when anything was dropped, and length-caps the
+    /// result. Use it anywhere the URL is printed to stderr or logged so credentials never
+    /// reach console/log history (engineering standard #5). The full URL is still returned
+    /// in tool results — the caller already supplied it.
     /// </summary>
     internal static string RedactUrl(string url)
     {
-        // Fallback when Uri parsing fails: strip query, fragment, AND userinfo by hand so
-        // we never leave `user:pass@host` in the output.
-        static string Fallback(string u)
-        {
-            var s = u.Split('?')[0].Split('#')[0];
-            var schemeIdx = s.IndexOf("//", StringComparison.Ordinal);
-            if (schemeIdx >= 0)
-            {
-                var atIdx = s.IndexOf('@', schemeIdx + 2);
-                if (atIdx >= 0)
-                    s = s.Substring(0, schemeIdx + 2) + s.Substring(atIdx + 1);
-            }
-            return s;
-        }
+        const int maxLen = 80;
+        var (safe, dropped) = BuildRedactedUrl(url);
+        if (safe.Length > maxLen)
+            safe = safe.Substring(0, maxLen) + "...";  // cap the URL part; marker added after
+        return dropped ? safe + " (redacted)" : safe;
+    }
 
+    private static (string safe, bool dropped) BuildRedactedUrl(string url)
+    {
         try
         {
-            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
-                return Fallback(url);
-
-            var port = uri.IsDefaultPort ? string.Empty : $":{uri.Port}";
-            var safe = $"{uri.Scheme}://{uri.Host}{port}{uri.AbsolutePath}";
-            var dropped = !string.IsNullOrEmpty(uri.Query)
-                || !string.IsNullOrEmpty(uri.Fragment)
-                || !string.IsNullOrEmpty(uri.UserInfo);
-            // Neutral marker — what was dropped may be a query, fragment, OR userinfo.
-            return dropped ? safe + " (redacted)" : safe;
+            if (Uri.TryCreate(url, UriKind.Absolute, out var uri))
+            {
+                // uri.Host already brackets IPv6 literals (e.g. "[2001:db8::1]"), so
+                // scheme://host:port stays unambiguous without extra handling.
+                var port = uri.IsDefaultPort ? string.Empty : $":{uri.Port}";
+                var safe = $"{uri.Scheme}://{uri.Host}{port}{uri.AbsolutePath}";
+                var dropped = !string.IsNullOrEmpty(uri.Query)
+                    || !string.IsNullOrEmpty(uri.Fragment)
+                    || !string.IsNullOrEmpty(uri.UserInfo);
+                return (safe, dropped);
+            }
         }
         catch
         {
-            return Fallback(url);
+            // fall through to the hand-rolled fallback below
         }
+
+        // Parse failed: strip query, fragment, AND userinfo by hand so we never leave
+        // `user:pass@host`, and report whether anything was removed.
+        var s = url.Split('?')[0].Split('#')[0];
+        var strippedQueryOrFragment = s.Length != url.Length;
+        var schemeIdx = s.IndexOf("//", StringComparison.Ordinal);
+        var strippedUserInfo = false;
+        if (schemeIdx >= 0)
+        {
+            var atIdx = s.IndexOf('@', schemeIdx + 2);
+            if (atIdx >= 0)
+            {
+                s = s.Substring(0, schemeIdx + 2) + s.Substring(atIdx + 1);
+                strippedUserInfo = true;
+            }
+        }
+        return (s, strippedQueryOrFragment || strippedUserInfo);
     }
 
+    /// <summary>
+    /// Validates URL to prevent SSRF attacks.
+    /// Blocks access to private IPs, localhost, and internal networks.
+    /// </summary>
     private static string? ValidateUrl(string url)
     {
         // Validate URL format

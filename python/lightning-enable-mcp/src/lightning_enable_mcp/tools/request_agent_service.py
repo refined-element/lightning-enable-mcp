@@ -75,6 +75,14 @@ async def request_agent_service(
                 "error": "Agent service not available. The MCP server may not be configured correctly.",
             })
 
+        if not api_client.is_configured:
+            return json.dumps({
+                "success": False,
+                "error": "Lightning Enable API key not configured. "
+                         "Set LIGHTNING_ENABLE_API_KEY environment variable or add 'lightningEnableApiKey' to ~/.lightning-enable/config.json. "
+                         "Required for requesting agent services.",
+            })
+
         # Budget check before sending request (validation only — no spend recorded)
         if budget_service is not None:
             check = await budget_service.check_approval_level(budget_sats)

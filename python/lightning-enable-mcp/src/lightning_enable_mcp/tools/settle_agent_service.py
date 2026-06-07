@@ -116,7 +116,7 @@ async def settle_agent_service(
                         "maxUsd": float(result.amount_usd),
                         "remainingSessionUsd": float(result.remaining_session_budget_usd),
                     },
-                    "hint": "Increase max_sats, or edit ~/.lightning-enable/config.json to change limits.",
+                    "hint": "Denied by budget policy (session/per-payment/cooldown) — raising max_sats won't help. Lower the amount, wait out any cooldown, or raise your limits in ~/.lightning-enable/config.json.",
                 })
 
             if result.requires_confirmation and not confirmed:

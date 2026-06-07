@@ -317,21 +317,37 @@ public static class AccessL402ResourceTool
     /// </summary>
     internal static string RedactUrl(string url)
     {
+        // Fallback when Uri parsing fails: strip query, fragment, AND userinfo by hand so
+        // we never leave `user:pass@host` in the output.
+        static string Fallback(string u)
+        {
+            var s = u.Split('?')[0].Split('#')[0];
+            var schemeIdx = s.IndexOf("//", StringComparison.Ordinal);
+            if (schemeIdx >= 0)
+            {
+                var atIdx = s.IndexOf('@', schemeIdx + 2);
+                if (atIdx >= 0)
+                    s = s.Substring(0, schemeIdx + 2) + s.Substring(atIdx + 1);
+            }
+            return s;
+        }
+
         try
         {
             if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
-                return url.Split('?')[0].Split('#')[0];
+                return Fallback(url);
 
             var port = uri.IsDefaultPort ? string.Empty : $":{uri.Port}";
             var safe = $"{uri.Scheme}://{uri.Host}{port}{uri.AbsolutePath}";
             var dropped = !string.IsNullOrEmpty(uri.Query)
                 || !string.IsNullOrEmpty(uri.Fragment)
                 || !string.IsNullOrEmpty(uri.UserInfo);
-            return dropped ? safe + " (query redacted)" : safe;
+            // Neutral marker — what was dropped may be a query, fragment, OR userinfo.
+            return dropped ? safe + " (redacted)" : safe;
         }
         catch
         {
-            return url.Split('?')[0].Split('#')[0];
+            return Fallback(url);
         }
     }
 

@@ -4,10 +4,14 @@ Tests for Pay Invoice Tool
 
 import json
 import pytest
+from datetime import datetime, timezone, timedelta
+from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
 from lightning_enable_mcp.tools.pay_invoice import pay_invoice
 from lightning_enable_mcp.budget import BudgetManager, BudgetExceededError
+from lightning_enable_mcp.budget_service import PendingConfirmation
+from lightning_enable_mcp.config import ApprovalLevel
 
 
 class TestPayInvoice:
@@ -352,3 +356,117 @@ class TestPayInvoice:
 
         assert data["success"] is True
         assert data["preimage"] == "preimage"
+
+
+def _confirming_budget(code: str = "ABC123", sats: int = 50000):
+    """A BudgetService mock whose check returns requires_confirmation=True."""
+    budget = MagicMock()
+    approval = MagicMock()
+    approval.level = ApprovalLevel.FORM_CONFIRM
+    approval.requires_confirmation = True
+    approval.amount_usd = Decimal("50.00")
+    approval.denial_reason = None
+    approval.remaining_session_budget_usd = Decimal("100.00")
+    budget.check_approval_level = AsyncMock(return_value=approval)
+    now = datetime.now(timezone.utc)
+    pc = PendingConfirmation(
+        nonce=code, amount_sats=sats, amount_usd=Decimal("50.00"),
+        tool_name="pay_invoice", description="lnbc...",
+        created_at=now, expires_at=now + timedelta(minutes=2),
+    )
+    budget.create_pending_confirmation = MagicMock(return_value=pc)
+    budget.validate_and_consume_confirmation = MagicMock(return_value=pc)
+    budget.record_spend = MagicMock()
+    budget.record_payment_time = MagicMock()
+    budget.get_status = MagicMock(return_value={
+        "session": {"spentSats": sats, "spentUsd": 50.0, "remainingUsd": 50.0, "requestCount": 1}
+    })
+    return budget
+
+
+class TestPayInvoiceOutOfBandConfirmation:
+    """Funds-safety: above-threshold payments need a human-relayed, out-of-band code."""
+
+    @pytest.mark.asyncio
+    async def test_above_threshold_requests_confirmation_and_does_not_leak_code(self):
+        """The confirmation code must NEVER appear in the model-visible tool result."""
+        wallet = AsyncMock()
+        wallet.pay_invoice = AsyncMock(return_value="preimage")
+        budget = _confirming_budget(code="ZZZ999")
+
+        result = await pay_invoice(
+            invoice="lnbc500u1pj9npjpp5...",
+            max_sats=50000,
+            wallet=wallet,
+            budget_service=budget,
+        )
+        data = json.loads(result)
+
+        assert data["success"] is False
+        assert data.get("requiresConfirmation") is True
+        # The actual code printed to stderr must NOT be in the result, anywhere.
+        assert "ZZZ999" not in result
+        assert "nonce" not in data
+        # No payment happened on the request-confirmation path.
+        wallet.pay_invoice.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_human_relayed_code_unlocks_the_payment(self):
+        """With a valid human-relayed code (bound to amount+tool), the payment proceeds."""
+        wallet = AsyncMock()
+        wallet.pay_invoice = AsyncMock(return_value="preimage123")
+        budget = _confirming_budget(code="ABC123", sats=50000)
+
+        result = await pay_invoice(
+            invoice="lnbc500u1pj9npjpp5...",
+            max_sats=50000,
+            wallet=wallet,
+            budget_service=budget,
+            confirmation_code="abc123",  # lowercase from human — tool upcases it
+        )
+        data = json.loads(result)
+
+        assert data["success"] is True
+        assert data["preimage"] == "preimage123"
+        budget.validate_and_consume_confirmation.assert_called_once_with("ABC123", 50000, "pay_invoice")
+        wallet.pay_invoice.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_bad_code_is_rejected_and_not_paid(self):
+        """A code that fails validation (wrong/expired/replayed) must refuse to pay."""
+        wallet = AsyncMock()
+        wallet.pay_invoice = AsyncMock(return_value="preimage")
+        budget = _confirming_budget()
+        budget.validate_and_consume_confirmation = MagicMock(return_value=None)  # rejected
+
+        result = await pay_invoice(
+            invoice="lnbc500u1pj9npjpp5...",
+            max_sats=50000,
+            wallet=wallet,
+            budget_service=budget,
+            confirmation_code="WRONG1",
+        )
+        data = json.loads(result)
+
+        assert data["success"] is False
+        assert "amount and tool" in data["error"]
+        wallet.pay_invoice.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_legacy_budget_manager_fails_closed_above_threshold(self):
+        """The legacy BudgetManager has no confirmation flow — it must refuse, not self-approve."""
+        wallet = AsyncMock()
+        wallet.pay_invoice = AsyncMock(return_value="preimage")
+        budget_manager = BudgetManager(max_per_request=100000, max_per_session=1000000)
+
+        result = await pay_invoice(
+            invoice="lnbc500u1pj9npjpp5...",
+            max_sats=50000,  # above the 1000-sat auto-approve floor
+            wallet=wallet,
+            budget_manager=budget_manager,
+        )
+        data = json.loads(result)
+
+        assert data["success"] is False
+        assert "auto-approve threshold" in data["error"]
+        wallet.pay_invoice.assert_not_called()

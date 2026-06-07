@@ -13,6 +13,8 @@ This module provides the BudgetService class that combines:
 
 import asyncio
 import logging
+import secrets
+from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 from typing import Optional
@@ -27,6 +29,29 @@ from .config import (
 from .price_service import PriceService, get_price_service
 
 logger = logging.getLogger("lightning-enable-mcp.budget-service")
+
+
+@dataclass
+class PendingConfirmation:
+    """A pending out-of-band payment confirmation, bound to a specific amount + tool.
+
+    The code is emitted ONLY to the server console/stderr by the calling tool — never
+    returned in a tool result — so a prompt-injected model cannot read it and self-approve.
+    The human operator reads it from the console and relays it back. One-time use, 2-minute
+    expiry. Mirrors the .NET PendingConfirmation.
+    """
+
+    nonce: str
+    amount_sats: int
+    amount_usd: Decimal
+    tool_name: str
+    description: str
+    created_at: datetime
+    expires_at: datetime
+
+    @property
+    def is_expired(self) -> bool:
+        return datetime.now(timezone.utc) >= self.expires_at
 
 
 class BudgetService:
@@ -87,6 +112,10 @@ class BudgetService:
         self._session_started: datetime = datetime.now(timezone.utc)
         self._last_payment_time: datetime = datetime.min.replace(tzinfo=timezone.utc)
         self._is_first_payment: bool = True
+
+        # Out-of-band confirmation store (code -> PendingConfirmation). The code is
+        # printed to stderr by the pay tools and never returned in a tool result.
+        self._pending_confirmations: dict[str, PendingConfirmation] = {}
 
         # Cached sats thresholds (updated when price changes significantly)
         self._auto_approve_sats: int = 0
@@ -269,6 +298,94 @@ class BudgetService:
             budget_service.record_payment_time()  # Start cooldown
         """
         self._last_payment_time = datetime.now(timezone.utc)
+
+    # =========================================================================
+    # Out-of-band confirmation (mirrors the .NET BudgetService)
+    # =========================================================================
+
+    _CONFIRMATION_CODE_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+    def create_pending_confirmation(
+        self,
+        amount_sats: int,
+        amount_usd: Decimal,
+        tool_name: str,
+        description: str,
+    ) -> PendingConfirmation:
+        """Create a pending confirmation with a crypto-random code, bound to amount + tool.
+
+        The caller (a pay tool) MUST print the returned ``nonce`` to STDERR ONLY and MUST
+        NOT include it in the tool result — that is what stops a prompt-injected agent from
+        reading the code and self-approving.
+        """
+        self._clean_expired_confirmations()
+        code = "".join(secrets.choice(self._CONFIRMATION_CODE_CHARS) for _ in range(6))
+        now = datetime.now(timezone.utc)
+        pc = PendingConfirmation(
+            nonce=code,
+            amount_sats=amount_sats,
+            amount_usd=amount_usd,
+            tool_name=tool_name,
+            description=description,
+            created_at=now,
+            expires_at=now + timedelta(minutes=2),
+        )
+        self._pending_confirmations[code] = pc
+        return pc
+
+    def validate_confirmation(self, nonce: str) -> Optional[PendingConfirmation]:
+        """Peek at a confirmation by code WITHOUT consuming it (used by confirm_payment).
+
+        Returns None if the code is unknown or expired (expired codes are purged).
+        """
+        if not nonce:
+            return None
+        pc = self._pending_confirmations.get(nonce)
+        if pc is None:
+            return None
+        if pc.is_expired:
+            self._pending_confirmations.pop(nonce, None)
+            return None
+        return pc
+
+    def validate_and_consume_confirmation(
+        self,
+        nonce: str,
+        expected_amount_sats: int,
+        expected_tool_name: str,
+    ) -> Optional[PendingConfirmation]:
+        """Validate a code, check expiry, verify it matches the amount AND tool about to be
+        paid, then consume it (one-time use).
+
+        Returns None if invalid, expired, already used, or the amount/tool does not match.
+        On an amount/tool MISMATCH the code is NOT consumed (a correct retry still works),
+        so a code approved for one (amount, tool) can never authorize a different one.
+        """
+        if not nonce:
+            return None
+        pc = self._pending_confirmations.get(nonce)
+        if pc is None:
+            return None
+        if pc.is_expired:
+            self._pending_confirmations.pop(nonce, None)
+            return None
+        # C-3: bind to the EXACT amount AND tool the code was approved for.
+        if pc.amount_sats != expected_amount_sats:
+            return None
+        if pc.tool_name != expected_tool_name:
+            return None
+        # Amount + tool match -> consume (one-time use).
+        self._pending_confirmations.pop(nonce, None)
+        return pc
+
+    def clean_expired_confirmations(self) -> None:
+        """Purge expired pending confirmations."""
+        self._clean_expired_confirmations()
+
+    def _clean_expired_confirmations(self) -> None:
+        expired = [code for code, pc in self._pending_confirmations.items() if pc.is_expired]
+        for code in expired:
+            self._pending_confirmations.pop(code, None)
 
     def get_user_configuration(self) -> UserBudgetConfiguration:
         """

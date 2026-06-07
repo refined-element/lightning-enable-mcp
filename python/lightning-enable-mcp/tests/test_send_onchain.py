@@ -9,10 +9,14 @@ Funds-safety (PY-FAILOPEN / PY-C1 / PY-C2):
 
 import json
 import pytest
+from datetime import datetime, timezone, timedelta
+from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
 from lightning_enable_mcp.tools.send_onchain import send_onchain
 from lightning_enable_mcp.strike_wallet import StrikeWallet
+from lightning_enable_mcp.budget_service import PendingConfirmation
+from lightning_enable_mcp.config import ApprovalLevel
 
 # A real BIP173 mainnet P2WPKH address (passes validation).
 VALID_ADDR = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
@@ -22,6 +26,32 @@ def _make_strike_wallet_mock(**kwargs):
     """Create a mock that passes isinstance(mock, StrikeWallet) checks."""
     mock = AsyncMock(spec=StrikeWallet, **kwargs)
     return mock
+
+
+def _approving_budget(code: str = "ABC123"):
+    """A budget service mock that approves (non-DENY) and accepts the given code.
+
+    Used by tests that need to reach the actual send: send_onchain ALWAYS requires
+    out-of-band confirmation and fails closed without a budget service, so a 'send'
+    test must supply one and pass a confirmation_code it will accept.
+    """
+    budget = MagicMock()
+    approval = MagicMock()
+    approval.level = ApprovalLevel.AUTO_APPROVE
+    approval.amount_usd = Decimal("5.00")
+    approval.denial_reason = None
+    budget.check_approval_level = AsyncMock(return_value=approval)
+    now = datetime.now(timezone.utc)
+    pc = PendingConfirmation(
+        nonce=code, amount_sats=0, amount_usd=Decimal("5.00"),
+        tool_name="send_onchain", description=VALID_ADDR,
+        created_at=now, expires_at=now + timedelta(minutes=2),
+    )
+    budget.create_pending_confirmation = MagicMock(return_value=pc)
+    budget.validate_and_consume_confirmation = MagicMock(return_value=pc)
+    budget.record_spend = MagicMock()
+    budget.record_payment_time = MagicMock()
+    return budget
 
 
 class TestSendOnchain:
@@ -48,7 +78,7 @@ class TestSendOnchain:
         wallet.send_onchain = AsyncMock()
 
         result = await send_onchain(
-            address="bc1qtest123", amount_sats=1000, confirmed=True, wallet=wallet
+            address="bc1qtest123", amount_sats=1000, wallet=wallet
         )
         parsed = json.loads(result)
         assert parsed["success"] is False
@@ -90,10 +120,16 @@ class TestSendOnchain:
         wallet = _make_strike_wallet_mock()
         wallet.send_onchain = AsyncMock()
 
-        result = await send_onchain(address=VALID_ADDR, amount_sats=50000, wallet=wallet)
+        result = await send_onchain(
+            address=VALID_ADDR, amount_sats=50000, wallet=wallet,
+            budget_service=_approving_budget(),
+        )
         parsed = json.loads(result)
         assert parsed["success"] is False
         assert parsed.get("requiresConfirmation") is True
+        # The confirmation code must NOT appear anywhere in the model-visible result.
+        assert "ABC123" not in result
+        assert "nonce" not in parsed
         wallet.send_onchain.assert_not_called()
 
     @pytest.mark.asyncio
@@ -105,7 +141,7 @@ class TestSendOnchain:
         budget.check_approval_level = AsyncMock(side_effect=Exception("price service down"))
 
         result = await send_onchain(
-            address=VALID_ADDR, amount_sats=50000, confirmed=True,
+            address=VALID_ADDR, amount_sats=50000,
             wallet=wallet, budget_service=budget,
         )
         parsed = json.loads(result)
@@ -126,7 +162,8 @@ class TestSendOnchain:
         wallet.send_onchain = AsyncMock(return_value=onchain_result)
 
         result = await send_onchain(
-            address=VALID_ADDR, amount_sats=50000, confirmed=True, wallet=wallet
+            address=VALID_ADDR, amount_sats=50000, wallet=wallet,
+            budget_service=_approving_budget(), confirmation_code="ABC123",
         )
         parsed = json.loads(result)
         assert parsed["success"] is True
@@ -150,7 +187,8 @@ class TestSendOnchain:
         wallet.send_onchain = AsyncMock(return_value=onchain_result)
 
         result = await send_onchain(
-            address=VALID_ADDR, amount_sats=10000, confirmed=True, wallet=wallet
+            address=VALID_ADDR, amount_sats=10000, wallet=wallet,
+            budget_service=_approving_budget(), confirmation_code="ABC123",
         )
         parsed = json.loads(result)
         assert parsed["success"] is True
@@ -167,7 +205,8 @@ class TestSendOnchain:
         wallet.send_onchain = AsyncMock(return_value=onchain_result)
 
         result = await send_onchain(
-            address=VALID_ADDR, amount_sats=50000, confirmed=True, wallet=wallet
+            address=VALID_ADDR, amount_sats=50000, wallet=wallet,
+            budget_service=_approving_budget(), confirmation_code="ABC123",
         )
         parsed = json.loads(result)
         assert parsed["success"] is False
@@ -179,7 +218,8 @@ class TestSendOnchain:
         wallet.send_onchain = AsyncMock(side_effect=Exception("Timeout"))
 
         result = await send_onchain(
-            address=VALID_ADDR, amount_sats=1000, confirmed=True, wallet=wallet
+            address=VALID_ADDR, amount_sats=1000, wallet=wallet,
+            budget_service=_approving_budget(), confirmation_code="ABC123",
         )
         parsed = json.loads(result)
         assert parsed["success"] is False

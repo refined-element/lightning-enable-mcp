@@ -21,6 +21,31 @@ from . import sanitize_error
 logger = logging.getLogger("lightning-enable-mcp.tools.access")
 
 
+def _redact_url_for_display(url: str, limit: int = 50) -> str:
+    """Return a display-safe URL with credentials stripped.
+
+    The query string, fragment, and userinfo can carry secrets (e.g.
+    ``?token=...``). This is printed to stderr and returned in error JSON, so we
+    keep only scheme://host/path and append a marker when anything was dropped —
+    never leak the sensitive parts to logs/console (engineering standard #5).
+    """
+    try:
+        from urllib.parse import urlsplit, urlunsplit
+
+        parts = urlsplit(url)
+        netloc = parts.hostname or ""
+        if parts.port:
+            netloc = f"{netloc}:{parts.port}"  # host:port only — drop any user:pass@
+        dropped = bool(parts.query or parts.fragment or parts.username or parts.password)
+        safe = urlunsplit((parts.scheme, netloc, parts.path, "", ""))
+        if dropped:
+            safe = f"{safe} (query redacted)"
+    except Exception:
+        # If parsing fails, fall back to scheme+host heuristics rather than the raw URL.
+        safe = url.split("?", 1)[0].split("#", 1)[0]
+    return safe[:limit] + "..." if len(safe) > limit else safe
+
+
 async def access_l402_resource(
     url: str,
     method: str = "GET",
@@ -92,7 +117,7 @@ async def access_l402_resource(
             # printed to the server console (stderr) only — never in this result — so the
             # human operator (not the model) must read it and relay it back.
             if result.requires_confirmation:
-                url_display = url[:50] + "..." if len(url) > 50 else url
+                url_display = _redact_url_for_display(url)
                 if confirmation_nonce:
                     confirmation = budget_service.validate_and_consume_confirmation(
                         confirmation_nonce.strip().upper(), max_sats, "access_l402_resource"
@@ -144,7 +169,7 @@ async def access_l402_resource(
 
             # LOG_AND_APPROVE: Log for user awareness but proceed
             if result.level == ApprovalLevel.LOG_AND_APPROVE:
-                logger.info(f"Log-and-approve L402 request: up to {max_sats} sats (${result.amount_usd:.2f}) for {url[:50]}...")
+                logger.info(f"Log-and-approve L402 request: up to {max_sats} sats (${result.amount_usd:.2f}) for {_redact_url_for_display(url)}")
 
         elif budget_manager:
             # Legacy budget manager fallback
@@ -163,7 +188,7 @@ async def access_l402_resource(
             auto_approve_sats = getattr(budget_manager, 'auto_approve_sats', 1000)
             if max_sats > auto_approve_sats:
                 estimated_usd = max_sats * 0.001
-                url_display = url[:50] + "..." if len(url) > 50 else url
+                url_display = _redact_url_for_display(url)
                 return json.dumps({
                     "success": False,
                     "error": (
@@ -193,7 +218,7 @@ async def access_l402_resource(
             if budget_service:
                 budget_service.record_spend(amount_paid)
                 budget_service.record_payment_time()
-                logger.info(f"Paid {amount_paid} sats for L402 access to {url}")
+                logger.info(f"Paid {amount_paid} sats for L402 access to {_redact_url_for_display(url)}")
 
                 # Get updated session info
                 status = budget_service.get_status()
@@ -211,7 +236,7 @@ async def access_l402_resource(
                     preimage="(auto-paid)",
                     status="success",
                 )
-                logger.info(f"Paid {amount_paid} sats for L402 access to {url}")
+                logger.info(f"Paid {amount_paid} sats for L402 access to {_redact_url_for_display(url)}")
                 session_info = {
                     "spentSats": budget_manager.session_spent,
                     "remainingSats": budget_manager.max_per_session - budget_manager.session_spent,
@@ -239,7 +264,7 @@ async def access_l402_resource(
         return json.dumps(result, indent=2)
 
     except Exception as e:
-        logger.exception(f"Error accessing {url}")
+        logger.exception(f"Error accessing {_redact_url_for_display(url)}")
 
         error_result = {
             "success": False,

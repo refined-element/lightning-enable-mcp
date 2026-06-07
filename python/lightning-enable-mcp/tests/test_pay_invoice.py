@@ -9,7 +9,7 @@ from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from lightning_enable_mcp.tools.pay_invoice import pay_invoice
-from lightning_enable_mcp.budget import BudgetManager, BudgetExceededError
+from lightning_enable_mcp.budget import BudgetManager
 from lightning_enable_mcp.budget_service import PendingConfirmation
 from lightning_enable_mcp.config import ApprovalLevel
 

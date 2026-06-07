@@ -45,3 +45,11 @@ def test_long_url_is_truncated_after_redaction():
     out = _redact_url_for_display(long_host)
     assert "SECRET" not in out
     assert out.endswith("...")
+
+
+def test_ipv6_host_is_bracketed():
+    # urlsplit unbrackets the IPv6 literal; the redactor must re-bracket it so host:port
+    # stays unambiguous (not "::1:8080").
+    out = _redact_url_for_display("http://[2001:db8::1]:8080/p?token=SECRET")
+    assert "[2001:db8::1]:8080" in out
+    assert "SECRET" not in out

@@ -33,9 +33,10 @@ def _redact_url_for_display(url: str, limit: int = 50) -> str:
         from urllib.parse import urlsplit, urlunsplit
 
         parts = urlsplit(url)
-        netloc = parts.hostname or ""
-        if parts.port:
-            netloc = f"{netloc}:{parts.port}"  # host:port only — drop any user:pass@
+        host = parts.hostname or ""
+        if ":" in host:  # IPv6 literal — urlsplit unbrackets it; re-bracket so host:port is unambiguous
+            host = f"[{host}]"
+        netloc = f"{host}:{parts.port}" if parts.port else host  # host:port only — drop any user:pass@
         dropped = bool(parts.query or parts.fragment or parts.username or parts.password)
         safe = urlunsplit((parts.scheme, netloc, parts.path, "", ""))
         if dropped:

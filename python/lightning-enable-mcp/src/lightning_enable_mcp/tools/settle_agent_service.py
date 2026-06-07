@@ -133,7 +133,7 @@ async def settle_agent_service(
                         f"${result.amount_usd:.2f} ({max_sats:,} sats). "
                         "To proceed, call settle_agent_service again with confirmed=True."
                     ),
-                    "howToConfirm": 'Call: settle_agent_service(l402Endpoint="...", confirmed=True)',
+                    "howToConfirm": 'Call: settle_agent_service(l402_endpoint="...", confirmed=True)',
                     "amount": {
                         "maxSats": max_sats,
                         "maxUsd": float(result.amount_usd),

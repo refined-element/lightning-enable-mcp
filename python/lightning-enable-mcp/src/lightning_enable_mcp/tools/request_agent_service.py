@@ -114,7 +114,7 @@ async def request_agent_service(
         if endpoint:
             response["l402Endpoint"] = endpoint
             response["nextStep"] = (
-                f'The provider has an L402 endpoint. Use settle_agent_service(l402Endpoint="{endpoint}") '
+                f'The provider has an L402 endpoint. Use settle_agent_service(l402_endpoint="{endpoint}") '
                 "to pay and access the service."
             )
         else:

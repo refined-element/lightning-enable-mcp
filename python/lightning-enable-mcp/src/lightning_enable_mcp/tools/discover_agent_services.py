@@ -135,8 +135,8 @@ async def discover_agent_services(
             "total": result.get("total", len(formatted)),
             "budget": budget_info,
             "hint": (
-                'Use request_agent_service(capabilityEventId="<event_id>") to request a service, '
-                'or settle_agent_service(l402Endpoint="<url>") to pay and access it directly via L402.'
+                'Use request_agent_service(capability_event_id="<event_id>") to request a service, '
+                'or settle_agent_service(l402_endpoint="<url>") to pay and access it directly via L402.'
                 if formatted
                 else "No agent services found. Try different keywords or categories."
             ),

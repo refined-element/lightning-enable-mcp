@@ -38,6 +38,11 @@ def _budget_with(level, **kwargs):
             "requestCount": 1,
         }
     }
+    # Out-of-band confirmation machinery (settle uses it like access_l402_resource).
+    pending = MagicMock()
+    pending.nonce = "ABC123"
+    budget.create_pending_confirmation = MagicMock(return_value=pending)
+    budget.validate_and_consume_confirmation = MagicMock(return_value=pending)
     return budget
 
 
@@ -134,35 +139,40 @@ class TestSettleAgentServiceBudget:
         budget.record_spend.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_confirmation_required_blocks_without_confirmed(self):
+    async def test_confirmation_required_blocks_and_does_not_leak_code(self):
+        """No nonce on the first call -> requiresConfirmation, no fetch, and the code
+        (printed to stderr) must NOT appear in the model-visible result."""
         client = AsyncMock()
         budget = _budget_with(ApprovalLevel.FORM_CONFIRM)
 
         result = await settle_agent_service(
             l402_endpoint="https://example.com/l402", max_sats=500,
-            confirmed=False, l402_client=client, budget_service=budget,
+            l402_client=client, budget_service=budget,
         )
         parsed = json.loads(result)
 
         assert parsed["success"] is False
         assert parsed["requiresConfirmation"] is True
         assert parsed["approvalLevel"] == "form_confirm"
-        # MUST NOT pay until confirmed.
+        assert "ABC123" not in result  # the confirmation code is never returned to the model
+        assert "nonce" not in parsed
+        # MUST NOT pay until the human-relayed code is supplied.
         client.fetch.assert_not_called()
         budget.record_spend.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_confirmed_proceeds_and_records_spend(self):
+    async def test_human_relayed_nonce_proceeds_and_records_spend(self):
         client = AsyncMock()
         client.fetch.return_value = ("service result body", 500)
         budget = _budget_with(ApprovalLevel.FORM_CONFIRM)
 
         result = await settle_agent_service(
             l402_endpoint="https://example.com/l402", max_sats=500,
-            confirmed=True, l402_client=client, budget_service=budget,
+            confirmation_nonce="abc123", l402_client=client, budget_service=budget,
         )
         parsed = json.loads(result)
 
+        budget.validate_and_consume_confirmation.assert_called_once_with("ABC123", 500, "settle_agent_service")
         assert parsed["success"] is True
         assert parsed["settlement"]["paid"] is True
         assert parsed["settlement"]["amountSats"] == 500

@@ -14,8 +14,9 @@ payment before delivering the service.
 
 import json
 import logging
+import sys
 from urllib.parse import urlparse
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from ..config import ApprovalLevel
 from . import sanitize_error
@@ -38,7 +39,7 @@ async def settle_agent_service(
     body: str | None = None,
     agreement_id: str | None = None,
     max_sats: int = 1000,
-    confirmed: bool = False,
+    confirmation_nonce: "Optional[str]" = None,
     l402_client: "L402Client | None" = None,
     budget_service: "BudgetService | None" = None,
 ) -> str:
@@ -51,7 +52,9 @@ async def settle_agent_service(
         body: Optional request body for POST requests (e.g., service params as JSON)
         agreement_id: Optional agreement event ID for tracking
         max_sats: Maximum satoshis to pay (default 1000)
-        confirmed: Set True to confirm a payment above the auto-approve threshold
+        confirmation_nonce: The code the human read from the server console (for settlements
+            above the auto-approve threshold). The code is NEVER in a tool result — ask the
+            human for it. Omit on the first call to request one.
         l402_client: L402 client instance (wallet-backed)
         budget_service: BudgetService for multi-tier approval gating
 
@@ -112,30 +115,62 @@ async def settle_agent_service(
                     "hint": "Denied by budget policy (session/per-payment/cooldown) — raising max_sats won't help. Lower the amount, wait out any cooldown, or raise your limits in ~/.lightning-enable/config.json.",
                 })
 
-            if result.requires_confirmation and not confirmed:
+            # OUT-OF-BAND confirmation for above-threshold settlements. The code is printed to
+            # the server console (stderr) ONLY — never in this result — so the human operator
+            # (not the model) must read it and relay it back. Closes the self-approval hole on
+            # this fund-moving tool (mirrors access_l402_resource / pay_invoice).
+            if result.requires_confirmation:
                 endpoint_display = (
                     l402_endpoint[:50] + "..." if len(l402_endpoint) > 50 else l402_endpoint
                 )
-                return json.dumps({
-                    "success": False,
-                    "requiresConfirmation": True,
-                    "approvalLevel": result.level.value,
-                    "error": "L402 settlement requires your confirmation",
-                    "message": (
-                        f"Settling this service via {endpoint_display} may cost up to "
-                        f"${result.amount_usd:.2f} ({max_sats:,} sats). "
-                        "To proceed, call settle_agent_service again with confirmed=True."
-                    ),
-                    "howToConfirm": 'Call: settle_agent_service(l402_endpoint="...", confirmed=True)',
-                    "amount": {
-                        "maxSats": max_sats,
-                        "maxUsd": float(result.amount_usd),
-                    },
-                    "budget": {
-                        "remainingSessionUsd": float(result.remaining_session_budget_usd),
-                    },
-                    "agreementId": agreement_id,
-                })
+                if confirmation_nonce:
+                    confirmation = budget_service.validate_and_consume_confirmation(
+                        confirmation_nonce.strip().upper(), max_sats, "settle_agent_service"
+                    )
+                    if confirmation is None:
+                        return json.dumps({
+                            "success": False,
+                            "error": (
+                                "Confirmation code is invalid, expired, already used, or does not match THIS "
+                                "settlement's amount and tool. Codes are bound to the exact amount + tool approved."
+                            ),
+                            "message": (
+                                "Ask the human operator for the code shown in the server console, then call "
+                                "settle_agent_service again with confirmation_nonce set to it."
+                            ),
+                        })
+                    # Human-relayed code validated (amount + tool bound) — fall through and settle.
+                else:
+                    pending = budget_service.create_pending_confirmation(
+                        max_sats, result.amount_usd, "settle_agent_service", endpoint_display
+                    )
+                    print(
+                        "[Lightning Enable] *** L402 SETTLEMENT CONFIRMATION REQUIRED ***\n"
+                        f"  settle_agent_service — up to ${result.amount_usd:.2f} ({max_sats:,} sats), {endpoint_display}\n"
+                        f"  Confirmation code: {pending.nonce}\n"
+                        "  To approve, give this code to the agent. Expires in 120s.",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    return json.dumps({
+                        "success": False,
+                        "requiresConfirmation": True,
+                        "approvalLevel": result.level.value,
+                        "error": "L402 settlement requires human confirmation",
+                        "message": (
+                            f"Settling this service via {endpoint_display} may cost up to ${result.amount_usd:.2f} "
+                            f"({max_sats:,} sats), above the auto-approve threshold. A confirmation code was printed "
+                            "to the server console/logs — visible to the human operator, NOT to you. Ask the human to "
+                            "read that code and give it to you."
+                        ),
+                        "howToConfirm": (
+                            "Ask the human operator for the confirmation code shown in the server console, then call "
+                            'settle_agent_service(l402_endpoint="...", confirmation_nonce="<code-from-human>").'
+                        ),
+                        "amount": {"maxSats": max_sats, "maxUsd": float(result.amount_usd)},
+                        "expiresInSeconds": 120,
+                        "agreementId": agreement_id,
+                    })
 
             if result.level == ApprovalLevel.LOG_AND_APPROVE:
                 logger.info(

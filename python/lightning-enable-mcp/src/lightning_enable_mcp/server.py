@@ -666,10 +666,9 @@ class LightningEnableServer:
                                 "description": "Maximum satoshis to pay",
                                 "default": 1000,
                             },
-                            "confirmed": {
-                                "type": "boolean",
-                                "description": "Set to true to confirm a settlement that requires approval. Use when a previous call returned requiresConfirmation=true.",
-                                "default": False,
+                            "confirmation_nonce": {
+                                "type": "string",
+                                "description": "Confirmation code the human operator read from the server console, for settlements above the auto-approve threshold. The code is NEVER in a tool result — ask the human for it. Omit on the first call to request one.",
                             },
                         },
                         "required": ["l402_endpoint"],
@@ -902,7 +901,7 @@ class LightningEnableServer:
                         body=arguments.get("body"),
                         agreement_id=arguments.get("agreement_id"),
                         max_sats=arguments.get("max_sats", 1000),
-                        confirmed=arguments.get("confirmed", False),
+                        confirmation_nonce=arguments.get("confirmation_nonce"),
                         l402_client=self.l402_client,
                         budget_service=self.budget_service,
                     )

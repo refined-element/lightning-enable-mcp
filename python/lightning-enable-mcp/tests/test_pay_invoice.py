@@ -18,10 +18,13 @@ from lightning_enable_mcp.config import ApprovalLevel
 # The test invoices are placeholders that don't really decode, so patch decode_bolt11
 # to a per-test amount. A test that cares about the paid amount sets _DECODE_SATS["v"]
 # at its top; everything else uses the small default. (Resets each test via the fixture.)
-# NOTE: patch the MODULE object explicitly, not "lightning_enable_mcp.tools.pay_invoice.
-# decode_bolt11" — tools/__init__ re-exports the pay_invoice FUNCTION, which shadows the
-# submodule of the same name, so the string target resolves to the function (AttributeError).
-import lightning_enable_mcp.tools.pay_invoice as _pay_invoice_module
+# NOTE: tools/__init__ re-exports the pay_invoice FUNCTION, which shadows the submodule
+# of the same name. So neither the string target "lightning_enable_mcp.tools.pay_invoice.
+# decode_bolt11" nor `import ... as` (both navigate via getattr) reach the module — they
+# resolve to the function -> AttributeError. importlib.import_module returns sys.modules[name]
+# (the real module), which is what we patch.
+import importlib as _importlib
+_pay_invoice_module = _importlib.import_module("lightning_enable_mcp.tools.pay_invoice")
 
 _DECODE_SATS = {"v": 10}
 

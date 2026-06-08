@@ -17,6 +17,7 @@ from mcp.types import (
     TextContent,
 )
 
+from . import __version__
 from .budget_service import BudgetService, get_budget_service
 from .payment_history_service import (
     PaymentHistoryService,
@@ -81,7 +82,7 @@ class LightningEnableServer:
     """MCP Server for L402 Lightning payments."""
 
     def __init__(self) -> None:
-        self.server = Server("lightning-enable")
+        self.server = Server("lightning-enable", version=__version__)
         self.wallet: LndWallet | NWCWallet | OpenNodeWallet | StrikeWallet | None = None
         self.strike_wallet: StrikeWallet | None = None  # For Strike-specific features
         self.l402_client: L402Client | None = None

@@ -23,15 +23,9 @@ Lightning Enable MCP provides tools for AI agents (like Claude) to:
 pip install lightning-enable-mcp
 ```
 
-The base install works on **every platform, including Windows**, with no compiler toolchain. The `secp256k1` dependency is optional.
+The base install works on **every platform, including Windows**, with no compiler toolchain — and that now includes **NWC wallets** (Nostr Wallet Connect: CoinOS, CLINK, Alby Hub). The Schnorr/ECDH crypto NWC needs comes from `coincurve`, which ships prebuilt wheels for Linux, macOS, and Windows, so it installs as a normal base dependency with nothing to compile.
 
-**NWC wallets** (Nostr Wallet Connect: CoinOS, CLINK, Alby Hub) additionally require the `[nwc]` extra, which pulls in `secp256k1`:
-
-```bash
-pip install lightning-enable-mcp[nwc]
-```
-
-Strike, LND, and OpenNode wallets do **not** need the `[nwc]` extra. If you configure an NWC wallet without it, the server returns a clear error telling you to install `lightning-enable-mcp[nwc]`.
+> The old `[nwc]` extra (which pulled in the `secp256k1` C-extension, with no Windows wheel) is no longer required. `pip install lightning-enable-mcp[nwc]` still resolves for back-compat, but the extra is now empty — the base install already covers NWC.
 
 ### Using uvx (recommended for Claude Desktop)
 

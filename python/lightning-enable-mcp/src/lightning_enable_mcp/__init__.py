@@ -51,15 +51,17 @@ from .price_service import (
     sats_to_usd,
     usd_to_sats,
 )
-from .server import LightningEnableServer, main
-
 # Derive __version__ from installed package metadata so it can never drift from
 # pyproject.toml (which is the single source of truth). Fall back to a sentinel when
 # running directly from an uninstalled source checkout (e.g., without pip install).
+# Defined BEFORE the .server import because server.py reads __version__ at import time
+# (to report it in the MCP serverInfo handshake) — reordering avoids a circular import.
 try:
     __version__ = _pkg_version("lightning-enable-mcp")
 except _PackageNotFoundError:  # pragma: no cover
     __version__ = "0.0.0+unknown"
+
+from .server import LightningEnableServer, main
 
 __all__ = [
     # Server

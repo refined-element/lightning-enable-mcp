@@ -1,6 +1,7 @@
 using LightningEnable.Mcp.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 
 namespace LightningEnable.Mcp;
@@ -69,6 +70,17 @@ public class Program
         });
 
         var builder = Host.CreateApplicationBuilder(args);
+
+        // MCP stdio uses stdout EXCLUSIVELY for JSON-RPC frames. The default Generic Host
+        // console logger (and the Hosting.Lifetime "Application started / Content root path"
+        // banner) write to stdout, which interleaves non-JSON lines into the protocol stream
+        // and desyncs strict MCP clients. Force ALL console log output to stderr, and drop the
+        // lifetime status banner entirely so stdout carries nothing but JSON-RPC.
+        builder.Logging.AddConsole(consoleOptions =>
+        {
+            consoleOptions.LogToStandardErrorThreshold = LogLevel.Trace;
+        });
+        builder.Services.Configure<ConsoleLifetimeOptions>(o => o.SuppressStatusMessages = true);
 
         // Register budget configuration FIRST (needed by wallet services for config file fallback)
         builder.Services.AddSingleton<IBudgetConfigurationService, BudgetConfigurationService>();

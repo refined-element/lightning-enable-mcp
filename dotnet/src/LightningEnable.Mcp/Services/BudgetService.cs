@@ -354,7 +354,7 @@ public class BudgetService : IBudgetService
         }
     }
 
-    public PendingConfirmation CreatePendingConfirmation(long amountSats, decimal amountUsd, string toolName, string description)
+    public PendingConfirmation CreatePendingConfirmation(long amountSats, decimal amountUsd, string toolName, string description, string destination)
     {
         lock (_lock)
         {
@@ -369,6 +369,7 @@ public class BudgetService : IBudgetService
                 AmountUsd = amountUsd,
                 ToolName = toolName,
                 Description = description,
+                Destination = (destination ?? string.Empty).Trim(),
                 CreatedAt = DateTime.UtcNow,
                 ExpiresAt = DateTime.UtcNow.AddMinutes(2)
             };
@@ -398,7 +399,7 @@ public class BudgetService : IBudgetService
         }
     }
 
-    public PendingConfirmation? ValidateAndConsumeConfirmation(string nonce, long expectedAmountSats, string expectedToolName)
+    public PendingConfirmation? ValidateAndConsumeConfirmation(string nonce, long expectedAmountSats, string expectedToolName, string expectedDestination)
     {
         if (string.IsNullOrWhiteSpace(nonce))
             return null;
@@ -423,8 +424,13 @@ public class BudgetService : IBudgetService
                 return null;
             if (!string.Equals(confirmation.ToolName, expectedToolName, StringComparison.Ordinal))
                 return null;
+            // #21 anti-redirect: bind to the EXACT destination too. A code approved to pay
+            // invoice/URL/address X must never authorize paying a different one (compared
+            // after trimming, mirroring how the destination was stored).
+            if (!string.Equals(confirmation.Destination, (expectedDestination ?? string.Empty).Trim(), StringComparison.Ordinal))
+                return null;
 
-            // Amount + tool match — consume (one-time use).
+            // Amount + tool + destination match — consume (one-time use).
             _pendingConfirmations.Remove(nonce);
             return confirmation;
         }

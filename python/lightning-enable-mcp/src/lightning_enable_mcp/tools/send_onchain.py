@@ -123,20 +123,21 @@ async def send_onchain(
     address = address.strip()
     if confirmation_nonce:
         confirmation = budget_service.validate_and_consume_confirmation(
-            confirmation_nonce.strip().upper(), amount_sats, "send_onchain"
+            confirmation_nonce.strip().upper(), amount_sats, "send_onchain", address
         )
         if confirmation is None:
             return json.dumps({
                 "success": False,
                 "error": "Confirmation code is invalid, expired, already used, or does not match THIS "
-                         "send's amount and tool. Codes are bound to the exact amount + tool approved.",
+                         "send's amount, tool, and address. Codes are bound to the exact amount, tool, and "
+                         "destination approved — a code cannot be redirected to a different address.",
                 "message": "Ask the human operator for the code shown in the server console, then call "
                            "send_onchain again with confirmation_nonce set to it.",
             })
-        # Human-relayed code validated (amount + tool bound) — fall through and send.
+        # Human-relayed code validated (amount + tool + address bound) — fall through and send.
     else:
         pending = budget_service.create_pending_confirmation(
-            amount_sats, budget_result.amount_usd, "send_onchain", address
+            amount_sats, budget_result.amount_usd, "send_onchain", address, destination=address
         )
         print(
             "[Lightning Enable] *** ON-CHAIN SEND CONFIRMATION REQUIRED (irreversible) ***\n"

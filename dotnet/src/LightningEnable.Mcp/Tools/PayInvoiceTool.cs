@@ -124,16 +124,17 @@ public static class PayInvoiceTool
                     // Check if a confirmed nonce was provided
                     if (!string.IsNullOrWhiteSpace(confirmationNonce))
                     {
-                        var confirmation = budgetService.ValidateAndConsumeConfirmation(confirmationNonce.Trim().ToUpperInvariant(), approvalResult.AmountSats, "pay_invoice");
+                        var confirmation = budgetService.ValidateAndConsumeConfirmation(confirmationNonce.Trim().ToUpperInvariant(), approvalResult.AmountSats, "pay_invoice", normalizedInvoice);
                         if (confirmation == null)
                         {
                             return JsonSerializer.Serialize(new
                             {
                                 success = false,
                                 error = "Confirmation code is invalid, expired, already used, or does not match THIS " +
-                                        "payment's amount and tool. Codes are bound to the exact amount + tool approved.",
+                                        "payment's amount, tool, and invoice. Codes are bound to the exact amount, tool, and " +
+                                        "destination approved — a code cannot be redirected to a different invoice.",
                                 message = "The code may have expired (2-minute limit), been used already, or been issued for a " +
-                                          "different amount/tool. Request a new confirmation by calling pay_invoice without a confirmationNonce."
+                                          "different amount/tool/invoice. Request a new confirmation by calling pay_invoice without a confirmationNonce."
                             });
                         }
 
@@ -159,7 +160,8 @@ public static class PayInvoiceTool
                                 amountSats.Value,
                                 approvalResult.AmountUsd,
                                 "pay_invoice",
-                                invoicePrefix);
+                                invoicePrefix,
+                                normalizedInvoice);
 
                             // OUT-OF-BAND CONFIRMATION: the code is written to STDERR only —
                             // the human sees the server console/logs; the model does NOT (it

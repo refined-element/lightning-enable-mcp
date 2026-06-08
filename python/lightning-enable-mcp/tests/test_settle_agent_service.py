@@ -172,7 +172,7 @@ class TestSettleAgentServiceBudget:
         )
         parsed = json.loads(result)
 
-        budget.validate_and_consume_confirmation.assert_called_once_with("ABC123", 500, "settle_agent_service")
+        budget.validate_and_consume_confirmation.assert_called_once_with("ABC123", 500, "settle_agent_service", "https://example.com/l402")
         assert parsed["success"] is True
         assert parsed["settlement"]["paid"] is True
         assert parsed["settlement"]["amountSats"] == 500

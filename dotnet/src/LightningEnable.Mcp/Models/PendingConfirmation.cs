@@ -27,9 +27,18 @@ public record PendingConfirmation
     public string ToolName { get; init; } = string.Empty;
 
     /// <summary>
-    /// Human-readable description of the payment (URL, invoice prefix, etc.).
+    /// Human-readable description of the payment (URL, invoice prefix, etc.). May be
+    /// redacted/truncated for display — do NOT use it for binding; use <see cref="Destination"/>.
     /// </summary>
     public string Description { get; init; } = string.Empty;
+
+    /// <summary>
+    /// The exact payment target this confirmation authorizes — the BOLT11 invoice
+    /// (pay_invoice / pay_l402_challenge), the resource URL (access_l402_resource), or the
+    /// on-chain address (send_onchain). Bound and checked on consume so a code can never be
+    /// redirected to a different destination (#21). Distinct from <see cref="Description"/>.
+    /// </summary>
+    public string Destination { get; init; } = string.Empty;
 
     /// <summary>
     /// When this confirmation was created.

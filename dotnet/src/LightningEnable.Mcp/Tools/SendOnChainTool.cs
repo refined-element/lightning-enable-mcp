@@ -117,14 +117,15 @@ public static class SendOnChainTool
             if (!string.IsNullOrWhiteSpace(confirmationNonce))
             {
                 var confirmation = budgetService.ValidateAndConsumeConfirmation(
-                    confirmationNonce.Trim().ToUpperInvariant(), amountSats, "send_onchain");
+                    confirmationNonce.Trim().ToUpperInvariant(), amountSats, "send_onchain", address);
                 if (confirmation == null)
                 {
                     return JsonSerializer.Serialize(new
                     {
                         success = false,
                         error = "Confirmation code is invalid, expired, already used, or does not match THIS " +
-                                "send's amount and tool. Codes are bound to the exact amount + tool they were approved for.",
+                                "send's amount, tool, and address. Codes are bound to the exact amount, tool, and " +
+                                "destination they were approved for — a code cannot be redirected to a different address.",
                         message = "Request a fresh confirmation by calling send_onchain again without a confirmationNonce, then supply the new code."
                     });
                 }
@@ -133,7 +134,7 @@ public static class SendOnChainTool
             else
             {
                 var pending = budgetService.CreatePendingConfirmation(
-                    amountSats, approval.AmountUsd, "send_onchain", address);
+                    amountSats, approval.AmountUsd, "send_onchain", address, address);
 
                 // Code to STDERR only — the human sees it; the model never does.
                 Console.Error.WriteLine(

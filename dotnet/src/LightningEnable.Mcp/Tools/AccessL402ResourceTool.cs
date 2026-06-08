@@ -122,16 +122,17 @@ public static class AccessL402ResourceTool
                 // Check if a confirmed nonce was provided
                 if (!string.IsNullOrWhiteSpace(confirmationNonce))
                 {
-                    var confirmation = budgetService.ValidateAndConsumeConfirmation(confirmationNonce.Trim().ToUpperInvariant(), approvalResult.AmountSats, "access_l402_resource");
+                    var confirmation = budgetService.ValidateAndConsumeConfirmation(confirmationNonce.Trim().ToUpperInvariant(), approvalResult.AmountSats, "access_l402_resource", url);
                     if (confirmation == null)
                     {
                         return JsonSerializer.Serialize(new
                         {
                             success = false,
                             error = "Confirmation code is invalid, expired, already used, or does not match THIS " +
-                                    "request's amount and tool. Codes are bound to the exact amount + tool approved.",
+                                    "request's amount, tool, and URL. Codes are bound to the exact amount, tool, and " +
+                                    "destination approved — a code cannot be redirected to a different URL.",
                             message = "The code may have expired (2-minute limit), been used already, or been issued for a " +
-                                      "different amount/tool. Request a new confirmation by calling access_l402_resource without a confirmationNonce."
+                                      "different amount/tool/URL. Request a new confirmation by calling access_l402_resource without a confirmationNonce."
                         });
                     }
 
@@ -156,7 +157,8 @@ public static class AccessL402ResourceTool
                             maxSats,
                             approvalResult.AmountUsd,
                             "access_l402_resource",
-                            urlDisplay);
+                            urlDisplay,
+                            url);
 
                         // OUT-OF-BAND CONFIRMATION: code to STDERR only (human sees the server
                         // console/logs; the model only sees tool results). An injected agent

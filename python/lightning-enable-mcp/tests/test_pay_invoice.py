@@ -300,7 +300,7 @@ def _confirming_budget(code: str = "ABC123", sats: int = 50000):
     now = datetime.now(timezone.utc)
     pc = PendingConfirmation(
         nonce=code, amount_sats=sats, amount_usd=Decimal("50.00"),
-        tool_name="pay_invoice", description="lnbc...",
+        tool_name="pay_invoice", description="lnbc...", destination="lnbc500u1pj9npjpp5...",
         created_at=now, expires_at=now + timedelta(minutes=2),
     )
     budget.create_pending_confirmation = MagicMock(return_value=pc)
@@ -356,7 +356,7 @@ class TestPayInvoiceOutOfBandConfirmation:
 
         assert data["success"] is True
         assert data["preimage"] == "preimage123"
-        budget.validate_and_consume_confirmation.assert_called_once_with("ABC123", 50000, "pay_invoice")
+        budget.validate_and_consume_confirmation.assert_called_once_with("ABC123", 50000, "pay_invoice", "lnbc500u1pj9npjpp5...")
         wallet.pay_invoice.assert_called_once()
 
     @pytest.mark.asyncio
@@ -377,7 +377,7 @@ class TestPayInvoiceOutOfBandConfirmation:
         data = json.loads(result)
 
         assert data["success"] is False
-        assert "amount and tool" in data["error"]
+        assert "amount, tool, and invoice" in data["error"]
         wallet.pay_invoice.assert_not_called()
 
 

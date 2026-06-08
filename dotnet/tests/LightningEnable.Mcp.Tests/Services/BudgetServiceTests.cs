@@ -672,22 +672,44 @@ public class BudgetServiceTests
     {
         SetupConfigurationWithLimits(500m, 100m);
         var service = new BudgetService(_configServiceMock.Object, _priceServiceMock.Object);
-        var pending = service.CreatePendingConfirmation(1000, 0.01m, "pay_invoice", "inv...");
+        var pending = service.CreatePendingConfirmation(1000, 0.01m, "pay_invoice", "inv...", "lnbc-dest");
 
-        // Wrong AMOUNT (right tool) → rejected; a 1,000-sat approval can't authorize 1,000,000.
-        service.ValidateAndConsumeConfirmation(pending.Nonce, 1_000_000, "pay_invoice").Should().BeNull();
+        // Wrong AMOUNT (right tool + dest) → rejected; a 1,000-sat approval can't authorize 1,000,000.
+        service.ValidateAndConsumeConfirmation(pending.Nonce, 1_000_000, "pay_invoice", "lnbc-dest").Should().BeNull();
 
-        // Wrong TOOL (right amount) → rejected; a pay_invoice code can't authorize send_onchain
+        // Wrong TOOL (right amount + dest) → rejected; a pay_invoice code can't authorize send_onchain
         // (no cross-tool replay).
-        service.ValidateAndConsumeConfirmation(pending.Nonce, 1000, "send_onchain").Should().BeNull();
+        service.ValidateAndConsumeConfirmation(pending.Nonce, 1000, "send_onchain", "lnbc-dest").Should().BeNull();
 
-        // Neither mismatch consumed the nonce — the correct (amount, tool) still works.
-        var ok = service.ValidateAndConsumeConfirmation(pending.Nonce, 1000, "pay_invoice");
+        // Neither mismatch consumed the nonce — the correct (amount, tool, dest) still works.
+        var ok = service.ValidateAndConsumeConfirmation(pending.Nonce, 1000, "pay_invoice", "lnbc-dest");
         ok.Should().NotBeNull();
         ok!.AmountSats.Should().Be(1000);
 
         // One-time use: a second consume fails.
-        service.ValidateAndConsumeConfirmation(pending.Nonce, 1000, "pay_invoice").Should().BeNull();
+        service.ValidateAndConsumeConfirmation(pending.Nonce, 1000, "pay_invoice", "lnbc-dest").Should().BeNull();
+    }
+
+    [Fact]
+    public void Confirmation_BoundToDestination_RejectsRedirect_AndNonceNotConsumed()
+    {
+        // #21 anti-redirect: a code approved to pay destination X (invoice / URL / on-chain
+        // address) must never authorize a payment to a DIFFERENT destination, even when the
+        // amount and tool match. A mismatch must NOT consume the code.
+        SetupConfigurationWithLimits(500m, 100m);
+        var service = new BudgetService(_configServiceMock.Object, _priceServiceMock.Object);
+        var pending = service.CreatePendingConfirmation(1000, 0.01m, "pay_invoice", "lnbc1...AAA", "lnbc1aaa");
+        pending.Destination.Should().Be("lnbc1aaa");
+
+        // Same amount + tool, DIFFERENT destination → rejected (the redirect attack).
+        service.ValidateAndConsumeConfirmation(pending.Nonce, 1000, "pay_invoice", "lnbc1bbb").Should().BeNull();
+
+        // Whitespace-only difference is tolerated (trim).
+        var ok = service.ValidateAndConsumeConfirmation(pending.Nonce, 1000, "pay_invoice", "  lnbc1aaa  ");
+        ok.Should().NotBeNull();
+
+        // Consumed once → gone.
+        service.ValidateAndConsumeConfirmation(pending.Nonce, 1000, "pay_invoice", "lnbc1aaa").Should().BeNull();
     }
 
     #endregion

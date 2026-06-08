@@ -124,10 +124,9 @@ class LightningEnableServer:
                                 "description": "Maximum satoshis to pay for this request",
                                 "default": 1000,
                             },
-                            "confirmed": {
-                                "type": "boolean",
-                                "description": "Set to true to confirm a payment that requires approval. Use when previous call returned requiresConfirmation=true.",
-                                "default": False,
+                            "confirmation_nonce": {
+                                "type": "string",
+                                "description": "Confirmation code the human operator read from the server console, for payments above the auto-approve threshold. The code is NEVER in a tool result — ask the human for it. Omit on the first call to request one.",
                             },
                         },
                         "required": ["url"],
@@ -155,6 +154,10 @@ class LightningEnableServer:
                                 "type": "integer",
                                 "description": "Maximum satoshis allowed for this payment",
                                 "default": 1000,
+                            },
+                            "confirmation_nonce": {
+                                "type": "string",
+                                "description": "Confirmation code the human operator read from the server console, for payments above the auto-approve threshold. The code is NEVER in a tool result — ask the human for it. Omit on the first call to request one.",
                             },
                         },
                         "required": ["invoice"],
@@ -223,10 +226,9 @@ class LightningEnableServer:
                                 "description": "Maximum satoshis allowed to pay. Defaults to 1000",
                                 "default": 1000,
                             },
-                            "confirmed": {
-                                "type": "boolean",
-                                "description": "Set to true to confirm a payment that requires approval. Use when previous call returned requiresConfirmation=true.",
-                                "default": False,
+                            "confirmation_nonce": {
+                                "type": "string",
+                                "description": "Confirmation code the human operator read from the server console, for payments above the auto-approve threshold. The code is NEVER in a tool result — ask the human for it. Omit on the first call to request one.",
                             },
                         },
                         "required": ["invoice"],
@@ -339,12 +341,13 @@ class LightningEnableServer:
                                 "type": "integer",
                                 "description": "Amount to send in satoshis",
                             },
-                            "confirmed": {
-                                "type": "boolean",
+                            "confirmation_nonce": {
+                                "type": "string",
                                 "description": (
-                                    "Set to true to confirm this irreversible on-chain send. "
-                                    "The first call returns requiresConfirmation; call again with "
-                                    "confirmed=true to proceed."
+                                    "Confirmation code the human operator read from the server console. "
+                                    "On-chain sends always require it: the first call prints a code to the "
+                                    "console (never in the result) and returns requiresConfirmation; ask the "
+                                    "human and call again with confirmation_nonce set to it."
                                 ),
                             },
                         },
@@ -490,7 +493,7 @@ class LightningEnableServer:
                         headers=arguments.get("headers", {}),
                         body=arguments.get("body"),
                         max_sats=arguments.get("max_sats", 1000),
-                        confirmed=arguments.get("confirmed", False),
+                        confirmation_nonce=arguments.get("confirmation_nonce"),
                         l402_client=self.l402_client,
                         budget_manager=self.budget_manager,
                         budget_service=self.budget_service,
@@ -501,8 +504,10 @@ class LightningEnableServer:
                         invoice=arguments["invoice"],
                         macaroon=arguments.get("macaroon"),
                         max_sats=arguments.get("max_sats", 1000),
+                        confirmation_nonce=arguments.get("confirmation_nonce"),
                         wallet=self.wallet,
                         budget_manager=self.budget_manager,
+                        budget_service=self.budget_service,
                     )
 
                 elif name == "check_wallet_balance":
@@ -526,7 +531,7 @@ class LightningEnableServer:
                     result = await pay_invoice(
                         invoice=arguments.get("invoice", ""),
                         max_sats=arguments.get("max_sats", 1000),
-                        confirmed=arguments.get("confirmed", False),
+                        confirmation_nonce=arguments.get("confirmation_nonce"),
                         wallet=self.wallet,
                         budget_manager=self.budget_manager,
                         budget_service=self.budget_service,
@@ -574,7 +579,7 @@ class LightningEnableServer:
                     result = await send_onchain(
                         address=arguments.get("address", ""),
                         amount_sats=arguments.get("amount_sats", 0),
-                        confirmed=arguments.get("confirmed", False),
+                        confirmation_nonce=arguments.get("confirmation_nonce"),
                         wallet=onchain_wallet,
                         budget_service=self.budget_service,
                     )

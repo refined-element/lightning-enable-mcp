@@ -7,8 +7,9 @@ Supports Strike and LND wallets.
 
 import json
 import logging
+import sys
 from . import sanitize_error
-from typing import TYPE_CHECKING, Union
+from typing import TYPE_CHECKING, Optional, Union
 
 if TYPE_CHECKING:
     from ..budget_service import BudgetService
@@ -21,7 +22,7 @@ logger = logging.getLogger("lightning-enable-mcp.tools.send_onchain")
 async def send_onchain(
     address: str,
     amount_sats: int,
-    confirmed: bool = False,
+    confirmation_nonce: "Optional[str]" = None,
     wallet: "Union[StrikeWallet, LndWallet, None]" = None,
     budget_service: "BudgetService | None" = None,
 ) -> str:
@@ -34,9 +35,10 @@ async def send_onchain(
     Args:
         address: Bitcoin address to send to (e.g., bc1q...)
         amount_sats: Amount to send in satoshis
-        confirmed: Set to True to confirm this irreversible on-chain send.
-            On-chain payments cannot be undone, so the first call always returns
-            requiresConfirmation; call again with confirmed=True to proceed.
+        confirmation_nonce: The code the human read from the server console. On-chain sends
+            are irreversible and ALWAYS require confirmation: the first call prints a code
+            to the server console (never in the result) and returns requiresConfirmation;
+            ask the human for the code and call again with confirmation_nonce set to it.
         wallet: Strike or LND wallet instance
         budget_service: BudgetService for spending limits
 
@@ -86,38 +88,75 @@ async def send_onchain(
             "hint": "Set STRIKE_API_KEY or LND_REST_HOST+LND_MACAROON_HEX for on-chain payments."
         })
 
-    # Budget check — FAIL CLOSED (PY-FAILOPEN fix). Previously an exception here
-    # was swallowed and the payment proceeded with NO budget enforcement; for an
-    # irreversible on-chain send that is unacceptable, so a budget-check error
-    # now REFUSES the send.
-    if budget_service:
-        try:
-            budget_result = await budget_service.check_approval_level(amount_sats)
-        except Exception as e:
-            logger.warning(f"Budget check error; refusing on-chain send (fail-closed): {e}")
+    # On-chain is irreversible, so it ALWAYS requires out-of-band confirmation and must
+    # FAIL CLOSED if there is no budget/confirmation service to run that gate through.
+    if budget_service is None:
+        return json.dumps({
+            "success": False,
+            "error": "Budget/confirmation service is unavailable, so this on-chain send was refused "
+                     "(fail-closed). On-chain payments are irreversible and must go through the "
+                     "confirmation gate.",
+        })
+
+    # Budget check — FAIL CLOSED. A budget-check error (e.g. price feed down) REFUSES the
+    # send rather than proceeding with no enforcement.
+    try:
+        budget_result = await budget_service.check_approval_level(amount_sats)
+    except Exception as e:
+        logger.warning(f"Budget check error; refusing on-chain send (fail-closed): {e}")
+        return json.dumps({
+            "success": False,
+            "error": "Could not verify spending budget, so the on-chain send was refused "
+                     "(fail-closed). Check the wallet / price service and try again.",
+        })
+
+    from ..config import ApprovalLevel
+    if budget_result.level == ApprovalLevel.DENY:
+        return json.dumps({
+            "success": False,
+            "error": f"Budget check failed: {budget_result.denial_reason}",
+        })
+
+    # ALWAYS require OUT-OF-BAND confirmation (irreversible). The code is printed to the
+    # server console (stderr) only — never in the result — so the human operator, not the
+    # model, must read it and relay it back.
+    address = address.strip()
+    if confirmation_nonce:
+        confirmation = budget_service.validate_and_consume_confirmation(
+            confirmation_nonce.strip().upper(), amount_sats, "send_onchain"
+        )
+        if confirmation is None:
             return json.dumps({
                 "success": False,
-                "error": "Could not verify spending budget, so the on-chain send was refused "
-                         "(fail-closed). Check the wallet / price service and try again.",
+                "error": "Confirmation code is invalid, expired, already used, or does not match THIS "
+                         "send's amount and tool. Codes are bound to the exact amount + tool approved.",
+                "message": "Ask the human operator for the code shown in the server console, then call "
+                           "send_onchain again with confirmation_nonce set to it.",
             })
-
-        from ..config import ApprovalLevel
-        if budget_result.level == ApprovalLevel.DENY:
-            return json.dumps({
-                "success": False,
-                "error": f"Budget check failed: {budget_result.denial_reason}",
-            })
-
-    # PY-C1: on-chain sends are irreversible, so ALWAYS require explicit
-    # confirmation regardless of amount/tier. (Previously the requires_confirmation
-    # tiers fell through and paid with no confirmation at all.)
-    if not confirmed:
+        # Human-relayed code validated (amount + tool bound) — fall through and send.
+    else:
+        pending = budget_service.create_pending_confirmation(
+            amount_sats, budget_result.amount_usd, "send_onchain", address
+        )
+        print(
+            "[Lightning Enable] *** ON-CHAIN SEND CONFIRMATION REQUIRED (irreversible) ***\n"
+            f"  send_onchain — {amount_sats:,} sats to {address}\n"
+            f"  Confirmation code: {pending.nonce}\n"
+            "  To approve, give this code to the agent. Expires in 120s.",
+            file=sys.stderr,
+            flush=True,
+        )
         return json.dumps({
             "success": False,
             "requiresConfirmation": True,
-            "error": "On-chain sends are irreversible and require explicit confirmation.",
-            "message": f"Confirm sending {amount_sats:,} sats to {address}? This cannot be undone.",
-            "howToConfirm": f'Call: send_onchain(address="{address}", amount_sats={amount_sats}, confirmed=True)',
+            "error": "On-chain send requires human confirmation",
+            "message": f"On-chain sends are irreversible, so this {amount_sats:,}-sat send to {address} requires "
+                       "confirmation. A confirmation code was printed to the server console/logs — visible to the "
+                       "human operator, NOT to you. Ask the human to read that code and give it to you.",
+            "howToConfirm": "Ask the human operator for the confirmation code shown in the server console, then call "
+                            'send_onchain(address="...", amount_sats=..., confirmation_nonce="<code-from-human>").',
+            "amount": {"sats": amount_sats, "usd": float(budget_result.amount_usd)},
+            "expiresInSeconds": 120,
         })
 
     try:

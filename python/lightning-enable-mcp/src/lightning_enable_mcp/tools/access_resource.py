@@ -21,6 +21,35 @@ from . import sanitize_error
 logger = logging.getLogger("lightning-enable-mcp.tools.access")
 
 
+def _redact_url_for_display(url: str, limit: int = 50) -> str:
+    """Return a display-safe URL with credentials stripped.
+
+    The query string, fragment, and userinfo can carry secrets (e.g. ``?token=...``).
+    This is printed to stderr / logged, so keep only scheme://host[:port]/path and mark
+    when anything was dropped — never leak the sensitive parts (engineering standard #5).
+    """
+    try:
+        from urllib.parse import urlsplit, urlunsplit
+
+        parts = urlsplit(url)
+        host = parts.hostname or ""
+        if ":" in host:  # IPv6 literal — urlsplit unbrackets it; re-bracket so host:port is unambiguous
+            host = f"[{host}]"
+        netloc = f"{host}:{parts.port}" if parts.port else host
+        dropped = bool(parts.query or parts.fragment or parts.username or parts.password)
+        safe = urlunsplit((parts.scheme, netloc, parts.path, "", ""))
+        if dropped:
+            safe = f"{safe} (redacted)"
+    except Exception:
+        safe = url.split("?", 1)[0].split("#", 1)[0]
+        if "//" in safe:
+            scheme_sep, rest = safe.split("//", 1)
+            if "@" in rest:
+                rest = rest.split("@", 1)[1]
+            safe = scheme_sep + "//" + rest
+    return safe[:limit] + "..." if len(safe) > limit else safe
+
+
 async def access_l402_resource(
     url: str,
     method: str = "GET",
@@ -93,7 +122,7 @@ async def access_l402_resource(
             # printed to the server console (stderr) only — never in this result — so the
             # human operator (not the model) must read it and relay it back.
             if result.requires_confirmation:
-                url_display = url[:50] + "..." if len(url) > 50 else url
+                url_display = _redact_url_for_display(url)
                 if confirmation_nonce:
                     confirmation = budget_service.validate_and_consume_confirmation(
                         confirmation_nonce.strip().upper(), max_sats, "access_l402_resource"
@@ -145,7 +174,7 @@ async def access_l402_resource(
 
             # LOG_AND_APPROVE: Log for user awareness but proceed
             if result.level == ApprovalLevel.LOG_AND_APPROVE:
-                logger.info(f"Log-and-approve L402 request: up to {max_sats} sats (${result.amount_usd:.2f}) for {url[:50]}...")
+                logger.info(f"Log-and-approve L402 request: up to {max_sats} sats (${result.amount_usd:.2f}) for {_redact_url_for_display(url)}")
 
         # Make request with L402 handling
         response_text, amount_paid = await l402_client.fetch(
@@ -162,7 +191,7 @@ async def access_l402_resource(
             if budget_service:
                 budget_service.record_spend(amount_paid)
                 budget_service.record_payment_time()
-                logger.info(f"Paid {amount_paid} sats for L402 access to {url}")
+                logger.info(f"Paid {amount_paid} sats for L402 access to {_redact_url_for_display(url)}")
 
                 # Get updated session info
                 status = budget_service.get_status()
@@ -176,7 +205,7 @@ async def access_l402_resource(
             # Audit trail (separate from limits). Preimage is NEVER stored.
             if payment_history_service:
                 payment_history_service.record_payment(
-                    url=url,
+                    url=_redact_url_for_display(url),
                     amount_sats=amount_paid,
                     status="success",
                 )
@@ -199,7 +228,7 @@ async def access_l402_resource(
         return json.dumps(result, indent=2)
 
     except Exception as e:
-        logger.exception(f"Error accessing {url}")
+        logger.exception(f"Error accessing {_redact_url_for_display(url)}")
 
         error_result = {
             "success": False,

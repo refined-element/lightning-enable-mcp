@@ -191,18 +191,16 @@ def _verify_nostr_event_signature(event: dict[str, Any]) -> bool:
         if recomputed_id.lower() != id_hex.lower():
             return False
 
-        from secp256k1 import PublicKey
+        from coincurve import PublicKeyXOnly
 
         pubkey_bytes = bytes.fromhex(pubkey_hex)
         sig_bytes = bytes.fromhex(sig_hex)
         id_bytes = bytes.fromhex(id_hex)
 
-        # secp256k1.PublicKey takes a 33-byte compressed pubkey; x-only pubkey is
-        # 32 bytes so we prefix 0x02 (assume even y, NIP-340 convention).
-        compressed = b"\x02" + pubkey_bytes
-        pubkey = PublicKey(compressed, raw=True)
-        # schnorr_verify takes (msg, sig, raw=True). Returns True iff valid.
-        return bool(pubkey.schnorr_verify(id_bytes, sig_bytes, None, raw=True))
+        # BIP340 verification takes the 32-byte x-only pubkey directly.
+        pubkey = PublicKeyXOnly(pubkey_bytes)
+        # verify(signature, message) — message is the raw 32-byte event id (not hashed).
+        return bool(pubkey.verify(sig_bytes, id_bytes))
     except Exception:
         # Defensive: any parsing/crypto exception → treat as unverified.
         return False
@@ -210,7 +208,7 @@ def _verify_nostr_event_signature(event: dict[str, Any]) -> bool:
 
 def _sign_event(event: dict[str, Any], secret_key: bytes) -> str:
     """
-    Sign a Nostr event using secp256k1.
+    Sign a Nostr event using BIP340 Schnorr (coincurve).
 
     Args:
         event: Event dict with id field set
@@ -220,16 +218,18 @@ def _sign_event(event: dict[str, Any], secret_key: bytes) -> str:
         Hex-encoded signature
     """
     try:
-        from secp256k1 import PrivateKey
+        from coincurve import PrivateKey
 
         privkey = PrivateKey(secret_key)
         event_id_bytes = bytes.fromhex(event["id"])
-        sig = privkey.schnorr_sign(event_id_bytes, None, raw=True)
+        # BIP340 schnorr over the raw 32-byte event id (coincurve does not hash it).
+        sig = privkey.sign_schnorr(event_id_bytes)
         return sig.hex()
     except ImportError:
         raise ImportError(
-            "secp256k1 is required for NWC (Nostr Wallet Connect) signing. "
-            "Install it with:  pip install lightning-enable-mcp[nwc]"
+            "coincurve is required for NWC (Nostr Wallet Connect) signing. "
+            "It ships with this package — reinstall via:  pip install --upgrade lightning-enable-mcp "
+            "(or install it directly:  pip install 'coincurve>=20.0.0')."
         )
 
 
@@ -244,16 +244,17 @@ def _get_pubkey(secret_key: bytes) -> str:
         Hex-encoded public key (x-only, 32 bytes)
     """
     try:
-        from secp256k1 import PrivateKey
+        from coincurve import PrivateKey
 
         privkey = PrivateKey(secret_key)
-        pubkey = privkey.pubkey.serialize()
-        # Return x-only pubkey (skip the prefix byte)
-        return pubkey[1:33].hex() if len(pubkey) == 33 else pubkey[:32].hex()
+        # 33-byte compressed pubkey (prefix || X); return x-only (drop the prefix).
+        pubkey = privkey.public_key.format(compressed=True)
+        return pubkey[1:33].hex()
     except ImportError:
         raise ImportError(
-            "secp256k1 is required for NWC (Nostr Wallet Connect) wallets. "
-            "Install it with:  pip install lightning-enable-mcp[nwc]"
+            "coincurve is required for NWC (Nostr Wallet Connect) wallets. "
+            "It ships with this package — reinstall via:  pip install --upgrade lightning-enable-mcp "
+            "(or install it directly:  pip install 'coincurve>=20.0.0')."
         )
 
 
@@ -290,16 +291,11 @@ def _encrypt_content(plaintext: str, secret_key: bytes, recipient_pubkey: str) -
 
     from cryptography.hazmat.backends import default_backend
     from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-    from secp256k1 import PrivateKey, PublicKey  # noqa: F401  (PrivateKey not used here, kept for parity)
 
-    # Compute ECDH shared point; AES key is the raw 32-byte X coordinate.
-    recipient_bytes = bytes.fromhex(recipient_pubkey)
-    if len(recipient_bytes) == 32:
-        # Add prefix for compressed pubkey (assume even y-coordinate)
-        recipient_bytes = b"\x02" + recipient_bytes
-    pubkey = PublicKey(recipient_bytes, raw=True)
-    shared_point = pubkey.tweak_mul(secret_key)
-    shared_secret = shared_point.serialize()[1:33]  # raw shared-X — matches l402-ts + CoinOS
+    # AES key is the raw 32-byte ECDH shared-X. Single source of truth for the
+    # curve math (shared with the decrypt path) so the two can't drift — matches
+    # l402-ts + CoinOS.
+    shared_secret = _compute_shared_x(secret_key, recipient_pubkey)
 
     # Generate IV and encrypt with AES-256-CBC + PKCS7 padding
     iv = os.urandom(16)
@@ -398,14 +394,15 @@ def _compute_shared_x(secret_key: bytes, pubkey_hex: str) -> bytes:
     Returns:
         32-byte shared x-coordinate
     """
-    from secp256k1 import PrivateKey, PublicKey
+    from coincurve import PublicKey
 
     pubkey_bytes = bytes.fromhex(pubkey_hex)
     if len(pubkey_bytes) == 32:
         pubkey_bytes = b"\x02" + pubkey_bytes
-    pubkey = PublicKey(pubkey_bytes, raw=True)
-    shared_point = pubkey.tweak_mul(secret_key)
-    return shared_point.serialize()[1:33]
+    pubkey = PublicKey(pubkey_bytes)
+    shared_point = pubkey.multiply(secret_key)
+    # Uncompressed point is 0x04 || X || Y; take raw X.
+    return shared_point.format(compressed=False)[1:33]
 
 
 def _decrypt_nip04(encrypted: str, secret_key: bytes, sender_pubkey: str) -> str:

@@ -10,12 +10,31 @@ import json
 import pytest
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from lightning_enable_mcp.tools.pay_invoice import pay_invoice
 from lightning_enable_mcp.budget_service import PendingConfirmation
 from lightning_enable_mcp.payment_history_service import PaymentHistoryService
 from lightning_enable_mcp.config import ApprovalLevel
+
+
+# pay_invoice now decodes the BOLT11 amount and budgets against IT (not max_sats).
+# The placeholder invoices in these tests don't really decode, so patch decode_bolt11
+# to a per-test amount; a test that cares about the paid amount sets _DECODE_SATS["v"].
+_DECODE_SATS = {"v": 10}
+
+
+@pytest.fixture(autouse=True)
+def _patch_decode():
+    def fake_decode(_invoice):
+        m = MagicMock()
+        m.amount_msat = _DECODE_SATS["v"] * 1000
+        m.amount = _DECODE_SATS["v"]
+        return m
+
+    with patch("lightning_enable_mcp.tools.pay_invoice.decode_bolt11", side_effect=fake_decode):
+        _DECODE_SATS["v"] = 10
+        yield
 
 
 def _approving_budget():
@@ -127,6 +146,7 @@ class TestPayInvoice:
     @pytest.mark.asyncio
     async def test_successful_payment_recorded_in_history_without_preimage(self):
         """The payment is recorded in history, but the preimage is NEVER stored."""
+        _DECODE_SATS["v"] = 500  # decoded invoice amount under test
         wallet = AsyncMock()
         wallet.pay_invoice = AsyncMock(return_value="secretpreimage123")
         history = PaymentHistoryService()
@@ -314,6 +334,7 @@ class TestPayInvoiceOutOfBandConfirmation:
     @pytest.mark.asyncio
     async def test_human_relayed_code_unlocks_the_payment(self):
         """With a valid human-relayed code (bound to amount+tool), the payment proceeds."""
+        _DECODE_SATS["v"] = 50000  # decoded invoice amount under test
         wallet = AsyncMock()
         wallet.pay_invoice = AsyncMock(return_value="preimage123")
         budget = _confirming_budget(code="ABC123", sats=50000)
@@ -352,3 +373,44 @@ class TestPayInvoiceOutOfBandConfirmation:
         assert data["success"] is False
         assert "amount and tool" in data["error"]
         wallet.pay_invoice.assert_not_called()
+
+
+class TestPayInvoiceAmountDecoding:
+    """Funds-safety: pay_invoice budgets against the DECODED invoice amount, not max_sats."""
+
+    @pytest.mark.asyncio
+    async def test_invoice_amount_exceeding_max_sats_is_rejected(self):
+        _DECODE_SATS["v"] = 50000
+        wallet = AsyncMock()
+        wallet.pay_invoice = AsyncMock(return_value="preimage")
+        result = await pay_invoice(invoice="lnbc500u1...", max_sats=100, wallet=wallet)
+        data = json.loads(result)
+        assert data["success"] is False
+        assert "exceeds the maximum" in data["error"]
+        assert data["amount_sats"] == 50000
+        wallet.pay_invoice.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_amountless_invoice_is_rejected(self):
+        _DECODE_SATS["v"] = 0  # fake_decode -> amount falsy -> no amount
+        wallet = AsyncMock()
+        wallet.pay_invoice = AsyncMock(return_value="preimage")
+        result = await pay_invoice(invoice="lnbc1...", max_sats=1000, wallet=wallet)
+        data = json.loads(result)
+        assert data["success"] is False
+        assert "no amount" in data["error"].lower()
+        wallet.pay_invoice.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_budget_is_checked_against_decoded_amount_not_max_sats(self):
+        _DECODE_SATS["v"] = 50000
+        wallet = AsyncMock()
+        wallet.pay_invoice = AsyncMock(return_value="preimage")
+        budget = _approving_budget()
+        result = await pay_invoice(
+            invoice="lnbc500u1...", max_sats=100000, wallet=wallet, budget_service=budget,
+        )
+        data = json.loads(result)
+        assert data["success"] is True
+        budget.check_approval_level.assert_awaited_once_with(50000)
+        budget.record_spend.assert_called_once_with(50000)

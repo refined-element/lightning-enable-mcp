@@ -50,6 +50,7 @@ class TestConfirmPayment:
             amount_usd=Decimal("5.00"),
             tool_name="pay_invoice",
             description="Invoice payment",
+            destination="lnbc-test-invoice",
             created_at=now,
             expires_at=now + timedelta(minutes=2),
         )

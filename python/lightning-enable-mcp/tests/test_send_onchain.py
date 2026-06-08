@@ -44,7 +44,7 @@ def _approving_budget(code: str = "ABC123"):
     now = datetime.now(timezone.utc)
     pc = PendingConfirmation(
         nonce=code, amount_sats=0, amount_usd=Decimal("5.00"),
-        tool_name="send_onchain", description=VALID_ADDR,
+        tool_name="send_onchain", description=VALID_ADDR, destination=VALID_ADDR,
         created_at=now, expires_at=now + timedelta(minutes=2),
     )
     budget.create_pending_confirmation = MagicMock(return_value=pc)

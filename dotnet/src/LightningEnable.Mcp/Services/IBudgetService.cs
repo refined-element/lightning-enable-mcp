@@ -77,9 +77,10 @@ public interface IBudgetService
     /// <param name="amountSats">Payment amount in satoshis.</param>
     /// <param name="amountUsd">Payment amount in USD (for display).</param>
     /// <param name="toolName">Which tool requested confirmation.</param>
-    /// <param name="description">Human-readable description (URL, invoice prefix).</param>
+    /// <param name="description">Human-readable description (URL, invoice prefix) — for display only.</param>
+    /// <param name="destination">The exact payment target (invoice / URL / on-chain address); bound and checked on consume so the code cannot be redirected (#21).</param>
     /// <returns>The pending confirmation with its nonce code.</returns>
-    PendingConfirmation CreatePendingConfirmation(long amountSats, decimal amountUsd, string toolName, string description);
+    PendingConfirmation CreatePendingConfirmation(long amountSats, decimal amountUsd, string toolName, string description, string destination);
 
     /// <summary>
     /// Validates a nonce and checks expiry WITHOUT consuming it.
@@ -101,8 +102,9 @@ public interface IBudgetService
     /// <param name="nonce">The confirmation code.</param>
     /// <param name="expectedAmountSats">The amount about to be paid; must equal the approved amount.</param>
     /// <param name="expectedToolName">The tool consuming the code; must equal the tool the confirmation was created for (prevents cross-tool replay).</param>
-    /// <returns>The confirmed pending confirmation, or null if invalid / amount- or tool-mismatched.</returns>
-    PendingConfirmation? ValidateAndConsumeConfirmation(string nonce, long expectedAmountSats, string expectedToolName);
+    /// <param name="expectedDestination">The payment target about to be paid; must equal the approved destination (#21 anti-redirect). Compared after trimming.</param>
+    /// <returns>The confirmed pending confirmation, or null if invalid / amount-, tool-, or destination-mismatched.</returns>
+    PendingConfirmation? ValidateAndConsumeConfirmation(string nonce, long expectedAmountSats, string expectedToolName, string expectedDestination);
 
     /// <summary>
     /// Purges expired pending confirmations from memory.

@@ -544,7 +544,7 @@ public class PayInvoiceToolTests
                 RemainingSessionBudgetUsd = 95.00m
             });
         _budgetServiceMock.Setup(b => b.CreatePendingConfirmation(
-                It.IsAny<long>(), It.IsAny<decimal>(), It.IsAny<string>(), It.IsAny<string>()))
+                It.IsAny<long>(), It.IsAny<decimal>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()))
             .Returns(new PendingConfirmation
             {
                 Nonce = "ABC123",

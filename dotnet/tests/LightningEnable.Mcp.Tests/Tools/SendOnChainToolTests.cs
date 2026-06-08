@@ -28,7 +28,7 @@ public class SendOnChainToolTests
         budget.Setup(b => b.CheckApprovalLevelAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ApprovalCheckResult { Level = ApprovalLevel.AutoApprove, AmountSats = 5000, AmountUsd = 0.05m });
         budget.Setup(b => b.CreatePendingConfirmation(
-                It.IsAny<long>(), It.IsAny<decimal>(), It.IsAny<string>(), It.IsAny<string>()))
+                It.IsAny<long>(), It.IsAny<decimal>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()))
             .Returns(new PendingConfirmation
             {
                 Nonce = "ONCH99",

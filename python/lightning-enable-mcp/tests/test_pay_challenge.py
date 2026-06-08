@@ -23,7 +23,7 @@ def _confirming_budget(code: str = "ABC123", sats: int = 10):
     now = datetime.now(timezone.utc)
     pc = PendingConfirmation(
         nonce=code, amount_sats=sats, amount_usd=Decimal("0.01"),
-        tool_name="pay_l402_challenge", description="lnbc...",
+        tool_name="pay_l402_challenge", description="lnbc...", destination="lnbc10n1pjtest",
         created_at=now, expires_at=now + timedelta(minutes=2),
     )
     budget.create_pending_confirmation = MagicMock(return_value=pc)
@@ -83,7 +83,7 @@ class TestPayL402ChallengeOutOfBandConfirmation:
 
         assert data["success"] is True
         assert data["preimage"] == "preimage123"
-        budget.validate_and_consume_confirmation.assert_called_once_with("ABC123", 10, "pay_l402_challenge")
+        budget.validate_and_consume_confirmation.assert_called_once_with("ABC123", 10, "pay_l402_challenge", "lnbc10n1pjtest")
         mock_wallet.pay_invoice.assert_called_once()
 
     @pytest.mark.asyncio
@@ -108,7 +108,7 @@ class TestPayL402ChallengeOutOfBandConfirmation:
         data = json.loads(result)
 
         assert data["success"] is False
-        assert "amount and tool" in data["error"]
+        assert "amount, tool, and invoice" in data["error"]
         mock_wallet.pay_invoice.assert_not_called()
 
 class TestPayL402ChallengeNoAmountRejection:

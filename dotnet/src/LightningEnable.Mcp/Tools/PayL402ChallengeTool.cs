@@ -92,16 +92,17 @@ public static class PayL402ChallengeTool
                     // Check if a confirmed nonce was provided
                     if (!string.IsNullOrWhiteSpace(confirmationNonce))
                     {
-                        var confirmation = budgetService.ValidateAndConsumeConfirmation(confirmationNonce.Trim().ToUpperInvariant(), approvalResult.AmountSats, "pay_l402_challenge");
+                        var confirmation = budgetService.ValidateAndConsumeConfirmation(confirmationNonce.Trim().ToUpperInvariant(), approvalResult.AmountSats, "pay_l402_challenge", normalizedInvoice);
                         if (confirmation == null)
                         {
                             return JsonSerializer.Serialize(new
                             {
                                 success = false,
                                 error = "Confirmation code is invalid, expired, already used, or does not match THIS " +
-                                        "payment's amount and tool. Codes are bound to the exact amount + tool approved.",
+                                        "payment's amount, tool, and invoice. Codes are bound to the exact amount, tool, and " +
+                                        "destination approved — a code cannot be redirected to a different invoice.",
                                 message = "The code may have expired (2-minute limit), been used already, or been issued for a " +
-                                          "different amount/tool. Request a new confirmation by calling pay_l402_challenge without a confirmationNonce."
+                                          "different amount/tool/invoice. Request a new confirmation by calling pay_l402_challenge without a confirmationNonce."
                             });
                         }
 
@@ -126,7 +127,8 @@ public static class PayL402ChallengeTool
                                 budgetCheckAmount,
                                 approvalResult.AmountUsd,
                                 "pay_l402_challenge",
-                                invoicePrefix);
+                                invoicePrefix,
+                                normalizedInvoice);
 
                             // OUT-OF-BAND CONFIRMATION: code to STDERR only (human sees the server
                             // console/logs; the model only sees tool results). An injected agent

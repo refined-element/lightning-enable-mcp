@@ -125,24 +125,26 @@ async def settle_agent_service(
                 )
                 if confirmation_nonce:
                     confirmation = budget_service.validate_and_consume_confirmation(
-                        confirmation_nonce.strip().upper(), max_sats, "settle_agent_service"
+                        confirmation_nonce.strip().upper(), max_sats, "settle_agent_service", l402_endpoint
                     )
                     if confirmation is None:
                         return json.dumps({
                             "success": False,
                             "error": (
                                 "Confirmation code is invalid, expired, already used, or does not match THIS "
-                                "settlement's amount and tool. Codes are bound to the exact amount + tool approved."
+                                "settlement's amount, tool, and endpoint. Codes are bound to the exact amount, tool, "
+                                "and destination approved — a code cannot be redirected to a different endpoint."
                             ),
                             "message": (
                                 "Ask the human operator for the code shown in the server console, then call "
                                 "settle_agent_service again with confirmation_nonce set to it."
                             ),
                         })
-                    # Human-relayed code validated (amount + tool bound) — fall through and settle.
+                    # Human-relayed code validated (amount + tool + endpoint bound) — fall through and settle.
                 else:
                     pending = budget_service.create_pending_confirmation(
-                        max_sats, result.amount_usd, "settle_agent_service", endpoint_display
+                        max_sats, result.amount_usd, "settle_agent_service", endpoint_display,
+                        destination=l402_endpoint,
                     )
                     print(
                         "[Lightning Enable] *** L402 SETTLEMENT CONFIRMATION REQUIRED ***\n"

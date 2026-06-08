@@ -116,24 +116,26 @@ async def pay_l402_challenge(
                 inv_prefix = invoice[:30] + "..."
                 if confirmation_nonce:
                     confirmation = budget_service.validate_and_consume_confirmation(
-                        confirmation_nonce.strip().upper(), amount_sats, "pay_l402_challenge"
+                        confirmation_nonce.strip().upper(), amount_sats, "pay_l402_challenge", invoice
                     )
                     if confirmation is None:
                         return json.dumps({
                             "success": False,
                             "error": (
                                 "Confirmation code is invalid, expired, already used, or does not match THIS "
-                                "payment's amount and tool. Codes are bound to the exact amount + tool approved."
+                                "payment's amount, tool, and invoice. Codes are bound to the exact amount, tool, "
+                                "and destination approved — a code cannot be redirected to a different invoice."
                             ),
                             "message": (
                                 "Ask the human operator for the code shown in the server console, then call "
                                 "pay_l402_challenge again with confirmation_nonce set to it."
                             ),
                         })
-                    # Human-relayed code validated — fall through and pay.
+                    # Human-relayed code validated (amount + tool + invoice bound) — fall through and pay.
                 else:
                     pending = budget_service.create_pending_confirmation(
-                        amount_sats, approval.amount_usd, "pay_l402_challenge", inv_prefix
+                        amount_sats, approval.amount_usd, "pay_l402_challenge", inv_prefix,
+                        destination=invoice,
                     )
                     print(
                         "[Lightning Enable] *** L402 CHALLENGE PAYMENT CONFIRMATION REQUIRED ***\n"

@@ -75,6 +75,12 @@ class PendingConfirmation:
     amount_usd: Decimal
     tool_name: str
     description: str
+    # The exact payment target the code authorizes — the BOLT11 invoice (pay_invoice /
+    # pay_l402_challenge), the resource URL (access_l402_resource / settle_agent_service),
+    # or the on-chain address (send_onchain). Bound and checked on consume so a code can
+    # never be redirected to a different destination (#21). Distinct from `description`,
+    # which is a display string and may be redacted/truncated.
+    destination: str
     created_at: datetime
     expires_at: datetime
 
@@ -453,8 +459,13 @@ class BudgetService:
         amount_usd: Decimal,
         tool_name: str,
         description: str,
+        destination: str,
     ) -> PendingConfirmation:
-        """Create a pending confirmation with a crypto-random code, bound to amount + tool.
+        """Create a pending confirmation with a crypto-random code, bound to amount + tool
+        + destination.
+
+        ``destination`` is the exact payment target (invoice / URL / on-chain address); it is
+        checked on consume so an approved code can never be redirected elsewhere (#21).
 
         The caller (a pay tool) MUST print the returned ``nonce`` to STDERR ONLY and MUST
         NOT include it in the tool result — that is what stops a prompt-injected agent from
@@ -475,6 +486,7 @@ class BudgetService:
                 amount_usd=amount_usd,
                 tool_name=tool_name,
                 description=description,
+                destination=(destination or "").strip(),
                 created_at=now,
                 expires_at=now + timedelta(minutes=2),
             )
@@ -502,13 +514,14 @@ class BudgetService:
         nonce: str,
         expected_amount_sats: int,
         expected_tool_name: str,
+        expected_destination: str,
     ) -> Optional[PendingConfirmation]:
-        """Validate a code, check expiry, verify it matches the amount AND tool about to be
-        paid, then consume it (one-time use).
+        """Validate a code, check expiry, verify it matches the amount AND tool AND
+        destination about to be paid, then consume it (one-time use).
 
-        Returns None if invalid, expired, already used, or the amount/tool does not match.
-        On an amount/tool MISMATCH the code is NOT consumed (a correct retry still works),
-        so a code approved for one (amount, tool) can never authorize a different one.
+        Returns None if invalid, expired, already used, or the amount/tool/destination does
+        not match. On a MISMATCH the code is NOT consumed (a correct retry still works), so a
+        code approved for one (amount, tool, destination) can never authorize a different one.
         """
         if not nonce:
             return None
@@ -524,7 +537,11 @@ class BudgetService:
                 return None
             if pc.tool_name != expected_tool_name:
                 return None
-            # Amount + tool match -> consume (one-time use).
+            # #21 anti-redirect: bind to the EXACT destination too. A code approved to pay
+            # invoice/URL/address X must never authorize paying a different one.
+            if pc.destination != (expected_destination or "").strip():
+                return None
+            # Amount + tool + destination match -> consume (one-time use).
             self._pending_confirmations.pop(nonce, None)
             return pc
 

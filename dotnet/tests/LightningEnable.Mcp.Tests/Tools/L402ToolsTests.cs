@@ -191,7 +191,7 @@ public class L402ToolsTests
                 RemainingSessionBudgetUsd = 95.00m
             });
         budgetServiceMock.Setup(b => b.CreatePendingConfirmation(
-                It.IsAny<long>(), It.IsAny<decimal>(), It.IsAny<string>(), It.IsAny<string>()))
+                It.IsAny<long>(), It.IsAny<decimal>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()))
             .Returns(new PendingConfirmation
             {
                 Nonce = "L4C123",
@@ -241,7 +241,7 @@ public class L402ToolsTests
                 RemainingSessionBudgetUsd = 97.50m
             });
         budgetServiceMock.Setup(b => b.CreatePendingConfirmation(
-                It.IsAny<long>(), It.IsAny<decimal>(), It.IsAny<string>(), It.IsAny<string>()))
+                It.IsAny<long>(), It.IsAny<decimal>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()))
             .Returns(new PendingConfirmation
             {
                 Nonce = "PLC456",

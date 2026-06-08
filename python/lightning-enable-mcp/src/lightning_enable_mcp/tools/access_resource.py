@@ -125,24 +125,26 @@ async def access_l402_resource(
                 url_display = _redact_url_for_display(url)
                 if confirmation_nonce:
                     confirmation = budget_service.validate_and_consume_confirmation(
-                        confirmation_nonce.strip().upper(), max_sats, "access_l402_resource"
+                        confirmation_nonce.strip().upper(), max_sats, "access_l402_resource", url
                     )
                     if confirmation is None:
                         return json.dumps({
                             "success": False,
                             "error": (
                                 "Confirmation code is invalid, expired, already used, or does not match THIS "
-                                "request's amount and tool. Codes are bound to the exact amount + tool approved."
+                                "request's amount, tool, and URL. Codes are bound to the exact amount, tool, and "
+                                "destination approved — a code cannot be redirected to a different URL."
                             ),
                             "message": (
                                 "Ask the human operator for the code shown in the server console, then call "
                                 "access_l402_resource again with confirmation_nonce set to it."
                             ),
                         })
-                    # Human-relayed code validated (amount + tool bound) — fall through.
+                    # Human-relayed code validated (amount + tool + URL bound) — fall through.
                 else:
                     pending = budget_service.create_pending_confirmation(
-                        max_sats, result.amount_usd, "access_l402_resource", url_display
+                        max_sats, result.amount_usd, "access_l402_resource", url_display,
+                        destination=url,
                     )
                     print(
                         "[Lightning Enable] *** L402 PAYMENT CONFIRMATION REQUIRED ***\n"

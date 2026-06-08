@@ -12,6 +12,8 @@ from typing import Any
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
+
+from . import __version__
 from mcp.types import (
     Tool,
     TextContent,
@@ -81,7 +83,7 @@ class LightningEnableServer:
     """MCP Server for L402 Lightning payments."""
 
     def __init__(self) -> None:
-        self.server = Server("lightning-enable")
+        self.server = Server("lightning-enable", version=__version__)
         self.wallet: LndWallet | NWCWallet | OpenNodeWallet | StrikeWallet | None = None
         self.strike_wallet: StrikeWallet | None = None  # For Strike-specific features
         self.l402_client: L402Client | None = None

@@ -7,11 +7,12 @@ Uses the new BudgetService with multi-tier approval logic.
 
 import json
 import logging
-from typing import TYPE_CHECKING
+import sys
+from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
-    from ..budget import BudgetManager
     from ..budget_service import BudgetService
+    from ..payment_history_service import PaymentHistoryService
     from ..l402_client import L402Client
 
 from ..config import ApprovalLevel
@@ -20,16 +21,45 @@ from . import sanitize_error
 logger = logging.getLogger("lightning-enable-mcp.tools.access")
 
 
+def _redact_url_for_display(url: str, limit: int = 50) -> str:
+    """Return a display-safe URL with credentials stripped.
+
+    The query string, fragment, and userinfo can carry secrets (e.g. ``?token=...``).
+    This is printed to stderr / logged, so keep only scheme://host[:port]/path and mark
+    when anything was dropped — never leak the sensitive parts (engineering standard #5).
+    """
+    try:
+        from urllib.parse import urlsplit, urlunsplit
+
+        parts = urlsplit(url)
+        host = parts.hostname or ""
+        if ":" in host:  # IPv6 literal — urlsplit unbrackets it; re-bracket so host:port is unambiguous
+            host = f"[{host}]"
+        netloc = f"{host}:{parts.port}" if parts.port else host
+        dropped = bool(parts.query or parts.fragment or parts.username or parts.password)
+        safe = urlunsplit((parts.scheme, netloc, parts.path, "", ""))
+        if dropped:
+            safe = f"{safe} (redacted)"
+    except Exception:
+        safe = url.split("?", 1)[0].split("#", 1)[0]
+        if "//" in safe:
+            scheme_sep, rest = safe.split("//", 1)
+            if "@" in rest:
+                rest = rest.split("@", 1)[1]
+            safe = scheme_sep + "//" + rest
+    return safe[:limit] + "..." if len(safe) > limit else safe
+
+
 async def access_l402_resource(
     url: str,
     method: str = "GET",
     headers: dict[str, str] | None = None,
     body: str | None = None,
     max_sats: int = 1000,
-    confirmed: bool = False,
+    confirmation_nonce: "Optional[str]" = None,
     l402_client: "L402Client | None" = None,
-    budget_manager: "BudgetManager | None" = None,
     budget_service: "BudgetService | None" = None,
+    payment_history_service: "PaymentHistoryService | None" = None,
 ) -> str:
     """
     Fetch a URL with automatic L402 payment handling.
@@ -37,9 +67,10 @@ async def access_l402_resource(
     If the server returns a 402 Payment Required response with an L402 challenge,
     this function will automatically pay the invoice and retry the request.
 
-    NOTE: Most MCP clients (including Claude Code) don't support elicitation yet.
-    L402 payments above auto_approve threshold require explicit confirmation
-    by calling this tool again with confirmed=True.
+    L402 payments above the auto-approve threshold require OUT-OF-BAND confirmation: the
+    server prints a code to its console/stderr (the human operator sees it; the model does
+    not), and you must ask the human for that code and pass it as confirmation_nonce. The
+    code is never in a tool result, so a prompt-injected agent cannot self-approve.
 
     Args:
         url: The URL to fetch
@@ -47,10 +78,11 @@ async def access_l402_resource(
         headers: Optional additional request headers
         body: Optional request body for POST/PUT requests
         max_sats: Maximum satoshis to pay for this request
-        confirmed: Set to True to confirm a payment above the auto-approve threshold
+        confirmation_nonce: The code the human read from the server console (for payments
+            above the auto-approve threshold). Omit on the first call to request one.
         l402_client: L402 client instance
-        budget_manager: Legacy budget manager (deprecated, use budget_service)
         budget_service: BudgetService for multi-tier approval logic
+        payment_history_service: PaymentHistoryService for the session audit trail
 
     Returns:
         Response body text or error message
@@ -66,7 +98,8 @@ async def access_l402_resource(
         return f"Error: Invalid HTTP method: {method}"
 
     try:
-        # Use new BudgetService if available, otherwise fall back to legacy BudgetManager
+        # BudgetService is the single source of truth for spending limits + the
+        # out-of-band confirmation flow.
         if budget_service:
             # Check approval level using new multi-tier system
             result = await budget_service.check_approval_level(max_sats)
@@ -85,65 +118,63 @@ async def access_l402_resource(
                     "note": "Edit ~/.lightning-enable/config.json to change limits."
                 })
 
-            # Check if payment requires confirmation (FORM_CONFIRM or URL_CONFIRM)
-            if result.requires_confirmation and not confirmed:
-                url_display = url[:50] + "..." if len(url) > 50 else url
-                return json.dumps({
-                    "success": False,
-                    "requiresConfirmation": True,
-                    "approvalLevel": result.level.value,
-                    "error": "L402 payment requires your confirmation",
-                    "message": f"This L402 request to {url_display} may cost up to ${result.amount_usd:.2f} ({max_sats:,} sats). "
-                              "To proceed, call access_l402_resource again with confirmed=True.",
-                    "howToConfirm": 'Call: access_l402_resource(url="...", confirmed=True)',
-                    "amount": {
-                        "maxSats": max_sats,
-                        "maxUsd": float(result.amount_usd)
-                    },
-                    "budget": {
-                        "remainingSessionUsd": float(result.remaining_session_budget_usd),
-                    }
-                })
+            # OUT-OF-BAND confirmation for above-threshold L402 payments. The code is
+            # printed to the server console (stderr) only — never in this result — so the
+            # human operator (not the model) must read it and relay it back.
+            if result.requires_confirmation:
+                url_display = _redact_url_for_display(url)
+                if confirmation_nonce:
+                    confirmation = budget_service.validate_and_consume_confirmation(
+                        confirmation_nonce.strip().upper(), max_sats, "access_l402_resource"
+                    )
+                    if confirmation is None:
+                        return json.dumps({
+                            "success": False,
+                            "error": (
+                                "Confirmation code is invalid, expired, already used, or does not match THIS "
+                                "request's amount and tool. Codes are bound to the exact amount + tool approved."
+                            ),
+                            "message": (
+                                "Ask the human operator for the code shown in the server console, then call "
+                                "access_l402_resource again with confirmation_nonce set to it."
+                            ),
+                        })
+                    # Human-relayed code validated (amount + tool bound) — fall through.
+                else:
+                    pending = budget_service.create_pending_confirmation(
+                        max_sats, result.amount_usd, "access_l402_resource", url_display
+                    )
+                    print(
+                        "[Lightning Enable] *** L402 PAYMENT CONFIRMATION REQUIRED ***\n"
+                        f"  access_l402_resource — up to ${result.amount_usd:.2f} ({max_sats:,} sats), {url_display}\n"
+                        f"  Confirmation code: {pending.nonce}\n"
+                        "  To approve, give this code to the agent. Expires in 120s.",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                    return json.dumps({
+                        "success": False,
+                        "requiresConfirmation": True,
+                        "approvalLevel": result.level.value,
+                        "error": "L402 payment requires human confirmation",
+                        "message": (
+                            f"This L402 request to {url_display} may cost up to ${result.amount_usd:.2f} "
+                            f"({max_sats:,} sats), above the auto-approve threshold. A confirmation code was printed "
+                            "to the server console/logs — visible to the human operator, NOT to you. Ask the human to "
+                            "read that code and give it to you."
+                        ),
+                        "howToConfirm": (
+                            "Ask the human operator for the confirmation code shown in the server console, then call "
+                            'access_l402_resource(url="...", confirmation_nonce="<code-from-human>").'
+                        ),
+                        "amount": {"maxSats": max_sats, "maxUsd": float(result.amount_usd)},
+                        "expiresInSeconds": 120,
+                        "budget": {"remainingSessionUsd": float(result.remaining_session_budget_usd)},
+                    })
 
             # LOG_AND_APPROVE: Log for user awareness but proceed
             if result.level == ApprovalLevel.LOG_AND_APPROVE:
-                logger.info(f"Log-and-approve L402 request: up to {max_sats} sats (${result.amount_usd:.2f}) for {url[:50]}...")
-
-        elif budget_manager:
-            # Legacy budget manager fallback
-            status = budget_manager.get_status()
-            if status["remaining"] <= 0:
-                return json.dumps({
-                    "success": False,
-                    "error": "Session budget exhausted",
-                    "message": f"Spent {status['spent']}/{status['limits']['per_session']} sats. "
-                              "Use configure_budget to increase limit.",
-                    "budget": status
-                })
-
-            # Check if payment requires confirmation (above auto_approve threshold)
-            auto_approve_sats = getattr(budget_manager, 'auto_approve_sats', 1000)
-            if max_sats > auto_approve_sats and not confirmed:
-                # Estimate USD value (~$0.001 per sat at ~$100k/BTC)
-                estimated_usd = max_sats * 0.001
-                url_display = url[:50] + "..." if len(url) > 50 else url
-                return json.dumps({
-                    "success": False,
-                    "requiresConfirmation": True,
-                    "error": "L402 payment requires your confirmation",
-                    "message": f"This L402 request to {url_display} may cost up to ~${estimated_usd:.2f} ({max_sats:,} sats), "
-                              f"which exceeds the auto-approve threshold of {auto_approve_sats:,} sats. "
-                              "To proceed, call access_l402_resource again with confirmed=True.",
-                    "howToConfirm": 'Call: access_l402_resource(url="...", confirmed=True)',
-                    "amount": {
-                        "maxSats": max_sats,
-                        "estimatedUsd": round(estimated_usd, 2)
-                    },
-                    "thresholds": {
-                        "autoApprove": auto_approve_sats,
-                        "note": "Payments above this require confirmation"
-                    }
-                })
+                logger.info(f"Log-and-approve L402 request: up to {max_sats} sats (${result.amount_usd:.2f}) for {_redact_url_for_display(url)}")
 
         # Make request with L402 handling
         response_text, amount_paid = await l402_client.fetch(
@@ -155,11 +186,12 @@ async def access_l402_resource(
         )
 
         # Record payment if one was made
+        session_info = None
         if amount_paid is not None:
             if budget_service:
                 budget_service.record_spend(amount_paid)
                 budget_service.record_payment_time()
-                logger.info(f"Paid {amount_paid} sats for L402 access to {url}")
+                logger.info(f"Paid {amount_paid} sats for L402 access to {_redact_url_for_display(url)}")
 
                 # Get updated session info
                 status = budget_service.get_status()
@@ -169,23 +201,14 @@ async def access_l402_resource(
                     "remainingUsd": status["session"]["remainingUsd"],
                     "requestCount": status["session"]["requestCount"],
                 }
-            elif budget_manager:
-                budget_manager.record_payment(
-                    url=url,
+
+            # Audit trail (separate from limits). Preimage is NEVER stored.
+            if payment_history_service:
+                payment_history_service.record_payment(
+                    url=_redact_url_for_display(url),
                     amount_sats=amount_paid,
-                    invoice="(auto-paid)",
-                    preimage="(auto-paid)",
                     status="success",
                 )
-                logger.info(f"Paid {amount_paid} sats for L402 access to {url}")
-                session_info = {
-                    "spentSats": budget_manager.session_spent,
-                    "remainingSats": budget_manager.max_per_session - budget_manager.session_spent,
-                }
-            else:
-                session_info = None
-        else:
-            session_info = None
 
         # Format response
         result = {
@@ -205,7 +228,7 @@ async def access_l402_resource(
         return json.dumps(result, indent=2)
 
     except Exception as e:
-        logger.exception(f"Error accessing {url}")
+        logger.exception(f"Error accessing {_redact_url_for_display(url)}")
 
         error_result = {
             "success": False,

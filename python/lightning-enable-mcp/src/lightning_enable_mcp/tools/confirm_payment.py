@@ -22,13 +22,16 @@ async def confirm_payment(
     budget_service: "BudgetService | None" = None,
 ) -> str:
     """
-    Confirm a pending payment using the 6-character nonce code.
+    Verify a confirmation code that the HUMAN operator read from the server console.
 
-    Call this after a payment tool returns requiresConfirmation=true with a nonce.
-    The nonce expires after 2 minutes and can only be used once.
+    For payments above the auto-approve threshold, the server prints a code to its
+    console/stderr (never in a tool result). The human reads it and gives it to you. This
+    tool only VERIFIES the code (it does not consume it or pay) — to actually pay, call the
+    original payment tool again with confirmation_nonce set to the code. Codes expire after
+    2 minutes and are one-time use (consumed by the payment tool, bound to its amount+tool).
 
     Args:
-        nonce: The 6-character confirmation code from the payment request
+        nonce: The confirmation code the human read from the server console
         budget_service: BudgetService for confirmation validation
 
     Returns:
@@ -60,14 +63,17 @@ async def confirm_payment(
         return json.dumps({
             "success": True,
             "confirmed": True,
-            "message": f"Payment of ${confirmation.get('amount_usd', 0):.2f} "
-                       f"({confirmation.get('amount_sats', 0):,} sats) confirmed",
+            "message": (
+                f"Confirmation code is valid for a payment of ${float(confirmation.amount_usd):.2f} "
+                f"({confirmation.amount_sats:,} sats) via {confirmation.tool_name}. To actually pay, call "
+                "that tool again with confirmation_nonce set to this code (it is consumed then, one-time)."
+            ),
             "confirmation": {
-                "nonce": confirmation.get("nonce"),
-                "amountSats": confirmation.get("amount_sats"),
-                "amountUsd": round(confirmation.get("amount_usd", 0), 2),
-                "toolName": confirmation.get("tool_name"),
-                "description": confirmation.get("description"),
+                "nonce": confirmation.nonce,
+                "amountSats": confirmation.amount_sats,
+                "amountUsd": round(float(confirmation.amount_usd), 2),
+                "toolName": confirmation.tool_name,
+                "description": confirmation.description,
             }
         }, indent=2)
 

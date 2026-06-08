@@ -33,8 +33,6 @@ RUN mkdir -p /home/mcpuser/.lightning-enable
 ENV NWC_CONNECTION_STRING=""
 ENV OPENNODE_API_KEY=""
 ENV STRIKE_API_KEY=""
-ENV L402_MAX_SATS_PER_REQUEST="1000"
-ENV L402_MAX_SATS_PER_SESSION="10000"
 
 # MCP servers communicate via stdio
 ENTRYPOINT ["lightning-enable-mcp"]

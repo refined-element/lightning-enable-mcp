@@ -20,7 +20,8 @@ class TestLightningEnableServer:
         assert server.server is not None
         assert server.wallet is None
         assert server.l402_client is None
-        assert server.budget_manager is None
+        assert server.budget_service is None
+        assert server.payment_history_service is None
 
     @pytest.mark.asyncio
     async def test_list_tools_returns_all_tools(self):
@@ -66,9 +67,16 @@ class TestLightningEnableServer:
             "verify_l402_payment",
             "confirm_payment",
             "discover_api",
+            "discover_agent_services",
+            "publish_agent_capability",
+            "request_agent_service",
+            "publish_agent_attestation",
+            "get_agent_reputation",
+            "settle_agent_service",
         }
 
         assert tool_names == expected_tools
+        assert len(tool_names) == 23
 
     @pytest.mark.asyncio
     async def test_services_not_initialized_without_nwc(self):
@@ -159,7 +167,8 @@ class TestLightningEnableServer:
                 # Assert it's specifically the NWC backend, not just "a wallet".
                 assert isinstance(server.wallet, NWCWallet)
                 assert server.l402_client is not None
-                assert server.budget_manager is not None
+                assert server.budget_service is not None
+                assert server.payment_history_service is not None
 
 
 class TestToolSchemas:

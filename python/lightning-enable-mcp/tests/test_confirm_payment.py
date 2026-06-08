@@ -4,9 +4,12 @@ Tests for confirm_payment tool
 
 import json
 import pytest
+from datetime import datetime, timezone, timedelta
+from decimal import Decimal
 from unittest.mock import MagicMock
 
 from lightning_enable_mcp.tools.confirm_payment import confirm_payment
+from lightning_enable_mcp.budget_service import PendingConfirmation
 
 
 class TestConfirmPayment:
@@ -39,14 +42,17 @@ class TestConfirmPayment:
     @pytest.mark.asyncio
     async def test_successful_confirmation(self):
         """Test successful payment confirmation."""
+        now = datetime.now(timezone.utc)
         budget_service = MagicMock()
-        budget_service.validate_confirmation.return_value = {
-            "nonce": "ABC123",
-            "amount_sats": 5000,
-            "amount_usd": 5.00,
-            "tool_name": "pay_invoice",
-            "description": "Invoice payment",
-        }
+        budget_service.validate_confirmation.return_value = PendingConfirmation(
+            nonce="ABC123",
+            amount_sats=5000,
+            amount_usd=Decimal("5.00"),
+            tool_name="pay_invoice",
+            description="Invoice payment",
+            created_at=now,
+            expires_at=now + timedelta(minutes=2),
+        )
 
         result = await confirm_payment(nonce="abc123", budget_service=budget_service)
         parsed = json.loads(result)

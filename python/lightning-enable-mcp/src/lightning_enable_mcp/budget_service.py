@@ -14,6 +14,7 @@ This module provides the BudgetService class that combines:
 import asyncio
 import logging
 import secrets
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
@@ -29,6 +30,34 @@ from .config import (
 from .price_service import PriceService, get_price_service
 
 logger = logging.getLogger("lightning-enable-mcp.budget-service")
+
+
+@dataclass
+class ConfigureBudgetResult:
+    """Result of a tighten-only configure_budget call.
+
+    Mirrors the .NET ``ConfigureBudgetResult``. ``success`` is False with an
+    ``error`` message when the request would RAISE caps above the current
+    effective limit (rejected), and True with the new effective sats caps
+    otherwise.
+    """
+
+    success: bool
+    error: Optional[str] = None
+    effective_per_request_sats: Optional[int] = None
+    effective_per_session_sats: Optional[int] = None
+
+    @classmethod
+    def fail(cls, error: str) -> "ConfigureBudgetResult":
+        return cls(success=False, error=error)
+
+    @classmethod
+    def ok(cls, per_request_sats: int, per_session_sats: int) -> "ConfigureBudgetResult":
+        return cls(
+            success=True,
+            effective_per_request_sats=per_request_sats,
+            effective_per_session_sats=per_session_sats,
+        )
 
 
 @dataclass
@@ -116,6 +145,11 @@ class BudgetService:
         # Out-of-band confirmation store (code -> PendingConfirmation). The code is
         # printed to stderr by the pay tools and never returned in a tool result.
         self._pending_confirmations: dict[str, PendingConfirmation] = {}
+        # The confirmation methods are SYNC (called from async tools), so the async
+        # self._lock can't guard them. Use a re-entrant threading lock so create/validate/
+        # consume are atomic even under a thread pool / multi-worker (hosted) server — and
+        # so create_pending_confirmation can call _clean_expired_confirmations while held.
+        self._confirmation_lock = threading.RLock()
 
         # Cached sats thresholds (updated when price changes significantly)
         self._auto_approve_sats: int = 0
@@ -125,6 +159,13 @@ class BudgetService:
         self._max_per_payment_sats: int = 0
         self._max_per_session_sats: int = 0
         self._thresholds_cache_expiry: datetime = datetime.min.replace(tzinfo=timezone.utc)
+
+        # Tighten-only runtime caps (sats) set by the agent via configure_budget.
+        # None = no runtime cap. Enforced in addition to the USD config limits
+        # (most-restrictive-wins). An agent can only ever LOWER these. Mirrors the
+        # .NET BudgetService _runtimeMaxPerRequestSats / _runtimeMaxPerSessionSats.
+        self._runtime_max_per_request_sats: Optional[int] = None
+        self._runtime_max_per_session_sats: Optional[int] = None
 
         # Lock for thread safety
         self._lock = asyncio.Lock()
@@ -194,6 +235,39 @@ class BudgetService:
                         ),
                         remaining_session_budget_usd=max(Decimal("0"), remaining_session_usd),
                     )
+
+            # Runtime tighten-only caps (set via configure_budget). Sats-based, enforced
+            # on top of the USD config limits above — most-restrictive-wins. Mirrors the
+            # .NET BudgetService runtime-cap enforcement.
+            if (
+                self._runtime_max_per_request_sats is not None
+                and amount_sats > self._runtime_max_per_request_sats
+            ):
+                return ApprovalCheckResult(
+                    level=ApprovalLevel.DENY,
+                    amount_sats=amount_sats,
+                    amount_usd=amount_usd,
+                    denial_reason=(
+                        f"Payment of {amount_sats:,} sats exceeds the runtime per-request cap of "
+                        f"{self._runtime_max_per_request_sats:,} sats set via configure_budget."
+                    ),
+                    remaining_session_budget_usd=max(Decimal("0"), remaining_session_usd),
+                )
+            if (
+                self._runtime_max_per_session_sats is not None
+                and self._session_spent_sats + amount_sats > self._runtime_max_per_session_sats
+            ):
+                return ApprovalCheckResult(
+                    level=ApprovalLevel.DENY,
+                    amount_sats=amount_sats,
+                    amount_usd=amount_usd,
+                    denial_reason=(
+                        f"Payment of {amount_sats:,} sats would exceed the runtime per-session cap of "
+                        f"{self._runtime_max_per_session_sats:,} sats (already spent "
+                        f"{self._session_spent_sats:,}) set via configure_budget."
+                    ),
+                    remaining_session_budget_usd=max(Decimal("0"), remaining_session_usd),
+                )
 
             # Check cooldown
             if not self._is_cooldown_elapsed():
@@ -299,6 +373,74 @@ class BudgetService:
         """
         self._last_payment_time = datetime.now(timezone.utc)
 
+    async def configure_budget(
+        self, per_request_sats: int, per_session_sats: int
+    ) -> ConfigureBudgetResult:
+        """TIGHTEN-ONLY runtime spending caps (sats). Ports the .NET ConfigureBudgetAsync.
+
+        An agent may only LOWER its per-request / per-session caps at runtime — it can
+        never RAISE them above the operator's config-file limit (USD→sats) or an already
+        tighter runtime cap. This is the whole point: a prompt-injected agent must not be
+        able to loosen its own spending authority and then drain the wallet. To raise
+        limits, the operator edits ~/.lightning-enable/config.json.
+
+        Returns a ConfigureBudgetResult: ``fail`` (rejected) when the request is invalid
+        or would raise a cap above the current effective limit; ``ok`` with the new
+        effective caps otherwise.
+        """
+        if per_request_sats <= 0:
+            return ConfigureBudgetResult.fail("per_request must be a positive number of sats.")
+        if per_session_sats <= 0:
+            return ConfigureBudgetResult.fail("per_session must be a positive number of sats.")
+        if per_request_sats > per_session_sats:
+            return ConfigureBudgetResult.fail("per_request cannot exceed per_session.")
+
+        # Make sure the config-derived sats caps are current before we compare.
+        await self._update_thresholds_if_needed()
+
+        async with self._lock:
+            # Effective cap = most restrictive of the operator's config-file limit
+            # (USD→sats) and any existing runtime cap. A 0 config cap means "no config
+            # limit set" → treat as unlimited for this comparison.
+            config_req = self._max_per_payment_sats if self._max_per_payment_sats > 0 else None
+            config_sess = self._max_per_session_sats if self._max_per_session_sats > 0 else None
+
+            def _effective(config_cap: Optional[int], runtime_cap: Optional[int]) -> Optional[int]:
+                caps = [c for c in (config_cap, runtime_cap) if c is not None]
+                return min(caps) if caps else None
+
+            eff_req = _effective(config_req, self._runtime_max_per_request_sats)
+            eff_sess = _effective(config_sess, self._runtime_max_per_session_sats)
+
+            # TIGHTEN-ONLY. Refusing to raise caps above the current effective limit is
+            # the whole point. None = unlimited (no effective cap), so any request passes.
+            if (eff_req is not None and per_request_sats > eff_req) or (
+                eff_sess is not None and per_session_sats > eff_sess
+            ):
+                def _fmt(v: Optional[int]) -> str:
+                    return "unlimited" if v is None else f"{v:,} sats"
+
+                return ConfigureBudgetResult.fail(
+                    "configure_budget can only LOWER spending limits, not raise them. "
+                    f"Current effective caps: {_fmt(eff_req)}/request, {_fmt(eff_sess)}/session. "
+                    "To increase limits, the operator must edit ~/.lightning-enable/config.json — "
+                    "an agent cannot raise its own spending authority."
+                )
+
+            self._runtime_max_per_request_sats = per_request_sats
+            self._runtime_max_per_session_sats = per_session_sats
+            return ConfigureBudgetResult.ok(per_request_sats, per_session_sats)
+
+    @property
+    def runtime_max_per_request_sats(self) -> Optional[int]:
+        """The tighten-only runtime per-request cap (sats), or None if unset."""
+        return self._runtime_max_per_request_sats
+
+    @property
+    def runtime_max_per_session_sats(self) -> Optional[int]:
+        """The tighten-only runtime per-session cap (sats), or None if unset."""
+        return self._runtime_max_per_session_sats
+
     # =========================================================================
     # Out-of-band confirmation (mirrors the .NET BudgetService)
     # =========================================================================
@@ -318,25 +460,26 @@ class BudgetService:
         NOT include it in the tool result — that is what stops a prompt-injected agent from
         reading the code and self-approving.
         """
-        self._clean_expired_confirmations()
-        # Regenerate on the (astronomically unlikely) chance of a collision with a
-        # still-live confirmation, so a new code can never overwrite — and thereby
-        # silently re-bind — an outstanding human-approved one.
-        code = "".join(secrets.choice(self._CONFIRMATION_CODE_CHARS) for _ in range(6))
-        while code in self._pending_confirmations:
+        with self._confirmation_lock:
+            self._clean_expired_confirmations()
+            # Regenerate on the (astronomically unlikely) chance of a collision with a
+            # still-live confirmation, so a new code can never overwrite — and thereby
+            # silently re-bind — an outstanding human-approved one.
             code = "".join(secrets.choice(self._CONFIRMATION_CODE_CHARS) for _ in range(6))
-        now = datetime.now(timezone.utc)
-        pc = PendingConfirmation(
-            nonce=code,
-            amount_sats=amount_sats,
-            amount_usd=amount_usd,
-            tool_name=tool_name,
-            description=description,
-            created_at=now,
-            expires_at=now + timedelta(minutes=2),
-        )
-        self._pending_confirmations[code] = pc
-        return pc
+            while code in self._pending_confirmations:
+                code = "".join(secrets.choice(self._CONFIRMATION_CODE_CHARS) for _ in range(6))
+            now = datetime.now(timezone.utc)
+            pc = PendingConfirmation(
+                nonce=code,
+                amount_sats=amount_sats,
+                amount_usd=amount_usd,
+                tool_name=tool_name,
+                description=description,
+                created_at=now,
+                expires_at=now + timedelta(minutes=2),
+            )
+            self._pending_confirmations[code] = pc
+            return pc
 
     def validate_confirmation(self, nonce: str) -> Optional[PendingConfirmation]:
         """Peek at a confirmation by code WITHOUT consuming it (used by confirm_payment).
@@ -345,13 +488,14 @@ class BudgetService:
         """
         if not nonce:
             return None
-        pc = self._pending_confirmations.get(nonce)
-        if pc is None:
-            return None
-        if pc.is_expired:
-            self._pending_confirmations.pop(nonce, None)
-            return None
-        return pc
+        with self._confirmation_lock:
+            pc = self._pending_confirmations.get(nonce)
+            if pc is None:
+                return None
+            if pc.is_expired:
+                self._pending_confirmations.pop(nonce, None)
+                return None
+            return pc
 
     def validate_and_consume_confirmation(
         self,
@@ -368,29 +512,32 @@ class BudgetService:
         """
         if not nonce:
             return None
-        pc = self._pending_confirmations.get(nonce)
-        if pc is None:
-            return None
-        if pc.is_expired:
+        with self._confirmation_lock:
+            pc = self._pending_confirmations.get(nonce)
+            if pc is None:
+                return None
+            if pc.is_expired:
+                self._pending_confirmations.pop(nonce, None)
+                return None
+            # C-3: bind to the EXACT amount AND tool the code was approved for.
+            if pc.amount_sats != expected_amount_sats:
+                return None
+            if pc.tool_name != expected_tool_name:
+                return None
+            # Amount + tool match -> consume (one-time use).
             self._pending_confirmations.pop(nonce, None)
-            return None
-        # C-3: bind to the EXACT amount AND tool the code was approved for.
-        if pc.amount_sats != expected_amount_sats:
-            return None
-        if pc.tool_name != expected_tool_name:
-            return None
-        # Amount + tool match -> consume (one-time use).
-        self._pending_confirmations.pop(nonce, None)
-        return pc
+            return pc
 
     def clean_expired_confirmations(self) -> None:
         """Purge expired pending confirmations."""
         self._clean_expired_confirmations()
 
     def _clean_expired_confirmations(self) -> None:
-        expired = [code for code, pc in self._pending_confirmations.items() if pc.is_expired]
-        for code in expired:
-            self._pending_confirmations.pop(code, None)
+        # Re-entrant: create_pending_confirmation calls this while holding the lock.
+        with self._confirmation_lock:
+            expired = [code for code, pc in self._pending_confirmations.items() if pc.is_expired]
+            for code in expired:
+                self._pending_confirmations.pop(code, None)
 
     def get_user_configuration(self) -> UserBudgetConfiguration:
         """
@@ -440,6 +587,8 @@ class BudgetService:
                 "limits": {
                     "maxPerPayment": float(config.limits.max_per_payment) if config.limits.max_per_payment else None,
                     "maxPerSession": float(config.limits.max_per_session) if config.limits.max_per_session else None,
+                    "runtimeMaxPerRequestSats": self._runtime_max_per_request_sats,
+                    "runtimeMaxPerSessionSats": self._runtime_max_per_session_sats,
                 },
                 "session": {
                     "requireApprovalForFirstPayment": config.session.require_approval_for_first_payment,

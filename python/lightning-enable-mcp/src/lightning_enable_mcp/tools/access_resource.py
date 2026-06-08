@@ -11,8 +11,8 @@ import sys
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
-    from ..budget import BudgetManager
     from ..budget_service import BudgetService
+    from ..payment_history_service import PaymentHistoryService
     from ..l402_client import L402Client
 
 from ..config import ApprovalLevel
@@ -24,10 +24,9 @@ logger = logging.getLogger("lightning-enable-mcp.tools.access")
 def _redact_url_for_display(url: str, limit: int = 50) -> str:
     """Return a display-safe URL with credentials stripped.
 
-    The query string, fragment, and userinfo can carry secrets (e.g.
-    ``?token=...``). This is printed to stderr and returned in error JSON, so we
-    keep only scheme://host/path and append a marker when anything was dropped —
-    never leak the sensitive parts to logs/console (engineering standard #5).
+    The query string, fragment, and userinfo can carry secrets (e.g. ``?token=...``).
+    This is printed to stderr / logged, so keep only scheme://host[:port]/path and mark
+    when anything was dropped — never leak the sensitive parts (engineering standard #5).
     """
     try:
         from urllib.parse import urlsplit, urlunsplit
@@ -36,20 +35,17 @@ def _redact_url_for_display(url: str, limit: int = 50) -> str:
         host = parts.hostname or ""
         if ":" in host:  # IPv6 literal — urlsplit unbrackets it; re-bracket so host:port is unambiguous
             host = f"[{host}]"
-        netloc = f"{host}:{parts.port}" if parts.port else host  # host:port only — drop any user:pass@
+        netloc = f"{host}:{parts.port}" if parts.port else host
         dropped = bool(parts.query or parts.fragment or parts.username or parts.password)
         safe = urlunsplit((parts.scheme, netloc, parts.path, "", ""))
         if dropped:
-            # Neutral marker — what was dropped may be a query, fragment, OR userinfo.
             safe = f"{safe} (redacted)"
     except Exception:
-        # If parsing fails, fall back to stripping query, fragment, AND userinfo by hand
-        # rather than leaking the raw URL — the fallback must not leave `user:pass@host`.
         safe = url.split("?", 1)[0].split("#", 1)[0]
         if "//" in safe:
             scheme_sep, rest = safe.split("//", 1)
             if "@" in rest:
-                rest = rest.split("@", 1)[1]  # drop userinfo
+                rest = rest.split("@", 1)[1]
             safe = scheme_sep + "//" + rest
     return safe[:limit] + "..." if len(safe) > limit else safe
 
@@ -62,8 +58,8 @@ async def access_l402_resource(
     max_sats: int = 1000,
     confirmation_nonce: "Optional[str]" = None,
     l402_client: "L402Client | None" = None,
-    budget_manager: "BudgetManager | None" = None,
     budget_service: "BudgetService | None" = None,
+    payment_history_service: "PaymentHistoryService | None" = None,
 ) -> str:
     """
     Fetch a URL with automatic L402 payment handling.
@@ -85,8 +81,8 @@ async def access_l402_resource(
         confirmation_nonce: The code the human read from the server console (for payments
             above the auto-approve threshold). Omit on the first call to request one.
         l402_client: L402 client instance
-        budget_manager: Legacy budget manager (deprecated, use budget_service)
         budget_service: BudgetService for multi-tier approval logic
+        payment_history_service: PaymentHistoryService for the session audit trail
 
     Returns:
         Response body text or error message
@@ -102,7 +98,8 @@ async def access_l402_resource(
         return f"Error: Invalid HTTP method: {method}"
 
     try:
-        # Use new BudgetService if available, otherwise fall back to legacy BudgetManager
+        # BudgetService is the single source of truth for spending limits + the
+        # out-of-band confirmation flow.
         if budget_service:
             # Check approval level using new multi-tier system
             result = await budget_service.check_approval_level(max_sats)
@@ -179,39 +176,6 @@ async def access_l402_resource(
             if result.level == ApprovalLevel.LOG_AND_APPROVE:
                 logger.info(f"Log-and-approve L402 request: up to {max_sats} sats (${result.amount_usd:.2f}) for {_redact_url_for_display(url)}")
 
-        elif budget_manager:
-            # Legacy budget manager fallback
-            status = budget_manager.get_status()
-            if status["remaining"] <= 0:
-                return json.dumps({
-                    "success": False,
-                    "error": "Session budget exhausted",
-                    "message": f"Spent {status['spent']}/{status['limits']['per_session']} sats. "
-                              "Use configure_budget to increase limit.",
-                    "budget": status
-                })
-
-            # Above the auto-approve threshold. The legacy BudgetManager has no out-of-band
-            # confirmation flow, so FAIL CLOSED rather than allow an agent-driven self-confirm.
-            auto_approve_sats = getattr(budget_manager, 'auto_approve_sats', 1000)
-            if max_sats > auto_approve_sats:
-                estimated_usd = max_sats * 0.001
-                url_display = _redact_url_for_display(url)
-                return json.dumps({
-                    "success": False,
-                    "error": (
-                        f"This L402 request to {url_display} may cost up to ~${estimated_usd:.2f} ({max_sats:,} sats), "
-                        f"exceeding the auto-approve threshold of {auto_approve_sats:,} sats, and the legacy budget "
-                        "manager cannot confirm it. Configure ~/.lightning-enable/config.json so the BudgetService "
-                        "handles confirmation."
-                    ),
-                    "amount": {
-                        "maxSats": max_sats,
-                        "estimatedUsd": round(estimated_usd, 2)
-                    },
-                    "thresholds": {"autoApprove": auto_approve_sats},
-                })
-
         # Make request with L402 handling
         response_text, amount_paid = await l402_client.fetch(
             url=url,
@@ -222,6 +186,7 @@ async def access_l402_resource(
         )
 
         # Record payment if one was made
+        session_info = None
         if amount_paid is not None:
             if budget_service:
                 budget_service.record_spend(amount_paid)
@@ -236,25 +201,14 @@ async def access_l402_resource(
                     "remainingUsd": status["session"]["remainingUsd"],
                     "requestCount": status["session"]["requestCount"],
                 }
-            elif budget_manager:
-                budget_manager.record_payment(
-                    # Redacted — BudgetManager.record_payment logs this url, and the raw
-                    # query/fragment/userinfo can carry secrets (engineering standard #5).
+
+            # Audit trail (separate from limits). Preimage is NEVER stored.
+            if payment_history_service:
+                payment_history_service.record_payment(
                     url=_redact_url_for_display(url),
                     amount_sats=amount_paid,
-                    invoice="(auto-paid)",
-                    preimage="(auto-paid)",
                     status="success",
                 )
-                logger.info(f"Paid {amount_paid} sats for L402 access to {_redact_url_for_display(url)}")
-                session_info = {
-                    "spentSats": budget_manager.session_spent,
-                    "remainingSats": budget_manager.max_per_session - budget_manager.session_spent,
-                }
-            else:
-                session_info = None
-        else:
-            session_info = None
 
         # Format response
         result = {

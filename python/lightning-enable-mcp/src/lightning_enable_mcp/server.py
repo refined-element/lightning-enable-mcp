@@ -17,8 +17,11 @@ from mcp.types import (
     TextContent,
 )
 
-from .budget import BudgetManager
 from .budget_service import BudgetService, get_budget_service
+from .payment_history_service import (
+    PaymentHistoryService,
+    get_payment_history_service,
+)
 from .l402_client import L402Client
 from .lnd_wallet import LndWallet
 from .lightning_enable_api import LightningEnableApiClient
@@ -82,8 +85,8 @@ class LightningEnableServer:
         self.wallet: LndWallet | NWCWallet | OpenNodeWallet | StrikeWallet | None = None
         self.strike_wallet: StrikeWallet | None = None  # For Strike-specific features
         self.l402_client: L402Client | None = None
-        self.budget_manager: BudgetManager | None = None
-        self.budget_service: BudgetService | None = None  # New multi-tier approval system
+        self.budget_service: BudgetService | None = None  # Single source of truth for limits
+        self.payment_history_service: PaymentHistoryService | None = None  # Session audit trail
         self._nwc_config: NWCConfig | None = None  # Store NWC config for pubkey access
         self.api_client: LightningEnableApiClient | None = None  # For L402 producer tools
 
@@ -130,10 +133,9 @@ class LightningEnableServer:
                                 "description": "Maximum satoshis to pay for this request",
                                 "default": 1000,
                             },
-                            "confirmed": {
-                                "type": "boolean",
-                                "description": "Set to true to confirm a payment that requires approval. Use when previous call returned requiresConfirmation=true.",
-                                "default": False,
+                            "confirmation_nonce": {
+                                "type": "string",
+                                "description": "Confirmation code the human operator read from the server console, for payments above the auto-approve threshold. The code is NEVER in a tool result — ask the human for it. Omit on the first call to request one.",
                             },
                         },
                         "required": ["url"],
@@ -161,6 +163,10 @@ class LightningEnableServer:
                                 "type": "integer",
                                 "description": "Maximum satoshis allowed for this payment",
                                 "default": 1000,
+                            },
+                            "confirmation_nonce": {
+                                "type": "string",
+                                "description": "Confirmation code the human operator read from the server console, for payments above the auto-approve threshold. The code is NEVER in a tool result — ask the human for it. Omit on the first call to request one.",
                             },
                         },
                         "required": ["invoice"],
@@ -229,10 +235,9 @@ class LightningEnableServer:
                                 "description": "Maximum satoshis allowed to pay. Defaults to 1000",
                                 "default": 1000,
                             },
-                            "confirmed": {
-                                "type": "boolean",
-                                "description": "Set to true to confirm a payment that requires approval. Use when previous call returned requiresConfirmation=true.",
-                                "default": False,
+                            "confirmation_nonce": {
+                                "type": "string",
+                                "description": "Confirmation code the human operator read from the server console, for payments above the auto-approve threshold. The code is NEVER in a tool result — ask the human for it. Omit on the first call to request one.",
                             },
                         },
                         "required": ["invoice"],
@@ -345,12 +350,13 @@ class LightningEnableServer:
                                 "type": "integer",
                                 "description": "Amount to send in satoshis",
                             },
-                            "confirmed": {
-                                "type": "boolean",
+                            "confirmation_nonce": {
+                                "type": "string",
                                 "description": (
-                                    "Set to true to confirm this irreversible on-chain send. "
-                                    "The first call returns requiresConfirmation; call again with "
-                                    "confirmed=true to proceed."
+                                    "Confirmation code the human operator read from the server console. "
+                                    "On-chain sends always require it: the first call prints a code to the "
+                                    "console (never in the result) and returns requiresConfirmation; ask the "
+                                    "human and call again with confirmation_nonce set to it."
                                 ),
                             },
                         },
@@ -714,10 +720,10 @@ class LightningEnableServer:
                         headers=arguments.get("headers", {}),
                         body=arguments.get("body"),
                         max_sats=arguments.get("max_sats", 1000),
-                        confirmed=arguments.get("confirmed", False),
+                        confirmation_nonce=arguments.get("confirmation_nonce"),
                         l402_client=self.l402_client,
-                        budget_manager=self.budget_manager,
                         budget_service=self.budget_service,
+                        payment_history_service=self.payment_history_service,
                     )
 
                 elif name == "pay_l402_challenge":
@@ -725,8 +731,10 @@ class LightningEnableServer:
                         invoice=arguments["invoice"],
                         macaroon=arguments.get("macaroon"),
                         max_sats=arguments.get("max_sats", 1000),
+                        confirmation_nonce=arguments.get("confirmation_nonce"),
                         wallet=self.wallet,
-                        budget_manager=self.budget_manager,
+                        budget_service=self.budget_service,
+                        payment_history_service=self.payment_history_service,
                     )
 
                 elif name == "check_wallet_balance":
@@ -736,24 +744,24 @@ class LightningEnableServer:
                     result = await get_payment_history(
                         limit=arguments.get("limit", 10),
                         since=arguments.get("since"),
-                        budget_manager=self.budget_manager,
+                        payment_history_service=self.payment_history_service,
                     )
 
                 elif name == "configure_budget":
                     result = await configure_budget(
                         per_request=arguments.get("per_request", 1000),
                         per_session=arguments.get("per_session", 10000),
-                        budget_manager=self.budget_manager,
+                        budget_service=self.budget_service,
                     )
 
                 elif name == "pay_invoice":
                     result = await pay_invoice(
                         invoice=arguments.get("invoice", ""),
                         max_sats=arguments.get("max_sats", 1000),
-                        confirmed=arguments.get("confirmed", False),
+                        confirmation_nonce=arguments.get("confirmation_nonce"),
                         wallet=self.wallet,
-                        budget_manager=self.budget_manager,
                         budget_service=self.budget_service,
+                        payment_history_service=self.payment_history_service,
                     )
 
                 elif name == "create_invoice":
@@ -798,7 +806,7 @@ class LightningEnableServer:
                     result = await send_onchain(
                         address=arguments.get("address", ""),
                         amount_sats=arguments.get("amount_sats", 0),
-                        confirmed=arguments.get("confirmed", False),
+                        confirmation_nonce=arguments.get("confirmation_nonce"),
                         wallet=onchain_wallet,
                         budget_service=self.budget_service,
                     )
@@ -806,6 +814,7 @@ class LightningEnableServer:
                 elif name == "get_budget_status":
                     result = await get_budget_status(
                         budget_service=self.budget_service,
+                        payment_history_service=self.payment_history_service,
                     )
 
                 elif name == "create_l402_challenge":
@@ -910,7 +919,7 @@ class LightningEnableServer:
                 return [TextContent(type="text", text=f"Error in {name}: {safe_msg}")]
 
     async def _initialize_services(self) -> None:
-        """Initialize wallet, L402 client, and budget manager.
+        """Initialize wallet, L402 client, budget service, and payment history.
 
         Supports wallet backends (in priority order for L402):
         1. LND - Set LND_REST_HOST + LND_MACAROON_HEX (direct node, always returns preimage)
@@ -1025,17 +1034,17 @@ class LightningEnableServer:
             elif isinstance(self.wallet, StrikeWallet):
                 self.strike_wallet = self.wallet
 
-            # Initialize budget manager (legacy)
-            max_per_request = int(os.getenv("L402_MAX_SATS_PER_REQUEST", "1000"))
-            max_per_session = int(os.getenv("L402_MAX_SATS_PER_SESSION", "10000"))
-            self.budget_manager = BudgetManager(
-                max_per_request=max_per_request, max_per_session=max_per_session
-            )
-
-            # Initialize new BudgetService (multi-tier approval system)
-            # Uses configuration from ~/.lightning-enable/config.json
+            # Initialize the BudgetService (single source of truth for spending
+            # limits + multi-tier approval + out-of-band confirmation). Uses
+            # configuration from ~/.lightning-enable/config.json. The legacy
+            # BudgetManager and its L402_MAX_SATS_PER_REQUEST / _PER_SESSION env
+            # vars have been removed — runtime sats caps are now tightened via the
+            # BudgetService.configure_budget tool (tighten-only).
             self.budget_service = get_budget_service()
             logger.info("BudgetService initialized with multi-tier approval")
+
+            # Initialize the PaymentHistoryService (separate session audit trail).
+            self.payment_history_service = get_payment_history_service()
 
             # Initialize L402 client
             self.l402_client = L402Client(wallet=self.wallet)

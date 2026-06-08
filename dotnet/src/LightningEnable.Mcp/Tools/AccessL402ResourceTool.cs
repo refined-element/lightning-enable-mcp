@@ -135,7 +135,7 @@ public static class AccessL402ResourceTool
                         });
                     }
 
-                    Console.Error.WriteLine($"[Lightning Enable] L402 payment of up to {approvalResult.AmountUsd:C} confirmed via nonce {confirmation.Nonce} for {url}");
+                    Console.Error.WriteLine($"[Lightning Enable] L402 payment of up to {approvalResult.AmountUsd:C} confirmed via nonce {confirmation.Nonce} for {RedactUrl(url)}");
                 }
                 else
                 {
@@ -151,7 +151,7 @@ public static class AccessL402ResourceTool
                         // Always fall back to nonce-based confirmation.
                         // MCP elicitation is unreliable — many clients (including Claude Code)
                         // report Elicitation capability but don't handle it correctly.
-                        var urlDisplay = url.Length > 60 ? url.Substring(0, 60) + "..." : url;
+                        var urlDisplay = RedactUrl(url);
                         var pending = budgetService.CreatePendingConfirmation(
                             maxSats,
                             approvalResult.AmountUsd,
@@ -196,7 +196,7 @@ public static class AccessL402ResourceTool
             // Log if needed
             if (approvalResult.Level == ApprovalLevel.LogAndApprove)
             {
-                Console.Error.WriteLine($"[Lightning Enable] Auto-approved L402 payment up to: {approvalResult.AmountUsd:C} ({maxSats} sats) for {url}");
+                Console.Error.WriteLine($"[Lightning Enable] Auto-approved L402 payment up to: {approvalResult.AmountUsd:C} ({maxSats} sats) for {RedactUrl(url)}");
             }
         }
 
@@ -301,6 +301,62 @@ public static class AccessL402ResourceTool
                 error = ex.Message
             });
         }
+    }
+
+    /// <summary>
+    /// Returns a display-safe URL with credentials stripped. The query string, fragment,
+    /// and userinfo can carry secrets (e.g. <c>?token=...</c>); this keeps only
+    /// scheme://host[:port]/path, marks when anything was dropped, and length-caps the
+    /// result. Use it anywhere the URL is printed to stderr or logged so credentials never
+    /// reach console/log history (engineering standard #5). The full URL is still returned
+    /// in tool results — the caller already supplied it.
+    /// </summary>
+    internal static string RedactUrl(string url)
+    {
+        const int maxLen = 80;
+        var (safe, dropped) = BuildRedactedUrl(url);
+        if (safe.Length > maxLen)
+            safe = safe.Substring(0, maxLen) + "...";  // cap the URL part; marker added after
+        return dropped ? safe + " (redacted)" : safe;
+    }
+
+    private static (string safe, bool dropped) BuildRedactedUrl(string url)
+    {
+        try
+        {
+            if (Uri.TryCreate(url, UriKind.Absolute, out var uri))
+            {
+                // uri.Host already brackets IPv6 literals (e.g. "[2001:db8::1]"), so
+                // scheme://host:port stays unambiguous without extra handling.
+                var port = uri.IsDefaultPort ? string.Empty : $":{uri.Port}";
+                var safe = $"{uri.Scheme}://{uri.Host}{port}{uri.AbsolutePath}";
+                var dropped = !string.IsNullOrEmpty(uri.Query)
+                    || !string.IsNullOrEmpty(uri.Fragment)
+                    || !string.IsNullOrEmpty(uri.UserInfo);
+                return (safe, dropped);
+            }
+        }
+        catch
+        {
+            // fall through to the hand-rolled fallback below
+        }
+
+        // Parse failed: strip query, fragment, AND userinfo by hand so we never leave
+        // `user:pass@host`, and report whether anything was removed.
+        var s = url.Split('?')[0].Split('#')[0];
+        var strippedQueryOrFragment = s.Length != url.Length;
+        var schemeIdx = s.IndexOf("//", StringComparison.Ordinal);
+        var strippedUserInfo = false;
+        if (schemeIdx >= 0)
+        {
+            var atIdx = s.IndexOf('@', schemeIdx + 2);
+            if (atIdx >= 0)
+            {
+                s = s.Substring(0, schemeIdx + 2) + s.Substring(atIdx + 1);
+                strippedUserInfo = true;
+            }
+        }
+        return (s, strippedQueryOrFragment || strippedUserInfo);
     }
 
     /// <summary>
@@ -434,7 +490,7 @@ public static class AccessL402ResourceTool
 
         try
         {
-            var urlDisplay = url.Length > 50 ? url.Substring(0, 50) + "..." : url;
+            var urlDisplay = RedactUrl(url);
 
             if (approvalResult.Level == ApprovalLevel.FormConfirm)
             {

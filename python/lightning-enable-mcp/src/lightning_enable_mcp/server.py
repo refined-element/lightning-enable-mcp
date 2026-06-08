@@ -12,13 +12,12 @@ from typing import Any
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-
-from . import __version__
 from mcp.types import (
     Tool,
     TextContent,
 )
 
+from . import __version__
 from .budget_service import BudgetService, get_budget_service
 from .payment_history_service import (
     PaymentHistoryService,

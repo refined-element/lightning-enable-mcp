@@ -67,9 +67,16 @@ class TestLightningEnableServer:
             "verify_l402_payment",
             "confirm_payment",
             "discover_api",
+            "discover_agent_services",
+            "publish_agent_capability",
+            "request_agent_service",
+            "publish_agent_attestation",
+            "get_agent_reputation",
+            "settle_agent_service",
         }
 
         assert tool_names == expected_tools
+        assert len(tool_names) == 23
 
     @pytest.mark.asyncio
     async def test_services_not_initialized_without_nwc(self):

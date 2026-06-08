@@ -44,6 +44,12 @@ from .tools.verify_l402_payment import verify_l402_payment
 from .tools.wallet import check_wallet_balance
 from .tools.budget import configure_budget, get_payment_history
 from .tools.budget_status import get_budget_status
+from .tools.discover_agent_services import discover_agent_services
+from .tools.publish_agent_capability import publish_agent_capability
+from .tools.request_agent_service import request_agent_service
+from .tools.publish_agent_attestation import publish_agent_attestation
+from .tools.get_agent_reputation import get_agent_reputation
+from .tools.settle_agent_service import settle_agent_service
 
 # Configure logging
 logging.basicConfig(
@@ -465,6 +471,209 @@ class LightningEnableServer:
                         },
                     },
                 ),
+                Tool(
+                    name="discover_agent_services",
+                    description=(
+                        "Discover agent services on the Nostr network. Search by category, hashtag, or keyword. "
+                        "Returns capabilities published as kind 38400 events. "
+                        "Use this to find agents that offer services you can pay for via L402."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "category": {
+                                "type": "string",
+                                "description": "Filter by service category (e.g., 'ai', 'data', 'translation')",
+                            },
+                            "hashtags": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Filter by hashtags",
+                            },
+                            "query": {
+                                "type": "string",
+                                "description": "Search query",
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "description": "Maximum results to return",
+                                "default": 20,
+                            },
+                        },
+                    },
+                ),
+                Tool(
+                    name="publish_agent_capability",
+                    description=(
+                        "Publish an agent capability advertisement to the Nostr network. "
+                        "Makes your agent discoverable by other agents. Creates a kind 38400 event. "
+                        "Optionally creates an L402 proxy for payment settlement. "
+                        "Requires LIGHTNING_ENABLE_API_KEY."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "service_id": {
+                                "type": "string",
+                                "description": "Unique service identifier (used as d-tag)",
+                            },
+                            "categories": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Service categories (e.g., ['ai', 'translation'])",
+                            },
+                            "content": {
+                                "type": "string",
+                                "description": "Description of the service",
+                            },
+                            "price_sats": {
+                                "type": "integer",
+                                "description": "Price per request in satoshis",
+                            },
+                            "l402_endpoint": {
+                                "type": "string",
+                                "description": "L402 endpoint URL for payment settlement",
+                            },
+                            "target_url": {
+                                "type": "string",
+                                "description": "Target API URL (if auto-creating an L402 proxy via Lightning Enable)",
+                            },
+                            "hashtags": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Hashtags for discoverability",
+                            },
+                        },
+                        "required": ["service_id", "categories", "content", "price_sats"],
+                    },
+                ),
+                Tool(
+                    name="request_agent_service",
+                    description=(
+                        "Request a service from an agent. Sends a kind 38401 event referencing the provider's capability. "
+                        "Starts the negotiation process. If the provider has an L402 endpoint, you can skip this step "
+                        "and use settle_agent_service directly. Requires LIGHTNING_ENABLE_API_KEY."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "capability_event_id": {
+                                "type": "string",
+                                "description": "Event ID of the capability to request",
+                            },
+                            "budget_sats": {
+                                "type": "integer",
+                                "description": "Maximum budget in satoshis",
+                            },
+                            "parameters": {
+                                "type": "string",
+                                "description": "Additional parameters as a JSON string",
+                            },
+                        },
+                        "required": ["capability_event_id", "budget_sats"],
+                    },
+                ),
+                Tool(
+                    name="publish_agent_attestation",
+                    description=(
+                        "Publish an attestation (review) for an agent after a completed agreement. "
+                        "Creates a kind 38403 event that builds the agent's on-protocol reputation. "
+                        "Requires LIGHTNING_ENABLE_API_KEY."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "subject_pubkey": {
+                                "type": "string",
+                                "description": "Pubkey of the agent being reviewed",
+                            },
+                            "agreement_id": {
+                                "type": "string",
+                                "description": "Event ID of the agreement this review is for",
+                            },
+                            "rating": {
+                                "type": "integer",
+                                "description": "Rating from 1-5",
+                            },
+                            "content": {
+                                "type": "string",
+                                "description": "Free-text review content",
+                            },
+                            "proof": {
+                                "type": "string",
+                                "description": "Optional: hash of L402 payment preimage as proof of real transaction",
+                            },
+                        },
+                        "required": ["subject_pubkey", "agreement_id", "rating", "content"],
+                    },
+                ),
+                Tool(
+                    name="get_agent_reputation",
+                    description=(
+                        "Get an agent's reputation score and reviews. "
+                        "Queries kind 38403 attestation events for the given pubkey. "
+                        "Returns average rating and individual reviews."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "pubkey": {
+                                "type": "string",
+                                "description": "Pubkey of the agent to query reputation for",
+                            },
+                            "limit": {
+                                "type": "integer",
+                                "description": "Maximum number of attestations to return",
+                                "default": 20,
+                            },
+                        },
+                        "required": ["pubkey"],
+                    },
+                ),
+                Tool(
+                    name="settle_agent_service",
+                    description=(
+                        "Settle an agent service agreement via L402 payment (CONSUMER/REQUESTER side). "
+                        "Pays the L402 endpoint specified in the agreement, completing the service transaction. "
+                        "Uses the same L402 auto-pay flow as access_l402_resource. "
+                        "The L402 endpoint URL comes from discover_agent_services or request_agent_service results. "
+                        "NOTE: If you are the PROVIDER (selling a service), use create_l402_challenge to generate "
+                        "a Lightning invoice at the negotiated price, then verify_l402_payment to confirm payment "
+                        "before delivering the service."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "l402_endpoint": {
+                                "type": "string",
+                                "description": "L402 endpoint URL from the service agreement",
+                            },
+                            "method": {
+                                "type": "string",
+                                "description": "HTTP method (GET, POST, PUT, DELETE). Defaults to GET",
+                                "default": "GET",
+                            },
+                            "body": {
+                                "type": "string",
+                                "description": "Optional request body for POST requests (e.g., service parameters as JSON)",
+                            },
+                            "agreement_id": {
+                                "type": "string",
+                                "description": "Agreement event ID for tracking",
+                            },
+                            "max_sats": {
+                                "type": "integer",
+                                "description": "Maximum satoshis to pay",
+                                "default": 1000,
+                            },
+                            "confirmation_nonce": {
+                                "type": "string",
+                                "description": "Confirmation code the human operator read from the server console, for settlements above the auto-approve threshold. The code is NEVER in a tool result — ask the human for it. Omit on the first call to request one.",
+                            },
+                        },
+                        "required": ["l402_endpoint"],
+                    },
+                ),
             ]
 
         @self.server.call_tool()
@@ -475,8 +684,22 @@ class LightningEnableServer:
                 if self.wallet is None or self.l402_client is None:
                     await self._initialize_services()
 
-                # Tools that don't require a wallet connection
-                producer_tools = {"create_l402_challenge", "verify_l402_payment", "discover_api", "confirm_payment"}
+                # Tools that don't require a wallet connection.
+                # The ASA discovery/publish/request/attestation/reputation tools
+                # use the Lightning Enable API (or public registry), not the
+                # wallet — only settle_agent_service needs a wallet, so it is
+                # intentionally NOT in this set.
+                producer_tools = {
+                    "create_l402_challenge",
+                    "verify_l402_payment",
+                    "discover_api",
+                    "confirm_payment",
+                    "discover_agent_services",
+                    "publish_agent_capability",
+                    "request_agent_service",
+                    "publish_agent_attestation",
+                    "get_agent_reputation",
+                }
 
                 if self.wallet is None and name not in producer_tools:
                     return [
@@ -620,6 +843,66 @@ class LightningEnableServer:
                         query=arguments.get("query"),
                         category=arguments.get("category"),
                         budget_aware=arguments.get("budget_aware", True),
+                        budget_service=self.budget_service,
+                    )
+
+                elif name == "discover_agent_services":
+                    result = await discover_agent_services(
+                        category=arguments.get("category"),
+                        hashtags=arguments.get("hashtags"),
+                        query=arguments.get("query"),
+                        limit=arguments.get("limit", 20),
+                        api_client=self.api_client,
+                        budget_service=self.budget_service,
+                    )
+
+                elif name == "publish_agent_capability":
+                    result = await publish_agent_capability(
+                        service_id=arguments.get("service_id", ""),
+                        categories=arguments.get("categories", []),
+                        content=arguments.get("content", ""),
+                        price_sats=arguments.get("price_sats", 0),
+                        l402_endpoint=arguments.get("l402_endpoint"),
+                        target_url=arguments.get("target_url"),
+                        hashtags=arguments.get("hashtags"),
+                        api_client=self.api_client,
+                    )
+
+                elif name == "request_agent_service":
+                    result = await request_agent_service(
+                        capability_event_id=arguments.get("capability_event_id", ""),
+                        budget_sats=arguments.get("budget_sats", 0),
+                        parameters=arguments.get("parameters"),
+                        api_client=self.api_client,
+                        budget_service=self.budget_service,
+                    )
+
+                elif name == "publish_agent_attestation":
+                    result = await publish_agent_attestation(
+                        subject_pubkey=arguments.get("subject_pubkey", ""),
+                        agreement_id=arguments.get("agreement_id", ""),
+                        rating=arguments.get("rating", 0),
+                        content=arguments.get("content", ""),
+                        proof=arguments.get("proof"),
+                        api_client=self.api_client,
+                    )
+
+                elif name == "get_agent_reputation":
+                    result = await get_agent_reputation(
+                        pubkey=arguments.get("pubkey", ""),
+                        limit=arguments.get("limit", 20),
+                        api_client=self.api_client,
+                    )
+
+                elif name == "settle_agent_service":
+                    result = await settle_agent_service(
+                        l402_endpoint=arguments.get("l402_endpoint", ""),
+                        method=arguments.get("method", "GET"),
+                        body=arguments.get("body"),
+                        agreement_id=arguments.get("agreement_id"),
+                        max_sats=arguments.get("max_sats", 1000),
+                        confirmation_nonce=arguments.get("confirmation_nonce"),
+                        l402_client=self.l402_client,
                         budget_service=self.budget_service,
                     )
 

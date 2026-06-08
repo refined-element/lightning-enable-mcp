@@ -21,6 +21,12 @@ from lightning_enable_mcp.config import ApprovalLevel
 # pay_invoice now decodes the BOLT11 amount and budgets against IT (not max_sats).
 # The placeholder invoices in these tests don't really decode, so patch decode_bolt11
 # to a per-test amount; a test that cares about the paid amount sets _DECODE_SATS["v"].
+# tools/__init__ re-exports the pay_invoice FUNCTION, which shadows the submodule of the
+# same name, so a string patch target / `import ... as` (both getattr-navigated) reach the
+# function not the module. importlib.import_module returns the real module to patch.
+import importlib as _importlib
+_pay_invoice_module = _importlib.import_module("lightning_enable_mcp.tools.pay_invoice")
+
 _DECODE_SATS = {"v": 10}
 
 
@@ -32,7 +38,7 @@ def _patch_decode():
         m.amount = _DECODE_SATS["v"]
         return m
 
-    with patch("lightning_enable_mcp.tools.pay_invoice.decode_bolt11", side_effect=fake_decode):
+    with patch.object(_pay_invoice_module, "decode_bolt11", side_effect=fake_decode):
         _DECODE_SATS["v"] = 10
         yield
 

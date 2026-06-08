@@ -60,7 +60,8 @@ jobs:
           if [[ "$GITHUB_REF" == refs/tags/mcp-v* ]]; then
             VERSION="${GITHUB_REF#refs/tags/mcp-v}"
           else
-            VERSION=$(grep -oP '(?<=<Version>)[^<]+' dotnet/src/LightningEnable.Mcp/LightningEnable.Mcp.csproj)
+            # First <Version> match only — defends against the tag appearing in comments.
+            VERSION=$(grep -oP '(?<=<Version>)[^<]+' dotnet/src/LightningEnable.Mcp/LightningEnable.Mcp.csproj | head -n1)
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "Detected version: $VERSION"

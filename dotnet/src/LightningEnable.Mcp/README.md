@@ -439,8 +439,11 @@ dotnet test tests/LightningEnable.Mcp.Tests
 
 ```bash
 cd dotnet/src/LightningEnable.Mcp
-dotnet pack -c Release
-dotnet nuget push bin/Release/LightningEnable.Mcp.*.nupkg --source nuget.org
+# Pack into a clean output directory so the push step only sees the
+# artifact we just built, not stale .nupkg files from earlier versions
+# left over in bin/Release/.
+dotnet pack -c Release -o ./artifacts
+dotnet nuget push ./artifacts/LightningEnable.Mcp.*.nupkg --source nuget.org
 ```
 
 ## License

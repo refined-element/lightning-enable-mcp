@@ -3,8 +3,15 @@ using LightningEnable.Mcp.Models;
 namespace LightningEnable.Mcp.Services;
 
 /// <summary>
-/// Unified interface for Lightning payment providers.
-/// Abstracts differences between OpenNode, Lightspark, Strike, and NWC.
+/// Unified interface for Lightning payment providers — abstracts the wire
+/// shape of the underlying backend (REST, GraphQL, gRPC, etc.) so the tool
+/// layer can pay, invoice, and read balance without knowing which service
+/// is on the other end. The only implementer in this project today is
+/// <c>StrikePaymentProvider</c>. OpenNode, NWC, LND, and Strike each ship
+/// a richer wallet service on the sibling <c>IWalletService</c> interface
+/// (Strike is the only backend that appears on both — this interface for
+/// the agent-payment path, <c>IWalletService</c> for the wallet-tools
+/// path the MCP server exposes to consumers).
 /// </summary>
 public interface ILightningPaymentProvider
 {

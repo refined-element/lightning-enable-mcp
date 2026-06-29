@@ -4,6 +4,9 @@ Part of [Lightning Enable](https://lightningenable.com) — infrastructure for a
 
 # Lightning Enable MCP Server
 
+[![Discord](https://img.shields.io/discord/1405389254892195951?label=community&logo=discord&color=5865F2)](https://discord.gg/rX7NxHY8vx)
+
+
 An open-source MCP (Model Context Protocol) server that enables AI agents to make Lightning Network payments and participate in agent-to-agent commerce. 23 tools total: 15 free wallet tools, 2 producer tools, and 6 Agent Service Agreement (ASA) tools for discovering, negotiating, and settling services between agents on Nostr. Producer and ASA tools require an [Agentic Commerce subscription](https://lightningenable.com).
 
 Available in **.NET** and **Python**.

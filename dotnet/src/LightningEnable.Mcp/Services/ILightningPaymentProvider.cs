@@ -4,7 +4,7 @@ namespace LightningEnable.Mcp.Services;
 
 /// <summary>
 /// Unified interface for Lightning payment providers.
-/// Abstracts differences between OpenNode, Lightspark, Strike, and NWC.
+/// Abstracts differences between OpenNode, Strike, NWC, and LND.
 /// </summary>
 public interface ILightningPaymentProvider
 {

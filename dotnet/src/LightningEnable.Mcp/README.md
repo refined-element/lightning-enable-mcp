@@ -439,9 +439,11 @@ dotnet test tests/LightningEnable.Mcp.Tests
 
 ```bash
 cd dotnet/src/LightningEnable.Mcp
-# Pack into a clean output directory so the push step only sees the
-# artifact we just built, not stale .nupkg files from earlier versions
-# left over in bin/Release/.
+# Clear any prior packed artifacts BEFORE packing, so the wildcard push
+# below targets only this build's output. `dotnet pack -o` writes the new
+# .nupkg in but does NOT clear pre-existing files — the rm step is what
+# makes the push deterministic.
+rm -f ./artifacts/*.nupkg
 dotnet pack -c Release -o ./artifacts
 dotnet nuget push ./artifacts/LightningEnable.Mcp.*.nupkg --source nuget.org
 ```

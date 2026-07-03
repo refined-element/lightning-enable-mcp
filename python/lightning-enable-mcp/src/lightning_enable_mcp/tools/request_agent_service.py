@@ -1,8 +1,9 @@
 """
 Request Agent Service Tool
 
-Sends a service request referencing a provider's capability (kind 38401 event),
-starting the negotiation process. Requires LIGHTNING_ENABLE_API_KEY.
+Sends a service request (kind 38401 event) referencing a provider's capability.
+The provider responds with agreement/settlement terms; settle via
+settle_agent_service. Requires LIGHTNING_ENABLE_API_KEY.
 
 NOTE: Budget is NOT deducted at request time by design. The budget is only
 deducted at settlement time (settle_agent_service) when the L402 payment is
@@ -31,9 +32,10 @@ async def request_agent_service(
     budget_service: "BudgetService | None" = None,
 ) -> str:
     """
-    Request a service from an agent. Sends a kind 38401 event referencing the
-    provider's capability and starts the negotiation process. If the provider
-    has an L402 endpoint, you can skip this step and use settle_agent_service.
+    Sends a service request (kind 38401 event) referencing the provider's
+    capability. The provider responds with agreement/settlement terms; settle
+    via settle_agent_service. If the provider has an L402 endpoint, you can
+    skip this step and use settle_agent_service directly.
 
     Args:
         capability_event_id: Event ID of the capability to request

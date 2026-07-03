@@ -6,7 +6,7 @@ namespace LightningEnable.Mcp.Services;
 
 /// <summary>
 /// Service for Agent Service Agreement (ASA) operations on the Nostr network.
-/// Handles discovery, publishing, negotiation, and settlement of agent capabilities.
+/// Handles discovery, publishing, service requests, and settlement of agent capabilities.
 ///
 /// v1 implementation uses the Lightning Enable API for all operations.
 /// TODO: Add direct Nostr relay WebSocket support for discovery and publishing.

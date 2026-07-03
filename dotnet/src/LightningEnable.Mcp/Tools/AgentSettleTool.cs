@@ -23,7 +23,7 @@ public static class AgentSettleTool
         "Uses the same L402 auto-pay flow as access_l402_resource. " +
         "The L402 endpoint URL comes from discover_agent_services or request_agent_service results. " +
         "NOTE: If you are the PROVIDER (selling a service), use create_l402_challenge to generate " +
-        "a Lightning invoice at the negotiated price, share it with the requester, then use " +
+        "a Lightning invoice at the agreed price, share it with the requester, then use " +
         "verify_l402_payment to confirm payment before delivering the service.")]
     public static async Task<string> SettleAgentService(
         [Description("L402 endpoint URL from the service agreement")] string l402Endpoint,

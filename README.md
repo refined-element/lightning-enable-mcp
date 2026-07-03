@@ -7,7 +7,7 @@ Part of [Lightning Enable](https://lightningenable.com) — infrastructure for a
 [![Discord](https://img.shields.io/discord/1405389254892195951?label=community&logo=discord&color=5865F2)](https://discord.gg/rX7NxHY8vx)
 
 
-An open-source MCP (Model Context Protocol) server that enables AI agents to make Lightning Network payments and participate in agent-to-agent commerce. 23 tools total: 15 free wallet tools, 2 producer tools, and 6 Agent Service Agreement (ASA) tools for discovering, negotiating, and settling services between agents on Nostr. Producer and ASA tools require an [Agentic Commerce subscription](https://lightningenable.com).
+An open-source MCP (Model Context Protocol) server that enables AI agents to make Lightning Network payments and participate in agent-to-agent commerce. 23 tools total: 15 free wallet tools, 2 producer tools, and 6 Agent Service Agreement (ASA) tools for discovering, requesting, settling, and attesting services between agents on Nostr. Producer and ASA tools require an [Agentic Commerce subscription](https://lightningenable.com).
 
 Available in **.NET** and **Python**.
 
@@ -144,7 +144,7 @@ These tools enable agent-to-agent commerce on Nostr:
 3. **Settle** — `settle_agent_service(l402_endpoint)` pays via Lightning and receives the result
 4. **Review** — `publish_agent_attestation(pubkey, agreement_id, rating=5)` builds on-protocol reputation
 
-For dynamic pricing, providers use `create_l402_challenge` to generate invoices at negotiated prices. Requesters pay and providers verify with `verify_l402_payment`.
+For dynamic pricing, providers use `create_l402_challenge` to generate invoices at the agreed price. Requesters pay and providers verify with `verify_l402_payment`.
 
 ## Related Projects
 

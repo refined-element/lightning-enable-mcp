@@ -551,8 +551,9 @@ class LightningEnableServer:
                 Tool(
                     name="request_agent_service",
                     description=(
-                        "Request a service from an agent. Sends a kind 38401 event referencing the provider's capability. "
-                        "Starts the negotiation process. If the provider has an L402 endpoint, you can skip this step "
+                        "Sends a service request (kind 38401 event) referencing the provider's capability. "
+                        "The provider responds with agreement/settlement terms; settle via settle_agent_service. "
+                        "If the provider has an L402 endpoint, you can skip this step "
                         "and use settle_agent_service directly. Requires LIGHTNING_ENABLE_API_KEY."
                     ),
                     inputSchema={
@@ -639,7 +640,7 @@ class LightningEnableServer:
                         "Uses the same L402 auto-pay flow as access_l402_resource. "
                         "The L402 endpoint URL comes from discover_agent_services or request_agent_service results. "
                         "NOTE: If you are the PROVIDER (selling a service), use create_l402_challenge to generate "
-                        "a Lightning invoice at the negotiated price, then verify_l402_payment to confirm payment "
+                        "a Lightning invoice at the agreed price, then verify_l402_payment to confirm payment "
                         "before delivering the service."
                     ),
                     inputSchema={

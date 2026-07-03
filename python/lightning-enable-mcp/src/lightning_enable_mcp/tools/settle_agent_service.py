@@ -8,7 +8,7 @@ transaction. Uses the SAME wallet + budget-gating flow as access_l402_resource
 does NOT use the Lightning Enable API key.
 
 For the PROVIDER side (selling a service), use create_l402_challenge to generate
-a Lightning invoice at the negotiated price, then verify_l402_payment to confirm
+a Lightning invoice at the agreed price, then verify_l402_payment to confirm
 payment before delivering the service.
 """
 

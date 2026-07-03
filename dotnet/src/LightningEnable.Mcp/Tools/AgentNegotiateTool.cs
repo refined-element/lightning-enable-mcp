@@ -7,17 +7,18 @@ namespace LightningEnable.Mcp.Tools;
 
 /// <summary>
 /// MCP tool for requesting a service from an agent.
-/// Sends a kind 38401 event referencing the provider's capability to start negotiation.
+/// Sends a kind 38401 event referencing the provider's capability.
 /// </summary>
 [McpServerToolType]
 public static class AgentNegotiateTool
 {
     /// <summary>
-    /// Requests a service from an agent, starting the negotiation process.
+    /// Requests a service from an agent by sending a kind 38401 event.
     /// </summary>
     [McpServerTool(Name = "request_agent_service"), Description(
-        "Request a service from an agent. Sends a kind 38401 event referencing the provider's capability. " +
-        "Starts the negotiation process. If the provider has an L402 endpoint, you can skip this step " +
+        "Sends a service request (kind 38401 event) referencing the provider's capability. " +
+        "The provider responds with agreement/settlement terms; settle via settle_agent_service. " +
+        "If the provider has an L402 endpoint, you can skip this step " +
         "and use settle_agent_service directly.")]
     public static async Task<string> RequestAgentService(
         [Description("Event ID of the capability to request")] string capabilityEventId,

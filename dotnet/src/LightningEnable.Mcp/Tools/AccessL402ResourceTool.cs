@@ -52,7 +52,6 @@ public static class AccessL402ResourceTool
     {
         // Captured for the durable receipt (success path); set from the budget check below.
         var paymentPolicy = "auto (no budget check)";
-        decimal? sessionRemainingUsd = null;
 
         // Rate limiting check
         if (rateLimiter != null && !rateLimiter.IsAllowed("access_l402_resource"))
@@ -99,8 +98,7 @@ public static class AccessL402ResourceTool
         if (budgetService != null)
         {
             var approvalResult = await budgetService.CheckApprovalLevelAsync(maxSats, cancellationToken);
-            paymentPolicy = approvalResult.Level.ToString();
-            sessionRemainingUsd = approvalResult.RemainingSessionBudgetUsd;
+            paymentPolicy = PolicyString(approvalResult.Level);
 
             if (approvalResult.Level == ApprovalLevel.Deny)
             {
@@ -232,8 +230,7 @@ public static class AccessL402ResourceTool
                         RedactUrl(url),
                         result.PaidAmountSats,
                         paymentPolicy,
-                        budgetService?.GetConfig()?.SessionSpent,
-                        sessionRemainingUsd);
+                        budgetService?.GetConfig()?.SessionSpent);
                 }
                 catch { /* audit convenience must never break the payment */ }
             }
@@ -339,6 +336,19 @@ public static class AccessL402ResourceTool
     /// reach console/log history (engineering standard #5). The full URL is still returned
     /// in tool results — the caller already supplied it.
     /// </summary>
+    // Snake_case policy label matching the Python runtime's ApprovalLevel.value, so
+    // receipts.jsonl carries one consistent policy string regardless of which server
+    // (Python or .NET) wrote the line.
+    private static string PolicyString(ApprovalLevel level) => level switch
+    {
+        ApprovalLevel.AutoApprove => "auto_approve",
+        ApprovalLevel.LogAndApprove => "log_and_approve",
+        ApprovalLevel.FormConfirm => "form_confirm",
+        ApprovalLevel.UrlConfirm => "url_confirm",
+        ApprovalLevel.Deny => "deny",
+        _ => level.ToString().ToLowerInvariant(),
+    };
+
     internal static string RedactUrl(string url)
     {
         const int maxLen = 80;

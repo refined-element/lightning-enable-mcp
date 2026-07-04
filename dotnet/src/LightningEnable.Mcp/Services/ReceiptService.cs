@@ -15,7 +15,7 @@ namespace LightningEnable.Mcp.Services;
 public interface IReceiptService
 {
     void LogPayment(string walletLabel, string endpoint, long amountSats, string policy,
-        long? sessionSpentSats, decimal? sessionRemainingUsd);
+        long? sessionSpentSats);
 
     List<JsonNode> ReadRecent(int limit);
 
@@ -26,7 +26,7 @@ public sealed class ReceiptService : IReceiptService
 {
     // Rotate to a single ".1" backup once the live file passes this size, so the
     // log is self-limiting (~2x this cap) without per-write trims.
-    private const long MaxBytes = 5 * 1024 * 1024; // 5 MB
+    private const long DefaultMaxBytes = 5 * 1024 * 1024; // 5 MB
 
     private static readonly object _lock = new();
 
@@ -40,6 +40,7 @@ public sealed class ReceiptService : IReceiptService
     private const string RevokeDefault = "Revoke this wallet's connection or API key in its own app/dashboard.";
 
     private readonly string _path;
+    private readonly long _maxBytes;
 
     public ReceiptService(IBudgetConfigurationService? configService = null)
     {
@@ -47,10 +48,22 @@ public sealed class ReceiptService : IReceiptService
             ?? System.IO.Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".lightning-enable");
         _path = System.IO.Path.Combine(dir, "receipts.jsonl");
+        _maxBytes = DefaultMaxBytes;
     }
 
     // Test-only: write to an explicit path.
-    internal ReceiptService(string receiptsPath) => _path = receiptsPath;
+    internal ReceiptService(string receiptsPath)
+    {
+        _path = receiptsPath;
+        _maxBytes = DefaultMaxBytes;
+    }
+
+    // Test-only: explicit path + a shrunk rotation threshold to exercise rotation cheaply.
+    internal ReceiptService(string receiptsPath, long maxBytes)
+    {
+        _path = receiptsPath;
+        _maxBytes = maxBytes;
+    }
 
     public string Path => _path;
 
@@ -65,7 +78,7 @@ public sealed class ReceiptService : IReceiptService
     }
 
     public void LogPayment(string walletLabel, string endpoint, long amountSats, string policy,
-        long? sessionSpentSats, decimal? sessionRemainingUsd)
+        long? sessionSpentSats)
     {
         try
         {
@@ -73,13 +86,16 @@ public sealed class ReceiptService : IReceiptService
             var receipt = new JsonObject
             {
                 ["type"] = "l402_payment_receipt",
-                ["timestamp"] = DateTime.UtcNow.ToString("o"),
+                // Canonical millisecond-precision UTC "Z" form (parity with the Python side).
+                ["timestamp"] = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
                 ["endpoint"] = endpoint,               // already redacted by the caller
                 ["amountSats"] = amountSats,
                 ["wallet"] = label,
                 ["policy"] = policy,
+                // Post-payment session total (session-remaining is intentionally omitted:
+                // deriving it consistently across runtimes was error-prone — spentSats is
+                // the accurate, unambiguous figure).
                 ["sessionSpentSats"] = sessionSpentSats.HasValue ? JsonValue.Create(sessionSpentSats.Value) : null,
-                ["sessionRemainingUsd"] = sessionRemainingUsd.HasValue ? JsonValue.Create(sessionRemainingUsd.Value) : null,
                 ["revokePath"] = RevokePaths.TryGetValue(label, out var rp) ? rp : RevokeDefault,
             };
             Append(receipt.ToJsonString());
@@ -109,7 +125,7 @@ public sealed class ReceiptService : IReceiptService
         try
         {
             var fi = new FileInfo(_path);
-            if (fi.Exists && fi.Length > MaxBytes)
+            if (fi.Exists && fi.Length > _maxBytes)
             {
                 var backup = _path + ".1";
                 if (File.Exists(backup)) File.Delete(backup);
@@ -134,20 +150,28 @@ public sealed class ReceiptService : IReceiptService
     public List<JsonNode> ReadRecent(int limit)
     {
         var outp = new List<JsonNode>();
+        if (limit <= 0) return outp;
         try
         {
-            if (!File.Exists(_path)) return outp;
-            string[] lines;
-            lock (_lock) { lines = File.ReadAllLines(_path); }
-            var start = Math.Max(0, lines.Length - Math.Max(0, limit));
-            for (var i = start; i < lines.Length; i++)
+            // Read the rotated ".1" backup first (older) then the live file (newer), so
+            // a read right after a rotation still returns recent history.
+            var lines = new List<string>();
+            foreach (var p in new[] { _path + ".1", _path })
+            {
+                if (!File.Exists(p)) continue;
+                lock (_lock) { lines.AddRange(File.ReadAllLines(p)); }
+            }
+
+            var start = Math.Max(0, lines.Count - limit);
+            for (var i = start; i < lines.Count; i++)
             {
                 var l = lines[i].Trim();
                 if (l.Length == 0) continue;
                 try
                 {
                     var node = JsonNode.Parse(l);
-                    if (node != null) outp.Add(node);
+                    // Only surface object lines; skip a torn/interleaved/non-object line.
+                    if (node is JsonObject) outp.Add(node);
                 }
                 catch { /* skip a torn/partial line rather than fail the whole read */ }
             }

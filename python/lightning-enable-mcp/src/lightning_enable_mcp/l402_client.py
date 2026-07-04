@@ -399,9 +399,15 @@ class L402Client:
             )
 
             if response.status_code >= 400:
-                raise L402Error(
+                # The invoice was already paid (preimage obtained) but the authorized
+                # retry failed. Surface the settled amount on the error so the caller
+                # can still record this real spend (budget / history / receipt) instead
+                # of silently losing it.
+                err = L402Error(
                     f"Request failed after payment: {response.status_code} {response.text[:200]}"
                 )
+                err.amount_paid = challenge.amount_sats
+                raise err
 
             return response.text, challenge.amount_sats
 

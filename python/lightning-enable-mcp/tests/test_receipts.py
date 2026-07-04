@@ -19,7 +19,6 @@ def test_log_and_read_roundtrip(tmp_path):
         amount_sats=1,
         policy="auto_approve",
         session_spent_sats=1,
-        session_remaining_usd=149.0,
     )
     recs = svc.read_recent()
     assert len(recs) == 1
@@ -31,6 +30,32 @@ def test_log_and_read_roundtrip(tmp_path):
     assert r["endpoint"] == "https://api.example.com/x"
     assert r["sessionSpentSats"] == 1
     assert "connection" in r["revokePath"].lower()
+    # timestamp is the canonical millisecond Z form (parity with .NET)
+    assert r["timestamp"].endswith("Z")
+
+
+def test_read_recent_zero_or_negative_is_empty(tmp_path):
+    svc = _svc(tmp_path)
+    for i in range(3):
+        svc.log_payment(endpoint=f"https://e/{i}", amount_sats=i, policy="p")
+    assert svc.read_recent(0) == []
+    assert svc.read_recent(-5) == []
+
+
+def test_read_recent_skips_non_object_lines(tmp_path):
+    p = tmp_path / "receipts.jsonl"
+    p.write_text('{"amountSats": 1}\n42\n"a string"\n[1,2]\n{"amountSats": 2}\n', encoding="utf-8")
+    svc = ReceiptService(wallet_label="NWC", receipts_path=p)
+    assert [r["amountSats"] for r in svc.read_recent()] == [1, 2]
+
+
+def test_read_recent_includes_rotated_backup(tmp_path):
+    p = tmp_path / "receipts.jsonl"
+    p.with_name(p.name + ".1").write_text('{"amountSats": 1}\n{"amountSats": 2}\n', encoding="utf-8")
+    p.write_text('{"amountSats": 3}\n', encoding="utf-8")
+    svc = ReceiptService(wallet_label="NWC", receipts_path=p)
+    # backup (older) first, then live (newer)
+    assert [r["amountSats"] for r in svc.read_recent()] == [1, 2, 3]
 
 
 def test_receipt_carries_no_secrets(tmp_path):
@@ -126,3 +151,40 @@ async def test_get_receipts_clamps_limit(tmp_path):
     svc.log_payment(endpoint="https://e", amount_sats=1, policy="p")
     out = json.loads(await get_receipts(limit=99999, receipt_service=svc))
     assert out["success"] is True  # huge limit clamped, no error
+
+
+@pytest.mark.asyncio
+async def test_get_receipts_tolerates_bad_amount(tmp_path):
+    # A stray non-numeric amountSats must never crash the whole read.
+    p = tmp_path / "receipts.jsonl"
+    p.write_text('{"amountSats": "5"}\n{"amountSats": 3}\n', encoding="utf-8")
+    svc = ReceiptService(wallet_label="NWC", receipts_path=p)
+    out = json.loads(await get_receipts(limit=10, receipt_service=svc))
+    assert out["success"] is True
+    assert out["totalSatsInView"] == 3  # numeric one counted, string one skipped
+
+
+@pytest.mark.asyncio
+async def test_split_flow_paid_but_retry_failed_is_receipted(tmp_path):
+    # The wallet paid (preimage obtained) but the retry 500'd: overall failure, but
+    # the real spend must still be recorded in the receipt log.
+    from unittest.mock import AsyncMock
+    from lightning_enable_mcp.tools.access_resource import access_l402_resource
+    from lightning_enable_mcp.l402_client import L402Error
+
+    err = L402Error("Request failed after payment: 500 boom")
+    err.amount_paid = 7
+    client = AsyncMock()
+    client.fetch = AsyncMock(side_effect=err)
+
+    svc = _svc(tmp_path)
+    result = await access_l402_resource(
+        url="https://api.lightningenable.com/x",
+        l402_client=client,
+        receipt_service=svc,
+    )
+    data = json.loads(result)
+    assert data["success"] is False  # the request failed overall...
+    recs = svc.read_recent()          # ...but the spend was receipted
+    assert len(recs) == 1
+    assert recs[0]["amountSats"] == 7

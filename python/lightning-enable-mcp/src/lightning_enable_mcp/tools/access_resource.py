@@ -220,14 +220,18 @@ async def access_l402_resource(
                 )
 
             # Durable, off-context-path spend receipt (redacted endpoint, no secrets).
+            # Best-effort — a receipt failure must NEVER turn a settled payment into
+            # an error result (which a caller might retry, double-paying).
             if receipt_service is not None:
-                receipt_service.log_payment(
-                    endpoint=_redact_url_for_display(url),
-                    amount_sats=amount_paid,
-                    policy=payment_policy,
-                    session_spent_sats=(session_info or {}).get("spentSats"),
-                    session_remaining_usd=(session_info or {}).get("remainingUsd"),
-                )
+                try:
+                    receipt_service.log_payment(
+                        endpoint=_redact_url_for_display(url),
+                        amount_sats=amount_paid,
+                        policy=payment_policy,
+                        session_spent_sats=(session_info or {}).get("spentSats"),
+                    )
+                except Exception:
+                    logger.warning("Receipt logging failed (payment already settled)")
 
         # Format response
         result = {
@@ -248,6 +252,38 @@ async def access_l402_resource(
 
     except Exception as e:
         logger.exception(f"Error accessing {_redact_url_for_display(url)}")
+
+        # Paid-but-retry-failed (store split-flow): the invoice settled — money left the
+        # wallet — even though the resource retry failed. Record the real spend so the
+        # budget/history/receipt don't silently omit it (parity with the .NET runtime).
+        # Best-effort; never mask the original error.
+        amount_paid = getattr(e, "amount_paid", None)
+        if amount_paid:
+            try:
+                if budget_service:
+                    budget_service.record_spend(amount_paid)
+                    budget_service.record_payment_time()
+                if payment_history_service:
+                    payment_history_service.record_payment(
+                        url=_redact_url_for_display(url),
+                        amount_sats=amount_paid,
+                        status="paid_retry_failed",
+                    )
+                if receipt_service is not None:
+                    spent = None
+                    if budget_service:
+                        try:
+                            spent = budget_service.get_status()["session"]["spentSats"]
+                        except Exception:
+                            spent = None
+                    receipt_service.log_payment(
+                        endpoint=_redact_url_for_display(url),
+                        amount_sats=amount_paid,
+                        policy=payment_policy,
+                        session_spent_sats=spent,
+                    )
+            except Exception:
+                logger.warning("Failed to record paid-but-retry-failed spend")
 
         error_result = {
             "success": False,

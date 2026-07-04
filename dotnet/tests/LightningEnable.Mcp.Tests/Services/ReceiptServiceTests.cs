@@ -17,7 +17,7 @@ public class ReceiptServiceTests
     public void LogPayment_ThenRead_Roundtrips()
     {
         var svc = new ReceiptService(TempReceiptsPath());
-        svc.LogPayment("NWC", "https://api.example.com/x", 1, "AutoApprove", 1, 149.0m);
+        svc.LogPayment("NWC", "https://api.example.com/x", 1, "auto_approve", 1);
 
         var recs = svc.ReadRecent(20);
         recs.Should().HaveCount(1);
@@ -25,9 +25,11 @@ public class ReceiptServiceTests
         o["type"]!.GetValue<string>().Should().Be("l402_payment_receipt");
         o["amountSats"]!.GetValue<long>().Should().Be(1);
         o["wallet"]!.GetValue<string>().Should().Be("NWC");
-        o["policy"]!.GetValue<string>().Should().Be("AutoApprove");
+        o["policy"]!.GetValue<string>().Should().Be("auto_approve");
         o["sessionSpentSats"]!.GetValue<long>().Should().Be(1);
         o["revokePath"]!.GetValue<string>().ToLowerInvariant().Should().Contain("connection");
+        // canonical millisecond Z timestamp (parity with Python)
+        o["timestamp"]!.GetValue<string>().Should().EndWith("Z");
     }
 
     [Fact]
@@ -35,7 +37,7 @@ public class ReceiptServiceTests
     {
         var path = TempReceiptsPath();
         var svc = new ReceiptService(path);
-        svc.LogPayment("NWC", "https://api.example.com/x", 1, "AutoApprove", null, null);
+        svc.LogPayment("NWC", "https://api.example.com/x", 1, "auto_approve", null);
 
         var raw = File.ReadAllText(path);
         foreach (var forbidden in new[] { "preimage", "macaroon", "nostr+walletconnect", "connectionString" })
@@ -46,11 +48,19 @@ public class ReceiptServiceTests
     public void ReadRecent_NewestLast_RespectsLimit()
     {
         var svc = new ReceiptService(TempReceiptsPath());
-        for (var i = 0; i < 5; i++) svc.LogPayment("NWC", $"https://e/{i}", i, "p", null, null);
+        for (var i = 0; i < 5; i++) svc.LogPayment("NWC", $"https://e/{i}", i, "p", null);
 
         var recs = svc.ReadRecent(2);
         recs.Should().HaveCount(2);
         recs[^1].AsObject()["amountSats"]!.GetValue<long>().Should().Be(4);
+    }
+
+    [Fact]
+    public void ReadRecent_ZeroLimit_IsEmpty()
+    {
+        var svc = new ReceiptService(TempReceiptsPath());
+        svc.LogPayment("NWC", "https://e", 1, "p", null);
+        svc.ReadRecent(0).Should().BeEmpty();
     }
 
     [Fact]
@@ -60,14 +70,39 @@ public class ReceiptServiceTests
     }
 
     [Fact]
-    public void ReadRecent_TornLine_IsSkipped()
+    public void ReadRecent_NonObjectLine_IsSkipped()
     {
         var path = TempReceiptsPath();
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        File.WriteAllText(path, "{\"amountSats\":1}\nnot valid json\n{\"amountSats\":2}\n");
+        File.WriteAllText(path, "{\"amountSats\":1}\n42\n\"a string\"\n[1,2]\n{\"amountSats\":2}\n");
 
         var recs = new ReceiptService(path).ReadRecent(20);
         recs.Select(r => r.AsObject()["amountSats"]!.GetValue<long>()).Should().Equal(1, 2);
+    }
+
+    [Fact]
+    public void ReadRecent_IncludesRotatedBackup()
+    {
+        var path = TempReceiptsPath();
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path + ".1", "{\"amountSats\":1}\n{\"amountSats\":2}\n");
+        File.WriteAllText(path, "{\"amountSats\":3}\n");
+
+        var recs = new ReceiptService(path).ReadRecent(20);
+        recs.Select(r => r.AsObject()["amountSats"]!.GetValue<long>()).Should().Equal(1, 2, 3);
+    }
+
+    [Fact]
+    public void Rotation_BoundsTheFile_AndPreservesHistoryInBackup()
+    {
+        var path = TempReceiptsPath();
+        // Tiny cap so a handful of appends trips rotation.
+        var svc = new ReceiptService(path, maxBytes: 120);
+        for (var i = 0; i < 30; i++) svc.LogPayment("NWC", $"https://e/{i}", i, "auto_approve", null);
+
+        File.Exists(path + ".1").Should().BeTrue("the live file must rotate to a .1 backup once past the cap");
+        // read merges backup + live, so recent history survives rotation
+        svc.ReadRecent(50).Should().NotBeEmpty();
     }
 
     [Fact]
@@ -80,7 +115,7 @@ public class ReceiptServiceTests
         File.WriteAllText(aFile, "x");
 
         var svc = new ReceiptService(Path.Combine(aFile, "sub", "receipts.jsonl"));
-        var act = () => svc.LogPayment("NWC", "https://e", 1, "p", null, null);
+        var act = () => svc.LogPayment("NWC", "https://e", 1, "p", null);
         act.Should().NotThrow();
     }
 
@@ -88,8 +123,8 @@ public class ReceiptServiceTests
     public void GetReceiptsTool_Summarizes()
     {
         var svc = new ReceiptService(TempReceiptsPath());
-        svc.LogPayment("NWC", "https://e/1", 2, "AutoApprove", null, null);
-        svc.LogPayment("NWC", "https://e/2", 3, "AutoApprove", null, null);
+        svc.LogPayment("NWC", "https://e/1", 2, "auto_approve", null);
+        svc.LogPayment("NWC", "https://e/2", 3, "auto_approve", null);
 
         var json = JsonDocument.Parse(GetReceiptsTool.GetReceipts(limit: 10, receiptService: svc)).RootElement;
         json.GetProperty("success").GetBoolean().Should().BeTrue();

@@ -32,7 +32,15 @@ async def get_receipts(
         limit = 20
 
     receipts = receipt_service.read_recent(limit)
-    total_sats = sum((r.get("amountSats") or 0) for r in receipts)
+    # read_recent returns only dicts; still coerce defensively so a stray non-numeric
+    # amountSats (hand-edit / format drift) can never crash the whole read.
+    total_sats = 0
+    for r in receipts:
+        v = r.get("amountSats")
+        if isinstance(v, bool):
+            continue
+        if isinstance(v, (int, float)):
+            total_sats += int(v)
 
     return json.dumps({
         "success": True,

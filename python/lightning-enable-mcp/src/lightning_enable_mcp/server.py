@@ -91,7 +91,10 @@ class LightningEnableServer:
         self.l402_client: L402Client | None = None
         self.budget_service: BudgetService | None = None  # Single source of truth for limits
         self.payment_history_service: PaymentHistoryService | None = None  # Session audit trail
-        self.receipt_service: ReceiptService | None = None  # Durable spend receipts (~/.lightning-enable/receipts.jsonl)
+        # Always available so get_receipts can read the durable log even without a
+        # wallet configured (the "pull the plug" audit moment). The wallet label is
+        # upgraded from "unknown" once a wallet is initialized (used only on write).
+        self.receipt_service: ReceiptService | None = ReceiptService(wallet_label="unknown")
         self._nwc_config: NWCConfig | None = None  # Store NWC config for pubkey access
         self.api_client: LightningEnableApiClient | None = None  # For L402 producer tools
 

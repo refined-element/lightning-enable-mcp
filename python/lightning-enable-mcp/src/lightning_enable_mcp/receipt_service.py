@@ -23,6 +23,12 @@ from typing import Optional
 
 logger = logging.getLogger("lightning-enable-mcp.receipts")
 
+
+def _utc_now_iso() -> str:
+    """UTC timestamp, canonical millisecond-precision Z form (matches the .NET side)."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
 RECEIPTS_FILENAME = "receipts.jsonl"
 
 # Bound disk use: rotate to a single ``.1`` backup once the live file passes this
@@ -71,7 +77,6 @@ class ReceiptService:
         amount_sats: int,
         policy: str,
         session_spent_sats: Optional[int] = None,
-        session_remaining_usd: Optional[float] = None,
         kind: str = "l402_payment_receipt",
     ) -> None:
         """Append one payment receipt. Best-effort — never raises into the payment path.
@@ -80,37 +85,47 @@ class ReceiptService:
         """
         receipt = {
             "type": kind,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": _utc_now_iso(),
             "endpoint": endpoint,
             "amountSats": amount_sats,
             "wallet": self._wallet_label,
             "policy": policy,
+            # Post-payment session total (session_remaining is intentionally omitted:
+            # deriving it consistently across runtimes was error-prone — spentSats is
+            # the accurate, unambiguous figure).
             "sessionSpentSats": session_spent_sats,
-            "sessionRemainingUsd": session_remaining_usd,
             "revokePath": _REVOKE_PATHS.get(self._wallet_label, _REVOKE_DEFAULT),
         }
         self._append(receipt)
 
     def read_recent(self, limit: int = 20) -> list[dict]:
         """Return the most recent receipts (newest last). Tolerant of a missing/partial file."""
-        try:
-            if not self._path.exists():
-                return []
-            with open(self._path, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-        except Exception as e:  # pragma: no cover - defensive
-            logger.warning("Failed to read receipts: %s", e)
+        if limit <= 0:
             return []
 
+        # Read the rotated ".1" backup first (older) then the live file (newer), so a
+        # read right after a rotation still returns recent history rather than the
+        # near-empty fresh file.
+        lines: list[str] = []
+        for p in (self._path.with_name(self._path.name + ".1"), self._path):
+            try:
+                if p.exists():
+                    with open(p, "r", encoding="utf-8") as f:
+                        lines.extend(f.readlines())
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning("Failed to read receipts from %s: %s", p, e)
+
         out: list[dict] = []
-        for line in lines[-max(0, limit):]:
+        for line in lines[-limit:]:
             line = line.strip()
             if not line:
                 continue
             try:
-                out.append(json.loads(line))
+                obj = json.loads(line)
             except Exception:
                 continue  # skip a torn/partial line rather than fail the whole read
+            if isinstance(obj, dict):  # skip non-object lines (hand-edits / interleaved appends)
+                out.append(obj)
         return out
 
     # ---- internals ----

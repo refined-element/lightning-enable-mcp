@@ -149,11 +149,19 @@ class LightningEnableServer:
                         "Self-test the Lightning wallet by paying the public 1-sat L402 test "
                         "endpoint end to end. Proves the wallet is connected, returns a preimage, "
                         "and can complete an L402 payment. Costs about 1 satoshi. Use this to "
-                        "verify setup or answer 'is my wallet actually working?'."
+                        "verify setup or answer 'is my wallet actually working?'. If your budget "
+                        "config requires confirmation for this amount, the verdict is "
+                        "'needs_confirmation' and the server prints a code to its console — re-run "
+                        "with confirmation_nonce set to that code."
                     ),
                     inputSchema={
                         "type": "object",
-                        "properties": {},
+                        "properties": {
+                            "confirmation_nonce": {
+                                "type": "string",
+                                "description": "Confirmation code the human read from the server console, if a prior call returned test='needs_confirmation'. Omit on the first call.",
+                            },
+                        },
                         "required": [],
                     },
                 ),
@@ -718,7 +726,11 @@ class LightningEnableServer:
                     "get_agent_reputation",
                 }
 
-                if self.wallet is None and name not in producer_tools:
+                # test_l402_payment is allowed through even without a wallet so it can
+                # return its own structured no_wallet verdict (parity with .NET), instead
+                # of this generic guard string (which also wrongly suggests OpenNode, which
+                # cannot do L402).
+                if self.wallet is None and name not in producer_tools and name != "test_l402_payment":
                     return [
                         TextContent(
                             type="text",
@@ -744,6 +756,7 @@ class LightningEnableServer:
 
                 elif name == "test_l402_payment":
                     result = await test_l402_payment(
+                        confirmation_nonce=arguments.get("confirmation_nonce"),
                         l402_client=self.l402_client,
                         budget_service=self.budget_service,
                         payment_history_service=self.payment_history_service,

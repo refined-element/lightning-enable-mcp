@@ -30,6 +30,7 @@ from .nwc_wallet import NWCWallet, NWCConfig
 from .opennode_wallet import OpenNodeWallet
 from .strike_wallet import StrikeWallet
 from .tools.access_resource import access_l402_resource
+from .tools.test_l402_payment import test_l402_payment
 from .tools.check_invoice_status import check_invoice_status
 from .tools.confirm_payment import confirm_payment
 from .tools.create_invoice import create_invoice
@@ -140,6 +141,20 @@ class LightningEnableServer:
                             },
                         },
                         "required": ["url"],
+                    },
+                ),
+                Tool(
+                    name="test_l402_payment",
+                    description=(
+                        "Self-test the Lightning wallet by paying the public 1-sat L402 test "
+                        "endpoint end to end. Proves the wallet is connected, returns a preimage, "
+                        "and can complete an L402 payment. Costs about 1 satoshi. Use this to "
+                        "verify setup or answer 'is my wallet actually working?'."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {},
+                        "required": [],
                     },
                 ),
                 Tool(
@@ -722,6 +737,13 @@ class LightningEnableServer:
                         body=arguments.get("body"),
                         max_sats=arguments.get("max_sats", 1000),
                         confirmation_nonce=arguments.get("confirmation_nonce"),
+                        l402_client=self.l402_client,
+                        budget_service=self.budget_service,
+                        payment_history_service=self.payment_history_service,
+                    )
+
+                elif name == "test_l402_payment":
+                    result = await test_l402_payment(
                         l402_client=self.l402_client,
                         budget_service=self.budget_service,
                         payment_history_service=self.payment_history_service,

@@ -99,8 +99,19 @@ class TestL402SelfTest:
         assert data["reason"] == "no_wallet"
         assert "NWC_CONNECTION_STRING" in data["howToFix"]
 
+    def test_interpret_already_paid_is_inconclusive(self):
+        # L402 idempotency: re-testing within ~60s reuses the same invoice, which the
+        # wallet refuses to double-pay. The wallet is fine — not a failure.
+        raw = json.dumps({"success": False, "error": "Payment failed: Invoice has already been paid"})
+        data = json.loads(interpret(raw, "endpoint"))
+        assert data["test"] == "inconclusive"
+        assert data["walletWorking"] is None  # not a broken wallet
+        assert "60 second" in data["message"]
+
     @pytest.mark.parametrize("error,reason", [
         ("Wallet not configured. Set STRIKE_API_KEY", "no_wallet"),
+        ("", "network"),                                                # blank (e.g. ReadTimeout) -> network, not unknown
+        ("   ", "network"),
         ("Rate limit exceeded", "rate_limited"),                        # must NOT be budget_block
         ("timed out waiting for preimage from relay", "network"),       # network before preimage
         ("Payment succeeded but no preimage was returned", "no_preimage"),

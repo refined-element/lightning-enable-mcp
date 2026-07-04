@@ -184,8 +184,30 @@ public class TestL402PaymentToolTests
         verdict.GetProperty("reason").GetString().Should().Be("unexpected");
     }
 
+    [Fact]
+    public void Interpret_AlreadyPaid_IsInconclusive_NotBrokenWallet()
+    {
+        // L402 idempotency: re-testing within ~60s reuses the same invoice, which
+        // the wallet refuses to double-pay. The wallet is fine — not a failure.
+        var raw = JsonSerializer.Serialize(new
+        {
+            success = false,
+            error = "Payment failed: Invoice has already been paid"
+        });
+
+        var verdict = JsonDocument.Parse(TestL402PaymentTool.Interpret(raw, "e")).RootElement;
+
+        verdict.GetProperty("test").GetString().Should().Be("inconclusive");
+        verdict.GetProperty("message").GetString().Should().Contain("60 second");
+        // must NOT claim the wallet is broken
+        verdict.TryGetProperty("walletWorking", out var ww).Should().BeTrue();
+        (ww.ValueKind == JsonValueKind.Null).Should().BeTrue();
+    }
+
     [Theory]
     [InlineData("Wallet not configured. Set STRIKE_API_KEY...", "no_wallet")]
+    [InlineData("", "network")]                                                  // blank (e.g. ReadTimeout) -> network, not unknown
+    [InlineData("   ", "network")]
     [InlineData("Rate limit exceeded", "rate_limited")]                          // must NOT be budget_block
     [InlineData("timed out waiting for preimage from relay", "network")]         // network before preimage
     [InlineData("Payment succeeded but no preimage was returned", "no_preimage")]

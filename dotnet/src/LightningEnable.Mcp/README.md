@@ -2,7 +2,7 @@
 
 # Lightning Enable MCP Server
 
-A Model Context Protocol (MCP) server that enables AI agents to make Lightning Network payments. 15 tools work out of the box (free, no subscription). 8 tools require an [Agentic Commerce subscription](https://lightningenable.com) (from $99/mo) and `LIGHTNING_ENABLE_API_KEY`: 2 producer tools (`create_l402_challenge`, `verify_l402_payment`) and 6 Agent Service Agreement tools for agent-to-agent commerce over Nostr.
+A Model Context Protocol (MCP) server that enables AI agents to make Lightning Network payments. 16 tools work out of the box (free, no subscription). 8 tools require an [Agentic Commerce subscription](https://lightningenable.com) (from $99/mo) and `LIGHTNING_ENABLE_API_KEY`: 2 producer tools (`create_l402_challenge`, `verify_l402_payment`) and 6 Agent Service Agreement tools for agent-to-agent commerce over Nostr.
 
 ## Overview
 
@@ -246,6 +246,13 @@ Fetches a URL, automatically paying any L402 challenge. Requires a wallet that r
 - `headers`: Optional headers as JSON object
 - `body`: Optional request body
 - `maxSats`: Maximum sats to pay. Default: 1000
+
+### test_l402_payment
+
+Self-tests the wallet by paying the public 1-sat L402 test endpoint (`/l402/test/ping`) end to end. Proves the wallet is connected, returns a preimage, and can complete an L402 payment — the one-line answer to "is my wallet actually working?". Costs about 1 satoshi. Returns a plain verdict (`passed` / `needs_confirmation` / `inconclusive` / `failed` with a reason code). If your budget config requires confirmation for this amount, re-run with `confirmationNonce` set to the code the server prints to its console.
+
+**Parameters:**
+- `confirmationNonce`: Confirmation code from the server console, if a prior call returned `test="needs_confirmation"`. Omit on the first call.
 
 ### pay_l402_challenge
 

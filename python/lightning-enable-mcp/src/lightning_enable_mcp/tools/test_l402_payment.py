@@ -54,6 +54,15 @@ def _diagnose(error: str) -> tuple[str, str]:
     """
     e = (error or "").lower()
 
+    # A blank error usually means a client-side timeout / dropped connection (e.g. an
+    # httpx.ReadTimeout stringifies to empty) — surface that, not "unknown".
+    if not e.strip():
+        return (
+            "network",
+            "The request failed without a specific error — usually a timeout or a dropped connection. "
+            "Check your network / the NWC relay is reachable, then retry.",
+        )
+
     if "not configured" in e or "no wallet" in e or "not initialized" in e:
         return (
             "no_wallet",
@@ -195,6 +204,23 @@ def interpret(raw: str, endpoint: str) -> str:
             ),
             "endpoint": endpoint,
             "walletWorking": False,
+        }, indent=2)
+
+    # (2.5) Idempotency: the same 1-sat invoice was already paid moments ago (L402
+    # reuses it for ~60s to prevent double-charges). NOT a wallet failure — it's
+    # evidence a prior payment succeeded; the wallet is fine.
+    err_peek = (data.get("error") or "").lower()
+    if "already" in err_peek and "paid" in err_peek:
+        return json.dumps({
+            "success": False,
+            "test": "inconclusive",
+            "message": (
+                "The 1-sat test invoice was already paid moments ago — L402 reuses the same invoice "
+                "for ~60 seconds to prevent double-charges. Your wallet is fine; wait a minute and run "
+                "the test again for a fresh payment."
+            ),
+            "endpoint": endpoint,
+            "walletWorking": None,
         }, indent=2)
 
     # (3) Otherwise diagnose from the error string.

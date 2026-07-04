@@ -180,6 +180,25 @@ public static class TestL402PaymentTool
             });
         }
 
+        // (3.5) Idempotency: the same 1-sat invoice was already paid moments ago
+        // (L402 reuses it for ~60s to prevent double-charges). NOT a wallet failure —
+        // it's evidence a prior payment succeeded; the wallet is fine.
+        var errPeek = (root.TryGetProperty("error", out var epk) ? epk.GetString() : "") ?? "";
+        var errLow = errPeek.ToLowerInvariant();
+        if (errLow.Contains("already") && errLow.Contains("paid"))
+        {
+            return JsonSerializer.Serialize(new
+            {
+                success = false,
+                test = "inconclusive",
+                message = "The 1-sat test invoice was already paid moments ago — L402 reuses the same "
+                    + "invoice for ~60 seconds to prevent double-charges. Your wallet is fine; wait a "
+                    + "minute and run the test again for a fresh payment.",
+                endpoint,
+                walletWorking = (bool?)null
+            });
+        }
+
         // (4) Otherwise diagnose from the error string.
         var error = root.TryGetProperty("error", out var e) ? (e.GetString() ?? "") : "";
         var (reason, fix) = Diagnose(error);
@@ -218,6 +237,13 @@ public static class TestL402PaymentTool
     internal static (string reason, string fix) Diagnose(string error)
     {
         var e = (error ?? string.Empty).ToLowerInvariant();
+
+        // A blank error usually means a client-side timeout / dropped connection
+        // (e.g. an HTTP ReadTimeout stringifies to empty) — surface that, not "unknown".
+        if (string.IsNullOrWhiteSpace(e))
+            return ("network",
+                "The request failed without a specific error — usually a timeout or a dropped connection. "
+                + "Check your network / the NWC relay is reachable, then retry.");
 
         if (e.Contains("not configured") || e.Contains("no wallet") || e.Contains("not initialized"))
             return ("no_wallet",

@@ -7,7 +7,7 @@ Part of [Lightning Enable](https://lightningenable.com) — infrastructure for a
 [![Discord](https://img.shields.io/discord/1405389254892195951?label=community&logo=discord&color=5865F2)](https://discord.gg/rX7NxHY8vx)
 
 
-An open-source MCP (Model Context Protocol) server that enables AI agents to make Lightning Network payments and participate in agent-to-agent commerce. 23 tools total: 15 free wallet tools, 2 producer tools, and 6 Agent Service Agreement (ASA) tools for discovering, requesting, settling, and attesting services between agents on Nostr. Producer and ASA tools require an [Agentic Commerce subscription](https://lightningenable.com).
+An open-source MCP (Model Context Protocol) server that enables AI agents to make Lightning Network payments and participate in agent-to-agent commerce. 24 tools total: 16 free wallet tools, 2 producer tools, and 6 Agent Service Agreement (ASA) tools for discovering, requesting, settling, and attesting services between agents on Nostr. Producer and ASA tools require an [Agentic Commerce subscription](https://lightningenable.com).
 
 Available in **.NET** and **Python**.
 
@@ -104,7 +104,7 @@ Buy me a Lightning Enable t-shirt from store.lightningenable.com
 
 - [.NET README](dotnet/src/LightningEnable.Mcp/README.md) — Full .NET documentation
 - [Python README](python/lightning-enable-mcp/README.md) — Full Python documentation
-- [Full Docs](https://docs.lightningenable.com/products/l402-microtransactions/mcp-complete-guide) — Complete guide with all 23 tools
+- [Full Docs](https://docs.lightningenable.com/products/l402-microtransactions/mcp-complete-guide) — Complete guide with all 24 tools
 - [AI Spending Security](https://docs.lightningenable.com/products/l402-microtransactions/ai-spending-security) — Budget controls and safety
 
 ## Repository Structure

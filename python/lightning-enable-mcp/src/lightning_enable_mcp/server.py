@@ -31,6 +31,8 @@ from .opennode_wallet import OpenNodeWallet
 from .strike_wallet import StrikeWallet
 from .tools.access_resource import access_l402_resource
 from .tools.test_l402_payment import test_l402_payment
+from .tools.get_receipts import get_receipts
+from .receipt_service import ReceiptService, wallet_label_from
 from .tools.check_invoice_status import check_invoice_status
 from .tools.confirm_payment import confirm_payment
 from .tools.create_invoice import create_invoice
@@ -89,6 +91,7 @@ class LightningEnableServer:
         self.l402_client: L402Client | None = None
         self.budget_service: BudgetService | None = None  # Single source of truth for limits
         self.payment_history_service: PaymentHistoryService | None = None  # Session audit trail
+        self.receipt_service: ReceiptService | None = None  # Durable spend receipts (~/.lightning-enable/receipts.jsonl)
         self._nwc_config: NWCConfig | None = None  # Store NWC config for pubkey access
         self.api_client: LightningEnableApiClient | None = None  # For L402 producer tools
 
@@ -218,6 +221,26 @@ class LightningEnableServer:
                             "since": {
                                 "type": "string",
                                 "description": "ISO timestamp to filter payments from",
+                            },
+                        },
+                    },
+                ),
+                Tool(
+                    name="get_receipts",
+                    description=(
+                        "Read the durable, append-only payment receipt log "
+                        "(~/.lightning-enable/receipts.jsonl). Unlike get_payment_history "
+                        "(in-memory, this session only), receipts persist across sessions and "
+                        "include the spend policy and how to revoke the wallet. Use to review "
+                        "what an agent has spent and how to pull the plug."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "limit": {
+                                "type": "integer",
+                                "description": "Maximum number of recent receipts to return (1-200)",
+                                "default": 20,
                             },
                         },
                     },
@@ -730,7 +753,12 @@ class LightningEnableServer:
                 # return its own structured no_wallet verdict (parity with .NET), instead
                 # of this generic guard string (which also wrongly suggests OpenNode, which
                 # cannot do L402).
-                if self.wallet is None and name not in producer_tools and name != "test_l402_payment":
+                if (
+                    self.wallet is None
+                    and name not in producer_tools
+                    and name != "test_l402_payment"
+                    and name != "get_receipts"  # reads the durable log; no wallet needed
+                ):
                     return [
                         TextContent(
                             type="text",
@@ -752,6 +780,13 @@ class LightningEnableServer:
                         l402_client=self.l402_client,
                         budget_service=self.budget_service,
                         payment_history_service=self.payment_history_service,
+                        receipt_service=self.receipt_service,
+                    )
+
+                elif name == "get_receipts":
+                    result = await get_receipts(
+                        limit=arguments.get("limit", 20),
+                        receipt_service=self.receipt_service,
                     )
 
                 elif name == "test_l402_payment":
@@ -1081,6 +1116,10 @@ class LightningEnableServer:
 
             # Initialize the PaymentHistoryService (separate session audit trail).
             self.payment_history_service = get_payment_history_service()
+
+            # Durable, append-only spend receipts (off the agent's context path).
+            # Wallet label is fixed for the session, so bake it in at init.
+            self.receipt_service = ReceiptService(wallet_label=wallet_label_from(self.wallet))
 
             # Initialize L402 client
             self.l402_client = L402Client(wallet=self.wallet)

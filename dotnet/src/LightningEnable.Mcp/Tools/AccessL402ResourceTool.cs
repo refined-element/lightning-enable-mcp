@@ -46,8 +46,14 @@ public static class AccessL402ResourceTool
         IPriceService? priceService = null,
         IPaymentHistoryService? paymentHistory = null,
         IRateLimiter? rateLimiter = null,
+        IReceiptService? receiptService = null,
+        IWalletService? walletService = null,
         CancellationToken cancellationToken = default)
     {
+        // Captured for the durable receipt (success path); set from the budget check below.
+        var paymentPolicy = "auto (no budget check)";
+        decimal? sessionRemainingUsd = null;
+
         // Rate limiting check
         if (rateLimiter != null && !rateLimiter.IsAllowed("access_l402_resource"))
         {
@@ -93,6 +99,8 @@ public static class AccessL402ResourceTool
         if (budgetService != null)
         {
             var approvalResult = await budgetService.CheckApprovalLevelAsync(maxSats, cancellationToken);
+            paymentPolicy = approvalResult.Level.ToString();
+            sessionRemainingUsd = approvalResult.RemainingSessionBudgetUsd;
 
             if (approvalResult.Level == ApprovalLevel.Deny)
             {
@@ -211,6 +219,24 @@ public static class AccessL402ResourceTool
                 body,
                 maxSats,
                 cancellationToken);
+
+            // Durable, off-context-path spend receipt whenever a payment actually
+            // settled (covers both the 200 path and the paid-but-retry-failed path).
+            // Redacted endpoint, no secrets; best-effort, never breaks the payment.
+            if (receiptService != null && result.PaidAmountSats > 0)
+            {
+                try
+                {
+                    receiptService.LogPayment(
+                        walletService?.ProviderName ?? "unknown",
+                        RedactUrl(url),
+                        result.PaidAmountSats,
+                        paymentPolicy,
+                        budgetService?.GetConfig()?.SessionSpent,
+                        sessionRemainingUsd);
+                }
+                catch { /* audit convenience must never break the payment */ }
+            }
 
             if (result.Success)
             {

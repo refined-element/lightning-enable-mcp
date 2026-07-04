@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from ..budget_service import BudgetService
     from ..payment_history_service import PaymentHistoryService
     from ..l402_client import L402Client
+    from ..receipt_service import ReceiptService
 
 from ..config import ApprovalLevel
 from . import sanitize_error
@@ -60,6 +61,7 @@ async def access_l402_resource(
     l402_client: "L402Client | None" = None,
     budget_service: "BudgetService | None" = None,
     payment_history_service: "PaymentHistoryService | None" = None,
+    receipt_service: "ReceiptService | None" = None,
 ) -> str:
     """
     Fetch a URL with automatic L402 payment handling.
@@ -97,12 +99,17 @@ async def access_l402_resource(
     if method not in ("GET", "POST", "PUT", "DELETE"):
         return f"Error: Invalid HTTP method: {method}"
 
+    # Captured for the durable receipt (success path). Overwritten with the real
+    # approval tier once the budget check runs.
+    payment_policy = "auto (no budget check)"
+
     try:
         # BudgetService is the single source of truth for spending limits + the
         # out-of-band confirmation flow.
         if budget_service:
             # Check approval level using new multi-tier system
             result = await budget_service.check_approval_level(max_sats)
+            payment_policy = getattr(result.level, "value", str(result.level))
 
             if result.level == ApprovalLevel.DENY:
                 return json.dumps({
@@ -210,6 +217,16 @@ async def access_l402_resource(
                     url=_redact_url_for_display(url),
                     amount_sats=amount_paid,
                     status="success",
+                )
+
+            # Durable, off-context-path spend receipt (redacted endpoint, no secrets).
+            if receipt_service is not None:
+                receipt_service.log_payment(
+                    endpoint=_redact_url_for_display(url),
+                    amount_sats=amount_paid,
+                    policy=payment_policy,
+                    session_spent_sats=(session_info or {}).get("spentSats"),
+                    session_remaining_usd=(session_info or {}).get("remainingUsd"),
                 )
 
         # Format response

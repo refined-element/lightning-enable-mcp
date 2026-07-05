@@ -55,6 +55,7 @@ class TestLightningEnableServer:
             "pay_l402_challenge",
             "check_wallet_balance",
             "get_payment_history",
+            "get_receipts",
             "configure_budget",
             "pay_invoice",
             "create_invoice",
@@ -77,7 +78,7 @@ class TestLightningEnableServer:
         }
 
         assert tool_names == expected_tools
-        assert len(tool_names) == 24
+        assert len(tool_names) == 25
 
     @pytest.mark.asyncio
     async def test_services_not_initialized_without_nwc(self):

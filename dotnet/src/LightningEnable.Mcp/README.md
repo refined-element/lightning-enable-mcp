@@ -2,7 +2,7 @@
 
 # Lightning Enable MCP Server
 
-A Model Context Protocol (MCP) server that enables AI agents to make Lightning Network payments. 16 tools work out of the box (free, no subscription). 8 tools require an [Agentic Commerce subscription](https://lightningenable.com) (from $99/mo) and `LIGHTNING_ENABLE_API_KEY`: 2 producer tools (`create_l402_challenge`, `verify_l402_payment`) and 6 Agent Service Agreement tools for agent-to-agent commerce over Nostr.
+A Model Context Protocol (MCP) server that enables AI agents to make Lightning Network payments. 17 tools work out of the box (free, no subscription). 8 tools require an [Agentic Commerce subscription](https://lightningenable.com) (from $99/mo) and `LIGHTNING_ENABLE_API_KEY`: 2 producer tools (`create_l402_challenge`, `verify_l402_payment`) and 6 Agent Service Agreement tools for agent-to-agent commerce over Nostr.
 
 ## Overview
 
@@ -190,6 +190,15 @@ Checks the connected wallet balance and session spending.
 **Parameters:** None
 
 **Returns:** Wallet balance in satoshis, session spending summary, budget remaining
+
+### get_receipts
+
+Reads the durable, append-only payment receipt log at `~/.lightning-enable/receipts.jsonl`. Every L402 payment appends one receipt (endpoint, amount, wallet, spend policy, session spend, and how to revoke the wallet). Unlike `get_payment_history` (in-memory, this session only), receipts persist across sessions — the audit + "pull the plug" record. Receipts never contain secrets (no preimage, macaroon, or connection string).
+
+**Parameters:**
+- `limit`: Maximum number of recent receipts to return (1-200). Default: 20
+
+**Returns:** `{ success, count, totalSatsInView, logFile, receipts, note }` — the recent receipts plus a spend total and the log-file path.
 
 ### get_payment_history
 

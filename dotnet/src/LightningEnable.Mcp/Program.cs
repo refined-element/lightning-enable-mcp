@@ -212,6 +212,8 @@ public class Program
         builder.Services.AddSingleton<IBudgetService, BudgetService>();
         builder.Services.AddSingleton<IPaymentHistoryService, PaymentHistoryService>();
         builder.Services.AddSingleton<IRateLimiter, RateLimiter>();
+        // Durable, append-only spend receipts (~/.lightning-enable/receipts.jsonl).
+        builder.Services.AddSingleton<IReceiptService, ReceiptService>();
 
         // Configure MCP server with stdio transport
         builder.Services

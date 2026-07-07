@@ -331,6 +331,107 @@ public class CreateAccountToolTests : IDisposable
         saved["currency"]!.GetValue<string>().Should().Be("USD");
     }
 
+    // ----- Config-clobber protection -----
+
+    [Fact]
+    public void MergeApiKeyIntoConfig_MalformedNonEmptyFile_IsNotClobbered()
+    {
+        var path = NewTempPath();
+        var original = "{ \"wallets\": {\"nwcConnectionString\": \"keep-me\"} THIS IS BROKEN";
+        File.WriteAllText(path, original);
+
+        var (ok, err) = CreateAccountTool.MergeApiKeyIntoConfig(path, "le_new");
+
+        ok.Should().BeFalse();
+        err.Should().Contain("unparseable");
+        File.ReadAllText(path).Should().Be(original, "a malformed non-empty config must never be overwritten");
+    }
+
+    [Fact]
+    public void MergeApiKeyIntoConfig_NonObjectJson_IsNotClobbered()
+    {
+        var path = NewTempPath();
+        File.WriteAllText(path, "[1,2,3]");
+
+        var (ok, err) = CreateAccountTool.MergeApiKeyIntoConfig(path, "le_new");
+
+        ok.Should().BeFalse();
+        err.Should().Contain("not a JSON object");
+        File.ReadAllText(path).Should().Be("[1,2,3]");
+    }
+
+    [Fact]
+    public void MergeApiKeyIntoConfig_WhitespaceOnlyFile_WritesFresh()
+    {
+        var path = NewTempPath();
+        File.WriteAllText(path, "   \n\t ");
+
+        var (ok, err) = CreateAccountTool.MergeApiKeyIntoConfig(path, "le_k");
+
+        ok.Should().BeTrue();
+        JsonNode.Parse(File.ReadAllText(path))!["lightningEnableApiKey"]!.GetValue<string>().Should().Be("le_k");
+    }
+
+    [Fact]
+    public async Task CreateAccount_MalformedConfig_ReturnsKeyWithoutClobber()
+    {
+        var configPath = NewTempPath();
+        var original = "{ this is not valid json wallets keep-me";
+        File.WriteAllText(configPath, original);
+        _configServiceMock.Setup(c => c.ConfigFilePath).Returns(configPath);
+        SetupSuccessfulFetch();
+
+        var result = await CreateAccountTool.CreateLightningEnableAccount(
+            email: TestEmail, l402Client: _l402ClientMock.Object, configService: _configServiceMock.Object);
+
+        var json = JsonDocument.Parse(result);
+        // Signup still succeeds and the key is still returned...
+        json.RootElement.GetProperty("success").GetBoolean().Should().BeTrue();
+        json.RootElement.GetProperty("apiKey").GetString().Should().Be("le_live_abc123");
+        // ...but the malformed file was NOT overwritten.
+        json.RootElement.GetProperty("config").GetProperty("written").GetBoolean().Should().BeFalse();
+        File.ReadAllText(configPath).Should().Be(original);
+    }
+
+    // ----- Error scrubbing / truncation -----
+
+    [Fact]
+    public void Scrub_RedactsCredentialTokens()
+    {
+        CreateAccountTool.Scrub("your key is le_live_supersecret ok").Should().NotContain("supersecret");
+        CreateAccountTool.Scrub("auth Bearer abc.def.ghi").Should().Contain("[REDACTED]");
+        CreateAccountTool.Scrub("shopify shpat_zzz123").Should().NotContain("shpat_zzz123");
+        CreateAccountTool.Scrub("stripe sk_live_deadbeef").Should().NotContain("sk_live_deadbeef");
+    }
+
+    [Fact]
+    public void Scrub_TruncatesLongMessages()
+    {
+        var scrubbed = CreateAccountTool.Scrub(new string('x', 500));
+        scrubbed.Length.Should().BeLessThanOrEqualTo(203); // 200 + "..."
+        scrubbed.Should().EndWith("...");
+    }
+
+    [Fact]
+    public async Task CreateAccount_FetchFails_ScrubsAndTruncatesServerBody()
+    {
+        // Key appears early so we prove redaction runs BEFORE truncation.
+        var leaky = "le_live_leakedkey :: " + new string('y', 400);
+        _l402ClientMock
+            .Setup(c => c.FetchWithL402Async(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(),
+                It.IsAny<string?>(), It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(L402FetchResult.Failed("https://x/api/signup/l402", leaky, 500));
+
+        var result = await CreateAccountTool.CreateLightningEnableAccount(
+            email: TestEmail, l402Client: _l402ClientMock.Object, configService: _configServiceMock.Object);
+
+        var json = JsonDocument.Parse(result);
+        var error = json.RootElement.GetProperty("error").GetString()!;
+        error.Should().NotContain("leakedkey", "the API-key-shaped token must be redacted");
+        error.Length.Should().BeLessThanOrEqualTo(203, "the server body must be truncated");
+    }
+
     public void Dispose()
     {
         foreach (var f in _tempFiles)

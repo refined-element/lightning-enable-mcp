@@ -200,10 +200,12 @@ public static class CreateAccountTool
 
             if (!fetch.Success)
             {
+                // Scrub any credential-shaped tokens and cap the length — the L402 client's
+                // error can embed the full (untruncated) server response body.
                 return JsonSerializer.Serialize(new
                 {
                     success = false,
-                    error = fetch.ErrorMessage ?? "Account activation failed.",
+                    error = Scrub(fetch.ErrorMessage ?? "Account activation failed."),
                     statusCode = fetch.StatusCode,
                     hint = fetch.StatusCode == 402
                         ? "The L402 activation challenge could not be completed. Check wallet balance and configuration."
@@ -276,12 +278,44 @@ public static class CreateAccountTool
         }
         catch (Exception ex)
         {
+            // Scrub credential-shaped tokens from the exception message before it
+            // reaches the model — never let a key/secret leak into an error string.
             return JsonSerializer.Serialize(new
             {
                 success = false,
-                error = $"Error creating Lightning Enable account: {ex.Message}"
+                error = $"Error creating Lightning Enable account: {Scrub(ex.Message)}"
             });
         }
+    }
+
+    // Credential-shaped token patterns to redact from model-visible error strings
+    // (mirrors the Python sanitize_error set; plus the le_live_/le_test_ API key shape).
+    private static readonly Regex[] CredentialPatterns =
+    {
+        new(@"Bearer\s+\S+", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+        new(@"shpat_\S+", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+        new(@"sk_live_\S+", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+        new(@"sk_test_\S+", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+        new(@"le_(?:live|test)_\S+", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+    };
+
+    /// <summary>
+    /// Redacts credential-shaped tokens and caps length so a server error body /
+    /// exception message can never leak a key into a model-visible error string.
+    /// </summary>
+    internal static string Scrub(string? message, int maxLen = 200)
+    {
+        if (string.IsNullOrEmpty(message))
+            return string.Empty;
+
+        var scrubbed = message;
+        foreach (var pattern in CredentialPatterns)
+            scrubbed = pattern.Replace(scrubbed, "[REDACTED]");
+
+        if (scrubbed.Length > maxLen)
+            scrubbed = scrubbed.Substring(0, maxLen) + "...";
+
+        return scrubbed;
     }
 
     private static string BuildSignupUrl()
@@ -320,14 +354,35 @@ public static class CreateAccountTool
             JsonObject root;
             if (File.Exists(configPath))
             {
-                try
+                var existing = File.ReadAllText(configPath);
+                if (!string.IsNullOrWhiteSpace(existing))
                 {
-                    var existing = File.ReadAllText(configPath);
-                    root = JsonNode.Parse(existing) as JsonObject ?? new JsonObject();
+                    // Non-empty existing file: only merge if it parses to a JSON object.
+                    // If it's malformed or not an object, DO NOT overwrite it — that would
+                    // destroy the user's other secrets (wallet creds, budget limits). Return
+                    // the key in the tool result instead so it can be saved by hand.
+                    JsonNode? parsed;
+                    try
+                    {
+                        parsed = JsonNode.Parse(existing);
+                    }
+                    catch
+                    {
+                        return (false, $"existing config is unparseable; not overwriting it — save the API key manually as '{ConfigKey}' in {configPath}.");
+                    }
+
+                    if (parsed is JsonObject obj)
+                    {
+                        root = obj;
+                    }
+                    else
+                    {
+                        return (false, $"existing config is not a JSON object; not overwriting it — save the API key manually as '{ConfigKey}' in {configPath}.");
+                    }
                 }
-                catch
+                else
                 {
-                    // Corrupt/unparseable existing file — start fresh (nothing to preserve).
+                    // Genuinely empty/whitespace file → safe to write fresh.
                     root = new JsonObject();
                 }
             }

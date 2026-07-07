@@ -229,6 +229,118 @@ class TestCreateAccountSignupFlow:
         assert "wallet down" in result["error"]
 
 
+class TestCreateAccountPaidButRetryFailed:
+    """Funds-safety: L402Client.fetch settled the invoice but the authorized retry
+    failed (raises L402Error with .amount_paid). The settled spend must be recorded
+    and surfaced so the human knows money left the wallet and won't double-pay."""
+
+    @pytest.mark.asyncio
+    async def test_records_settled_spend_and_surfaces_amount(self, tmp_path):
+        from lightning_enable_mcp.l402_client import L402Error
+        err = L402Error("Request failed after payment: 500 Internal Server Error")
+        err.amount_paid = 100  # invoice SETTLED even though the retry failed
+
+        client = AsyncMock()
+        client.fetch = AsyncMock(side_effect=err)
+        budget = _budget_with(ApprovalLevel.AUTO_APPROVE)
+        history = MagicMock()
+
+        result = json.loads(await create_lightning_enable_account(
+            email=TEST_EMAIL, l402_client=client, budget_service=budget,
+            payment_history_service=history, config_path=str(tmp_path / "config.json"),
+        ))
+
+        assert result["success"] is False
+        # The settled payment is surfaced so the human knows money left the wallet.
+        assert result["activation"]["paid"] is True
+        assert result["activation"]["amountSats"] == 100
+        assert "warning" in result
+        # Spend + history recorded (not silently dropped).
+        budget.record_spend.assert_called_once_with(100)
+        budget.record_payment_time.assert_called_once()
+        assert history.record_payment.call_args.kwargs["status"] == "paid_signup_retry_failed"
+
+    @pytest.mark.asyncio
+    async def test_plain_error_without_amount_paid_does_not_record_spend(self, tmp_path):
+        from lightning_enable_mcp.l402_client import L402Error
+        client = AsyncMock()
+        client.fetch = AsyncMock(side_effect=L402Error("connection refused"))  # no amount_paid
+        budget = _budget_with(ApprovalLevel.AUTO_APPROVE)
+
+        result = json.loads(await create_lightning_enable_account(
+            email=TEST_EMAIL, l402_client=client, budget_service=budget,
+            config_path=str(tmp_path / "config.json"),
+        ))
+
+        assert result["success"] is False
+        assert "activation" not in result  # nothing settled
+        budget.record_spend.assert_not_called()
+
+
+class TestCreateAccountReceipts:
+    @pytest.mark.asyncio
+    async def test_success_logs_durable_receipt(self, tmp_path):
+        client = _paid_client()
+        budget = _budget_with(ApprovalLevel.AUTO_APPROVE)
+        receipts = MagicMock()
+
+        await create_lightning_enable_account(
+            email=TEST_EMAIL, l402_client=client, budget_service=budget,
+            receipt_service=receipts, config_path=str(tmp_path / "config.json"),
+        )
+        receipts.log_payment.assert_called_once()
+        assert receipts.log_payment.call_args.kwargs["amount_sats"] == 100
+
+
+class TestConfigClobberProtection:
+    """A non-empty but malformed/non-object config must NOT be overwritten — doing so
+    would destroy the user's other secrets (wallet creds, budget limits)."""
+
+    def test_malformed_nonempty_file_is_not_clobbered(self, tmp_path):
+        path = tmp_path / "config.json"
+        original = '{"wallets": {"nwcConnectionString": "keep-me"} THIS IS BROKEN'
+        path.write_text(original, encoding="utf-8")
+
+        ok, out_path, err = _merge_api_key_into_config("new_key", str(path))
+        assert ok is False
+        assert "unparseable" in err
+        # File left EXACTLY as it was — no clobber.
+        assert path.read_text(encoding="utf-8") == original
+
+    def test_nondict_json_is_not_clobbered(self, tmp_path):
+        path = tmp_path / "config.json"
+        path.write_text("[1, 2, 3]", encoding="utf-8")
+        ok, out_path, err = _merge_api_key_into_config("new_key", str(path))
+        assert ok is False
+        assert "not a JSON object" in err
+        assert path.read_text(encoding="utf-8") == "[1, 2, 3]"
+
+    def test_whitespace_only_file_writes_fresh(self, tmp_path):
+        path = tmp_path / "config.json"
+        path.write_text("   \n\t ", encoding="utf-8")  # genuinely empty
+        ok, out_path, err = _merge_api_key_into_config("k", str(path))
+        assert ok is True
+        assert json.loads(path.read_text(encoding="utf-8"))["lightningEnableApiKey"] == "k"
+
+    @pytest.mark.asyncio
+    async def test_signup_returns_key_without_clobbering_malformed_config(self, tmp_path):
+        path = tmp_path / "config.json"
+        original = "{ this is not json"
+        path.write_text(original, encoding="utf-8")
+
+        client = _paid_client()
+        result = json.loads(await create_lightning_enable_account(
+            email=TEST_EMAIL, l402_client=client, config_path=str(path),
+        ))
+        # Signup still succeeds and the key is still returned to the caller...
+        assert result["success"] is True
+        assert result["apiKey"] == "le_live_abc123"
+        # ...but the malformed file was NOT overwritten.
+        assert result["config"]["written"] is False
+        assert "error" in result["config"]
+        assert path.read_text(encoding="utf-8") == original
+
+
 class TestMergeApiKeyHelper:
     def test_creates_file_when_missing(self, tmp_path):
         path = tmp_path / "nested" / "config.json"

@@ -37,6 +37,7 @@ if TYPE_CHECKING:
     from ..budget_service import BudgetService
     from ..payment_history_service import PaymentHistoryService
     from ..l402_client import L402Client
+    from ..receipt_service import ReceiptService
 
 logger = logging.getLogger("lightning-enable-mcp.tools.create_account")
 
@@ -72,17 +73,26 @@ def _merge_api_key_into_config(api_key: str, config_path: "Optional[str]" = None
 
         data: dict = {}
         if path.exists():
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    loaded = json.load(f)
-                if isinstance(loaded, dict):
-                    data = loaded
-            except Exception:
-                # Corrupt/empty existing file — start fresh rather than crash. We
-                # intentionally do NOT delete anything we can't parse other than
-                # replacing the whole doc, but a JSON we can't read has no keys to
-                # preserve anyway.
-                data = {}
+            raw = path.read_text(encoding="utf-8")
+            if raw.strip():
+                # Non-empty existing file: only merge if it parses to a JSON object.
+                # If it's malformed or not an object, DO NOT overwrite it — that would
+                # destroy the user's other secrets (wallet creds, budget limits). Return
+                # the key in the tool result instead so it can be saved by hand.
+                try:
+                    loaded = json.loads(raw)
+                except Exception:
+                    return False, str(path), (
+                        "existing config is unparseable; not overwriting it — save the API key "
+                        f"manually as '{_CONFIG_KEY}' in {path}."
+                    )
+                if not isinstance(loaded, dict):
+                    return False, str(path), (
+                        "existing config is not a JSON object; not overwriting it — save the API key "
+                        f"manually as '{_CONFIG_KEY}' in {path}."
+                    )
+                data = loaded
+            # else: genuinely empty/whitespace file → safe to write fresh (data stays {}).
 
         data[_CONFIG_KEY] = api_key
 
@@ -110,6 +120,7 @@ async def create_lightning_enable_account(
     l402_client: "L402Client | None" = None,
     budget_service: "BudgetService | None" = None,
     payment_history_service: "PaymentHistoryService | None" = None,
+    receipt_service: "ReceiptService | None" = None,
     config_path: "Optional[str]" = None,
 ) -> str:
     """
@@ -124,12 +135,16 @@ async def create_lightning_enable_account(
         l402_client: L402 client instance (wallet-backed) — pays the activation invoice.
         budget_service: BudgetService for multi-tier approval + out-of-band confirmation.
         payment_history_service: PaymentHistoryService for the session audit trail.
+        receipt_service: ReceiptService for the durable, off-context-path spend receipt.
         config_path: Override for the config file path (testing). Defaults to
             ~/.lightning-enable/config.json.
 
     Returns:
         JSON string with the new account's apiKey + merchant details, or an error.
     """
+    # Captured for the durable receipt; overwritten with the real approval tier
+    # once the budget check runs (parity with access_l402_resource).
+    payment_policy = "auto (no budget check)"
     try:
         # Validate email BEFORE minting any invoice.
         if not email or not email.strip():
@@ -158,9 +173,12 @@ async def create_lightning_enable_account(
         # We gate on max_sats (the ceiling) because the exact fee isn't known until the
         # 402 challenge is minted inside fetch — the confirmation is bound to max_sats,
         # this tool, and the signup URL, so a code can't be redirected or reused.
+        # NOTE: the destination bound to the confirmation is the (constant) signup URL,
+        # NOT the email — every activation POSTs to the same endpoint.
         if budget_service is not None:
             from ..config import ApprovalLevel
             approval = await budget_service.check_approval_level(max_sats)
+            payment_policy = getattr(approval.level, "value", str(approval.level))
 
             if approval.level == ApprovalLevel.DENY:
                 return json.dumps({
@@ -254,6 +272,24 @@ async def create_lightning_enable_account(
                     amount_sats=amount_paid,
                     status="success",
                 )
+            # Durable, off-context-path spend receipt (best-effort — a receipt failure
+            # must NEVER turn a settled payment into an error the caller might retry).
+            if receipt_service is not None:
+                try:
+                    spent = None
+                    if budget_service is not None:
+                        try:
+                            spent = budget_service.get_status()["session"]["spentSats"]
+                        except Exception:
+                            spent = None
+                    receipt_service.log_payment(
+                        endpoint="account_activation",
+                        amount_sats=amount_paid,
+                        policy=payment_policy,
+                        session_spent_sats=spent,
+                    )
+                except Exception:
+                    logger.warning("Receipt logging failed (activation payment already settled)")
 
         # Parse the account payload the server returned after payment.
         try:
@@ -310,4 +346,50 @@ async def create_lightning_enable_account(
 
     except Exception as e:
         logger.exception("Error creating Lightning Enable account")
+
+        # Paid-but-retry-failed: L402Client.fetch raises an L402Error carrying
+        # `.amount_paid` when the activation invoice SETTLED (money left the wallet)
+        # but the authorized retry returned >=400. Record that real spend so the
+        # budget/history/receipt don't silently omit it, and surface the settled sats
+        # so the human knows a payment went through (and won't re-run and double-pay).
+        # Best-effort; never mask the original error. Mirrors access_l402_resource.
+        amount_paid = getattr(e, "amount_paid", None)
+        if amount_paid:
+            try:
+                if budget_service is not None:
+                    budget_service.record_spend(amount_paid)
+                    budget_service.record_payment_time()
+                if payment_history_service is not None:
+                    payment_history_service.record_payment(
+                        url="account_activation",
+                        amount_sats=amount_paid,
+                        status="paid_signup_retry_failed",
+                    )
+                if receipt_service is not None:
+                    spent = None
+                    if budget_service is not None:
+                        try:
+                            spent = budget_service.get_status()["session"]["spentSats"]
+                        except Exception:
+                            spent = None
+                    receipt_service.log_payment(
+                        endpoint="account_activation",
+                        amount_sats=amount_paid,
+                        policy=payment_policy,
+                        session_spent_sats=spent,
+                    )
+            except Exception:
+                logger.warning("Failed to record paid-but-retry-failed activation spend")
+
+            return json.dumps({
+                "success": False,
+                "error": sanitize_error(str(e)),
+                "activation": {"paid": True, "amountSats": amount_paid},
+                "warning": (
+                    f"A payment of {amount_paid} sats SETTLED but account activation did not complete. "
+                    "Do NOT re-run this tool or you may pay again — contact support@lightningenable.com "
+                    "with this email to recover the account."
+                ),
+            }, indent=2)
+
         return json.dumps({"success": False, "error": sanitize_error(str(e))})

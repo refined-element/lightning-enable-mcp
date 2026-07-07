@@ -850,6 +850,7 @@ class LightningEnableServer:
                         l402_client=self.l402_client,
                         budget_service=self.budget_service,
                         payment_history_service=self.payment_history_service,
+                        receipt_service=self.receipt_service,
                     )
 
                 elif name == "check_wallet_balance":

@@ -2,7 +2,7 @@
 
 # Lightning Enable MCP Server (Python)
 
-An MCP (Model Context Protocol) server that enables AI agents to make Lightning Network payments. The package exposes **23 tools**: **15 work out of the box** (free, no subscription); the other **8 unlock with an [Agentic Commerce subscription](https://lightningenable.com)** (from $99/mo) and `LIGHTNING_ENABLE_API_KEY` — 2 producer tools (`create_l402_challenge`, `verify_l402_payment`) and 6 Agent Service Agreement (ASA) tools for agent-to-agent commerce over Nostr.
+An MCP (Model Context Protocol) server that enables AI agents to make Lightning Network payments. The package exposes **24 tools**: **16 work out of the box** (free, no subscription); the other **8 unlock with an [Agentic Commerce subscription](https://lightningenable.com)** (from $99/mo) and `LIGHTNING_ENABLE_API_KEY` — 2 producer tools (`create_l402_challenge`, `verify_l402_payment`) and 6 Agent Service Agreement (ASA) tools for agent-to-agent commerce over Nostr. One of the out-of-the-box tools, `create_lightning_enable_account`, even *self-provisions* that API key: an agent with a wallet can pay a ~100-sat activation fee and unlock the subscription tools on the spot.
 
 ## Overview
 
@@ -167,6 +167,18 @@ Or if installed via pip, replace `"command": "uvx", "args": ["lightning-enable-m
 ```
 
 ## Available Tools
+
+### create_lightning_enable_account
+
+Self-bootstrapping signup: activate a Lightning Enable account with a tiny Lightning payment (~100 sats) and get back a merchant API key. Requires **NO** Lightning Enable API key (it *creates* one) — only a connected wallet. On success the API key is merged into `~/.lightning-enable/config.json` (existing keys preserved) so the producer/ASA tools unlock on the next restart. Above-threshold activation fees require an out-of-band confirmation code, exactly like `pay_l402_challenge`.
+
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `email` | string | Yes | - | Email address to register the account under |
+| `max_sats` | integer | No | 1000 | Maximum sats to pay for activation (fee is ~100 sats) |
+| `confirmation_nonce` | string | No | - | Human-relayed confirmation code (only for an above-threshold fee) |
+
+**Returns:** JSON with `apiKey`, `merchantId`, `planTier`, `subscriptionStatus`, `trialEndsAt`, `dashboardUrl`, and the config-write status.
 
 ### pay_invoice
 

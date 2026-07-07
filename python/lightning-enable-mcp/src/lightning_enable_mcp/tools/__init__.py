@@ -21,6 +21,7 @@ def sanitize_error(msg: str) -> str:
     return msg
 
 from .access_resource import access_l402_resource
+from .create_account import create_lightning_enable_account
 from .check_invoice_status import check_invoice_status
 from .confirm_payment import confirm_payment
 from .create_invoice import create_invoice
@@ -45,6 +46,7 @@ from .settle_agent_service import settle_agent_service
 
 __all__ = [
     "access_l402_resource",
+    "create_lightning_enable_account",
     "check_invoice_status",
     "confirm_payment",
     "create_invoice",

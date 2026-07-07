@@ -2,7 +2,7 @@
 
 # Lightning Enable MCP Server
 
-A Model Context Protocol (MCP) server that enables AI agents to make Lightning Network payments. 17 tools work out of the box (free, no subscription). 8 tools require an [Agentic Commerce subscription](https://lightningenable.com) (from $99/mo) and `LIGHTNING_ENABLE_API_KEY`: 2 producer tools (`create_l402_challenge`, `verify_l402_payment`) and 6 Agent Service Agreement tools for agent-to-agent commerce over Nostr.
+A Model Context Protocol (MCP) server that enables AI agents to make Lightning Network payments. 18 tools work out of the box (free, no subscription). 8 tools require an [Agentic Commerce subscription](https://lightningenable.com) (from $99/mo) and `LIGHTNING_ENABLE_API_KEY`: 2 producer tools (`create_l402_challenge`, `verify_l402_payment`) and 6 Agent Service Agreement tools for agent-to-agent commerce over Nostr. One out-of-the-box tool, `create_lightning_enable_account`, self-provisions that API key — an agent with a wallet pays a ~100-sat activation fee and unlocks the subscription tools on the spot.
 
 ## Overview
 
@@ -164,6 +164,17 @@ Add to your Claude Desktop configuration file:
 ```
 
 ## Available Tools
+
+### create_lightning_enable_account
+
+Self-bootstrapping signup: activate a Lightning Enable account with a tiny Lightning payment (~100 sats) and get back a merchant API key. Requires **NO** Lightning Enable API key (it *creates* one) — only a connected wallet. On success the API key is merged into `~/.lightning-enable/config.json` (existing keys preserved) so the producer/ASA tools unlock on the next restart. Above-threshold activation fees require a human-supplied confirmation code (same out-of-band flow as `pay_l402_challenge`).
+
+**Parameters:**
+- `email` (required): Email address to register the account under
+- `maxSats`: Maximum sats to pay for activation (fee is ~100 sats). Default: 1000
+- `confirmationNonce`: Human-relayed confirmation code (only for an above-threshold fee)
+
+**Returns:** `{ success, apiKey, merchantId, planTier, subscriptionStatus, trialEndsAt, dashboardUrl, activation, config }`
 
 ### pay_invoice
 

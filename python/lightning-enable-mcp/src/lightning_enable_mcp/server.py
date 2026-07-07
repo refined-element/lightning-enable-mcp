@@ -30,6 +30,7 @@ from .nwc_wallet import NWCWallet, NWCConfig
 from .opennode_wallet import OpenNodeWallet
 from .strike_wallet import StrikeWallet
 from .tools.access_resource import access_l402_resource
+from .tools.create_account import create_lightning_enable_account
 from .tools.test_l402_payment import test_l402_payment
 from .tools.get_receipts import get_receipts
 from .receipt_service import ReceiptService, wallet_label_from
@@ -200,6 +201,36 @@ class LightningEnableServer:
                             },
                         },
                         "required": ["invoice"],
+                    },
+                ),
+                Tool(
+                    name="create_lightning_enable_account",
+                    description=(
+                        "Self-bootstrapping signup: activate a Lightning Enable account with a tiny "
+                        "Lightning payment (~100 sats) and get back a merchant API key. Requires NO "
+                        "Lightning Enable API key (it CREATES one) — only a connected wallet. On success "
+                        "the API key is saved to ~/.lightning-enable/config.json so the producer/ASA tools "
+                        "unlock. Above-threshold fees require an out-of-band confirmation code (as with "
+                        "pay_l402_challenge)."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "email": {
+                                "type": "string",
+                                "description": "Email address to register the Lightning Enable account under.",
+                            },
+                            "max_sats": {
+                                "type": "integer",
+                                "description": "Maximum satoshis to pay for activation. The fee is ~100 sats.",
+                                "default": 1000,
+                            },
+                            "confirmation_nonce": {
+                                "type": "string",
+                                "description": "Confirmation code the human operator read from the server console, for an above-threshold activation fee. The code is NEVER in a tool result — ask the human for it. Omit on the first call to request one.",
+                            },
+                        },
+                        "required": ["email"],
                     },
                 ),
                 Tool(
@@ -809,6 +840,17 @@ class LightningEnableServer:
                         wallet=self.wallet,
                         budget_service=self.budget_service,
                         payment_history_service=self.payment_history_service,
+                    )
+
+                elif name == "create_lightning_enable_account":
+                    result = await create_lightning_enable_account(
+                        email=arguments.get("email", ""),
+                        max_sats=arguments.get("max_sats", 1000),
+                        confirmation_nonce=arguments.get("confirmation_nonce"),
+                        l402_client=self.l402_client,
+                        budget_service=self.budget_service,
+                        payment_history_service=self.payment_history_service,
+                        receipt_service=self.receipt_service,
                     )
 
                 elif name == "check_wallet_balance":

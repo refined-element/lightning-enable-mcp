@@ -234,3 +234,28 @@ class TestSanitizeError:
         result = sanitize_error(msg)
         assert "shpat_" not in result
         assert "[REDACTED]" in result
+
+    def test_sanitize_removes_lightning_enable_api_keys(self):
+        """Ported from .NET's CreateAccountTool.Scrub(): create_lightning_enable_account
+        can echo a server error body carrying a freshly minted merchant key."""
+        from lightning_enable_mcp.tools import sanitize_error
+
+        for key in ("le_live_abc123def456", "le_test_abc123def456"):
+            result = sanitize_error(f"Signup failed: {{\"apiKey\":\"{key}\"}}")
+            assert key not in result
+            assert "[REDACTED]" in result
+
+    def test_sanitize_truncates_long_messages(self):
+        """The length cap is part of the hardening: an upstream error can embed a full
+        untruncated response body, so an unrecognized credential shape could ride along
+        in the tail."""
+        from lightning_enable_mcp.tools import sanitize_error
+
+        result = sanitize_error("x" * 5000)
+        assert len(result) == 203  # 200 chars + "..."
+        assert result.endswith("...")
+
+    def test_sanitize_handles_empty_message(self):
+        from lightning_enable_mcp.tools import sanitize_error
+
+        assert sanitize_error("") == ""

@@ -11,13 +11,30 @@ _CREDENTIAL_PATTERNS = [
     re.compile(r"shpat_\S+", re.IGNORECASE),
     re.compile(r"sk_live_\S+", re.IGNORECASE),
     re.compile(r"sk_test_\S+", re.IGNORECASE),
+    # Lightning Enable merchant API keys — create_lightning_enable_account can echo a
+    # server error body containing one. Mirrors .NET's CreateAccountTool.Scrub().
+    re.compile(r"le_(?:live|test)_\S+", re.IGNORECASE),
 ]
 
+_MAX_ERROR_LEN = 200
 
-def sanitize_error(msg: str) -> str:
-    """Remove potential credentials from error messages returned to users."""
+
+def sanitize_error(msg: str, max_len: int = _MAX_ERROR_LEN) -> str:
+    """Redact credential-shaped tokens and cap length for model-visible error strings.
+
+    The length cap matters as much as the patterns: an upstream error can embed a full
+    untruncated response body, so an unrecognized credential shape could otherwise ride
+    along in the tail. Mirrors .NET's CreateAccountTool.Scrub().
+    """
+    if not msg:
+        return ""
+
     for pattern in _CREDENTIAL_PATTERNS:
         msg = pattern.sub("[REDACTED]", msg)
+
+    if len(msg) > max_len:
+        msg = msg[:max_len] + "..."
+
     return msg
 
 from .access_resource import access_l402_resource

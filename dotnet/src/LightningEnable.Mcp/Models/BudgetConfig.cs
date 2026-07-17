@@ -119,19 +119,26 @@ public record BudgetCheckResult
     public long RemainingSessionBudget { get; init; }
 
     /// <summary>
-    /// Maximum allowed for a single request.
+    /// Maximum sats allowed for a single request, as derived from the operator's config-file
+    /// USD maxPerPayment. INFORMATIONAL ONLY — this result does not enforce it.
+    ///
+    /// NULL means no per-payment cap is configured (or none could be resolved), i.e. there is
+    /// no limit number to report. Callers must surface "no cap configured" and must NOT
+    /// substitute a default of their own: a made-up figure reads to an agent as a real limit.
     /// </summary>
-    public long MaxPerRequest { get; init; }
+    public long? MaxPerRequest { get; init; }
 
     /// <summary>
-    /// Creates an allowed result.
+    /// Creates an allowed result. Pass null for <paramref name="maxPerRequest"/> when no
+    /// per-payment cap is configured.
     /// </summary>
-    public static BudgetCheckResult Allow(long remaining, long maxPerRequest) =>
+    public static BudgetCheckResult Allow(long remaining, long? maxPerRequest) =>
         new() { Allowed = true, RemainingSessionBudget = remaining, MaxPerRequest = maxPerRequest };
 
     /// <summary>
-    /// Creates a denied result.
+    /// Creates a denied result. Pass null for <paramref name="maxPerRequest"/> when no
+    /// per-payment cap is configured.
     /// </summary>
-    public static BudgetCheckResult Deny(string reason, long remaining, long maxPerRequest) =>
+    public static BudgetCheckResult Deny(string reason, long remaining, long? maxPerRequest) =>
         new() { Allowed = false, DenialReason = reason, RemainingSessionBudget = remaining, MaxPerRequest = maxPerRequest };
 }

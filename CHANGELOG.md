@@ -29,9 +29,16 @@ OpenNode, Strike, or Coinos.
   funds are committed.
 
 - **Values that are not preimages are no longer accepted as proof of payment.** (Both ports)
-  Preimages are now validated (64-character hex) at every wallet boundary. This also closes
-  a case in the .NET NWC wallet, which detected a UUID instead of a preimage (the known
-  Coinos internal-transfer bug), logged a warning, and then returned it to the agent anyway.
+  Preimages are now validated (64-character hex) at every wallet boundary — OpenNode, Strike,
+  NWC, and LND, in both ports. This closes a case in the .NET NWC wallet, which detected a
+  UUID instead of a preimage (the known Coinos internal-transfer bug), logged a warning, and
+  then returned it to the agent anyway. It also closes two boundaries that checked less than
+  they appeared to: the Python NWC wallet validated that every character was a hex *digit*
+  but never the *length*, so a short value like `deadbeef` passed; and both LND wallets
+  (Python and .NET) decoded whatever arrived and published it unchecked, on the assumption
+  that LND always returns a real preimage. A settled payment whose "preimage" fails this
+  check is reported as a success **without** a preimage (the funds are gone — calling it a
+  failure would invite a retry that pays twice), never as proof.
 
 - **A zero or malformed price in an API manifest read as `affordable_calls: "unlimited"`.**
   (Both ports) Manifests are third-party documents, so any API could claim unlimited

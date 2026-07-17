@@ -42,9 +42,11 @@ public static class GetPaymentHistoryTool
                 summary = new
                 {
                     totalPayments = summary.TotalPayments,
+                    // Includes pending: the funds are committed even though not settled.
                     totalSatsSpent = summary.TotalSatsSpent,
                     successfulPayments = summary.SuccessfulPayments,
-                    failedPayments = summary.FailedPayments
+                    failedPayments = summary.FailedPayments,
+                    pendingPayments = summary.PendingPayments
                 },
                 payments = recentPayments.Select(p => new
                 {
@@ -53,6 +55,10 @@ public static class GetPaymentHistoryTool
                     method = p.Method,
                     amountSats = p.AmountSats,
                     timestamp = p.Timestamp,
+                    // status is the authoritative outcome ("success"/"failed"/"pending");
+                    // success stays for compatibility but is false for a pending payment,
+                    // which has NOT settled and may still fail.
+                    status = p.Status.ToString().ToLowerInvariant(),
                     success = p.Success,
                     statusCode = p.ResponseStatusCode,
                     error = p.ErrorMessage

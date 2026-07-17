@@ -967,3 +967,82 @@ class TestNWCEncryptionDefault:
             await wallet.connect()
         assert NWC_FAIL_CONNECT in str(excinfo.value)
         assert "127.0.0.1:1" in str(excinfo.value)
+
+
+class TestNwcPreimageValidation:
+    """
+    The NWC wallet boundary must validate preimages as 64-char hex.
+
+    The release notes claim preimages are validated "at every wallet boundary".
+    This wallet only checked that every character was a hex DIGIT and never
+    checked the LENGTH, so a short value like "deadbeef" (8 chars, all hex)
+    was returned to the caller as proof of payment.
+    """
+
+    _URI = (
+        "nostr+walletconnect://"
+        "b889ff5b1513b641e2a139f661a661364979c5beee91842f8f0ef42ab558e9d4"
+        "?relay=wss://relay.example.com/v1"
+        "&secret=71a8c14c1407c113601079c4302dab36460f0ccd0ad506f1f2dc73b5100e4f3c"
+    )
+
+    def _wallet_returning(self, preimage):
+        from unittest.mock import AsyncMock
+
+        with patch("lightning_enable_mcp.nwc_wallet._get_pubkey", return_value="aa" * 32):
+            wallet = NWCWallet(self._URI)
+        wallet._send_request = AsyncMock(return_value={"result": {"preimage": preimage}})
+        return wallet
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bogus", [
+        "deadbeef",            # 8 hex chars — passes a char-only check, is not a preimage
+        "ab" * 31,             # 62 chars — one byte short
+        "ab" * 33,             # 66 chars — one byte long
+        "0123456789abcde",     # odd length
+    ])
+    async def test_rejects_wrong_length_hex(self, bogus):
+        # PreimageUnavailableError, not NWCPaymentError: the wallet reported no
+        # error, so the payment SETTLED. Reporting a failure would invite a retry
+        # that pays twice (see the wallet_errors module contract).
+        from lightning_enable_mcp.wallet_errors import PreimageUnavailableError
+
+        wallet = self._wallet_returning(bogus)
+        with pytest.raises(PreimageUnavailableError):
+            await wallet.pay_invoice("lnbc100n1p3abcdef")
+
+    @pytest.mark.asyncio
+    async def test_settled_but_unprovable_is_not_reported_as_a_payment_failure(self):
+        """A non-preimage means unprovable, NOT failed — a failure invites a double-pay."""
+        from lightning_enable_mcp.nwc_wallet import NWCPaymentError
+        from lightning_enable_mcp.wallet_errors import PreimageUnavailableError
+
+        wallet = self._wallet_returning("deadbeef")
+        with pytest.raises(PreimageUnavailableError) as excinfo:
+            await wallet.pay_invoice("lnbc100n1p3abcdef")
+        assert not isinstance(excinfo.value, NWCPaymentError)
+        assert excinfo.value.provider == "nwc"
+
+    @pytest.mark.asyncio
+    async def test_invoice_returned_as_preimage_is_rejected(self):
+        """A wallet echoing the invoice into the preimage field is also unprovable."""
+        from lightning_enable_mcp.wallet_errors import PreimageUnavailableError
+
+        wallet = self._wallet_returning("lnbc100n1p3abcdef")
+        with pytest.raises(PreimageUnavailableError):
+            await wallet.pay_invoice("lnbc100n1p3abcdef")
+
+    @pytest.mark.asyncio
+    async def test_accepts_valid_64_char_preimage(self):
+        wallet = self._wallet_returning("deadbeef" * 8)
+        assert await wallet.pay_invoice("lnbc100n1p3abcdef") == "deadbeef" * 8
+
+    @pytest.mark.asyncio
+    async def test_error_never_echoes_the_bogus_value(self):
+        """Engineering standard #5: never log/return preimage-position content."""
+        from lightning_enable_mcp.wallet_errors import PreimageUnavailableError
+
+        wallet = self._wallet_returning("deadbeef")
+        with pytest.raises(PreimageUnavailableError) as excinfo:
+            await wallet.pay_invoice("lnbc100n1p3abcdef")
+        assert "deadbeef" not in str(excinfo.value)

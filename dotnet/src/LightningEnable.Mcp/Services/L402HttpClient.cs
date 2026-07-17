@@ -242,7 +242,12 @@ public class L402HttpClient : IL402HttpClient
             var pendingTracking = !string.IsNullOrEmpty(paymentResult.TrackingId)
                 ? $" (tracking ID: {paymentResult.TrackingId})"
                 : "";
-            _historyService.RecordPayment(url, method, amountSats.Value, parsed.Invoice!, null, null, null);
+            // PENDING, not success: this payment may still fail, so the audit trail must
+            // not claim it settled. The sats still count toward the session total (the
+            // funds are committed) — see PaymentHistoryService.GetSummary.
+            _historyService.RecordPayment(url, method, amountSats.Value, parsed.Invoice!, null, null, null,
+                PaymentStatus.Pending,
+                $"Payment has not settled yet{pendingTracking} — it may still succeed or fail.");
             // Report the committed amount: callers use PaidAmountSats to tell the agent
             // money moved and it must not retry. Defaulting to 0 here would discard that.
             return L402FetchResult.Failed(url,

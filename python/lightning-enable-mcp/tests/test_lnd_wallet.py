@@ -715,3 +715,81 @@ class TestLndWallet:
         balance = await wallet.get_balance()
         assert balance == 999999
         assert isinstance(balance, int)
+
+
+class TestLndPreimageValidation:
+    """
+    The LND wallet boundary must validate preimages as 64-char hex.
+
+    LND normally always returns a real preimage, but "normally" is not a
+    guard. The release notes claim validation at EVERY wallet boundary, and
+    this one base64-decoded whatever arrived and hex-encoded it, so a short or
+    empty-ish value was published to the caller as proof of payment.
+    """
+
+    def _wallet_returning_preimage_b64(self, preimage_b64):
+        wallet = LndWallet(
+            rest_host="localhost:8080",
+            macaroon_hex="abc123",
+            skip_tls_verify=True,
+        )
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "payment_preimage": preimage_b64,
+            "payment_error": "",
+            "payment_hash": base64.b64encode(b"hash").decode(),
+        }
+        wallet._connected = True
+        wallet._client = AsyncMock()
+        wallet._client.request = AsyncMock(return_value=mock_response)
+        return wallet
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("raw_bytes", [
+        b"\xde\xad\xbe\xef",   # 4 bytes -> "deadbeef", 8 hex chars, not a preimage
+        b"\x01" * 31,          # one byte short
+        b"\x01" * 33,          # one byte long
+    ])
+    async def test_rejects_wrong_length_preimage(self, raw_bytes):
+        # PreimageUnavailableError, not LndPaymentError: LND reported no
+        # payment_error, so the payment SETTLED. Reporting a failure would invite a
+        # retry that pays twice (see the wallet_errors module contract).
+        from lightning_enable_mcp.wallet_errors import PreimageUnavailableError
+
+        wallet = self._wallet_returning_preimage_b64(base64.b64encode(raw_bytes).decode())
+        with pytest.raises(PreimageUnavailableError):
+            await wallet.pay_invoice("lnbc100n1...")
+
+    @pytest.mark.asyncio
+    async def test_settled_but_unprovable_is_not_reported_as_a_payment_failure(self):
+        """A non-preimage means unprovable, NOT failed — a failure invites a double-pay."""
+        from lightning_enable_mcp.wallet_errors import PreimageUnavailableError
+
+        wallet = self._wallet_returning_preimage_b64(
+            base64.b64encode(bytes.fromhex("deadbeef")).decode()
+        )
+        with pytest.raises(PreimageUnavailableError) as excinfo:
+            await wallet.pay_invoice("lnbc100n1...")
+        assert not isinstance(excinfo.value, LndPaymentError)
+        assert excinfo.value.provider == "lnd"
+
+    @pytest.mark.asyncio
+    async def test_accepts_valid_32_byte_preimage(self):
+        preimage_bytes = bytes.fromhex("deadbeef" * 8)
+        wallet = self._wallet_returning_preimage_b64(
+            base64.b64encode(preimage_bytes).decode()
+        )
+        assert await wallet.pay_invoice("lnbc100n1...") == "deadbeef" * 8
+
+    @pytest.mark.asyncio
+    async def test_error_never_echoes_the_bogus_value(self):
+        """Engineering standard #5: never log/return preimage-position content."""
+        from lightning_enable_mcp.wallet_errors import PreimageUnavailableError
+
+        wallet = self._wallet_returning_preimage_b64(
+            base64.b64encode(bytes.fromhex("deadbeef")).decode()
+        )
+        with pytest.raises(PreimageUnavailableError) as excinfo:
+            await wallet.pay_invoice("lnbc100n1...")
+        assert "deadbeef" not in str(excinfo.value)

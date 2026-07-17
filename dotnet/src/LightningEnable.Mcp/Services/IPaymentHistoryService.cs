@@ -8,8 +8,13 @@ namespace LightningEnable.Mcp.Services;
 public interface IPaymentHistoryService
 {
     /// <summary>
-    /// Records a successful payment.
+    /// Records a payment. Defaults to a settled (successful) payment.
     /// </summary>
+    /// <param name="status">
+    /// The outcome. Pass <see cref="PaymentStatus.Pending"/> for an in-flight payment —
+    /// it may still fail, and the audit trail must never claim it settled.
+    /// </param>
+    /// <param name="errorMessage">Optional context (e.g. why a payment is still pending).</param>
     void RecordPayment(
         string url,
         string method,
@@ -17,7 +22,9 @@ public interface IPaymentHistoryService
         string? invoice = null,
         string? preimageHex = null,
         string? l402Token = null,
-        int? statusCode = null);
+        int? statusCode = null,
+        PaymentStatus status = PaymentStatus.Success,
+        string? errorMessage = null);
 
     /// <summary>
     /// Records a failed payment attempt.

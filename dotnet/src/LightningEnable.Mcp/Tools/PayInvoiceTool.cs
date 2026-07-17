@@ -219,6 +219,10 @@ public static class PayInvoiceTool
             {
                 budgetService?.RecordSpend(amountSats.Value);
                 budgetService?.RecordPaymentTime();
+                // Record it as PENDING, not as a success. The tool result below says
+                // success:false/status:pending — the audit trail must say the same thing,
+                // or get_payment_history would report a settled payment for money that
+                // may never arrive.
                 paymentHistory?.RecordPayment(
                     "direct-invoice",
                     "PAY",
@@ -226,7 +230,10 @@ public static class PayInvoiceTool
                     normalizedInvoice,
                     null,
                     null,
-                    null);
+                    null,
+                    PaymentStatus.Pending,
+                    "Payment has not settled yet — it may still succeed or fail." +
+                    (string.IsNullOrEmpty(result.TrackingId) ? "" : $" Tracking ID: {result.TrackingId}"));
 
                 var pendingUsd = priceService != null
                     ? await priceService.SatsToUsdAsync(amountSats.Value, cancellationToken)

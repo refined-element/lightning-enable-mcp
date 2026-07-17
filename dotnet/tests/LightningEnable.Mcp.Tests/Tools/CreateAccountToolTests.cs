@@ -259,21 +259,137 @@ public class CreateAccountToolTests : IDisposable
         saved["currency"]!.GetValue<string>().Should().Be("USD");
     }
 
+    // ----- Paid-but-retry-failed (money already left the wallet) -----
+    //
+    // These mirror Python's TestCreateAccountPaidButRetryFailed. The shared invariant:
+    // whenever the activation invoice SETTLED, the tool MUST surface activation.paid +
+    // amountSats and tell the agent not to retry. Dropping that signal makes the agent
+    // pay the ~100 sat fee again on every retry.
+
+    /// <summary>
+    /// Duplicate email — the single most likely failure. The server mints a fresh
+    /// challenge with no existing-merchant pre-check (enumeration safety), so the client
+    /// pays BEFORE the 409 is known. L402HttpClient passes the real amountSats on this
+    /// path, so paidAmountSats: 100 is what production actually emits here.
+    /// </summary>
     [Fact]
-    public async Task CreateAccount_FetchFails_ReturnsError()
+    public async Task CreateAccount_PaidButDuplicateEmail_SurfacesPaidSignal_AndSaysDoNotRetry()
     {
         _l402ClientMock
             .Setup(c => c.FetchWithL402Async(
                 It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(),
                 It.IsAny<string?>(), It.IsAny<long>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(L402FetchResult.Failed("https://x/api/signup/l402", "email already registered", 409));
+            .ReturnsAsync(L402FetchResult.Failed(
+                "https://x/api/signup/l402",
+                "Request failed after payment: HTTP 409: {\"error\":\"merchant_exists\",\"message\":\"email already registered\"}",
+                409, paidAmountSats: 100, l402Token: "macaroon:preimage", protocol: "L402"));
 
         var result = await CreateAccountTool.CreateLightningEnableAccount(
             email: TestEmail, l402Client: _l402ClientMock.Object, configService: _configServiceMock.Object);
 
-        var json = JsonDocument.Parse(result);
-        json.RootElement.GetProperty("success").GetBoolean().Should().BeFalse();
-        json.RootElement.GetProperty("error").GetString().Should().Contain("already registered");
+        var json = JsonDocument.Parse(result).RootElement;
+        json.GetProperty("success").GetBoolean().Should().BeFalse();
+        json.GetProperty("error").GetString().Should().Contain("already registered");
+
+        // The signal that stops the retry loop: money moved.
+        var activation = json.GetProperty("activation");
+        activation.GetProperty("paid").GetBoolean().Should().BeTrue();
+        activation.GetProperty("amountSats").GetInt64().Should().Be(100);
+
+        // The agent must be told, unambiguously, not to pay again.
+        json.GetProperty("warning").GetString().Should().Contain("Do NOT re-run");
+
+        // ...and must NOT be told the service might just be down (that invites a retry).
+        result.Should().NotContain("service is unavailable");
+    }
+
+    /// <summary>
+    /// Pending payment (Strike/OpenNode in flight). The client explicitly says
+    /// "Do not retry it" — the tool's hint must not contradict that with
+    /// "check wallet balance and configuration".
+    /// </summary>
+    [Fact]
+    public async Task CreateAccount_PaidButPending_SurfacesPaidSignal_AndDoesNotBlameWallet()
+    {
+        _l402ClientMock
+            .Setup(c => c.FetchWithL402Async(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(),
+                It.IsAny<string?>(), It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(L402FetchResult.Failed(
+                "https://x/api/signup/l402",
+                "Payment has not settled yet (tracking ID: strike-123) — it may still succeed or fail. " +
+                "Do not retry it; check its status with the provider.",
+                402, paidAmountSats: 100));
+
+        var result = await CreateAccountTool.CreateLightningEnableAccount(
+            email: TestEmail, l402Client: _l402ClientMock.Object, configService: _configServiceMock.Object);
+
+        var json = JsonDocument.Parse(result).RootElement;
+        json.GetProperty("success").GetBoolean().Should().BeFalse();
+
+        var activation = json.GetProperty("activation");
+        activation.GetProperty("paid").GetBoolean().Should().BeTrue();
+        activation.GetProperty("amountSats").GetInt64().Should().Be(100);
+        json.GetProperty("warning").GetString().Should().Contain("Do NOT re-run");
+
+        // Direct contradiction of the client's own "do not retry" guidance.
+        result.Should().NotContain("Check wallet balance");
+    }
+
+    /// <summary>
+    /// Settled-without-preimage (Strike/OpenNode). The money left the wallet but no
+    /// proof exists; the client returns 402 after RecordSpend. Same invariant.
+    /// </summary>
+    [Fact]
+    public async Task CreateAccount_PaidButNoPreimage_SurfacesPaidSignal()
+    {
+        _l402ClientMock
+            .Setup(c => c.FetchWithL402Async(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(),
+                It.IsAny<string?>(), It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(L402FetchResult.Failed(
+                "https://x/api/signup/l402",
+                "Payment succeeded (tracking ID: strike-456) but wallet did not return a usable preimage. " +
+                "L402 requires a preimage for verification.",
+                402, paidAmountSats: 100));
+
+        var result = await CreateAccountTool.CreateLightningEnableAccount(
+            email: TestEmail, l402Client: _l402ClientMock.Object, configService: _configServiceMock.Object);
+
+        var json = JsonDocument.Parse(result).RootElement;
+        json.GetProperty("success").GetBoolean().Should().BeFalse();
+        json.GetProperty("activation").GetProperty("paid").GetBoolean().Should().BeTrue();
+        json.GetProperty("activation").GetProperty("amountSats").GetInt64().Should().Be(100);
+        result.Should().NotContain("Check wallet balance");
+    }
+
+    /// <summary>
+    /// The inverse guard: a genuinely UNPAID failure (no wallet / budget refusal —
+    /// the client bails before paying) must NOT claim money moved, and here the
+    /// wallet/config hint is correct and should survive.
+    /// </summary>
+    [Fact]
+    public async Task CreateAccount_UnpaidFailure_DoesNotClaimPaid()
+    {
+        _l402ClientMock
+            .Setup(c => c.FetchWithL402Async(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(),
+                It.IsAny<string?>(), It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(L402FetchResult.Failed(
+                "https://x/api/signup/l402",
+                "402 Payment Required but NWC wallet not configured. Set NWC_CONNECTION_STRING environment variable.",
+                402, paidAmountSats: 0));
+
+        var result = await CreateAccountTool.CreateLightningEnableAccount(
+            email: TestEmail, l402Client: _l402ClientMock.Object, configService: _configServiceMock.Object);
+
+        var json = JsonDocument.Parse(result).RootElement;
+        json.GetProperty("success").GetBoolean().Should().BeFalse();
+        json.GetProperty("activation").GetProperty("paid").GetBoolean().Should().BeFalse();
+
+        // No money moved → no do-not-retry warning, and the wallet hint is appropriate.
+        json.TryGetProperty("warning", out _).Should().BeFalse();
+        json.GetProperty("hint").GetString().Should().Contain("wallet");
     }
 
     [Fact]

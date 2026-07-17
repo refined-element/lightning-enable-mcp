@@ -44,9 +44,18 @@ PER_SOURCE_TIMEOUT_SECONDS = 5.0
 
 class PriceUnavailableError(Exception):
     """
-    Raised when CoinGecko, Coinbase, and Kraken all fail and no recent
-    cached value is available. The MCP refuses to fall back to a fake price
-    because that would mis-evaluate budgets.
+    Raised when a live fetch is required and CoinGecko, Coinbase, and Kraken
+    ALL fail.
+
+    There is no stale-cache fallback, and no hardcoded rate. get_btc_price()
+    serves the cached price only while it is younger than CACHE_DURATION (60s);
+    once the cache is stale it is not consulted at all — all three sources are
+    raced, and if every one of them fails this error is raised rather than
+    serving the stale value.
+
+    That is deliberate, not an oversight: a stale or fake price silently
+    mis-evaluates budgets, mis-stating what a payment costs and what headroom
+    is left. Callers must treat this as "the price is unknown" and fail closed.
     """
 
 
@@ -68,6 +77,15 @@ class PriceService:
     are widely trusted. Strike is NOT used here even when configured — it's
     surfaced separately via the explicit get_btc_price tool for Strike-only
     users.
+
+    Caching and failure are fail-closed, and callers should rely on exactly
+    this contract:
+    - A cached price younger than CACHE_DURATION (60s) is served directly.
+    - Otherwise all three sources are raced for a fresh price. A stale cache is
+      NOT a fallback — it is not consulted, and it does not soften the failure.
+    - If every source fails, get_btc_price() raises PriceUnavailableError. It
+      never serves a stale price and never substitutes a hardcoded rate, because
+      a wrong price mis-evaluates budgets. "Unknown" is the honest answer.
     """
 
     def __init__(self) -> None:

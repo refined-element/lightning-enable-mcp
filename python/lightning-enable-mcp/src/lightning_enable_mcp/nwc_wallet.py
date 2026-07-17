@@ -18,6 +18,8 @@ from urllib.parse import parse_qs, urlparse
 import websockets
 from websockets.client import WebSocketClientProtocol
 
+from .wallet_errors import PreimageUnavailableError, is_valid_preimage
+
 logger = logging.getLogger("lightning-enable-mcp.nwc")
 
 
@@ -1022,23 +1024,39 @@ class NWCWallet:
         if not preimage:
             raise NWCPaymentError("No preimage in payment response")
 
-        # Validate preimage format - should be 64-char hex string
-        # Some wallets may incorrectly return the invoice or other data
-        if preimage.startswith(("lnbc", "lntb", "lnurl")):
-            logger.error("NWC wallet returned invoice instead of preimage")
-            raise NWCPaymentError(
-                "Wallet returned invoice instead of preimage. "
-                "This may be a bug in your NWC wallet implementation."
-            )
+        # Some wallets incorrectly return the invoice or other data in the preimage
+        # field. Detect that specifically, for a diagnostic the operator can act on.
+        returned_invoice = preimage.startswith(("lnbc", "lntb", "lnurl"))
 
         # Normalize preimage - some wallets may include 0x prefix or spaces
         preimage = preimage.replace("0x", "").replace(" ", "").lower()
 
-        # Validate it looks like hex
-        if not all(c in "0123456789abcdef" for c in preimage):
+        # Validate through the shared gate: a preimage is 32 bytes hex-encoded =>
+        # EXACTLY 64 hex characters. This previously checked only that every character
+        # was a hex DIGIT and never the LENGTH, so a short value like "deadbeef" was
+        # returned to the caller as proof of payment. A wrong-length value cannot be a
+        # preimage — it will never satisfy an L402 server, and returning it asserts a
+        # proof that does not exist.
+        if returned_invoice or not is_valid_preimage(preimage):
+            # PreimageUnavailableError, NOT NWCPaymentError: the wallet reported no
+            # error, so the payment SETTLED — the funds are gone. Per the wallet_errors
+            # contract this is one of the two states that are NOT "the payment failed";
+            # raising a payment error here would tell the agent to retry and pay twice.
+            #
+            # Deliberately does not echo the offending value (engineering standard #5:
+            # never log preimage-position content).
             logger.error("NWC wallet returned invalid preimage format")
-            raise NWCPaymentError(
-                "Invalid preimage format. Expected hex string."
+            detail = (
+                "The wallet returned an invoice instead of a preimage (likely a bug in "
+                "your NWC wallet implementation). "
+                if returned_invoice
+                else "The wallet returned a value that is not a valid 64-character hex preimage. "
+            )
+            raise PreimageUnavailableError(
+                detail
+                + "The payment settled, but L402/MPP verification is not possible "
+                "without a real preimage (expected a 64-character hex string).",
+                provider="nwc",
             )
 
         return preimage

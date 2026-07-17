@@ -1,0 +1,34 @@
+# gitleaks configuration for lightning-enable-mcp
+#
+# Why this file exists
+# --------------------
+# The NIP-47 NWC test fixtures are dummy connection URIs pointing at
+# relay.example.com. They have been on main since before this config existed
+# (test_nwc_wallet.py lines 110/141/164, test_server.py). gitleaks only ever
+# flagged them when a PR happened to touch a nearby line, because it scans the
+# PR's new commits — so the same value was simultaneously "a leak" and invisible
+# three times over in the same file.
+#
+# Scope
+# -----
+# Deliberately narrow: the two specific fixture VALUES are allowlisted by
+# literal, not the tests/ directory wholesale. A real credential committed to a
+# test file still fails the scan. Adding a new fixture requires editing this
+# file, which forces a human to look at it — that is the point.
+#
+# A scanner that fires on known-good input teaches people to click through red.
+# Encode what is known; keep everything else loud.
+
+title = "lightning-enable-mcp"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Dummy NIP-47 NWC secrets used as test fixtures (relay.example.com). Not credentials."
+regexes = [
+  # test_nwc_wallet.py, test_server.py — dummy NWC connection secret
+  '''71a8c14c1407c113601079c4302dab36460f0ccd0ad506f1f2dc73b5100e4f3c''',
+  # test_nwc_wallet.py — second dummy NWC secret
+  '''fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210''',
+]

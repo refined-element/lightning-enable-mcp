@@ -7,21 +7,29 @@ namespace LightningEnable.Mcp.Services;
 /// <summary>
 /// Service for converting between USD and satoshis using current BTC/USD price.
 ///
-/// Design:
+/// Design — FAIL CLOSED. There is no fallback price of any kind:
 /// • Three independent public sources: CoinGecko, Coinbase, Kraken.
-/// • On cache miss, all three are queried in parallel and the first successful
-///   response wins (resilient to a single slow/failing source).
-/// • Cache duration is short (60 seconds) so price stays close to spot while
-///   absorbing burst traffic and avoiding rate-limit pressure.
-/// • If every source fails, the service THROWS — there is no hardcoded
-///   fallback price. A wrong fake price would silently mis-evaluate budgets.
+/// • A cached price younger than 60 seconds is served directly. This is the
+///   ONLY case in which a cached value is used.
+/// • Otherwise (cache empty OR older than 60 seconds) all three sources are
+///   raced in parallel and the first successful response wins. An expired
+///   cache entry is NOT consulted, not even as a last resort — it is dead.
+/// • If every source fails, the service THROWS (PriceUnavailableException).
+///   It does NOT serve a stale price and does NOT invent a hardcoded one.
+///   Budget limits are USD-denominated, so a stale or fake price would
+///   silently mis-evaluate them — refusing to price is the safe answer, and
+///   callers such as BudgetService deny the payment rather than guess.
 /// • Every fetch attempt is logged (source, latency, success/failure).
 /// </summary>
 public interface IPriceService
 {
     /// <summary>
-    /// Gets the current BTC/USD price. Throws if all sources fail and no
-    /// recent cached value is available.
+    /// Gets the current BTC/USD price: a cached value if it is younger than 60
+    /// seconds, otherwise a fresh race of all three sources.
+    ///
+    /// THROWS <see cref="PriceUnavailableException"/> if every source fails.
+    /// A stale (over-60s) cached value does not prevent the throw and is never
+    /// served — see the fail-closed note on <see cref="IPriceService"/>.
     /// </summary>
     Task<decimal> GetBtcPriceAsync(CancellationToken cancellationToken = default);
 
@@ -39,6 +47,11 @@ public interface IPriceService
     /// Returns the most recent successfully fetched price along with the
     /// source name and timestamp. Returns null if no fetch has succeeded yet.
     /// Does not trigger a fresh fetch — use GetBtcPriceAsync for that.
+    ///
+    /// DIAGNOSTIC/REPORTING ONLY: the snapshot may be arbitrarily old (check
+    /// FetchedAtUtc). Never price or evaluate a payment from it — GetBtcPriceAsync
+    /// is the only sanctioned source of a price, precisely because it refuses to
+    /// return a stale one.
     /// </summary>
     PriceSnapshot? GetLastSnapshot();
 }
@@ -49,7 +62,10 @@ public interface IPriceService
 public sealed record PriceSnapshot(decimal BtcUsd, string Source, DateTime FetchedAtUtc);
 
 /// <summary>
-/// Thrown when every price source fails and no recent cached value is available.
+/// Thrown when every price source fails on a fetch (i.e. no fresh price could be
+/// obtained and no cached value younger than 60 seconds was available to serve).
+/// An older cached value does not suppress this — the service never serves a
+/// stale price.
 /// </summary>
 public sealed class PriceUnavailableException : InvalidOperationException
 {

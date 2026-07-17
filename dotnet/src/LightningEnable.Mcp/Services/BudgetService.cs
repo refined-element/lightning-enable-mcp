@@ -229,7 +229,11 @@ public class BudgetService : IBudgetService
         var remaining = result.RemainingSessionBudgetUsd >= (decimal)long.MaxValue / 100m
             ? long.MaxValue
             : (long)(result.RemainingSessionBudgetUsd * 100);
-        var maxPerRequest = _maxPerPaymentSats > 0 ? _maxPerPaymentSats : 100000;
+        // Report the config-derived per-payment cap, or NULL when there isn't one. Never
+        // invent a figure: this value is informational (not enforced here), but an agent
+        // reads it as a real limit, and a fabricated 100,000-sat "limit" is a lie about the
+        // operator's configuration.
+        long? maxPerRequest = _maxPerPaymentSats > 0 ? _maxPerPaymentSats : null;
 
         if (result.RequiresConfirmation)
         {

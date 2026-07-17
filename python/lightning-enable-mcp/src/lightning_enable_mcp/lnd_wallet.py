@@ -28,6 +28,12 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
+from .wallet_errors import (
+    PaymentProofUnavailableError,
+    PreimageUnavailableError,
+    is_valid_preimage,
+)
+
 try:
     import httpx
 except ImportError:
@@ -254,12 +260,42 @@ class LndWallet:
             if payment_preimage_b64:
                 preimage_bytes = base64.b64decode(payment_preimage_b64)
                 preimage_hex = preimage_bytes.hex()
+
+                # Validate through the shared gate before returning it as proof.
+                # LND "always returns a preimage" in practice, but practice is not a
+                # guard: whatever arrived was decoded and returned unchecked, so a
+                # wrong-length value would go to the caller as proof of payment.
+                # Anything that is not 32 bytes hex-encoded cannot be a preimage.
+                if not is_valid_preimage(preimage_hex):
+                    # PreimageUnavailableError, NOT LndPaymentError: LND reported no
+                    # payment_error, so the payment SETTLED and the funds are gone.
+                    # Per the wallet_errors contract that is NOT "the payment failed" —
+                    # raising a payment error would invite a retry that pays twice.
+                    #
+                    # Deliberately does not echo the offending value (engineering
+                    # standard #5: never log preimage-position content).
+                    logger.error("LND returned a value that is not a valid preimage")
+                    payment_hash = result.get("payment_hash")
+                    raise PreimageUnavailableError(
+                        "LND returned a value that is not a valid 64-character hex "
+                        "preimage. The payment settled, but L402/MPP verification is "
+                        "not possible without a real preimage.",
+                        provider="lnd",
+                        tracking_id=payment_hash,
+                    )
+
                 logger.info("LND payment succeeded, preimage received")
                 return preimage_hex
 
             raise LndPaymentError("Payment succeeded but no preimage returned")
 
         except LndError:
+            raise
+        except PaymentProofUnavailableError:
+            # Settled-but-unprovable is NOT a payment failure. Must be re-raised
+            # before the generic handler below, which would otherwise rewrap it as
+            # an LndPaymentError and tell the agent to retry a payment that already
+            # took the money.
             raise
         except Exception as e:
             raise LndPaymentError(f"Payment failed: {e!s}") from e

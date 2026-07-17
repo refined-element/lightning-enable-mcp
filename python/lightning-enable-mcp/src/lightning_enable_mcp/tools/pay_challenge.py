@@ -8,6 +8,7 @@ import json
 import logging
 import sys
 from . import sanitize_error
+from ..wallet_errors import PaymentPendingError, PaymentProofUnavailableError
 from typing import TYPE_CHECKING, Optional
 
 from bolt11 import decode as decode_bolt11
@@ -167,7 +168,43 @@ async def pay_l402_challenge(
         # Pay the invoice
         protocol = "MPP" if is_mpp else "L402"
         logger.info(f"Paying {protocol} invoice for {amount_sats} sats")
-        preimage = await wallet.pay_invoice(invoice)
+        try:
+            preimage = await wallet.pay_invoice(invoice)
+        except PaymentProofUnavailableError as e:
+            # No preimage exists (the wallet never returns them, or the payment
+            # hasn't settled), so there is no way to authenticate — but the funds
+            # have left (or are leaving) the wallet. Record the real spend rather
+            # than silently losing it, then report the truth: paid, unusable.
+            if budget_service and amount_sats:
+                budget_service.record_spend(amount_sats)
+                budget_service.record_payment_time()
+            if payment_history_service and amount_sats:
+                payment_history_service.record_payment(
+                    url=f"manual_{protocol.lower()}_payment",
+                    amount_sats=amount_sats,
+                    status="pending" if isinstance(e, PaymentPendingError) else "paid_no_preimage",
+                    invoice=invoice,
+                )
+            pending = isinstance(e, PaymentPendingError)
+            return json.dumps({
+                "success": False,
+                "status": "pending" if pending else "paid_no_preimage",
+                "trackingId": e.tracking_id,
+                "error": (
+                    f"{protocol} payment has not settled yet — it may still succeed or fail."
+                    if pending else
+                    f"{protocol} payment settled but {e.provider} returned no preimage, so it "
+                    f"cannot authenticate. {protocol} requires a preimage as proof of payment."
+                ),
+                "message": (
+                    "Do NOT retry — the funds have left your wallet. Check the payment status "
+                    "with the provider using the tracking ID."
+                    if pending else
+                    f"The funds have left your wallet, but {e.provider} cannot prove the payment. "
+                    "Use an NWC or LND wallet for L402/MPP support."
+                ),
+                "amount_sats": amount_sats,
+            }, indent=2)
 
         # A falsy preimage means the payment did NOT settle. Do not record spend/history
         # or return a success response with an invalid Authorization header.

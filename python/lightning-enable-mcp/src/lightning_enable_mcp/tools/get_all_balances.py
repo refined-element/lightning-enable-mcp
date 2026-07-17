@@ -83,11 +83,21 @@ async def get_all_balances(
                 try:
                     status = budget_service.get_status()
                     session = status.get("session", {})
+                    # get_status() has no "remainingSats" key — reading one silently
+                    # reported a remaining budget of 0 forever. Derive it instead, and
+                    # render an undeterminable budget as null (never 0, which reads as
+                    # "you are broke", and never via a hardcoded BTC rate).
+                    remaining_sats = await budget_service.get_remaining_session_sats()
                     response["session"] = {
                         "spentSats": session.get("spentSats", 0),
-                        "remainingBudgetSats": session.get("remainingSats", 0),
+                        "remainingBudgetSats": remaining_sats,
                         "requestCount": session.get("requestCount", 0),
                     }
+                    if remaining_sats is None:
+                        response["session"]["remainingBudgetNote"] = (
+                            "Remaining budget is unknown (no session limit configured, or the "
+                            "BTC price is unavailable to convert the USD limit)."
+                        )
                 except Exception:
                     pass
 
@@ -124,11 +134,21 @@ async def get_all_balances(
                 try:
                     status = budget_service.get_status()
                     session = status.get("session", {})
+                    # get_status() has no "remainingSats" key — reading one silently
+                    # reported a remaining budget of 0 forever. Derive it instead, and
+                    # render an undeterminable budget as null (never 0, which reads as
+                    # "you are broke", and never via a hardcoded BTC rate).
+                    remaining_sats = await budget_service.get_remaining_session_sats()
                     response["session"] = {
                         "spentSats": session.get("spentSats", 0),
-                        "remainingBudgetSats": session.get("remainingSats", 0),
+                        "remainingBudgetSats": remaining_sats,
                         "requestCount": session.get("requestCount", 0),
                     }
+                    if remaining_sats is None:
+                        response["session"]["remainingBudgetNote"] = (
+                            "Remaining budget is unknown (no session limit configured, or the "
+                            "BTC price is unavailable to convert the USD limit)."
+                        )
                 except Exception:
                     pass
 

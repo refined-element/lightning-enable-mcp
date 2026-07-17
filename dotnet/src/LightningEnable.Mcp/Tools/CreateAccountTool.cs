@@ -202,14 +202,69 @@ public static class CreateAccountTool
             {
                 // Scrub any credential-shaped tokens and cap the length — the L402 client's
                 // error can embed the full (untruncated) server response body.
+                var scrubbedError = Scrub(fetch.ErrorMessage ?? "Account activation failed.");
+
+                // PAID BUT ACTIVATION FAILED — the activation fee left the wallet (or is in
+                // flight) yet no account came back. Mirrors Python's paid-but-retry-failed
+                // branch and this repo's own AccessL402ResourceTool.
+                //
+                // The spend is ALREADY recorded inside L402HttpClient, so — unlike Python,
+                // where the tool records it — we must NOT record again here or the budget
+                // double-counts. Budget accounting was never the gap: the AGENT-facing signal
+                // was. Without `paid`/`amountSats` and an explicit do-not-retry, the agent
+                // reads a retryable-sounding hint and pays the fee again on every attempt.
+                //
+                // This fires for EVERY failure status, not just 409: a duplicate email (409),
+                // a pending payment, and a settled-without-preimage payment (both 402) all
+                // spend real sats.
+                if (fetch.PaidAmountSats > 0)
+                {
+                    return JsonSerializer.Serialize(new
+                    {
+                        success = false,
+                        error = scrubbedError,
+                        statusCode = fetch.StatusCode,
+                        activation = new
+                        {
+                            paid = true,
+                            amountSats = fetch.PaidAmountSats
+                        },
+                        warning = $"A payment of {fetch.PaidAmountSats:N0} sats was taken from your wallet but account " +
+                                  "activation did not complete. Do NOT re-run this tool or you may pay the activation " +
+                                  $"fee again — contact support@lightningenable.com with this email ({email}) to recover the account.",
+                        hint = fetch.StatusCode == 409
+                            // Do NOT offer "service is unavailable" here — we know money moved and
+                            // the server told us why. Suggesting an outage invites the retry loop.
+                            ? "This email already has a Lightning Enable account. The activation fee is charged before " +
+                              "the server checks for an existing account (it mints the challenge without a pre-check so " +
+                              "signup cannot be used to probe which emails are registered). Retrying with this email will " +
+                              "pay again and fail again. Sign in with the existing account, or use a different email."
+                            // Do NOT say "check wallet balance" here — the wallet did its job and paid.
+                            // That hint contradicts the client's own "do not retry it" guidance.
+                            : "The activation fee was paid but the account did not activate — the payment may still be in " +
+                              "flight, or the wallet settled it without returning a preimage (L402 needs one to prove " +
+                              "payment). Check the payment status with your wallet provider; do not re-pay."
+                    }, new JsonSerializerOptions { WriteIndented = true });
+                }
+
+                // Genuinely unpaid — the client bailed before spending anything (no wallet,
+                // budget refusal, unparseable challenge). Here a retry after fixing the wallet
+                // or config is the correct advice, and costs nothing.
                 return JsonSerializer.Serialize(new
                 {
                     success = false,
-                    error = Scrub(fetch.ErrorMessage ?? "Account activation failed."),
+                    error = scrubbedError,
                     statusCode = fetch.StatusCode,
+                    activation = new
+                    {
+                        paid = false,
+                        amountSats = 0
+                    },
                     hint = fetch.StatusCode == 402
-                        ? "The L402 activation challenge could not be completed. Check wallet balance and configuration."
-                        : "The signup endpoint returned an error. The email may already have an account, or the service is unavailable."
+                        ? "The L402 activation challenge could not be completed and no payment was made. Check wallet " +
+                          "balance and configuration."
+                        : "The signup endpoint returned an error before any payment was made. The email may already have " +
+                          "an account, or the service is unavailable."
                 });
             }
 

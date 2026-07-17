@@ -136,6 +136,25 @@ public class LndWalletService : IWalletService, IDisposable
             {
                 var preimageBytes = Convert.FromBase64String(result.PaymentPreimage);
                 var preimageHex = Convert.ToHexString(preimageBytes).ToLowerInvariant();
+
+                // Validate at the boundary before publishing it as proof. LND "always
+                // returns a preimage" in practice, but practice is not a guard: whatever
+                // arrived was decoded and returned unchecked. A value that isn't 32 bytes
+                // of hex cannot be a preimage, so it must not occupy PreimageHex — the
+                // field L402 treats as proof of payment.
+                if (!Preimage.IsValid(preimageHex))
+                {
+                    // The payment SETTLED (LND reported no payment_error) — the funds are
+                    // gone. Report success WITHOUT a preimage rather than a failure, which
+                    // would invite a retry and a double-spend. Mirrors OpenNode/Strike/NWC.
+                    Console.Error.WriteLine("[LND] WARNING: Response is not a valid 64-char hex preimage - L402 verification will NOT work");
+                    var trackingId = result.PaymentHash ?? "unknown";
+                    return NwcPaymentResult.SucceededWithoutPreimage(
+                        trackingId,
+                        "LND returned a value that is not a valid 64-character hex preimage. " +
+                        "The payment settled, but L402/MPP verification is not possible without a real preimage.");
+                }
+
                 Console.Error.WriteLine("[LND] Payment succeeded, preimage received");
                 return NwcPaymentResult.Succeeded(preimageHex);
             }

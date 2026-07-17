@@ -227,3 +227,91 @@ async def test_propagates_caller_cancellation():
     with pytest.raises(aio.CancelledError):
         await task
     await service.close()
+
+
+# =============================================================================
+# FINDING 4: the docs must describe the code that exists.
+#
+# The docstring claimed PriceUnavailableError is raised when all sources fail
+# "and no recent cached value is available" — implying a stale-serving fallback
+# path. No such path exists (and none should: fail-closed is the point). A
+# reader over-trusted that sentence. These tests pin BOTH the doc and the
+# fail-closed behavior it now describes, so they can never drift apart again.
+# =============================================================================
+
+_STALE_FALLBACK_CLAIMS = [
+    "no recent cached value is available",
+    "no recent cached value",
+]
+
+
+def test_error_docstring_does_not_promise_a_stale_fallback():
+    """The raise condition is 'all sources failed' — full stop."""
+    doc = PriceUnavailableError.__doc__ or ""
+    lowered = doc.lower()
+    for claim in _STALE_FALLBACK_CLAIMS:
+        assert claim not in lowered, (
+            f"PriceUnavailableError docstring still implies a stale-cache fallback ({claim!r}). "
+            "There is no such path: a cache older than CACHE_DURATION is not consulted at all."
+        )
+
+
+def test_error_docstring_states_the_actual_contract():
+    doc = (PriceUnavailableError.__doc__ or "").lower()
+    assert "stale" in doc, "docstring must say a stale price is never served"
+    assert "raise" in doc, "docstring must state that it raises when every source fails"
+
+
+def test_price_service_docstring_documents_fail_closed_cache():
+    doc = (PriceService.__doc__ or "").lower()
+    assert "60" in doc or "cache_duration" in doc, (
+        "PriceService docstring must state the cache window that is actually served"
+    )
+    assert "stale" in doc, (
+        "PriceService docstring must state that a stale price is never served"
+    )
+
+
+@pytest.mark.asyncio
+async def test_stale_cache_is_not_served_when_all_sources_fail():
+    """
+    BEHAVIOR the docs now describe: a cache older than CACHE_DURATION is NOT a
+    fallback. All sources fail -> raise, even though a cached value exists.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from lightning_enable_mcp.price_service import CACHE_DURATION, PriceSnapshot
+
+    service = _build_service(coingecko=None, coinbase=None, kraken=None)[0]
+
+    # Seed a cached price that is just past the cache window.
+    service._snapshot = PriceSnapshot(
+        btc_usd=Decimal("95000"),
+        source="CoinGecko",
+        fetched_at=datetime.now(timezone.utc) - CACHE_DURATION - timedelta(seconds=1),
+    )
+
+    with pytest.raises(PriceUnavailableError):
+        await service.get_btc_price()
+
+    await service.close()
+
+
+@pytest.mark.asyncio
+async def test_fresh_cache_is_served_without_any_fetch():
+    """The only cache that IS served: younger than CACHE_DURATION."""
+    from datetime import datetime, timezone
+
+    from lightning_enable_mcp.price_service import PriceSnapshot
+
+    service, counts = _build_service(coingecko=None, coinbase=None, kraken=None)
+    service._snapshot = PriceSnapshot(
+        btc_usd=Decimal("95000"),
+        source="CoinGecko",
+        fetched_at=datetime.now(timezone.utc),
+    )
+
+    assert await service.get_btc_price() == Decimal("95000")
+    assert counts == {"coingecko": 0, "coinbase": 0, "kraken": 0}
+
+    await service.close()

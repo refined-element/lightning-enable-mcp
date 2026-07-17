@@ -163,3 +163,160 @@ class TestPaymentRecord:
         )
         data = record.to_dict()
         assert "invoice" not in data
+
+
+# =============================================================================
+# BudgetService.get_remaining_session_sats
+#
+# Python's budget is USD-native (config limits) with optional tighten-only
+# runtime sats caps, so "remaining sats" must be DERIVED. When it cannot be
+# derived the answer is None ("unknown") — never 0, and never via a hardcoded
+# BTC rate. A wrong number here overstates spending headroom to an agent.
+# =============================================================================
+
+from decimal import Decimal
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from lightning_enable_mcp.budget_service import BudgetService
+from lightning_enable_mcp.config import (
+    UserBudgetConfiguration,
+    PaymentLimits,
+    TierThresholds,
+    SessionSettings,
+)
+from lightning_enable_mcp.price_service import PriceUnavailableError
+
+
+def _price_service(*, available: bool = True):
+    """1 USD <-> 1000 sats (BTC = $100,000). `available=False` models a total outage."""
+    price = MagicMock()
+    if available:
+        price.usd_to_sats = AsyncMock(side_effect=lambda usd: int(Decimal(str(usd)) * 1000))
+        price.sats_to_usd = AsyncMock(side_effect=lambda sats: Decimal(sats) / 1000)
+        price.get_btc_price = AsyncMock(return_value=Decimal("100000"))
+        price.get_cached_btc_price = MagicMock(return_value=Decimal("100000"))
+    else:
+        err = PriceUnavailableError("CoinGecko, Coinbase, and Kraken all failed")
+        price.usd_to_sats = AsyncMock(side_effect=err)
+        price.sats_to_usd = AsyncMock(side_effect=err)
+        price.get_btc_price = AsyncMock(side_effect=err)
+        price.get_cached_btc_price = MagicMock(return_value=Decimal("0"))
+    price.get_last_snapshot = MagicMock(return_value=None)
+    return price
+
+
+def _config_service(max_per_session):
+    cfg = UserBudgetConfiguration(
+        tiers=TierThresholds(),
+        limits=PaymentLimits(max_per_payment=Decimal("500.00"), max_per_session=max_per_session),
+        session=SessionSettings(require_approval_for_first_payment=False, cooldown_seconds=0),
+    )
+    svc = MagicMock()
+    svc.configuration = cfg
+    return svc
+
+
+def _budget(max_per_session=Decimal("10.00"), *, price_available=True) -> BudgetService:
+    return BudgetService(
+        config_service=_config_service(max_per_session),
+        price_service=_price_service(available=price_available),
+    )
+
+
+class TestGetRemainingSessionSats:
+    @pytest.mark.asyncio
+    async def test_usd_limit_converted_to_sats(self):
+        """$10 session limit @ $100k/BTC -> 10,000 sats."""
+        svc = _budget(Decimal("10.00"))
+        assert await svc.get_remaining_session_sats() == 10_000
+
+    @pytest.mark.asyncio
+    async def test_usd_limit_minus_spend(self):
+        svc = _budget(Decimal("10.00"))
+        svc.record_spend(2_000)  # 2,000 sats == $2
+        assert await svc.get_remaining_session_sats() == 8_000
+
+    @pytest.mark.asyncio
+    async def test_no_limit_and_no_runtime_cap_is_unknown(self):
+        """Unbounded is NOT a number — and must never be rendered as 'unlimited'."""
+        svc = _budget(max_per_session=None)
+        assert await svc.get_remaining_session_sats() is None
+
+    @pytest.mark.asyncio
+    async def test_runtime_cap_only(self):
+        svc = _budget(max_per_session=None)
+        assert (await svc.configure_budget(per_request_sats=500, per_session_sats=5_000)).success
+        assert await svc.get_remaining_session_sats() == 5_000
+
+    @pytest.mark.asyncio
+    async def test_runtime_cap_minus_spend(self):
+        svc = _budget(max_per_session=None)
+        assert (await svc.configure_budget(per_request_sats=500, per_session_sats=5_000)).success
+        svc.record_spend(1_500)
+        assert await svc.get_remaining_session_sats() == 3_500
+
+    @pytest.mark.asyncio
+    async def test_most_restrictive_wins_runtime_tighter(self):
+        """$10 (=10,000 sats) config limit vs 3,000 sats runtime cap -> 3,000."""
+        svc = _budget(Decimal("10.00"))
+        assert (await svc.configure_budget(per_request_sats=500, per_session_sats=3_000)).success
+        assert await svc.get_remaining_session_sats() == 3_000
+
+    @pytest.mark.asyncio
+    async def test_most_restrictive_wins_usd_tighter(self):
+        """
+        $1 (=1,000 sats) config limit vs a looser 9,000 sats runtime cap -> 1,000.
+
+        The runtime cap is set directly rather than via configure_budget, which is
+        tighten-only and would (correctly) reject 9,000 against a 1,000-sat config
+        cap. The state is still reachable in the real world: config.json is read
+        live, so the operator can lower max_per_session after the agent set its
+        runtime cap — and a rising BTC price shrinks what a USD limit is worth in
+        sats.
+        """
+        svc = _budget(Decimal("1.00"))
+        svc._runtime_max_per_session_sats = 9_000
+        assert await svc.get_remaining_session_sats() == 1_000
+
+    @pytest.mark.asyncio
+    async def test_price_unavailable_is_unknown_not_zero(self):
+        """CRITICAL: no BTC price -> the USD bound is UNKNOWN. Never guess."""
+        svc = _budget(Decimal("10.00"), price_available=False)
+        assert await svc.get_remaining_session_sats() is None
+
+    @pytest.mark.asyncio
+    async def test_price_unavailable_is_unknown_even_with_runtime_cap(self):
+        """
+        A known runtime cap does NOT rescue an unknown USD bound: the true
+        remaining is min(known, unknown), which could be either. Reporting the
+        known one would overstate headroom. Fail closed.
+        """
+        svc = _budget(Decimal("10.00"), price_available=False)
+        svc._runtime_max_per_session_sats = 3_000
+        assert await svc.get_remaining_session_sats() is None
+
+    @pytest.mark.asyncio
+    async def test_never_negative(self):
+        """Overspend floors at 0 remaining, never a negative headroom."""
+        svc = _budget(Decimal("1.00"))
+        svc.record_spend(50_000)  # $50 spent against a $1 limit
+        assert await svc.get_remaining_session_sats() == 0
+
+    @pytest.mark.asyncio
+    async def test_exhausted_runtime_cap_floors_at_zero(self):
+        svc = _budget(max_per_session=None)
+        assert (await svc.configure_budget(per_request_sats=500, per_session_sats=1_000)).success
+        svc.record_spend(1_000)
+        assert await svc.get_remaining_session_sats() == 0
+
+    @pytest.mark.asyncio
+    async def test_exhausted_usd_limit_needs_no_price(self):
+        """
+        Already over the USD limit -> remaining is 0 by arithmetic on USD alone.
+        No conversion, so no price needed: this 0 is KNOWN, not a guessed default.
+        """
+        svc = _budget(Decimal("1.00"), price_available=False)
+        svc._session_spent_usd = Decimal("5.00")
+        assert await svc.get_remaining_session_sats() == 0

@@ -188,9 +188,15 @@ public class OpenNodeWalletServiceTests
         }
     }
 
-    [Fact]
-    public async Task PayInvoiceAsync_PendingStatus_ReturnsWithdrawalId()
+    [Theory]
+    [InlineData("pending")]
+    [InlineData("processing")]
+    public async Task PayInvoiceAsync_PendingStatus_IsNotReportedAsSuccess(string status)
     {
+        // This test previously asserted Success == true for a pending payment,
+        // enshrining the bug: an in-flight payment may still FAIL, and a caller
+        // that reads it as success proceeds believing it paid.
+
         // Arrange
         var originalKey = Environment.GetEnvironmentVariable("OPENNODE_API_KEY");
         try
@@ -202,7 +208,94 @@ public class OpenNodeWalletServiceTests
                 data = new
                 {
                     id = "withdrawal-456",
-                    status = "pending"
+                    status
+                }
+            });
+
+            var mockHandler = CreateMockHandler(HttpStatusCode.OK, responseJson);
+            var httpClient = new HttpClient(mockHandler.Object)
+            {
+                BaseAddress = new Uri("https://api.opennode.com/v2/")
+            };
+            var service = new OpenNodeWalletService(httpClient);
+
+            // Act
+            var result = await service.PayInvoiceAsync("lnbc100n1p3abcdef");
+
+            // Assert
+            result.Success.Should().BeFalse("a payment that may still fail is not a settled payment");
+            result.IsPending.Should().BeTrue();
+            result.PreimageHex.Should().BeNull();
+            result.HasPreimage.Should().BeFalse();
+            // The withdrawal ID is for tracking only — never as proof of payment.
+            result.TrackingId.Should().Be("withdrawal-456");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("OPENNODE_API_KEY", originalKey);
+        }
+    }
+
+    [Fact]
+    public async Task PayInvoiceAsync_SettledWithoutPreimage_IsSuccessButUnprovable()
+    {
+        // Arrange
+        var originalKey = Environment.GetEnvironmentVariable("OPENNODE_API_KEY");
+        try
+        {
+            Environment.SetEnvironmentVariable("OPENNODE_API_KEY", "test-key");
+
+            var responseJson = JsonSerializer.Serialize(new
+            {
+                data = new
+                {
+                    id = "withdrawal-123",
+                    status = "paid"
+                }
+            });
+
+            var mockHandler = CreateMockHandler(HttpStatusCode.OK, responseJson);
+            var httpClient = new HttpClient(mockHandler.Object)
+            {
+                BaseAddress = new Uri("https://api.opennode.com/v2/")
+            };
+            var service = new OpenNodeWalletService(httpClient);
+
+            // Act
+            var result = await service.PayInvoiceAsync("lnbc100n1p3abcdef");
+
+            // Assert — the funds are gone, so this IS a success; it just cannot be proven.
+            result.Success.Should().BeTrue();
+            result.IsPending.Should().BeFalse();
+            result.HasPreimage.Should().BeFalse();
+            result.PreimageHex.Should().BeNull("a withdrawal ID must never occupy the preimage field");
+            result.TrackingId.Should().Be("withdrawal-123");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("OPENNODE_API_KEY", originalKey);
+        }
+    }
+
+    [Theory]
+    [InlineData("lnbc100n1p3abcdef")]      // OpenNode echoing the invoice back
+    [InlineData("withdrawal-123")]          // an internal identifier
+    [InlineData("not-a-preimage")]
+    public async Task PayInvoiceAsync_NonPreimageInPreimageField_IsNotTreatedAsProof(string bogus)
+    {
+        // Arrange
+        var originalKey = Environment.GetEnvironmentVariable("OPENNODE_API_KEY");
+        try
+        {
+            Environment.SetEnvironmentVariable("OPENNODE_API_KEY", "test-key");
+
+            var responseJson = JsonSerializer.Serialize(new
+            {
+                data = new
+                {
+                    id = "withdrawal-123",
+                    status = "paid",
+                    preimage = bogus
                 }
             });
 
@@ -218,9 +311,8 @@ public class OpenNodeWalletServiceTests
 
             // Assert
             result.Success.Should().BeTrue();
-            result.PreimageHex.Should().BeNull(); // OpenNode doesn't return preimage
-            result.TrackingId.Should().Be("withdrawal-456");
             result.HasPreimage.Should().BeFalse();
+            result.PreimageHex.Should().BeNull();
         }
         finally
         {

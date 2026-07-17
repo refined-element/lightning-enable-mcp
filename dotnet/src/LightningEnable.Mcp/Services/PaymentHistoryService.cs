@@ -19,7 +19,9 @@ public class PaymentHistoryService : IPaymentHistoryService
         string? invoice = null,
         string? preimageHex = null,
         string? l402Token = null,
-        int? statusCode = null)
+        int? statusCode = null,
+        PaymentStatus status = PaymentStatus.Success,
+        string? errorMessage = null)
     {
         lock (_lock)
         {
@@ -36,11 +38,12 @@ public class PaymentHistoryService : IPaymentHistoryService
                 Method = method.ToUpperInvariant(),
                 AmountSats = amountSats,
                 Timestamp = DateTime.UtcNow,
-                Success = true,
+                Status = status,
                 Invoice = invoice,
                 PreimageHex = preimageHex,
                 L402Token = l402Token,
-                ResponseStatusCode = statusCode
+                ResponseStatusCode = statusCode,
+                ErrorMessage = errorMessage
             });
         }
     }
@@ -66,7 +69,7 @@ public class PaymentHistoryService : IPaymentHistoryService
                 Method = method.ToUpperInvariant(),
                 AmountSats = amountSats,
                 Timestamp = DateTime.UtcNow,
-                Success = false,
+                Status = PaymentStatus.Failed,
                 Invoice = invoice,
                 ErrorMessage = errorMessage
             });
@@ -92,9 +95,18 @@ public class PaymentHistoryService : IPaymentHistoryService
             return new PaymentHistorySummary
             {
                 TotalPayments = payments.Count,
-                TotalSatsSpent = payments.Where(p => p.Success).Sum(p => p.AmountSats),
-                SuccessfulPayments = payments.Count(p => p.Success),
-                FailedPayments = payments.Count(p => !p.Success),
+                // Committed funds, not settled funds: a pending payment's sats are already
+                // gone from the agent's budget, so they count here. Only an outright
+                // FAILURE moved no money.
+                TotalSatsSpent = payments
+                    .Where(p => p.Status is PaymentStatus.Success or PaymentStatus.Pending)
+                    .Sum(p => p.AmountSats),
+                // Settled only. `!p.Success` used to sweep pending into the failed bucket
+                // as well, so pending was miscounted at BOTH ends once it stopped being
+                // stamped as a success — each status now counts exactly itself.
+                SuccessfulPayments = payments.Count(p => p.Status == PaymentStatus.Success),
+                FailedPayments = payments.Count(p => p.Status == PaymentStatus.Failed),
+                PendingPayments = payments.Count(p => p.Status == PaymentStatus.Pending),
                 Payments = payments.OrderByDescending(p => p.Timestamp).ToList()
             };
         }

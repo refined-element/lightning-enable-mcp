@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING
 import httpx
 from bolt11 import decode as decode_bolt11
 
+from .wallet_errors import PaymentProofUnavailableError
+
 if TYPE_CHECKING:
     from .nwc_wallet import NWCWallet
 
@@ -384,7 +386,16 @@ class L402Client:
             # Pay invoice
             protocol = "MPP" if isinstance(challenge, MppChallenge) else "L402"
             logger.info(f"Paying {protocol} invoice for {challenge.amount_sats} sats")
-            preimage = await self.wallet.pay_invoice(challenge.invoice)
+            try:
+                preimage = await self.wallet.pay_invoice(challenge.invoice)
+            except PaymentProofUnavailableError as e:
+                # The wallet has no preimage for us (it never returns them, or the
+                # payment hasn't settled), so L402 cannot be completed — but the
+                # funds have left (or are leaving) the wallet. Surface the settled
+                # amount so the caller records the real spend instead of silently
+                # losing it, same as the paid-but-retry-failed path below.
+                e.amount_paid = challenge.amount_sats
+                raise
 
             # Create token
             if isinstance(challenge, MppChallenge):
@@ -455,6 +466,13 @@ class L402Client:
         # Pay invoice
         try:
             preimage = await self.wallet.pay_invoice(invoice)
+        except PaymentProofUnavailableError as e:
+            # Not a payment failure — the funds left (or are leaving) the wallet,
+            # there is simply no preimage to authenticate with. Rewrapping this as
+            # L402PaymentError("Payment failed") would tell the caller the money is
+            # still theirs. Attach the amount so the spend can still be recorded.
+            e.amount_paid = amount_sats
+            raise
         except Exception as e:
             raise L402PaymentError(f"Payment failed: {e!s}") from e
 

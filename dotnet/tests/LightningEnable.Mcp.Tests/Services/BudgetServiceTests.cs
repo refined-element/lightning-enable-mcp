@@ -183,6 +183,52 @@ public class BudgetServiceTests
 
     #endregion
 
+    #region Finding 5 — never report a fabricated per-request limit
+
+    [Fact]
+    public void CheckBudget_NoPerPaymentCapConfigured_ReportsNoCap_NotAFabricatedNumber()
+    {
+        // With no maxPerPayment in the operator's config there is NO per-request ceiling to
+        // report. Inventing one (the old code substituted 100,000 sats out of thin air) is
+        // worse than reporting nothing: MaxPerRequest is informational and never enforced,
+        // but an agent reads it as a real limit and plans its spending around it.
+        _configServiceMock.Setup(c => c.Configuration).Returns(new UserBudgetConfiguration
+        {
+            Currency = "USD",
+            Tiers = new TierThresholds
+            {
+                AutoApprove = 0.10m,
+                LogAndApprove = 1.00m,
+                FormConfirm = 10.00m,
+                UrlConfirm = 100.00m
+            },
+            Limits = new PaymentLimits { MaxPerPayment = null, MaxPerSession = 100.00m },
+            Session = new SessionSettings { RequireApprovalForFirstPayment = false, CooldownSeconds = 0 }
+        });
+        var service = new BudgetService(_configServiceMock.Object, _priceServiceMock.Object);
+
+        // 5,000 sats = $0.05 (mock rate) → auto-approve tier.
+        var result = service.CheckBudget(5_000);
+
+        result.MaxPerRequest.Should().BeNull(
+            "no per-payment cap is configured, so there is no limit number to report");
+    }
+
+    [Fact]
+    public void CheckBudget_PerPaymentCapConfigured_ReportsTheRealCap()
+    {
+        // Guard for the other direction: when the operator HAS set a cap, it must still be
+        // reported accurately (not dropped by the nullable change).
+        SetupConfigurationWithLimits(0.50m, 100m); // $0.50 → 50,000 sats at the mock rate
+        var service = new BudgetService(_configServiceMock.Object, _priceServiceMock.Object);
+
+        var result = service.CheckBudget(5_000);
+
+        result.MaxPerRequest.Should().Be(50_000);
+    }
+
+    #endregion
+
     #region configure_budget — tighten-only runtime caps (decision C)
 
     [Fact]

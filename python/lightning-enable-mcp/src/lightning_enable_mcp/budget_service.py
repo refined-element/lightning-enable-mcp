@@ -27,7 +27,7 @@ from .config import (
     UserBudgetConfiguration,
     get_config_service,
 )
-from .price_service import PriceService, get_price_service
+from .price_service import PriceService, PriceUnavailableError, get_price_service
 
 logger = logging.getLogger("lightning-enable-mcp.budget-service")
 
@@ -436,6 +436,55 @@ class BudgetService:
             self._runtime_max_per_request_sats = per_request_sats
             self._runtime_max_per_session_sats = per_session_sats
             return ConfigureBudgetResult.ok(per_request_sats, per_session_sats)
+
+    async def get_remaining_session_sats(self) -> Optional[int]:
+        """Remaining session budget in SATS, or None if it cannot be determined.
+
+        Read-only. Note the port asymmetry: .NET's budget is sats-native, so it can
+        just read RemainingSessionBudget. Python's is USD-native (config file limits)
+        with optional tighten-only runtime sats caps, so remaining sats must be
+        DERIVED as the most restrictive of:
+          - the USD session limit minus USD spent, converted at the live BTC price
+          - the runtime per-session sats cap minus sats spent (price-independent)
+
+        Returns None — meaning UNKNOWN — when:
+          - neither bound is set (unbounded: the wallet balance, not this service,
+            is what limits spending), or
+          - a USD bound exists but the BTC price is unavailable. A known runtime cap
+            does NOT rescue this: the true remaining is min(known, unknown), which
+            could be either, so returning the known one would OVERSTATE headroom.
+
+        Callers must render None as "unknown" — never as 0, and never by falling back
+        to a hardcoded BTC rate. A wrong number here misstates spending headroom to an
+        agent, which is worse than no number at all.
+        """
+        config = self._config_service.configuration
+        bounds: list[int] = []
+
+        # Runtime sats cap: exact, needs no price.
+        if self._runtime_max_per_session_sats is not None:
+            bounds.append(max(0, self._runtime_max_per_session_sats - self._session_spent_sats))
+
+        # USD config limit: needs the live BTC price to be expressed in sats.
+        if config.limits.max_per_session is not None:
+            remaining_usd = config.limits.max_per_session - self._session_spent_usd
+            if remaining_usd <= 0:
+                # Already exhausted — 0 by arithmetic on USD alone. No conversion,
+                # so this 0 is KNOWN, not a guessed default.
+                bounds.append(0)
+            else:
+                try:
+                    bounds.append(await self._price_service.usd_to_sats(remaining_usd))
+                except PriceUnavailableError:
+                    # Fail closed: this bound is unknown, so the answer is unknown.
+                    logger.debug(
+                        "Remaining session sats undeterminable: BTC price unavailable"
+                    )
+                    return None
+
+        if not bounds:
+            return None
+        return min(bounds)
 
     @property
     def runtime_max_per_request_sats(self) -> Optional[int]:

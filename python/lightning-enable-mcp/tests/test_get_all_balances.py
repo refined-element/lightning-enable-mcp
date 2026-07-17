@@ -128,3 +128,41 @@ class TestGetAllBalances:
 
         assert parsed["success"] is False
         assert "Connection refused" in parsed["error"]
+
+
+class TestGetAllBalancesRemainingBudget:
+    """
+    `get_status()` has no `remainingSats` key, so reading one reported a remaining
+    budget of 0 to agents forever — the same defect fixed in discover_api.
+    """
+
+    @pytest.mark.asyncio
+    async def test_remaining_budget_is_not_hardwired_to_zero(self):
+        wallet = AsyncMock()
+        wallet.get_balance = AsyncMock(return_value=500_000)
+
+        budget = MagicMock()
+        budget.get_status = MagicMock(return_value={
+            "session": {"spentSats": 1_000, "requestCount": 2},
+        })
+        budget.get_remaining_session_sats = AsyncMock(return_value=99_000)
+
+        data = json.loads(await get_all_balances(wallet=wallet, budget_service=budget))
+
+        assert data["session"]["remainingBudgetSats"] == 99_000
+        assert data["session"]["spentSats"] == 1_000
+
+    @pytest.mark.asyncio
+    async def test_unknown_remaining_budget_is_null_not_zero(self):
+        """Unknown must never render as 0 — that reads as 'you are broke'."""
+        wallet = AsyncMock()
+        wallet.get_balance = AsyncMock(return_value=500_000)
+
+        budget = MagicMock()
+        budget.get_status = MagicMock(return_value={"session": {"spentSats": 0, "requestCount": 0}})
+        budget.get_remaining_session_sats = AsyncMock(return_value=None)
+
+        data = json.loads(await get_all_balances(wallet=wallet, budget_service=budget))
+
+        assert data["session"]["remainingBudgetSats"] is None
+        assert "remainingBudgetNote" in data["session"]

@@ -18,6 +18,12 @@ from dataclasses import dataclass, field
 from typing import Any
 from decimal import Decimal
 
+from .wallet_errors import (
+    PaymentProofUnavailableError,
+    PreimageUnavailableError,
+    is_valid_preimage,
+)
+
 try:
     import httpx
 except ImportError:
@@ -269,9 +275,14 @@ class StrikeWallet:
             amount_sats: Unused - Strike uses the invoice amount
 
         Returns:
-            Payment preimage (hex) for L402 verification
+            The payment preimage (hex) for L402 verification. If this method
+            returns, the value IS a real preimage — never a substitute identifier
+            such as the Strike payment ID.
 
         Raises:
+            PreimageUnavailableError: Payment completed, but Strike returned no
+                usable preimage. Funds ARE gone; carries the payment ID as
+                tracking_id. This is NOT a payment failure.
             StrikePaymentError: If payment fails
         """
         logger.info(f"Paying invoice via Strike: {bolt11[:30]}...")
@@ -309,16 +320,30 @@ class StrikeWallet:
                 # Extract preimage from lightning.preImage (Strike API)
                 lightning_details = payment.get("lightning", {})
                 preimage = lightning_details.get("preImage") if lightning_details else None
-                if preimage:
+                if is_valid_preimage(preimage):
                     logger.info("Preimage received from Strike, L402 fully supported")
-                    return preimage
+                    return preimage.strip()  # type: ignore[union-attr]
 
-                # Fallback: preimage not in response
-                logger.warning("No preimage in Strike response - L402 will NOT work for this payment")
-                return payment_id
+                # Preimage absent or unusable. The payment COMPLETED — the funds
+                # are gone — but a Strike payment ID is not proof of payment and
+                # must never stand in for a preimage (see wallet_errors).
+                logger.warning(
+                    f"Strike completed payment {payment_id} but returned no usable preimage — "
+                    "L402 verification is impossible for this payment"
+                )
+                raise PreimageUnavailableError(
+                    "Strike completed the payment but returned no usable preimage. "
+                    "L402 requires a preimage as proof of payment. The funds have left your wallet.",
+                    provider="strike",
+                    tracking_id=payment_id,
+                    status=state,
+                )
 
             raise StrikePaymentError(f"Payment failed with state: {state}")
 
+        except PaymentProofUnavailableError:
+            # "No preimage" — deliberate, must not be rewrapped as a generic failure.
+            raise
         except StrikeError:
             raise
         except Exception as e:

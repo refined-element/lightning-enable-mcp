@@ -13,6 +13,10 @@ from lightning_enable_mcp.l402_client import (
     L402BudgetExceededError,
     MppToken,
 )
+from lightning_enable_mcp.wallet_errors import (
+    PaymentPendingError,
+    PreimageUnavailableError,
+)
 
 
 class TestL402Challenge:
@@ -280,3 +284,75 @@ class TestPayChallengeNoAmountRejection:
                 await self.client.pay_challenge(
                     invoice="lnbc1pjtest", macaroon="mac123", max_sats=0
                 )
+
+
+class TestPayChallengeProofUnavailable:
+    """
+    When the wallet has no preimage, L402 cannot complete — but the funds still
+    left. The error must stay typed (so callers can tell "paid, unprovable" from
+    "payment failed") and must carry the amount so the spend is not lost.
+    """
+
+    def setup_method(self):
+        class MockWallet:
+            pass
+
+        self.client = L402Client(wallet=MockWallet())  # type: ignore
+
+    @pytest.mark.asyncio
+    async def test_preimage_unavailable_is_not_rewrapped_as_payment_failed(self):
+        """
+        Rewrapping this as L402PaymentError("Payment failed") would tell the
+        caller the money is still theirs. It isn't.
+        """
+        mock_wallet = AsyncMock()
+        mock_wallet.pay_invoice = AsyncMock(side_effect=PreimageUnavailableError(
+            "no preimage", provider="opennode", tracking_id="w-1", status="paid",
+        ))
+        self.client.wallet = mock_wallet
+
+        with patch.object(self.client, "_get_invoice_amount_msat", return_value=10_000):
+            with pytest.raises(PreimageUnavailableError) as exc:
+                await self.client.pay_challenge(invoice="lnbc10n1pjtest", macaroon="mac123")
+
+        assert exc.value.tracking_id == "w-1"
+
+    @pytest.mark.asyncio
+    async def test_settled_amount_is_attached_so_the_spend_can_be_recorded(self):
+        """Mirrors the paid-but-retry-failed idiom: callers read e.amount_paid."""
+        mock_wallet = AsyncMock()
+        mock_wallet.pay_invoice = AsyncMock(side_effect=PreimageUnavailableError(
+            "no preimage", provider="opennode", tracking_id="w-1", status="paid",
+        ))
+        self.client.wallet = mock_wallet
+
+        with patch.object(self.client, "_get_invoice_amount_msat", return_value=10_000):
+            with pytest.raises(PreimageUnavailableError) as exc:
+                await self.client.pay_challenge(invoice="lnbc10n1pjtest", macaroon="mac123")
+
+        assert exc.value.amount_paid == 10  # 10_000 msat -> 10 sats
+
+    @pytest.mark.asyncio
+    async def test_pending_payment_is_not_reported_as_a_token(self):
+        mock_wallet = AsyncMock()
+        mock_wallet.pay_invoice = AsyncMock(side_effect=PaymentPendingError(
+            "in flight", provider="opennode", tracking_id="w-2", status="pending",
+        ))
+        self.client.wallet = mock_wallet
+
+        with patch.object(self.client, "_get_invoice_amount_msat", return_value=10_000):
+            with pytest.raises(PaymentPendingError):
+                await self.client.pay_challenge(invoice="lnbc10n1pjtest", macaroon="mac123")
+
+    @pytest.mark.asyncio
+    async def test_real_payment_failures_still_become_l402_payment_error(self):
+        """Regression guard: ordinary wallet failures keep their old behavior."""
+        from lightning_enable_mcp.l402_client import L402PaymentError
+
+        mock_wallet = AsyncMock()
+        mock_wallet.pay_invoice = AsyncMock(side_effect=RuntimeError("node offline"))
+        self.client.wallet = mock_wallet
+
+        with patch.object(self.client, "_get_invoice_amount_msat", return_value=10_000):
+            with pytest.raises(L402PaymentError):
+                await self.client.pay_challenge(invoice="lnbc10n1pjtest", macaroon="mac123")

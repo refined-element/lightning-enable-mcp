@@ -119,6 +119,20 @@ public class L402HttpClient : IL402HttpClient
         // Pay invoice
         var paymentResult = await _walletService.PayInvoiceAsync(invoice, cancellationToken);
 
+        // IN FLIGHT: not settled, may still fail — so no preimage exists to authenticate
+        // with. The funds are committed, so record the spend rather than losing it, but
+        // do not call this a failure (the caller must not retry and pay twice).
+        if (paymentResult.IsPending)
+        {
+            _budgetService.RecordSpend(amountSats.Value);
+            var pendingTracking = !string.IsNullOrEmpty(paymentResult.TrackingId)
+                ? $" (tracking ID: {paymentResult.TrackingId})"
+                : "";
+            throw new InvalidOperationException(
+                $"Payment has not settled yet{pendingTracking} — it may still succeed or fail. " +
+                "Do not retry it; check its status with the provider.");
+        }
+
         if (!paymentResult.Success)
         {
             throw new InvalidOperationException($"Payment failed: {paymentResult.ErrorMessage}");
@@ -127,13 +141,18 @@ public class L402HttpClient : IL402HttpClient
         // Check if preimage is available - both L402 and MPP require it
         if (!paymentResult.HasPreimage)
         {
+            // The payment SETTLED — the money left the wallet — there is simply no proof
+            // of it. Record the real spend before bailing out, or the budget silently
+            // under-counts a payment that actually happened.
+            _budgetService.RecordSpend(amountSats.Value);
+
             var trackingInfo = !string.IsNullOrEmpty(paymentResult.TrackingId)
                 ? $" (tracking ID: {paymentResult.TrackingId})"
                 : "";
             var protocol = isMpp ? "MPP" : "L402";
             throw new InvalidOperationException(
-                $"Payment succeeded{trackingInfo} but wallet did not return preimage. " +
-                $"{protocol} requires preimage for verification. Use NWC or LND wallet for L402/MPP support.");
+                $"Payment succeeded{trackingInfo} but wallet did not return a usable preimage. " +
+                $"{protocol} requires a preimage for verification. Use NWC or LND wallet for L402/MPP support.");
         }
 
         // Record payment
@@ -214,6 +233,28 @@ public class L402HttpClient : IL402HttpClient
         // Pay invoice via wallet
         var paymentResult = await _walletService.PayInvoiceAsync(parsed.Invoice!, cancellationToken);
 
+        // IN FLIGHT: not settled, may still fail — no preimage exists to authenticate
+        // with. The funds are committed, so record the spend rather than losing it, but
+        // do not call this a failure (the caller must not retry and pay twice).
+        if (paymentResult.IsPending)
+        {
+            _budgetService.RecordSpend(amountSats.Value);
+            var pendingTracking = !string.IsNullOrEmpty(paymentResult.TrackingId)
+                ? $" (tracking ID: {paymentResult.TrackingId})"
+                : "";
+            // PENDING, not success: this payment may still fail, so the audit trail must
+            // not claim it settled. The sats still count toward the session total (the
+            // funds are committed) — see PaymentHistoryService.GetSummary.
+            _historyService.RecordPayment(url, method, amountSats.Value, parsed.Invoice!, null, null, null,
+                PaymentStatus.Pending,
+                $"Payment has not settled yet{pendingTracking} — it may still succeed or fail.");
+            // Report the committed amount: callers use PaidAmountSats to tell the agent
+            // money moved and it must not retry. Defaulting to 0 here would discard that.
+            return L402FetchResult.Failed(url,
+                $"Payment has not settled yet{pendingTracking} — it may still succeed or fail. " +
+                "Do not retry it; check its status with the provider.", 402, amountSats.Value);
+        }
+
         if (!paymentResult.Success)
         {
             _historyService.RecordFailedPayment(url, method, amountSats.Value, paymentResult.ErrorMessage ?? "Unknown error", parsed.Invoice!);
@@ -223,15 +264,22 @@ public class L402HttpClient : IL402HttpClient
         // Check if preimage is available - both L402 and MPP require it for verification
         if (!paymentResult.HasPreimage)
         {
+            // The payment SETTLED — the money left the wallet — there is simply no proof
+            // of it. Record the real spend before bailing out, or the budget silently
+            // under-counts a payment that actually happened.
+            _budgetService.RecordSpend(amountSats.Value);
+
             var trackingInfo = !string.IsNullOrEmpty(paymentResult.TrackingId)
                 ? $" (tracking ID: {paymentResult.TrackingId})"
                 : "";
             var protocolName = parsed.IsMpp ? "MPP" : "L402";
             _historyService.RecordFailedPayment(url, method, amountSats.Value,
-                $"Payment succeeded but no preimage returned{trackingInfo}. {protocolName} requires preimage.", parsed.Invoice!);
+                $"Payment succeeded but no usable preimage returned{trackingInfo}. {protocolName} requires a preimage.", parsed.Invoice!);
+            // The spend above is real and already recorded — report it so callers can warn
+            // the agent off a retry. Defaulting to 0 would hide a payment that happened.
             return L402FetchResult.Failed(url,
-                $"Payment succeeded{trackingInfo} but wallet did not return preimage. " +
-                $"{protocolName} requires preimage for verification. Use NWC or LND wallet for L402/MPP support.", 402);
+                $"Payment succeeded{trackingInfo} but wallet did not return a usable preimage. " +
+                $"{protocolName} requires a preimage for verification. Use NWC or LND wallet for L402/MPP support.", 402, amountSats.Value);
         }
 
         // Record successful payment

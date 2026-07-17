@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Globalization;
 using System.Text.Json;
 using LightningEnable.Mcp.Services;
 using ModelContextProtocol.Server;
@@ -117,36 +118,7 @@ public static class DiscoverApiTool
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
 
-        var items = new List<Dictionary<string, object?>>();
-        if (root.TryGetProperty("items", out var itemsArray) && itemsArray.ValueKind == JsonValueKind.Array)
-        {
-            foreach (var item in itemsArray.EnumerateArray())
-            {
-                var entry = new Dictionary<string, object?>();
-                if (item.TryGetProperty("name", out var name)) entry["name"] = name.GetString();
-                if (item.TryGetProperty("description", out var desc)) entry["description"] = desc.GetString();
-                if (item.TryGetProperty("parsedCategories", out var cats) && cats.ValueKind == JsonValueKind.Array)
-                    entry["categories"] = cats.EnumerateArray().Select(c => c.GetString()).ToList();
-                if (item.TryGetProperty("endpointCount", out var epCount)) entry["endpoint_count"] = epCount.GetInt32();
-                if (item.TryGetProperty("defaultPriceSats", out var price)) entry["default_price_sats"] = price.GetInt32();
-                if (item.TryGetProperty("manifestUrl", out var mUrl)) entry["manifest_url"] = mUrl.GetString();
-                if (item.TryGetProperty("proxyBaseUrl", out var pUrl)) entry["proxy_base_url"] = pUrl.GetString();
-                if (item.TryGetProperty("documentationUrl", out var docUrl)) entry["documentation_url"] = docUrl.GetString();
-
-                // Budget annotation per result
-                if (budgetAware && budgetService != null && entry.ContainsKey("default_price_sats"))
-                {
-                    var priceSats = Convert.ToInt64(entry["default_price_sats"]);
-                    if (priceSats > 0)
-                    {
-                        var config = budgetService.GetConfig();
-                        entry["affordable_calls"] = config.RemainingSessionBudget / priceSats;
-                    }
-                }
-
-                items.Add(entry);
-            }
-        }
+        var items = BuildRegistryEntries(root, budgetAware, budgetService);
 
         var total = root.TryGetProperty("total", out var totalProp) ? totalProp.GetInt32() : items.Count;
 
@@ -175,6 +147,47 @@ public static class DiscoverApiTool
                 ? "Call discover_api(url=\"<manifest_url>\") for full endpoint details and pricing of a specific API."
                 : "No APIs found. Try different keywords or browse categories."
         }, new JsonSerializerOptions { WriteIndented = true });
+    }
+
+    /// <summary>
+    /// Projects the registry's response items into the tool's output shape, optionally
+    /// annotating each with how many calls the remaining session budget affords.
+    /// </summary>
+    internal static List<Dictionary<string, object?>> BuildRegistryEntries(
+        JsonElement root, bool budgetAware, IBudgetService? budgetService)
+    {
+        var items = new List<Dictionary<string, object?>>();
+        if (!root.TryGetProperty("items", out var itemsArray) || itemsArray.ValueKind != JsonValueKind.Array)
+            return items;
+
+        foreach (var item in itemsArray.EnumerateArray())
+        {
+            var entry = new Dictionary<string, object?>();
+            if (item.TryGetProperty("name", out var name)) entry["name"] = name.GetString();
+            if (item.TryGetProperty("description", out var desc)) entry["description"] = desc.GetString();
+            if (item.TryGetProperty("parsedCategories", out var cats) && cats.ValueKind == JsonValueKind.Array)
+                entry["categories"] = cats.EnumerateArray().Select(c => c.GetString()).ToList();
+            if (item.TryGetProperty("endpointCount", out var epCount)) entry["endpoint_count"] = epCount.GetInt32();
+            if (item.TryGetProperty("defaultPriceSats", out var price)) entry["default_price_sats"] = ReadPriceValue(price);
+            if (item.TryGetProperty("manifestUrl", out var mUrl)) entry["manifest_url"] = mUrl.GetString();
+            if (item.TryGetProperty("proxyBaseUrl", out var pUrl)) entry["proxy_base_url"] = pUrl.GetString();
+            if (item.TryGetProperty("documentationUrl", out var docUrl)) entry["documentation_url"] = docUrl.GetString();
+
+            // Budget annotation per result. Same rule as the manifest path: a real count only
+            // for a positive whole-sats price, otherwise an explicit "unknown" — the registry
+            // response is no more trusted than a manifest.
+            if (budgetAware && budgetService != null)
+            {
+                entry.TryGetValue("default_price_sats", out var priceValue);
+                entry["affordable_calls"] = TryGetPositiveSats(priceValue, out var priceSats)
+                    ? Math.Max(0L, budgetService.GetConfig().RemainingSessionBudget) / priceSats
+                    : (object)"unknown";
+            }
+
+            items.Add(entry);
+        }
+
+        return items;
     }
 
     private static string GetRegistryBaseUrl()
@@ -236,28 +249,7 @@ public static class DiscoverApiTool
                 }
 
                 // Annotate endpoints with affordability
-                foreach (var endpoint in endpoints)
-                {
-                    if (endpoint.TryGetValue("pricing", out var pricingObj) &&
-                        pricingObj is Dictionary<string, object?> pricing &&
-                        pricing.TryGetValue("base_price_sats", out var priceObj))
-                    {
-                        var basePriceSats = Convert.ToInt64(priceObj);
-                        if (basePriceSats > 0)
-                        {
-                            endpoint["affordable_calls"] = remainingSats / basePriceSats;
-                            if (btcPrice.HasValue && btcPrice.Value > 0)
-                            {
-                                var costUsd = (decimal)basePriceSats / 100_000_000m * btcPrice.Value;
-                                endpoint["cost_usd"] = Math.Round(costUsd, 6);
-                            }
-                        }
-                        else
-                        {
-                            endpoint["affordable_calls"] = "unlimited";
-                        }
-                    }
-                }
+                AnnotateEndpointsWithAffordability(endpoints, remainingSats, btcPrice);
 
                 budgetInfo = new
                 {
@@ -289,6 +281,95 @@ public static class DiscoverApiTool
                 success = false,
                 error = $"Failed to parse manifest JSON: {ex.Message}"
             });
+        }
+    }
+
+    /// <summary>
+    /// Reads a price field out of an UNTRUSTED manifest/registry document without throwing on
+    /// any JSON shape. The document's raw claim is preserved as-is (a whole number stays a
+    /// number; anything else is surfaced verbatim so the caller can see what was actually
+    /// published) — deciding whether that claim is a usable price is
+    /// <see cref="TryGetPositiveSats"/>'s job, never this method's.
+    /// </summary>
+    internal static object? ReadPriceValue(JsonElement element) => element.ValueKind switch
+    {
+        // Fractional and Int64-overflowing numbers fall through to their raw text: still
+        // reported to the caller, but not silently truncated into a wrong sats figure.
+        JsonValueKind.Number => element.TryGetInt64(out var n) ? n : element.GetRawText(),
+        JsonValueKind.String => element.GetString(),
+        JsonValueKind.Null or JsonValueKind.Undefined => null,
+        _ => element.GetRawText()
+    };
+
+    /// <summary>
+    /// Resolves a value read by <see cref="ReadPriceValue"/> to a POSITIVE whole number of sats.
+    ///
+    /// Returns false — which callers MUST render as "unknown", never "unlimited" and never
+    /// "free" — for every shape a hostile document can supply that is not a usable price:
+    /// missing, null, zero, negative, non-numeric, fractional, or Int64-overflowing. A manifest
+    /// is attacker-authorable, so an unusable price must never widen what the agent believes it
+    /// can spend. Never throws.
+    /// </summary>
+    internal static bool TryGetPositiveSats(object? value, out long sats)
+    {
+        sats = 0;
+        switch (value)
+        {
+            case long l:
+                sats = l;
+                break;
+            case int i:
+                sats = i;
+                break;
+            case string s when long.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed):
+                // A quoted whole number ("100") is unambiguous and cannot over-claim
+                // affordability, so it is accepted rather than discarded as unknown.
+                sats = parsed;
+                break;
+            default:
+                // Includes null, bool, objects, arrays, "abc", "1.5", and overflowing numbers.
+                return false;
+        }
+
+        // Zero or negative is NOT "free" or "unlimited" — it is a broken price claim.
+        return sats > 0;
+    }
+
+    /// <summary>
+    /// Annotates each endpoint with how many calls the remaining session budget affords,
+    /// and the USD cost of a single call when a BTC price is available.
+    ///
+    /// Every endpoint gets an explicit verdict: a real count only when the manifest states a
+    /// positive whole-sats price, otherwise "unknown". No endpoint is left unannotated (an
+    /// agent could misread silence as free) and none is ever reported as "unlimited".
+    /// </summary>
+    internal static void AnnotateEndpointsWithAffordability(
+        List<Dictionary<string, object?>> endpoints, long remainingSats, decimal? btcPrice)
+    {
+        foreach (var endpoint in endpoints)
+        {
+            object? priceObj = null;
+            if (endpoint.TryGetValue("pricing", out var pricingObj) &&
+                pricingObj is Dictionary<string, object?> pricing)
+            {
+                pricing.TryGetValue("base_price_sats", out priceObj);
+            }
+
+            if (!TryGetPositiveSats(priceObj, out var basePriceSats))
+            {
+                endpoint["affordable_calls"] = "unknown";
+                continue;
+            }
+
+            // Clamp the remaining budget: an overspent session affords zero calls, not a
+            // negative number of them.
+            endpoint["affordable_calls"] = Math.Max(0L, remainingSats) / basePriceSats;
+
+            if (btcPrice.HasValue && btcPrice.Value > 0)
+            {
+                var costUsd = (decimal)basePriceSats / 100_000_000m * btcPrice.Value;
+                endpoint["cost_usd"] = Math.Round(costUsd, 6);
+            }
         }
     }
 
@@ -382,13 +463,16 @@ public static class DiscoverApiTool
         return info;
     }
 
-    private static Dictionary<string, object?> ExtractL402Info(JsonElement root)
+    /// <summary>
+    /// Projects the manifest's service-wide l402 block into the tool's output shape.
+    /// </summary>
+    internal static Dictionary<string, object?> ExtractL402Info(JsonElement root)
     {
         var info = new Dictionary<string, object?>();
         if (root.TryGetProperty("l402", out var l402))
         {
             if (l402.TryGetProperty("default_price_sats", out var price))
-                info["default_price_sats"] = price.GetInt32();
+                info["default_price_sats"] = ReadPriceValue(price);
             if (l402.TryGetProperty("payment_flow", out var flow))
                 info["payment_flow"] = flow.GetString();
             if (l402.TryGetProperty("capabilities", out var caps) && caps.ValueKind == JsonValueKind.Object)
@@ -408,7 +492,10 @@ public static class DiscoverApiTool
         return info;
     }
 
-    private static List<Dictionary<string, object?>> ExtractEndpoints(JsonElement root)
+    /// <summary>
+    /// Projects the manifest's endpoint array into the tool's output shape.
+    /// </summary>
+    internal static List<Dictionary<string, object?>> ExtractEndpoints(JsonElement root)
     {
         var endpoints = new List<Dictionary<string, object?>>();
         if (!root.TryGetProperty("endpoints", out var endpointsArray) ||
@@ -430,8 +517,10 @@ public static class DiscoverApiTool
             {
                 var pricingDict = new Dictionary<string, object?>();
                 if (pricing.TryGetProperty("model", out var model)) pricingDict["model"] = model.GetString();
+                // Untrusted document: GetInt64() would throw on any non-numeric shape and take
+                // the entire discovery response down with it.
                 if (pricing.TryGetProperty("base_price_sats", out var basePriceProp))
-                    pricingDict["base_price_sats"] = basePriceProp.GetInt64();
+                    pricingDict["base_price_sats"] = ReadPriceValue(basePriceProp);
                 endpoint["pricing"] = pricingDict;
             }
 

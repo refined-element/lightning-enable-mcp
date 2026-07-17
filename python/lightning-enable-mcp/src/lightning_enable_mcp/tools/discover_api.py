@@ -11,6 +11,7 @@ Two modes:
 
 import json
 import logging
+import math
 import os
 from . import sanitize_error
 from typing import TYPE_CHECKING, Any
@@ -31,6 +32,58 @@ WELL_KNOWN_PATHS = [
     "/l402-manifest.json",
     "/l402.json",
 ]
+
+
+# The entire Bitcoin supply, in sats. A single call cannot cost more than every
+# bitcoin that will ever exist, so anything above this is malformed rather than
+# expensive. Bounding here also keeps an unbounded JSON int away from float(),
+# which raises OverflowError above ~1.8e308.
+MAX_PRICE_SATS = 21_000_000 * 100_000_000
+
+
+def _parse_price_sats(value: Any) -> int | float | None:
+    """
+    Strictly parse a price (in sats) out of an UNTRUSTED manifest / registry entry.
+
+    Manifests are third-party documents fetched from a public registry or an
+    arbitrary URL — an attacker controls every byte. Anything that is not a
+    positive, finite, plausible number is rejected as UNKNOWN rather than coerced
+    into a price or waved through as free.
+
+    Returns None when the value cannot be trusted as a price. Python type traps
+    handled explicitly:
+      - bool is a subclass of int, so `True` would otherwise read as 1 sat.
+      - a JSON string ("100") is not a number, however numeric it looks.
+      - inf/nan are floats but would blow up int() or the affordability division.
+      - 0 / negative prices are not "free" — they are malformed.
+      - JSON ints are unbounded; a huge one would raise OverflowError inside
+        float(), which the caller's catch-all would silently turn into a
+        missing budget block.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if value <= 0 or value > MAX_PRICE_SATS:
+        return None
+    return value
+
+
+def _affordable_calls(
+    remaining_sats: int | None, price_sats: int | float | None
+) -> int | str:
+    """
+    How many calls the remaining budget covers at `price_sats` each.
+
+    Returns the string "unknown" unless BOTH inputs are known. It must NEVER
+    return "unlimited" or "free": an unknown price and an undeterminable budget
+    are exactly the cases where an agent must not be told it can keep spending.
+    `remaining_sats=None` means the budget could not be determined (e.g. the BTC
+    price is unavailable) — that is unknown, not zero.
+    """
+    if remaining_sats is None or price_sats is None:
+        return "unknown"
+    return int(remaining_sats // price_sats)
 
 
 def _get_registry_base_url() -> str:
@@ -293,6 +346,17 @@ async def _search_registry(
 
         data = response.json()
 
+    # Derive the remaining budget ONCE for all results. None means it could not
+    # be determined, which renders as "unknown" — never 0, never "unlimited".
+    budget_status: dict[str, Any] | None = None
+    remaining_sats: int | None = None
+    if budget_aware and budget_service:
+        try:
+            budget_status = budget_service.get_status()
+            remaining_sats = await budget_service.get_remaining_session_sats()
+        except Exception:
+            pass
+
     items = []
     raw_items = data.get("items", [])
     if isinstance(raw_items, list):
@@ -320,33 +384,28 @@ async def _search_registry(
             if "defaultPriceSats" in item:
                 entry["default_price_sats"] = item["defaultPriceSats"]
 
-            # Budget annotation per result
+            # Budget annotation per result. Registry entries are third-party data
+            # too, so the advertised price gets the same strict parsing as a
+            # manifest's — an unusable price reads "unknown", not "unlimited".
             if budget_aware and budget_service and "default_price_sats" in entry:
-                price_sats = entry["default_price_sats"]
-                if isinstance(price_sats, (int, float)) and price_sats > 0:
-                    try:
-                        status = budget_service.get_status()
-                        remaining = status.get("session", {}).get("remainingSats", 0)
-                        entry["affordable_calls"] = remaining // price_sats
-                    except Exception:
-                        pass
+                entry["affordable_calls"] = _affordable_calls(
+                    remaining_sats, _parse_price_sats(entry["default_price_sats"])
+                )
 
             items.append(entry)
 
     total = data.get("total", len(items))
 
     budget_info = None
-    if budget_aware and budget_service:
-        try:
-            status = budget_service.get_status()
-            session = status.get("session", {})
-            budget_info = {
-                "remaining_sats": session.get("remainingSats", 0),
-                "session_limit_sats": session.get("limitSats", 0),
-                "session_spent_sats": session.get("spentSats", 0),
-            }
-        except Exception:
-            pass
+    if budget_status is not None:
+        spent_sats = budget_status.get("session", {}).get("spentSats", 0)
+        budget_info = {
+            "remaining_sats": remaining_sats,
+            "session_limit_sats": (
+                remaining_sats + spent_sats if remaining_sats is not None else None
+            ),
+            "session_spent_sats": spent_sats,
+        }
 
     hint = (
         'Call discover_api(url="<manifest_url>") for full endpoint details and pricing of a specific API.'
@@ -402,38 +461,46 @@ async def _fetch_and_format_manifest(
     budget_info = None
     if budget_aware and budget_service:
         try:
-            status = budget_service.get_status()
-            session = status.get("session", {})
-            remaining_sats = session.get("remainingSats", 0)
+            session = budget_service.get_status().get("session", {})
+            spent_sats = session.get("spentSats", 0)
 
-            # Try to get BTC price for USD conversion
+            # Remaining sats is DERIVED (the Python budget is USD-native). None
+            # means "cannot be determined" — it is reported as such, never as 0.
+            remaining_sats = await budget_service.get_remaining_session_sats()
+
+            # BTC price for the USD annotations. Unavailability is NOT fatal:
+            # discovery still works, we just omit the USD figures rather than
+            # invent them. (Bare except is load-bearing — do not widen.)
             btc_price = None
             try:
                 from ..price_service import get_price_service
                 price_svc = get_price_service()
-                btc_price = await price_svc.get_btc_price_usd()
+                btc_price = await price_svc.get_btc_price()
             except Exception:
                 pass
 
-            # Annotate endpoints with affordability
+            # Annotate endpoints with affordability. The manifest is untrusted:
+            # only a positive, finite, numeric price yields a real count or cost.
             for endpoint in endpoints:
                 pricing = endpoint.get("pricing")
-                if isinstance(pricing, dict) and "base_price_sats" in pricing:
-                    base_price_sats = pricing["base_price_sats"]
-                    if isinstance(base_price_sats, (int, float)) and base_price_sats > 0:
-                        endpoint["affordable_calls"] = remaining_sats // int(base_price_sats)
-                        if btc_price and btc_price > 0:
-                            cost_usd = float(base_price_sats) / 100_000_000 * float(btc_price)
-                            endpoint["cost_usd"] = round(cost_usd, 6)
-                    else:
-                        endpoint["affordable_calls"] = "unlimited"
+                if not isinstance(pricing, dict):
+                    # No pricing block at all — claim nothing.
+                    continue
+                price_sats = _parse_price_sats(pricing.get("base_price_sats"))
+                endpoint["affordable_calls"] = _affordable_calls(remaining_sats, price_sats)
+                if price_sats is not None and btc_price and btc_price > 0:
+                    cost_usd = float(price_sats) / 100_000_000 * float(btc_price)
+                    endpoint["cost_usd"] = round(cost_usd, 6)
 
             budget_info = {
                 "remaining_sats": remaining_sats,
-                "session_limit_sats": session.get("limitSats", 0),
-                "session_spent_sats": session.get("spentSats", 0),
+                # Derived from the same figures: what is left plus what is gone.
+                "session_limit_sats": (
+                    remaining_sats + spent_sats if remaining_sats is not None else None
+                ),
+                "session_spent_sats": spent_sats,
             }
-            if btc_price and btc_price > 0:
+            if remaining_sats is not None and btc_price and btc_price > 0:
                 budget_info["remaining_usd"] = round(
                     float(remaining_sats) / 100_000_000 * float(btc_price), 4
                 )

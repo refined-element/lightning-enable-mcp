@@ -210,6 +210,55 @@ public static class PayInvoiceTool
             // Pay the invoice
             var result = await walletService.PayInvoiceAsync(normalizedInvoice, cancellationToken);
 
+            // IN FLIGHT: accepted but not settled — it may still fail. Reporting this as
+            // success would have the agent proceed believing it paid; reporting it as a
+            // plain failure would invite a retry that pays twice. Report it as pending.
+            // The funds are committed, so count them against the budget — not counting
+            // them would let an agent retry its way past its own limit.
+            if (result.IsPending)
+            {
+                budgetService?.RecordSpend(amountSats.Value);
+                budgetService?.RecordPaymentTime();
+                // Record it as PENDING, not as a success. The tool result below says
+                // success:false/status:pending — the audit trail must say the same thing,
+                // or get_payment_history would report a settled payment for money that
+                // may never arrive.
+                paymentHistory?.RecordPayment(
+                    "direct-invoice",
+                    "PAY",
+                    amountSats.Value,
+                    normalizedInvoice,
+                    null,
+                    null,
+                    null,
+                    PaymentStatus.Pending,
+                    "Payment has not settled yet — it may still succeed or fail." +
+                    (string.IsNullOrEmpty(result.TrackingId) ? "" : $" Tracking ID: {result.TrackingId}"));
+
+                var pendingUsd = priceService != null
+                    ? await priceService.SatsToUsdAsync(amountSats.Value, cancellationToken)
+                    : 0m;
+
+                return JsonSerializer.Serialize(new
+                {
+                    success = false,
+                    status = "pending",
+                    trackingId = result.TrackingId,
+                    error = "Payment has not settled yet — it may still succeed or fail.",
+                    message = result.ErrorMessage ??
+                              "The payment was accepted but has not settled. Do NOT treat it as paid and do " +
+                              "NOT retry it — retrying may pay twice. Check its status with the provider " +
+                              "using the tracking ID.",
+                    errorCode = result.ErrorCode,
+                    payment = new
+                    {
+                        amountSats = amountSats.Value,
+                        amountUsd = Math.Round(pendingUsd, 2),
+                        invoice = normalizedInvoice.Substring(0, Math.Min(30, normalizedInvoice.Length)) + "..."
+                    }
+                });
+            }
+
             if (!result.Success)
             {
                 paymentHistory?.RecordFailedPayment(

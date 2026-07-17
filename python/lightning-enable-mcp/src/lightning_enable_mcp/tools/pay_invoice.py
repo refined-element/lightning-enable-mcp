@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 from bolt11 import decode as decode_bolt11
 
 from ..config import ApprovalLevel
+from ..wallet_errors import PaymentPendingError, PreimageUnavailableError
 from . import sanitize_error
 
 logger = logging.getLogger("lightning-enable-mcp.tools.pay_invoice")
@@ -192,9 +193,68 @@ async def pay_invoice(
             if result.level == ApprovalLevel.LOG_AND_APPROVE:
                 logger.info(f"Log-and-approve payment: {amount_sats} sats (${result.amount_usd:.2f})")
 
-        # Pay the invoice
+        # Pay the invoice.
+        #
+        # Two non-failure outcomes have no preimage and must NOT be flattened into
+        # either "success" or "failure" — both would misinform the agent, and one of
+        # them (reporting a settled payment as failed) invites a double-spend retry.
         logger.info(f"Paying invoice: {normalized_invoice[:30]}...")
-        preimage = await wallet.pay_invoice(normalized_invoice)
+        try:
+            preimage = await wallet.pay_invoice(normalized_invoice)
+        except PaymentPendingError as e:
+            # In flight, may still fail. Count it against the budget anyway (the
+            # funds are committed; not counting them would let an agent retry past
+            # its limit), but never claim the payment succeeded.
+            if budget_service:
+                budget_service.record_spend(amount_sats)
+                budget_service.record_payment_time()
+            if payment_history_service:
+                payment_history_service.record_payment(
+                    url="direct-invoice",
+                    amount_sats=amount_sats,
+                    status="pending",
+                    invoice=normalized_invoice,
+                )
+            return json.dumps({
+                "success": False,
+                "status": "pending",
+                "trackingId": e.tracking_id,
+                "error": "Payment has not settled yet — it may still succeed or fail.",
+                "message": (
+                    f"{e.provider} accepted the payment but has not settled it. Do NOT treat this "
+                    "as paid and do NOT retry it — retrying may pay twice. Check the payment's "
+                    "status with the provider using the tracking ID."
+                ),
+                "amount": {"sats": amount_sats},
+            }, indent=2)
+        except PreimageUnavailableError as e:
+            # Settled: the money is GONE, so record the spend. But there is no
+            # preimage, so no L402 proof — say so plainly instead of inventing one.
+            if budget_service:
+                budget_service.record_spend(amount_sats)
+                budget_service.record_payment_time()
+            if payment_history_service:
+                payment_history_service.record_payment(
+                    url="direct-invoice",
+                    amount_sats=amount_sats,
+                    status="success",
+                    invoice=normalized_invoice,
+                )
+            return json.dumps({
+                "success": True,
+                "preimage": None,
+                "trackingId": e.tracking_id,
+                "message": "Payment successful",
+                "warning": (
+                    f"{e.provider} does not return a preimage for this payment, so there is NO "
+                    "proof of payment: L402/MPP verification will not work and this payment "
+                    "cannot be used to authenticate. Use an NWC or LND wallet for L402 support."
+                ),
+                "amount": {"sats": amount_sats},
+                "invoice": {
+                    "paid": normalized_invoice[:30] + "..." if len(normalized_invoice) > 30 else normalized_invoice
+                },
+            }, indent=2)
 
         if not preimage:
             # Record failed payment (preimage is never stored in history).

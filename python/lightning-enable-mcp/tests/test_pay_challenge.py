@@ -9,6 +9,7 @@ import pytest
 from lightning_enable_mcp.tools.pay_challenge import pay_l402_challenge
 from lightning_enable_mcp.budget_service import PendingConfirmation
 from lightning_enable_mcp.config import ApprovalLevel
+from lightning_enable_mcp.wallet_errors import PaymentPendingError, PreimageUnavailableError
 
 
 def _confirming_budget(code: str = "ABC123", sats: int = 10):
@@ -364,3 +365,94 @@ class TestPayL402ChallengeNoPreimage:
         assert "no preimage" in result["error"].lower()
         budget.record_spend.assert_not_called()
         history.record_payment.assert_not_called()
+
+
+class TestPayL402ChallengeProofUnavailable:
+    """
+    A wallet that cannot produce a preimage (OpenNode always; Strike sometimes)
+    cannot complete L402 — but the funds still left. Report the truth and keep
+    the accounting honest: never a forged token, never a lost spend.
+    """
+
+    def _budget(self):
+        budget = MagicMock()
+        approval = MagicMock()
+        approval.level = ApprovalLevel.AUTO_APPROVE
+        approval.requires_confirmation = False
+        approval.amount_usd = Decimal("0.10")
+        approval.denial_reason = None
+        budget.check_approval_level = AsyncMock(return_value=approval)
+        budget.record_spend = MagicMock()
+        budget.record_payment_time = MagicMock()
+        return budget
+
+    async def _run(self, exc, budget, history):
+        mock_wallet = AsyncMock()
+        mock_wallet.pay_invoice = AsyncMock(side_effect=exc)
+
+        mock_decoded = MagicMock()
+        mock_decoded.amount_msat = 100000
+        mock_decoded.amount = 100
+
+        with patch(
+            "lightning_enable_mcp.tools.pay_challenge.decode_bolt11",
+            return_value=mock_decoded,
+        ):
+            return json.loads(
+                await pay_l402_challenge(
+                    invoice="lnbc100n1pjtest",
+                    macaroon="test-macaroon",
+                    wallet=mock_wallet,
+                    budget_service=budget,
+                    payment_history_service=history,
+                )
+            )
+
+    @pytest.mark.asyncio
+    async def test_settled_without_preimage_never_returns_a_token(self):
+        budget, history = self._budget(), MagicMock()
+
+        result = await self._run(
+            PreimageUnavailableError(
+                "no preimage", provider="opennode", tracking_id="withdrawal-123", status="paid",
+            ),
+            budget, history,
+        )
+
+        assert result["success"] is False
+        assert result["trackingId"] == "withdrawal-123"
+        # No Authorization header may be built from a non-preimage.
+        assert "usage" not in result
+        assert "withdrawal-123" not in json.dumps(result.get("usage", {}))
+        assert "preimage" not in result
+
+    @pytest.mark.asyncio
+    async def test_settled_without_preimage_still_records_the_real_spend(self):
+        """The money is gone. Not counting it would let an agent spend past its cap."""
+        budget, history = self._budget(), MagicMock()
+
+        await self._run(
+            PreimageUnavailableError(
+                "no preimage", provider="opennode", tracking_id="w-1", status="paid",
+            ),
+            budget, history,
+        )
+
+        budget.record_spend.assert_called_once_with(100)
+        history.record_payment.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_pending_is_not_success_and_is_flagged_pending(self):
+        budget, history = self._budget(), MagicMock()
+
+        result = await self._run(
+            PaymentPendingError(
+                "in flight", provider="opennode", tracking_id="w-2", status="pending",
+            ),
+            budget, history,
+        )
+
+        assert result["success"] is False
+        assert result["status"] == "pending"
+        assert result["trackingId"] == "w-2"
+        budget.record_spend.assert_called_once_with(100)

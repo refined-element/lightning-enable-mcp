@@ -194,7 +194,7 @@ public class PayInvoiceToolTests
     public async Task PayInvoice_WithinBudget_Succeeds()
     {
         // Arrange
-        const string expectedPreimage = "abcd1234567890";
+        const string expectedPreimage = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20";
 
         _walletServiceMock.Setup(w => w.IsConfigured).Returns(true);
         _walletServiceMock.Setup(w => w.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
@@ -226,7 +226,7 @@ public class PayInvoiceToolTests
     public async Task PayInvoice_NoBudgetService_SkipsBudgetCheck()
     {
         // Arrange
-        const string expectedPreimage = "abcd1234567890";
+        const string expectedPreimage = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20";
 
         _walletServiceMock.Setup(w => w.IsConfigured).Returns(true);
         _walletServiceMock.Setup(w => w.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
@@ -333,7 +333,7 @@ public class PayInvoiceToolTests
     {
         // Arrange
         const string testInvoice = "lntb1000n1p3abcdef"; // Testnet prefix with amount
-        const string expectedPreimage = "preimage123";
+        const string expectedPreimage = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20";
 
         _walletServiceMock.Setup(w => w.IsConfigured).Returns(true);
         _walletServiceMock.Setup(w => w.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
@@ -357,7 +357,7 @@ public class PayInvoiceToolTests
     public async Task PayInvoice_Success_RecordsInHistory()
     {
         // Arrange
-        const string expectedPreimage = "preimage123";
+        const string expectedPreimage = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20";
 
         _walletServiceMock.Setup(w => w.IsConfigured).Returns(true);
         _walletServiceMock.Setup(w => w.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
@@ -456,7 +456,7 @@ public class PayInvoiceToolTests
     {
         // Arrange
         const string longInvoice = "lnbc1000n1p3abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnop";
-        const string expectedPreimage = "preimage123";
+        const string expectedPreimage = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20";
 
         _walletServiceMock.Setup(w => w.IsConfigured).Returns(true);
         _walletServiceMock.Setup(w => w.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
@@ -506,7 +506,7 @@ public class PayInvoiceToolTests
     {
         // Arrange
         const string longInvoice = "lnbc1000n1p3abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnop";
-        const string expectedPreimage = "preimage123";
+        const string expectedPreimage = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20";
 
         _walletServiceMock.Setup(w => w.IsConfigured).Returns(true);
         _walletServiceMock.Setup(w => w.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
@@ -578,6 +578,127 @@ public class PayInvoiceToolTests
         json.RootElement.GetProperty("expiresInSeconds").GetInt32().Should().Be(120);
         json.RootElement.GetProperty("amount").GetProperty("sats").GetInt64().Should().Be(100); // lnbc1000n = 100 sats
         json.RootElement.GetProperty("amount").GetProperty("usd").GetDecimal().Should().Be(5.00m); // contract: USD still surfaced
+    }
+
+    #endregion
+
+    #region Pending / No-Preimage Tests
+
+    private void SetupAutoApprove()
+    {
+        _budgetServiceMock.Setup(b => b.CheckApprovalLevelAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApprovalCheckResult
+            {
+                Level = ApprovalLevel.AutoApprove,
+                AmountSats = 100,
+                AmountUsd = 0.01m,
+                RemainingSessionBudgetUsd = 99.99m
+            });
+    }
+
+    [Fact]
+    public async Task PayInvoice_PendingPayment_IsNotReportedAsSuccess()
+    {
+        // A payment still in flight may FAIL. Reporting "Payment successful" makes
+        // the agent proceed believing it paid.
+        _walletServiceMock.Setup(w => w.IsConfigured).Returns(true);
+        _walletServiceMock.Setup(w => w.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(NwcPaymentResult.Pending("withdrawal-456", "still settling"));
+        SetupAutoApprove();
+
+        var result = await PayInvoiceTool.PayInvoice(
+            invoice: TestInvoice,
+            walletService: _walletServiceMock.Object,
+            budgetService: _budgetServiceMock.Object,
+            priceService: _priceServiceMock.Object);
+
+        var json = JsonDocument.Parse(result);
+        json.RootElement.GetProperty("success").GetBoolean().Should().BeFalse();
+        json.RootElement.GetProperty("status").GetString().Should().Be("pending");
+        json.RootElement.GetProperty("trackingId").GetString().Should().Be("withdrawal-456");
+        result.Should().NotContain("Payment successful");
+    }
+
+    [Fact]
+    public async Task PayInvoice_PendingPayment_StillCountsAgainstBudget()
+    {
+        // The funds are committed. Not counting them lets an agent retry past its cap.
+        _walletServiceMock.Setup(w => w.IsConfigured).Returns(true);
+        _walletServiceMock.Setup(w => w.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(NwcPaymentResult.Pending("withdrawal-456", "still settling"));
+        SetupAutoApprove();
+
+        await PayInvoiceTool.PayInvoice(
+            invoice: TestInvoice,
+            walletService: _walletServiceMock.Object,
+            budgetService: _budgetServiceMock.Object,
+            priceService: _priceServiceMock.Object);
+
+        _budgetServiceMock.Verify(b => b.RecordSpend(100), Times.Once);
+    }
+
+    [Fact]
+    public async Task PayInvoice_PendingPayment_NeverExposesTrackingIdAsPreimage()
+    {
+        _walletServiceMock.Setup(w => w.IsConfigured).Returns(true);
+        _walletServiceMock.Setup(w => w.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(NwcPaymentResult.Pending("withdrawal-456", "still settling"));
+        SetupAutoApprove();
+
+        var result = await PayInvoiceTool.PayInvoice(
+            invoice: TestInvoice,
+            walletService: _walletServiceMock.Object,
+            budgetService: _budgetServiceMock.Object,
+            priceService: _priceServiceMock.Object);
+
+        var json = JsonDocument.Parse(result);
+        json.RootElement.TryGetProperty("preimage", out var preimage).Should().BeFalse(
+            "a pending payment has no preimage at all");
+    }
+
+    [Fact]
+    public async Task PayInvoice_SettledWithoutPreimage_ReportsSuccessWithNullPreimage()
+    {
+        // The money IS gone, so this is a success — but unprovable, and the tool must
+        // say so rather than invent proof.
+        _walletServiceMock.Setup(w => w.IsConfigured).Returns(true);
+        _walletServiceMock.Setup(w => w.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(NwcPaymentResult.SucceededWithoutPreimage("withdrawal-123", "OpenNode returns no preimage"));
+        SetupAutoApprove();
+
+        var result = await PayInvoiceTool.PayInvoice(
+            invoice: TestInvoice,
+            walletService: _walletServiceMock.Object,
+            budgetService: _budgetServiceMock.Object,
+            priceService: _priceServiceMock.Object);
+
+        var json = JsonDocument.Parse(result);
+        json.RootElement.GetProperty("success").GetBoolean().Should().BeTrue();
+        json.RootElement.GetProperty("preimage").ValueKind.Should().Be(JsonValueKind.Null);
+        json.RootElement.GetProperty("trackingId").GetString().Should().Be("withdrawal-123");
+        json.RootElement.GetProperty("warning").GetString().Should().NotBeNullOrEmpty();
+    }
+
+    [Fact]
+    public async Task PayInvoice_WalletReturnsNonPreimageValue_IsNotPassedOffAsProof()
+    {
+        // Regression guard for the Coinos UUID / withdrawal-ID class of bug at the
+        // agent-facing surface: whatever the wallet hands back, only a real preimage
+        // may appear in the preimage field.
+        _walletServiceMock.Setup(w => w.IsConfigured).Returns(true);
+        _walletServiceMock.Setup(w => w.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(NwcPaymentResult.Succeeded("b5f9e0c2-1234-4a56-8901-abcdef123456"));
+        SetupAutoApprove();
+
+        var result = await PayInvoiceTool.PayInvoice(
+            invoice: TestInvoice,
+            walletService: _walletServiceMock.Object,
+            budgetService: _budgetServiceMock.Object,
+            priceService: _priceServiceMock.Object);
+
+        var json = JsonDocument.Parse(result);
+        json.RootElement.GetProperty("preimage").ValueKind.Should().Be(JsonValueKind.Null);
+        result.Should().NotContain("b5f9e0c2-1234-4a56-8901-abcdef123456");
     }
 
     #endregion

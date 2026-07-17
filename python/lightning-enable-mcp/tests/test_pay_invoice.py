@@ -16,6 +16,7 @@ from lightning_enable_mcp.tools.pay_invoice import pay_invoice
 from lightning_enable_mcp.budget_service import PendingConfirmation
 from lightning_enable_mcp.payment_history_service import PaymentHistoryService
 from lightning_enable_mcp.config import ApprovalLevel
+from lightning_enable_mcp.wallet_errors import PaymentPendingError, PreimageUnavailableError
 
 
 # pay_invoice now decodes the BOLT11 amount and budgets against IT (not max_sats).
@@ -420,3 +421,111 @@ class TestPayInvoiceAmountDecoding:
         assert data["success"] is True
         budget.check_approval_level.assert_awaited_once_with(50000)
         budget.record_spend.assert_called_once_with(50000)
+
+
+class TestPayInvoiceWithoutPreimage:
+    """
+    Two wallet outcomes have no preimage and are neither plain success nor plain
+    failure. Collapsing either into one costs money: "success" makes the agent
+    proceed unpaid, "failure" makes it retry a payment it already made.
+    """
+
+    @pytest.mark.asyncio
+    async def test_pending_payment_is_not_reported_as_success(self):
+        """An in-flight payment may still FAIL — never report it as paid."""
+        _DECODE_SATS["v"] = 1000
+        wallet = AsyncMock()
+        wallet.pay_invoice = AsyncMock(side_effect=PaymentPendingError(
+            "not settled yet", provider="opennode", tracking_id="withdrawal-456", status="pending",
+        ))
+
+        result = await pay_invoice(invoice="lnbc1000n1...", max_sats=1000, wallet=wallet)
+        data = json.loads(result)
+
+        assert data["success"] is False
+        assert data["status"] == "pending"
+        assert data["trackingId"] == "withdrawal-456"
+        assert "preimage" not in data
+        # Must not tell the agent the payment worked.
+        assert "Payment successful" not in json.dumps(data)
+
+    @pytest.mark.asyncio
+    async def test_pending_payment_still_counts_against_budget(self):
+        """The funds are committed — not counting them would let an agent retry past its cap."""
+        _DECODE_SATS["v"] = 1000
+        wallet = AsyncMock()
+        wallet.pay_invoice = AsyncMock(side_effect=PaymentPendingError(
+            "not settled yet", provider="opennode", tracking_id="w-1", status="pending",
+        ))
+        budget = _approving_budget()
+
+        await pay_invoice(invoice="lnbc1000n1...", max_sats=1000, wallet=wallet, budget_service=budget)
+
+        budget.record_spend.assert_called_once_with(1000)
+
+    @pytest.mark.asyncio
+    async def test_pending_payment_is_recorded_as_pending_in_history(self):
+        _DECODE_SATS["v"] = 1000
+        wallet = AsyncMock()
+        wallet.pay_invoice = AsyncMock(side_effect=PaymentPendingError(
+            "not settled yet", provider="opennode", tracking_id="w-1", status="pending",
+        ))
+        history = PaymentHistoryService()
+
+        await pay_invoice(
+            invoice="lnbc1000n1...", max_sats=1000, wallet=wallet,
+            payment_history_service=history,
+        )
+
+        assert history.get_history(10)[0].status == "pending"
+
+    @pytest.mark.asyncio
+    async def test_settled_without_preimage_reports_success_with_null_preimage(self):
+        """
+        The money IS gone, so this is a success — but there is no proof of
+        payment, and the tool must say so instead of inventing one.
+        """
+        _DECODE_SATS["v"] = 1000
+        wallet = AsyncMock()
+        wallet.pay_invoice = AsyncMock(side_effect=PreimageUnavailableError(
+            "no preimage", provider="opennode", tracking_id="withdrawal-123", status="paid",
+        ))
+
+        result = await pay_invoice(invoice="lnbc1000n1...", max_sats=1000, wallet=wallet)
+        data = json.loads(result)
+
+        assert data["success"] is True
+        assert data["preimage"] is None
+        assert data["trackingId"] == "withdrawal-123"
+        assert "warning" in data
+        # The tracking ID must never be offered as the preimage.
+        assert data["preimage"] != "withdrawal-123"
+
+    @pytest.mark.asyncio
+    async def test_settled_without_preimage_counts_against_budget(self):
+        _DECODE_SATS["v"] = 1000
+        wallet = AsyncMock()
+        wallet.pay_invoice = AsyncMock(side_effect=PreimageUnavailableError(
+            "no preimage", provider="opennode", tracking_id="w-1", status="paid",
+        ))
+        budget = _approving_budget()
+
+        await pay_invoice(invoice="lnbc1000n1...", max_sats=1000, wallet=wallet, budget_service=budget)
+
+        budget.record_spend.assert_called_once_with(1000)
+
+    @pytest.mark.asyncio
+    async def test_no_response_field_ever_carries_a_tracking_id_as_preimage(self):
+        """Regression guard for the fabrication bug, at the agent-facing surface."""
+        _DECODE_SATS["v"] = 1000
+        for exc in (
+            PreimageUnavailableError("x", provider="opennode", tracking_id="withdrawal-123", status="paid"),
+            PaymentPendingError("x", provider="opennode", tracking_id="withdrawal-123", status="pending"),
+        ):
+            wallet = AsyncMock()
+            wallet.pay_invoice = AsyncMock(side_effect=exc)
+
+            data = json.loads(await pay_invoice(invoice="lnbc1000n1...", max_sats=1000, wallet=wallet))
+
+            assert data.get("preimage") is None
+            assert data.get("trackingId") == "withdrawal-123"

@@ -215,18 +215,32 @@ public class NwcWalletService : IWalletService, IDisposable
                 return NwcPaymentResult.Failed("NO_PREIMAGE", "Payment succeeded but no preimage returned");
             }
 
-            // Validate preimage format (should be 64 hex chars = 32 bytes)
-            var isValidHex = preimage.Length == 64 && preimage.All(c => "0123456789abcdefABCDEF".Contains(c));
-            DebugLog($"Is valid 64-char hex: {isValidHex}");
-
-            if (!isValidHex)
+            // Validate preimage format (should be 64 hex chars = 32 bytes).
+            // This detection used to only WARN and then return the value anyway — so a
+            // Coinos UUID went out to the agent in the field L402 treats as proof of
+            // payment, producing an Authorization header the server always rejects.
+            // A value that isn't a preimage is not proof of anything: report the payment
+            // as settled (the funds ARE gone — reporting failure would invite a retry
+            // and a double-spend) but WITHOUT a preimage.
+            if (!Preimage.IsValid(preimage))
             {
                 DebugLog("WARNING: Preimage is not valid 64 hex chars");
-                // Check if it looks like a UUID
-                if (preimage.Contains('-') && preimage.Length == 36)
+                var looksLikeUuid = preimage.Contains('-') && preimage.Length == 36;
+                if (looksLikeUuid)
                 {
                     DebugLog("DETECTED: Preimage looks like a UUID - Coinos internal transfer bug");
                 }
+
+                var detail = looksLikeUuid
+                    ? "The wallet returned a UUID instead of a preimage (known Coinos internal-transfer bug). "
+                    : "The wallet returned a value that is not a valid 64-character hex preimage. ";
+
+                return NwcPaymentResult.SucceededWithoutPreimage(
+                    preimage,
+                    detail +
+                    "The payment settled, but L402/MPP verification is not possible without a real " +
+                    "preimage. Paying an external Lightning invoice (rather than an internal transfer " +
+                    "within the same wallet provider) normally returns one.");
             }
 
             DebugLog("Returning preimage");

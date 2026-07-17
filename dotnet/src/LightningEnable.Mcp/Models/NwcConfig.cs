@@ -156,14 +156,79 @@ public record NwcConfig
 }
 
 /// <summary>
+/// Validation for Lightning payment preimages.
+///
+/// Under L402 (and MPP) the preimage is not a receipt or a tracking number — it IS
+/// the proof of payment. The client sends it back as
+/// <c>Authorization: L402 &lt;macaroon&gt;:&lt;preimage&gt;</c>, and the server grants access
+/// solely because possessing it proves the invoice was paid.
+///
+/// So anything that is not a preimage must never occupy that field. Wallets have
+/// been observed handing back internal identifiers in its place — OpenNode
+/// withdrawal IDs, Strike payment IDs, and Coinos UUIDs (its internal-transfer
+/// bug). Publishing one of those to an agent produces an Authorization header the
+/// server rejects: money spent, no access, and a payment record that falsely
+/// claims a valid preimage.
+///
+/// Mirrors the Python port's <c>wallet_errors.is_valid_preimage</c>.
+/// </summary>
+public static class Preimage
+{
+    /// <summary>A preimage is a 32-byte value, hex-encoded => 64 hex characters.</summary>
+    public const int HexLength = 64;
+
+    /// <summary>
+    /// True only if <paramref name="value"/> is a syntactically valid preimage:
+    /// a 64-character hex string.
+    ///
+    /// This does NOT verify the preimage against a payment hash — it only rejects
+    /// values that cannot possibly be a preimage (withdrawal IDs, payment IDs,
+    /// UUIDs, BOLT11 invoices, empty/null). Anything failing this check must never
+    /// be handed to a caller as proof of payment.
+    /// </summary>
+    public static bool IsValid(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return false;
+
+        var candidate = value.AsSpan().Trim();
+        if (candidate.Length != HexLength)
+            return false;
+
+        foreach (var c in candidate)
+        {
+            var isHexDigit = (c >= '0' && c <= '9')
+                          || (c >= 'a' && c <= 'f')
+                          || (c >= 'A' && c <= 'F');
+            if (!isHexDigit)
+                return false;
+        }
+
+        return true;
+    }
+}
+
+/// <summary>
 /// Result of an NWC pay_invoice request.
 /// </summary>
 public record NwcPaymentResult
 {
     /// <summary>
-    /// Whether the payment was successful.
+    /// Whether the payment reached a SETTLED state. False for both hard failures
+    /// and payments still in flight (see <see cref="IsPending"/>) — an in-flight
+    /// payment may still fail, so it must never read as terminal success.
     /// </summary>
     public bool Success { get; init; }
+
+    /// <summary>
+    /// Whether the payment was accepted but has NOT settled yet. It may still
+    /// succeed, and it may still FAIL.
+    ///
+    /// Distinct from a hard failure: the funds are committed, so the caller must
+    /// neither claim the payment worked nor retry it (retrying risks paying twice).
+    /// Poll the provider with <see cref="TrackingId"/> to resolve it.
+    /// </summary>
+    public bool IsPending { get; init; }
 
     /// <summary>
     /// The payment preimage (hex) proving payment was made.
@@ -188,21 +253,29 @@ public record NwcPaymentResult
     public string? ErrorMessage { get; init; }
 
     /// <summary>
-    /// Whether a valid preimage is available for L402 verification.
+    /// Whether a REAL preimage is available for L402/MPP verification.
+    ///
+    /// This is the gate that stops an internal identifier from reaching an L402
+    /// Authorization header, so it asks the honest question — "is this actually a
+    /// preimage?" — rather than checking for a couple of known-bad sentinel
+    /// strings, which a UUID or a withdrawal ID would sail straight past.
     /// </summary>
-    public bool HasPreimage => !string.IsNullOrEmpty(PreimageHex) &&
-                                !PreimageHex.StartsWith("NO_PREIMAGE") &&
-                                !PreimageHex.StartsWith("PENDING");
+    public bool HasPreimage => Preimage.IsValid(PreimageHex);
 
     /// <summary>
     /// Creates a successful payment result with preimage.
+    /// If <paramref name="preimageHex"/> is not a real preimage, the result still
+    /// reports success (the payment settled) but <see cref="HasPreimage"/> is
+    /// false — the value is never passed off as proof of payment.
     /// </summary>
     public static NwcPaymentResult Succeeded(string preimageHex) =>
         new() { Success = true, PreimageHex = preimageHex };
 
     /// <summary>
     /// Creates a successful payment result without preimage.
-    /// Use when payment succeeded but wallet doesn't provide preimage (e.g., OpenNode).
+    /// Use when the payment SETTLED — the funds are gone — but the wallet does not
+    /// provide a usable preimage (e.g. OpenNode, which never does). This is NOT a
+    /// payment failure: reporting it as one invites the caller to retry and pay twice.
     /// </summary>
     public static NwcPaymentResult SucceededWithoutPreimage(string trackingId, string warning) =>
         new()
@@ -212,6 +285,25 @@ public record NwcPaymentResult
             TrackingId = trackingId,
             ErrorCode = "NO_PREIMAGE",
             ErrorMessage = warning
+        };
+
+    /// <summary>
+    /// Creates an IN-FLIGHT payment result: accepted by the provider but not yet
+    /// settled, and it may still fail.
+    ///
+    /// Deliberately NOT <see cref="Success"/> — a payment that can still fail must
+    /// not collapse into terminal success, or the caller proceeds believing it paid.
+    /// Equally it is not a hard failure, so callers must not retry it.
+    /// </summary>
+    public static NwcPaymentResult Pending(string trackingId, string message) =>
+        new()
+        {
+            Success = false,
+            IsPending = true,
+            PreimageHex = null,
+            TrackingId = trackingId,
+            ErrorCode = "PAYMENT_PENDING",
+            ErrorMessage = message
         };
 
     /// <summary>

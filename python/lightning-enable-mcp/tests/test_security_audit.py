@@ -88,9 +88,21 @@ class TestStrikeWalletPreimageExtraction:
             f"Expected preimage '{expected_preimage}', got '{result}'"
 
     @pytest.mark.asyncio
-    async def test_pay_invoice_falls_back_to_payment_id_without_preimage(self):
-        """Verify pay_invoice returns payment_id when preimage is not available."""
+    async def test_pay_invoice_never_falls_back_to_payment_id_without_preimage(self):
+        """
+        Verify pay_invoice REFUSES to substitute the payment ID when no preimage
+        is available.
+
+        This test previously asserted the OPPOSITE — that pay_invoice "falls back"
+        to returning the Strike payment ID — which enshrined the bug as intended
+        behavior. A payment ID is an internal Strike identifier; returning it from
+        a method contracted to return a preimage publishes it to the agent in the
+        field L402 treats as PROOF OF PAYMENT. The server then rejects the
+        resulting Authorization header: money spent, no access, and a payment
+        record that falsely claims a valid preimage.
+        """
         from lightning_enable_mcp.strike_wallet import StrikeWallet
+        from lightning_enable_mcp.wallet_errors import PreimageUnavailableError
 
         wallet = StrikeWallet(api_key="test-key")
 
@@ -109,10 +121,12 @@ class TestStrikeWalletPreimageExtraction:
         wallet._client = MagicMock()
         wallet._request = mock_request
 
-        result = await wallet.pay_invoice("lnbc1test")
+        with pytest.raises(PreimageUnavailableError) as exc:
+            await wallet.pay_invoice("lnbc1test")
 
-        assert result == "test-payment-id", \
-            f"Expected payment_id fallback, got '{result}'"
+        # The payment ID is still surfaced — but as a tracking ID, never as proof.
+        assert exc.value.tracking_id == "test-payment-id"
+        assert exc.value.provider == "strike"
 
 
 class TestNwcWalletNoPreimageLogging:

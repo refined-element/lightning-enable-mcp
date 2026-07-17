@@ -10,6 +10,13 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from .wallet_errors import (
+    PaymentPendingError,
+    PaymentProofUnavailableError,
+    PreimageUnavailableError,
+    is_valid_preimage,
+)
+
 try:
     import httpx
 except ImportError:
@@ -134,15 +141,28 @@ class OpenNodeWallet:
         """
         Pay a Lightning invoice via OpenNode withdrawal.
 
+        IMPORTANT: OpenNode does not expose Lightning preimages. This method
+        therefore raises PreimageUnavailableError on virtually every successful
+        payment — that is correct and deliberate. A withdrawal ID is an internal
+        OpenNode identifier, NOT proof of payment, and returning one here would
+        publish it to the agent in the field L402 treats as proof. For L402/MPP
+        support use an NWC or LND wallet, which return real preimages.
+
         Args:
             bolt11: BOLT11 invoice string
             amount_sats: Amount in satoshis (optional, uses invoice amount if not specified)
 
         Returns:
-            Payment preimage as hex string (or withdrawal ID if preimage not available)
+            The payment preimage as a hex string. If this method returns, the
+            value IS a real preimage — never a substitute identifier.
 
         Raises:
-            OpenNodePaymentError: If payment fails
+            PreimageUnavailableError: Payment settled, but OpenNode returned no
+                usable preimage (the normal outcome). Funds ARE gone; carries the
+                withdrawal ID as tracking_id. This is NOT a payment failure.
+            PaymentPendingError: Payment accepted but not yet settled — it may
+                still fail. Carries the withdrawal ID as tracking_id.
+            OpenNodePaymentError: If the payment actually failed.
         """
         logger.info(f"Paying invoice via OpenNode: {bolt11[:30]}...")
 
@@ -165,23 +185,43 @@ class OpenNodeWallet:
             logger.info(f"Withdrawal created: {withdrawal_id}, status: {status}")
 
             if status in ("paid", "confirmed", "completed"):
-                # Payment successful
-                # OpenNode may not return preimage, use withdrawal ID as fallback
-                preimage = result.get("preimage") or result.get("reference") or withdrawal_id
+                # Payment settled. The ONLY acceptable preimage is a real one in
+                # the `preimage` field. `reference` and `id` are internal OpenNode
+                # identifiers — substituting either here would hand the agent a
+                # forged proof of payment (see wallet_errors for the full why).
+                preimage = result.get("preimage")
 
-                # Validate preimage - shouldn't be the invoice
-                if isinstance(preimage, str) and preimage.startswith(("lnbc", "lntb")):
-                    logger.warning("OpenNode returned invoice instead of preimage, using withdrawal ID")
-                    preimage = withdrawal_id
+                if is_valid_preimage(preimage):
+                    logger.info("Payment successful, preimage received")
+                    return preimage.strip()  # type: ignore[union-attr]
 
-                logger.info(f"Payment successful: {preimage}")
-                return preimage
+                # Settled but unprovable. The funds ARE gone — this is NOT a
+                # payment failure, and callers must not report it as one (an
+                # agent that thinks it failed will retry and pay twice).
+                logger.warning(
+                    f"Payment settled (withdrawal {withdrawal_id}) but OpenNode returned no usable "
+                    "preimage — L402/MPP verification is impossible. Use NWC or LND for L402 support."
+                )
+                raise PreimageUnavailableError(
+                    "OpenNode settled the payment but returned no usable preimage. "
+                    "L402 requires a preimage as proof of payment — use an NWC or LND wallet "
+                    "for L402 support. The funds have left your wallet.",
+                    provider="opennode",
+                    tracking_id=withdrawal_id,
+                    status=status,
+                )
 
             elif status in ("pending", "processing"):
-                # Payment in progress - this is normal for Lightning
-                # Return the withdrawal ID for tracking
+                # In flight. No preimage exists YET and the payment may still
+                # FAIL, so this must not collapse into terminal success.
                 logger.info(f"Payment processing: {withdrawal_id}")
-                return withdrawal_id
+                raise PaymentPendingError(
+                    f"OpenNode accepted the payment but it has not settled yet (status: {status}). "
+                    "It may still fail. Check the withdrawal status before treating it as paid.",
+                    provider="opennode",
+                    tracking_id=withdrawal_id,
+                    status=status,
+                )
 
             else:
                 raise OpenNodePaymentError(
@@ -189,6 +229,10 @@ class OpenNodeWallet:
                     f"Details: {result}"
                 )
 
+        except PaymentProofUnavailableError:
+            # "No preimage" / "not settled yet" — deliberate, must not be
+            # rewrapped as a generic payment failure below.
+            raise
         except OpenNodeError:
             raise
         except Exception as e:

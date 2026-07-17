@@ -161,17 +161,21 @@ public class StrikeWalletService : IWalletService, IDisposable
 
                 // Strike now returns preimage on the lightning.preImage property
                 var preimage = payment.Lightning?.PreImage;
-                if (!string.IsNullOrEmpty(preimage))
+                if (Preimage.IsValid(preimage))
                 {
                     Console.Error.WriteLine("[Strike] Preimage received, L402 fully supported");
-                    return NwcPaymentResult.Succeeded(preimage);
+                    return NwcPaymentResult.Succeeded(preimage!);
                 }
 
-                // Fallback: preimage not in response (older API or non-Lightning payment)
-                Console.Error.WriteLine("[Strike] WARNING: No preimage in response - L402 will NOT work for this payment");
+                // No usable preimage (older API, non-Lightning payment, or a value that
+                // isn't preimage-shaped). The payment COMPLETED — the funds are gone —
+                // but the Strike payment ID is an internal identifier, not proof of
+                // payment, and must never stand in for the preimage.
+                Console.Error.WriteLine("[Strike] WARNING: No usable preimage in response - L402 will NOT work for this payment");
                 return NwcPaymentResult.SucceededWithoutPreimage(
                     payment.PaymentId,
-                    "Strike did not return preimage for this payment. L402 requires preimage.");
+                    "Strike did not return a usable preimage for this payment. L402 requires a preimage " +
+                    "as proof of payment. The funds have left your wallet.");
             }
 
             return NwcPaymentResult.Failed(payment.State ?? "UNKNOWN", "Payment did not complete");

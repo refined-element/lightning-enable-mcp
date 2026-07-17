@@ -117,29 +117,42 @@ public class OpenNodeWalletService : IWalletService, IDisposable
                 case "paid":
                 case "confirmed":
                 case "completed":
-                    // Payment successful - check if preimage is available
-                    // NOTE: OpenNode does NOT return preimages for Lightning payments
-                    // This means L402 verification will NOT work with OpenNode
+                    // Payment SETTLED — the funds are gone. Check for a real preimage.
+                    // NOTE: OpenNode does NOT return preimages for Lightning payments,
+                    // so this practically always takes the no-preimage branch and L402
+                    // verification will NOT work with OpenNode.
+                    //
+                    // The withdrawal ID is NOT a substitute: it is an internal OpenNode
+                    // identifier, and handing it back as a preimage would publish it in
+                    // the field L402 treats as proof of payment. Same for anything else
+                    // that isn't preimage-shaped (OpenNode has been seen echoing the
+                    // invoice back in this field).
                     var preimage = data["preimage"]?.GetValue<string>();
-                    if (string.IsNullOrEmpty(preimage))
+                    if (!Preimage.IsValid(preimage))
                     {
-                        // OpenNode doesn't provide preimage - return success with warning
+                        // Settled but unprovable — success WITHOUT a preimage. Not a
+                        // failure: reporting it as one invites a retry and a double-spend.
                         Console.Error.WriteLine($"[OpenNode] Payment succeeded (withdrawal ID: {withdrawalId})");
-                        Console.Error.WriteLine("[OpenNode] WARNING: No preimage returned - L402 verification will NOT work");
+                        Console.Error.WriteLine("[OpenNode] WARNING: No usable preimage returned - L402 verification will NOT work");
                         Console.Error.WriteLine("[OpenNode] For L402 support, use NWC or LND wallet instead");
                         return NwcPaymentResult.SucceededWithoutPreimage(
                             withdrawalId,
-                            "OpenNode does not return preimage. L402 requires preimage - use NWC or LND wallet.");
+                            "OpenNode does not return a usable preimage. L402 requires a preimage as proof " +
+                            "of payment - use an NWC or LND wallet. The funds have left your wallet.");
                     }
-                    return NwcPaymentResult.Succeeded(preimage);
+                    return NwcPaymentResult.Succeeded(preimage!);
 
                 case "pending":
                 case "processing":
-                    // Payment in progress - return success without preimage
+                    // IN FLIGHT: no preimage exists yet and the payment may still FAIL.
+                    // This must not collapse into terminal success — the caller would
+                    // proceed believing it paid. It is not a hard failure either, so the
+                    // caller must not retry it: the funds are already committed.
                     Console.Error.WriteLine($"[OpenNode] Payment pending/processing (withdrawal ID: {withdrawalId})");
-                    return NwcPaymentResult.SucceededWithoutPreimage(
+                    return NwcPaymentResult.Pending(
                         withdrawalId,
-                        "Payment is processing. Preimage will be available when confirmed.");
+                        $"Payment is {status} and has not settled — it may still fail. Do not treat it as " +
+                        "paid and do not retry it; check the withdrawal status with OpenNode instead.");
 
                 default:
                     return NwcPaymentResult.Failed("PAYMENT_FAILED",

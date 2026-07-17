@@ -1,4 +1,5 @@
 using System.Net;
+using System.Reflection;
 using System.Text;
 using LightningEnable.Mcp.Services;
 
@@ -188,6 +189,59 @@ public class PriceServiceTests
         ex.Which.Message.Should().Contain("CoinGecko");
         ex.Which.Message.Should().Contain("Coinbase");
         ex.Which.Message.Should().Contain("Kraken");
+    }
+
+    [Fact]
+    public async Task GetBtcPriceAsync_StaleCache_IsNeverServed_ThrowsInstead()
+    {
+        // Pins the fail-closed contract the docs now describe. The docs previously said the
+        // service throws only "if all sources fail AND no recent cached value is available",
+        // implying an expired cache entry could still rescue an all-sources-down fetch. It
+        // cannot, and must not: budget limits are USD-denominated, so a stale price would
+        // silently mis-evaluate them. Past the 60s window the cache is dead to us.
+        var handler = new FakeHttpHandler();
+        handler.SetCoinGeckoFailure();
+        handler.SetCoinbaseFailure();
+        handler.SetKrakenFailure();
+
+        using var http = new HttpClient(handler);
+        var service = new PriceService(http);
+        PlantCachedSnapshot(service, new PriceSnapshot(50_000m, "CoinGecko", DateTime.UtcNow.AddMinutes(-5)));
+
+        var act = async () => await service.GetBtcPriceAsync();
+
+        await act.Should().ThrowAsync<PriceUnavailableException>(
+            because: "an expired cache entry is not a fallback — a stale price must never be served");
+    }
+
+    [Fact]
+    public async Task GetBtcPriceAsync_FreshCache_IsServedWithoutHittingAnySource()
+    {
+        // The other half of the documented contract: within the 60s window the cached value
+        // is served and no source is contacted.
+        var handler = new FakeHttpHandler();
+        handler.SetCoinGeckoResponse(76_800m);
+        handler.SetCoinbaseResponse(76_800m);
+        handler.SetKrakenResponse(76_800m);
+
+        using var http = new HttpClient(handler);
+        var service = new PriceService(http);
+        PlantCachedSnapshot(service, new PriceSnapshot(50_000m, "CoinGecko", DateTime.UtcNow.AddSeconds(-5)));
+
+        var price = await service.GetBtcPriceAsync();
+
+        price.Should().Be(50_000m, "a cache entry younger than 60s is served as-is");
+        handler.CoinGeckoCallCount.Should().Be(0);
+        handler.CoinbaseCallCount.Should().Be(0);
+        handler.KrakenCallCount.Should().Be(0);
+    }
+
+    /// <summary>Plants a cache entry with a chosen age, so cache-window behaviour is testable without waiting 60s.</summary>
+    private static void PlantCachedSnapshot(PriceService service, PriceSnapshot snapshot)
+    {
+        var field = typeof(PriceService).GetField("_cached", BindingFlags.NonPublic | BindingFlags.Instance);
+        field.Should().NotBeNull("this test pins the behaviour of PriceService._cached");
+        field!.SetValue(service, snapshot);
     }
 
     // ── Test infrastructure ─────────────────────────────────────────────────

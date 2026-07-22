@@ -57,7 +57,7 @@ public static class MyNewTool
 - L402 requires preimage — only works with LND, Strike, CoinOS NWC, CLINK NWC, Alby Hub NWC
 
 ## Free vs Paid
-- 15 free tools (no license needed)
+- 18 free tools (no license needed)
 - 2 producer tools require Agentic Commerce subscription ($99/mo+): `create_l402_challenge`, `verify_l402_payment`
 - If the new tool should be paid, add license check logic
 

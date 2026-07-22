@@ -10,7 +10,7 @@
 # to keep in sync on every release.
 
 name: lightning-enable
-description: AI agent Lightning payments and commerce — invoices, L402, API discovery, budgets, agent service agreements. 23 tools, 15 free, 8 unlock with a Lightning Enable API key.
+description: AI agent Lightning payments and commerce — invoices, L402, API discovery, budgets, agent service agreements. 26 tools, 18 free, 8 unlock with a Lightning Enable API key.
 author: Lightning Enable
 license: MIT
 repository: https://github.com/refined-element/lightning-enable-mcp
@@ -24,7 +24,7 @@ startCommand:
         type: string
         description: >-
           Optional. Your Lightning Enable API key. Required only to enable the 8
-          subscription-gated tools (2 producer + 6 ASA). The 15 consumer tools
+          subscription-gated tools (2 producer + 6 ASA). The 18 out-of-the-box tools
           work without it. Get a key at https://lightningenable.com.
         secret: true
       strikeApiKey:

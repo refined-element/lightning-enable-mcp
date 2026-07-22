@@ -2,7 +2,7 @@
 
 # Lightning Enable MCP Server
 
-A Model Context Protocol (MCP) server that enables AI agents to make Lightning Network payments. 18 tools work out of the box (free, no subscription). 8 tools require an [Agentic Commerce subscription](https://lightningenable.com) (from $99/mo) and `LIGHTNING_ENABLE_API_KEY`: 2 producer tools (`create_l402_challenge`, `verify_l402_payment`) and 6 Agent Service Agreement tools for agent-to-agent commerce over Nostr. One out-of-the-box tool, `create_lightning_enable_account`, self-provisions that API key — an agent with a wallet pays a ~100-sat activation fee and unlocks the subscription tools on the spot.
+A Model Context Protocol (MCP) server that enables AI agents to make Lightning Network payments. 26 tools total: 18 work out of the box (free, no subscription); the other 8 require an [Agentic Commerce subscription](https://lightningenable.com) (from $99/mo) and `LIGHTNING_ENABLE_API_KEY`: 2 producer tools (`create_l402_challenge`, `verify_l402_payment`) and 6 Agent Service Agreement tools for agent-to-agent commerce over Nostr. One out-of-the-box tool, `create_lightning_enable_account`, self-provisions that API key — an agent with a wallet pays a ~100-sat activation fee and unlocks the subscription tools on the spot.
 
 ## Overview
 

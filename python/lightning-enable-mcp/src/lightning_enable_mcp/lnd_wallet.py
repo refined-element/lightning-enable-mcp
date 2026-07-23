@@ -22,6 +22,7 @@ To get your macaroon in hex format:
 """
 
 import base64
+import binascii
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -258,7 +259,27 @@ class LndWallet:
             # LND returns preimage as base64 - convert to hex
             payment_preimage_b64 = result.get("payment_preimage")
             if payment_preimage_b64:
-                preimage_bytes = base64.b64decode(payment_preimage_b64)
+                try:
+                    preimage_bytes = base64.b64decode(payment_preimage_b64)
+                except (binascii.Error, ValueError) as decode_err:
+                    # LND reported no payment_error, so the payment SETTLED — the funds
+                    # are gone. A preimage that is not decodable base64 is settled-but-
+                    # UNPROVABLE, not a payment failure. Left to fall through, this
+                    # binascii.Error hits the generic `except` below and becomes a
+                    # RETRYABLE LndPaymentError — inviting a double-pay. Raise the
+                    # terminal PreimageUnavailableError instead, matching the no-preimage
+                    # and invalid-format cases.
+                    #
+                    # Deliberately does not echo the offending value (engineering
+                    # standard #5: never log preimage-position content).
+                    logger.error("LND returned a preimage that is not valid base64")
+                    raise PreimageUnavailableError(
+                        "LND returned a preimage that is not valid base64. The payment "
+                        "settled, but L402/MPP verification is not possible without a "
+                        "real preimage.",
+                        provider="lnd",
+                        tracking_id=result.get("payment_hash"),
+                    ) from decode_err
                 preimage_hex = preimage_bytes.hex()
 
                 # Validate through the shared gate before returning it as proof.

@@ -1062,6 +1062,7 @@ class TestNwcPreimageValidation:
         {"result": {"preimage": None}},  # explicit null preimage
         {"result": {"preimage": ""}},    # empty-string preimage
         {},                              # neither error nor a usable preimage
+        {"result": None},                # {"result": null}: key present, value null
     ])
     async def test_settled_but_no_preimage_is_not_a_retryable_failure(self, response):
         # The wallet reported NO error, so the payment SETTLED — the funds are gone.
@@ -1095,3 +1096,32 @@ class TestNwcPreimageValidation:
         with pytest.raises(NWCPaymentError) as excinfo:
             await wallet.pay_invoice("lnbc100n1p3abcdef")
         assert not isinstance(excinfo.value, PreimageUnavailableError)
+
+    # A real, decodable BOLT11 invoice whose payment hash is known, so the
+    # tracking_id (reconciliation handle) can be asserted exactly.
+    _REAL_INVOICE = (
+        "lnbc1u1p4xrdg4pp5qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqz4s"
+        "sp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygsdq8w3jhxaqmvzc7"
+        "ynxfrf3mualn327tqzly49zdvut8k4fu853vl0lhllcl8dn2zz86svfphyzjys47zks63r"
+        "v79ahfprnypsyfpdm6j8xwx6788qq50hwu0"
+    )
+    _REAL_INVOICE_PAYMENT_HASH = (
+        "00000000000000000000000000000000000000000000000000000000000000ab"
+    )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("response", [
+        {"result": {"preimage": None}},  # settled, no preimage
+        {"result": None},                # {"result": null}
+    ])
+    async def test_settled_no_preimage_passes_payment_hash_as_tracking_id(self, response):
+        # Reconciliation parity with LND: on a settled-but-unprovable payment the NWC
+        # wallet must hand the operator a tracking_id so they can look the payment up.
+        # NIP-47 pay_invoice responses carry no payment_hash, so it is derived from the
+        # invoice we paid. The old code omitted tracking_id entirely (it was None).
+        from lightning_enable_mcp.wallet_errors import PreimageUnavailableError
+
+        wallet = self._wallet_returning_raw(response)
+        with pytest.raises(PreimageUnavailableError) as excinfo:
+            await wallet.pay_invoice(self._REAL_INVOICE)
+        assert excinfo.value.tracking_id == self._REAL_INVOICE_PAYMENT_HASH

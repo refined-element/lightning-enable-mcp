@@ -180,7 +180,16 @@ class TestLndWallet:
 
     @pytest.mark.asyncio
     async def test_pay_invoice_no_preimage(self):
-        """Test missing preimage raises LndPaymentError."""
+        """Missing preimage after a settled payment raises the non-retryable error.
+
+        LND reported no payment_error, so the payment SETTLED — the funds are gone.
+        This must raise the terminal PreimageUnavailableError (do NOT retry), NOT the
+        generic LndPaymentError, which the caller would surface as a failure and an
+        agent would retry, paying twice. (This test previously asserted LndPaymentError,
+        which encoded the P0 double-pay bug.)
+        """
+        from lightning_enable_mcp.wallet_errors import PreimageUnavailableError
+
         wallet = self._make_wallet()
 
         mock_response = MagicMock()
@@ -194,8 +203,9 @@ class TestLndWallet:
         wallet._client = AsyncMock()
         wallet._client.request = AsyncMock(return_value=mock_response)
 
-        with pytest.raises(LndPaymentError, match="no preimage"):
+        with pytest.raises(PreimageUnavailableError) as excinfo:
             await wallet.pay_invoice("lnbc100n1...")
+        assert not isinstance(excinfo.value, LndPaymentError)
 
     @pytest.mark.asyncio
     async def test_pay_invoice_not_configured(self):
@@ -793,3 +803,119 @@ class TestLndPreimageValidation:
         with pytest.raises(PreimageUnavailableError) as excinfo:
             await wallet.pay_invoice("lnbc100n1...")
         assert "deadbeef" not in str(excinfo.value)
+
+    def _wallet_returning_raw(self, response):
+        """Build a wallet whose next pay_invoice response is exactly ``response``."""
+        wallet = LndWallet(
+            rest_host="localhost:8080",
+            macaroon_hex="abc123",
+            skip_tls_verify=True,
+        )
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = response
+        wallet._connected = True
+        wallet._client = AsyncMock()
+        wallet._client.request = AsyncMock(return_value=mock_response)
+        return wallet
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("response", [
+        {"payment_error": "", "payment_hash": base64.b64encode(b"hash").decode()},  # key absent
+        {"payment_preimage": None, "payment_error": ""},                            # explicit null
+        {"payment_preimage": "", "payment_error": ""},                              # empty string
+    ])
+    async def test_settled_but_no_preimage_is_not_a_retryable_failure(self, response):
+        # LND reported no payment_error, so the payment SETTLED — the funds are gone.
+        # A missing/empty preimage means the payment is UNPROVABLE, not that it FAILED.
+        # The old code raised the generic LndPaymentError("Payment succeeded but no
+        # preimage returned") here, which the caller surfaces as a failure and an agent
+        # retries — paying a second time. Per the wallet_errors contract this must raise
+        # the terminal, non-retryable PreimageUnavailableError instead (mirrors the .NET
+        # SucceededWithoutPreimage contract).
+        from lightning_enable_mcp.wallet_errors import PreimageUnavailableError
+
+        wallet = self._wallet_returning_raw(response)
+        with pytest.raises(PreimageUnavailableError) as excinfo:
+            await wallet.pay_invoice("lnbc100n1...")
+        # Must be the terminal do-not-retry error, NOT the generic payment failure.
+        assert not isinstance(excinfo.value, LndPaymentError)
+        assert excinfo.value.provider == "lnd"
+
+    @pytest.mark.asyncio
+    async def test_genuine_failure_still_raises_the_retryable_payment_error(self):
+        # No over-correction: when LND reports a payment_error the payment did NOT
+        # settle, so this stays a normal (retryable) LndPaymentError and must NOT be
+        # downgraded to the settled-but-unprovable PreimageUnavailableError.
+        from lightning_enable_mcp.wallet_errors import PreimageUnavailableError
+
+        wallet = self._wallet_returning_raw(
+            {"payment_preimage": "", "payment_error": "insufficient_balance"}
+        )
+        with pytest.raises(LndPaymentError) as excinfo:
+            await wallet.pay_invoice("lnbc100n1...")
+        assert not isinstance(excinfo.value, PreimageUnavailableError)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad_b64", [
+        "not-valid-base64",  # non-alphabet chars -> Incorrect padding
+        "abc",               # 3 valid chars -> Incorrect padding
+    ])
+    async def test_settled_but_malformed_base64_preimage_is_not_a_retryable_failure(
+        self, bad_b64
+    ):
+        # LND reported no payment_error, so the payment SETTLED — the funds are gone.
+        # A preimage that is not decodable base64 is settled-but-UNPROVABLE, not a
+        # payment failure. The old code let base64.b64decode raise binascii.Error, which
+        # fell through to the generic `except` and became a RETRYABLE LndPaymentError —
+        # inviting a double-pay. It must raise the terminal, non-retryable
+        # PreimageUnavailableError instead, matching the no-preimage / invalid-format
+        # cases, and carry the payment_hash as the reconciliation tracking_id.
+        from lightning_enable_mcp.wallet_errors import PreimageUnavailableError
+
+        payment_hash_b64 = base64.b64encode(b"reconcile-me").decode()
+        wallet = self._wallet_returning_raw(
+            {"payment_preimage": bad_b64, "payment_error": "", "payment_hash": payment_hash_b64}
+        )
+        with pytest.raises(PreimageUnavailableError) as excinfo:
+            await wallet.pay_invoice("lnbc100n1...")
+        # Must be the terminal do-not-retry error, NOT the generic payment failure.
+        assert not isinstance(excinfo.value, LndPaymentError)
+        assert excinfo.value.provider == "lnd"
+        assert excinfo.value.tracking_id == payment_hash_b64
+        # Engineering standard #5: never echo the offending preimage-position value.
+        assert bad_b64 not in str(excinfo.value)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad_preimage", [
+        123,            # JSON number -> base64.b64decode(123) raises TypeError
+        123.45,         # JSON float -> TypeError
+        ["deadbeef"],   # JSON array -> TypeError
+        {"hex": "de"},  # JSON object -> TypeError
+    ])
+    async def test_settled_but_non_string_preimage_is_not_a_retryable_failure(
+        self, bad_preimage
+    ):
+        # LND reported no payment_error, so the payment SETTLED — the funds are gone.
+        # A wrong-type payment_preimage (e.g. a JSON number) makes base64.b64decode raise
+        # TypeError, which the round-2 `except (binascii.Error, ValueError)` did NOT catch
+        # — so it fell through to the generic `except` and became a RETRYABLE
+        # LndPaymentError, inviting a double-pay. It must raise the terminal, non-retryable
+        # PreimageUnavailableError instead, matching the no-preimage / malformed-base64
+        # cases, and carry the payment_hash as the reconciliation tracking_id.
+        from lightning_enable_mcp.wallet_errors import PreimageUnavailableError
+
+        payment_hash_b64 = base64.b64encode(b"reconcile-me").decode()
+        wallet = self._wallet_returning_raw(
+            {
+                "payment_preimage": bad_preimage,
+                "payment_error": "",
+                "payment_hash": payment_hash_b64,
+            }
+        )
+        with pytest.raises(PreimageUnavailableError) as excinfo:
+            await wallet.pay_invoice("lnbc100n1...")
+        # Must be the terminal do-not-retry error, NOT the generic payment failure.
+        assert not isinstance(excinfo.value, LndPaymentError)
+        assert excinfo.value.provider == "lnd"
+        assert excinfo.value.tracking_id == payment_hash_b64

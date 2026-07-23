@@ -22,6 +22,7 @@ To get your macaroon in hex format:
 """
 
 import base64
+import binascii
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -258,7 +259,28 @@ class LndWallet:
             # LND returns preimage as base64 - convert to hex
             payment_preimage_b64 = result.get("payment_preimage")
             if payment_preimage_b64:
-                preimage_bytes = base64.b64decode(payment_preimage_b64)
+                try:
+                    preimage_bytes = base64.b64decode(payment_preimage_b64)
+                except (binascii.Error, ValueError, TypeError) as decode_err:
+                    # LND reported no payment_error, so the payment SETTLED — the funds
+                    # are gone. A preimage that is not decodable base64 — or is the wrong
+                    # type entirely (a JSON number makes base64.b64decode raise TypeError,
+                    # not binascii.Error) — is settled-but-UNPROVABLE, not a payment
+                    # failure. Left to fall through, either error hits the generic
+                    # `except` below and becomes a RETRYABLE LndPaymentError — inviting a
+                    # double-pay. Raise the terminal PreimageUnavailableError instead,
+                    # matching the no-preimage and invalid-format cases.
+                    #
+                    # Deliberately does not echo the offending value (engineering
+                    # standard #5: never log preimage-position content).
+                    logger.error("LND returned a preimage that is not a decodable base64 string")
+                    raise PreimageUnavailableError(
+                        "LND returned a preimage that is not a decodable base64 string. "
+                        "The payment settled, but L402/MPP verification is not possible "
+                        "without a real preimage.",
+                        provider="lnd",
+                        tracking_id=result.get("payment_hash"),
+                    ) from decode_err
                 preimage_hex = preimage_bytes.hex()
 
                 # Validate through the shared gate before returning it as proof.
@@ -287,7 +309,24 @@ class LndWallet:
                 logger.info("LND payment succeeded, preimage received")
                 return preimage_hex
 
-            raise LndPaymentError("Payment succeeded but no preimage returned")
+            # LND reported no payment_error above, so the payment SETTLED — the funds
+            # are gone. A missing/empty preimage does NOT mean the payment failed; it
+            # means the payment is UNPROVABLE. Raising LndPaymentError here (the old
+            # behavior) surfaces a settled payment as a failure, and the caller retries
+            # and pays twice. Per the wallet_errors contract this is one of the two
+            # states that are NOT "the payment failed" — the terminal, non-retryable
+            # PreimageUnavailableError (mirrors the .NET SucceededWithoutPreimage
+            # contract in Models/NwcConfig.cs). It is re-raised untouched by the
+            # PaymentProofUnavailableError handler below, not rewrapped as a failure.
+            #
+            # Deliberately does not echo any response content (engineering standard #5).
+            logger.error("LND payment settled but no preimage was returned")
+            raise PreimageUnavailableError(
+                "The payment settled, but LND returned no preimage, so L402/MPP "
+                "verification is not possible without a real preimage.",
+                provider="lnd",
+                tracking_id=result.get("payment_hash"),
+            )
 
         except LndError:
             raise

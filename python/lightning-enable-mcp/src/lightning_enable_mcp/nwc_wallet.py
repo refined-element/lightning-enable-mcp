@@ -16,11 +16,28 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 import websockets
+from bolt11 import decode as decode_bolt11
 from websockets.client import WebSocketClientProtocol
 
 from .wallet_errors import PreimageUnavailableError, is_valid_preimage
 
 logger = logging.getLogger("lightning-enable-mcp.nwc")
+
+
+def _payment_hash_from_bolt11(bolt11: str) -> str | None:
+    """
+    Best-effort payment hash from a BOLT11 invoice, for use as the reconciliation
+    ``tracking_id`` on a settled-but-unprovable payment (parity with LND, which
+    reads the hash from its response). NIP-47 ``pay_invoice`` responses carry no
+    payment hash, so it is derived from the invoice we actually paid.
+
+    Never raises: a bad/undecodable invoice just yields ``None`` — the tracking_id
+    is a diagnostic handle, not part of the payment's correctness.
+    """
+    try:
+        return getattr(decode_bolt11(bolt11), "payment_hash", None)
+    except Exception:
+        return None
 
 
 class NWCError(Exception):
@@ -1018,11 +1035,55 @@ class NWCWallet:
             error = response["error"]
             raise NWCPaymentError(f"Payment failed: {error.get('message', error)}")
 
-        result = response.get("result", {})
+        # A NIP-47 response can carry the "result" key with a null value
+        # ({"result": null}), in which case .get("result", {}) still returns None and
+        # None.get("preimage") raises AttributeError — which l402_client wraps as a
+        # RETRYABLE "Payment failed" and the agent pays twice. Treat any non-dict result
+        # (None, list, str) as empty so it routes to the settled-but-no-preimage
+        # PreimageUnavailableError path below, consistent with {} / {"result": {}} /
+        # {"result": {"preimage": null}}.
+        result = response.get("result")
+        if not isinstance(result, dict):
+            result = {}
         preimage = result.get("preimage")
 
         if not preimage:
-            raise NWCPaymentError("No preimage in payment response")
+            # No error was reported above, so the payment SETTLED — the funds are gone.
+            # A missing/empty preimage does NOT mean the payment failed; it means the
+            # payment is UNPROVABLE. Raising NWCPaymentError here (the old behavior)
+            # surfaces a settled payment as a failure, and the caller retries and pays
+            # twice. Per the wallet_errors contract this is one of the two states that
+            # are NOT "the payment failed" — the terminal, non-retryable
+            # PreimageUnavailableError (mirrors the .NET SucceededWithoutPreimage
+            # contract in Models/NwcConfig.cs).
+            #
+            # Deliberately does not echo any response content (engineering standard #5).
+            logger.error("NWC payment settled but no preimage was returned")
+            raise PreimageUnavailableError(
+                "The payment settled, but the wallet returned no preimage, so L402/MPP "
+                "verification is not possible (expected a 64-character hex string).",
+                provider="nwc",
+                tracking_id=_payment_hash_from_bolt11(bolt11),
+            )
+
+        # A wrong-type preimage (e.g. a JSON number) is truthy, so it slips past the
+        # `if not preimage:` guard above and would reach preimage.startswith(...) /
+        # is_valid_preimage below, which raise AttributeError on a non-string. That
+        # propagates out of pay_invoice as a RETRYABLE "Payment failed" and the agent
+        # pays twice. The wallet reported no error, so the payment SETTLED — a wrong-type
+        # preimage is settled-but-UNPROVABLE, not a failure: route it to the same
+        # terminal PreimageUnavailableError as the missing/invalid-format cases.
+        #
+        # Deliberately does not echo the offending value (engineering standard #5).
+        if not isinstance(preimage, str):
+            logger.error("NWC payment settled but preimage was not a string")
+            raise PreimageUnavailableError(
+                "The payment settled, but the wallet returned a preimage that is not a "
+                "string, so L402/MPP verification is not possible (expected a "
+                "64-character hex string).",
+                provider="nwc",
+                tracking_id=_payment_hash_from_bolt11(bolt11),
+            )
 
         # Some wallets incorrectly return the invoice or other data in the preimage
         # field. Detect that specifically, for a diagnostic the operator can act on.
@@ -1057,6 +1118,7 @@ class NWCWallet:
                 + "The payment settled, but L402/MPP verification is not possible "
                 "without a real preimage (expected a 64-character hex string).",
                 provider="nwc",
+                tracking_id=_payment_hash_from_bolt11(bolt11),
             )
 
         return preimage

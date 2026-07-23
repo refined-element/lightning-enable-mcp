@@ -1046,3 +1046,111 @@ class TestNwcPreimageValidation:
         with pytest.raises(PreimageUnavailableError) as excinfo:
             await wallet.pay_invoice("lnbc100n1p3abcdef")
         assert "deadbeef" not in str(excinfo.value)
+
+    def _wallet_returning_raw(self, response):
+        """Build a wallet whose next pay_invoice response is exactly ``response``."""
+        from unittest.mock import AsyncMock
+
+        with patch("lightning_enable_mcp.nwc_wallet._get_pubkey", return_value="aa" * 32):
+            wallet = NWCWallet(self._URI)
+        wallet._send_request = AsyncMock(return_value=response)
+        return wallet
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("response", [
+        {"result": {}},                  # result object present, preimage key absent
+        {"result": {"preimage": None}},  # explicit null preimage
+        {"result": {"preimage": ""}},    # empty-string preimage
+        {},                              # neither error nor a usable preimage
+        {"result": None},                # {"result": null}: key present, value null
+    ])
+    async def test_settled_but_no_preimage_is_not_a_retryable_failure(self, response):
+        # The wallet reported NO error, so the payment SETTLED — the funds are gone.
+        # A missing/empty preimage means the payment is UNPROVABLE, not that it FAILED.
+        # The old code raised the generic NWCPaymentError("No preimage in payment
+        # response") here, which the caller surfaces as a failure and an agent retries —
+        # paying a second time. Per the wallet_errors contract this must raise the
+        # terminal, non-retryable PreimageUnavailableError instead (mirrors the .NET
+        # SucceededWithoutPreimage contract).
+        from lightning_enable_mcp.nwc_wallet import NWCPaymentError
+        from lightning_enable_mcp.wallet_errors import PreimageUnavailableError
+
+        wallet = self._wallet_returning_raw(response)
+        with pytest.raises(PreimageUnavailableError) as excinfo:
+            await wallet.pay_invoice("lnbc100n1p3abcdef")
+        # Must be the terminal do-not-retry error, NOT the generic payment failure.
+        assert not isinstance(excinfo.value, NWCPaymentError)
+        assert excinfo.value.provider == "nwc"
+
+    @pytest.mark.asyncio
+    async def test_genuine_failure_still_raises_the_retryable_payment_error(self):
+        # No over-correction: when the wallet reports an error the payment did NOT
+        # settle, so this stays a normal (retryable) NWCPaymentError and must NOT be
+        # downgraded to the settled-but-unprovable PreimageUnavailableError.
+        from lightning_enable_mcp.nwc_wallet import NWCPaymentError
+        from lightning_enable_mcp.wallet_errors import PreimageUnavailableError
+
+        wallet = self._wallet_returning_raw(
+            {"error": {"code": "INSUFFICIENT_BALANCE", "message": "not enough funds"}}
+        )
+        with pytest.raises(NWCPaymentError) as excinfo:
+            await wallet.pay_invoice("lnbc100n1p3abcdef")
+        assert not isinstance(excinfo.value, PreimageUnavailableError)
+
+    # A real, decodable BOLT11 invoice whose payment hash is known, so the
+    # tracking_id (reconciliation handle) can be asserted exactly.
+    _REAL_INVOICE = (
+        "lnbc1u1p4xrdg4pp5qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqz4s"
+        "sp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygsdq8w3jhxaqmvzc7"
+        "ynxfrf3mualn327tqzly49zdvut8k4fu853vl0lhllcl8dn2zz86svfphyzjys47zks63r"
+        "v79ahfprnypsyfpdm6j8xwx6788qq50hwu0"
+    )
+    _REAL_INVOICE_PAYMENT_HASH = (
+        "00000000000000000000000000000000000000000000000000000000000000ab"
+    )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("response", [
+        {"result": {"preimage": None}},  # settled, no preimage
+        {"result": None},                # {"result": null}
+    ])
+    async def test_settled_no_preimage_passes_payment_hash_as_tracking_id(self, response):
+        # Reconciliation parity with LND: on a settled-but-unprovable payment the NWC
+        # wallet must hand the operator a tracking_id so they can look the payment up.
+        # NIP-47 pay_invoice responses carry no payment_hash, so it is derived from the
+        # invoice we paid. The old code omitted tracking_id entirely (it was None).
+        from lightning_enable_mcp.wallet_errors import PreimageUnavailableError
+
+        wallet = self._wallet_returning_raw(response)
+        with pytest.raises(PreimageUnavailableError) as excinfo:
+            await wallet.pay_invoice(self._REAL_INVOICE)
+        assert excinfo.value.tracking_id == self._REAL_INVOICE_PAYMENT_HASH
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad_preimage", [
+        123,          # JSON number -> int.startswith(...) raises AttributeError
+        123.45,       # JSON float -> AttributeError
+        ["lnbc"],     # JSON array -> AttributeError
+        {"hex": 1},   # JSON object -> AttributeError
+    ])
+    async def test_settled_but_non_string_preimage_is_not_a_retryable_failure(
+        self, bad_preimage
+    ):
+        # The wallet reported NO error, so the payment SETTLED — the funds are gone.
+        # A wrong-type preimage (e.g. a JSON number) is truthy, so it slips past the
+        # `if not preimage:` guard and hits preimage.startswith(...) / is_valid_preimage,
+        # which raise AttributeError on a non-string — propagating out of pay_invoice as
+        # a RETRYABLE "Payment failed" and the agent pays twice. A settled payment whose
+        # preimage is the wrong type is settled-but-UNPROVABLE, not a failure: it must
+        # raise the terminal, non-retryable PreimageUnavailableError, carrying the
+        # invoice's payment hash as the reconciliation tracking_id.
+        from lightning_enable_mcp.nwc_wallet import NWCPaymentError
+        from lightning_enable_mcp.wallet_errors import PreimageUnavailableError
+
+        wallet = self._wallet_returning_raw({"result": {"preimage": bad_preimage}})
+        with pytest.raises(PreimageUnavailableError) as excinfo:
+            await wallet.pay_invoice(self._REAL_INVOICE)
+        # Must be the terminal do-not-retry error, NOT the generic payment failure.
+        assert not isinstance(excinfo.value, NWCPaymentError)
+        assert excinfo.value.provider == "nwc"
+        assert excinfo.value.tracking_id == self._REAL_INVOICE_PAYMENT_HASH

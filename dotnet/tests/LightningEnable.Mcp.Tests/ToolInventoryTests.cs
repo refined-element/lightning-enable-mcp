@@ -52,6 +52,13 @@ public class ToolInventoryTests
 
         foreach (var type in assembly.GetTypes())
         {
+            // WithToolsFromAssembly() only discovers tools on [McpServerToolType] classes,
+            // so scope the guard the same way — otherwise a stray [McpServerTool] on a type
+            // that forgot [McpServerToolType] would be counted here yet never actually served.
+            var isToolType = type.GetCustomAttributes(inherit: false)
+                .Any(a => a.GetType().Name == "McpServerToolTypeAttribute");
+            if (!isToolType) continue;
+
             const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic
                 | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly;
 

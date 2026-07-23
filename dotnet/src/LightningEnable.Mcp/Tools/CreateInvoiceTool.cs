@@ -51,7 +51,7 @@ public static class CreateInvoiceTool
             return JsonSerializer.Serialize(new
             {
                 success = false,
-                error = "Wallet not configured. Set one L402-capable wallet — STRIKE_API_KEY, NWC_CONNECTION_STRING, or LND_REST_HOST+LND_MACAROON_HEX. (OPENNODE_API_KEY is receiving/invoicing only — it cannot pay L402 challenges.) Then run test_l402_payment to confirm the wallet works."
+                error = WalletMessages.NotConfigured
             });
         }
 

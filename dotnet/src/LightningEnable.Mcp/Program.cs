@@ -194,6 +194,7 @@ public class Program
                 Console.Error.WriteLine("                                     (+ optional OPENNODE_ENVIRONMENT)");
                 Console.Error.WriteLine("");
                 Console.Error.WriteLine("Priority when several are set: LND > NWC > Strike > OpenNode.");
+                Console.Error.WriteLine("Or add credentials to ~/.lightning-enable/config.json under the \"wallets\" key.");
                 Console.Error.WriteLine("After configuring, run the test_l402_payment tool to confirm the wallet works end to end (~1 sat).");
                 // Register a default that will report "not configured" errors
                 builder.Services.AddHttpClient<IWalletService, NwcWalletService>();

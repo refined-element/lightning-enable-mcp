@@ -10,6 +10,49 @@ from lightning_enable_mcp.server import LightningEnableServer
 from lightning_enable_mcp.nwc_wallet import NWCWallet
 
 
+# ── Tool inventory: the SINGLE SOURCE OF TRUTH for the tool count ──────────────
+# Every advertised count (package READMEs, docs, marketing) derives from this
+# split. Add or remove a tool → update the right set here; the guard assertions
+# in test_list_tools_returns_all_tools then fail until the code and this list
+# agree. Keep in lockstep with the .NET guard
+# (dotnet/tests/LightningEnable.Mcp.Tests/ToolInventoryTests.cs) and the docs'
+# MCP Complete Guide — the one place that itemizes the tools for humans.
+#
+# Canonical: 26 total = 18 out-of-the-box (free, just a wallet) + 8 that require
+# LIGHTNING_ENABLE_API_KEY (2 producer + 6 ASA).
+FREE_TOOLS = {
+    "pay_invoice",
+    "check_wallet_balance",
+    "get_payment_history",
+    "get_receipts",
+    "get_budget_status",
+    "configure_budget",
+    "create_invoice",
+    "check_invoice_status",
+    "access_l402_resource",
+    "pay_l402_challenge",
+    "test_l402_payment",
+    "discover_api",
+    "get_btc_price",
+    "get_all_balances",
+    "exchange_currency",
+    "send_onchain",
+    "confirm_payment",
+    "create_lightning_enable_account",
+}
+API_KEY_TOOLS = {
+    "create_l402_challenge",
+    "verify_l402_payment",
+    "discover_agent_services",
+    "request_agent_service",
+    "settle_agent_service",
+    "publish_agent_capability",
+    "publish_agent_attestation",
+    "get_agent_reputation",
+}
+ALL_TOOLS = FREE_TOOLS | API_KEY_TOOLS
+
+
 class TestLightningEnableServer:
     """Tests for LightningEnableServer."""
 
@@ -49,37 +92,15 @@ class TestLightningEnableServer:
         tools = result.root.tools
         tool_names = {tool.name for tool in tools}
 
-        expected_tools = {
-            "access_l402_resource",
-            "create_lightning_enable_account",
-            "test_l402_payment",
-            "pay_l402_challenge",
-            "check_wallet_balance",
-            "get_payment_history",
-            "get_receipts",
-            "configure_budget",
-            "pay_invoice",
-            "create_invoice",
-            "check_invoice_status",
-            "get_all_balances",
-            "get_btc_price",
-            "exchange_currency",
-            "send_onchain",
-            "get_budget_status",
-            "create_l402_challenge",
-            "verify_l402_payment",
-            "confirm_payment",
-            "discover_api",
-            "discover_agent_services",
-            "publish_agent_capability",
-            "request_agent_service",
-            "publish_agent_attestation",
-            "get_agent_reputation",
-            "settle_agent_service",
-        }
-
-        assert tool_names == expected_tools
+        # The registered set must exactly equal the declared inventory (no drift).
+        assert tool_names == ALL_TOOLS
         assert len(tool_names) == 26
+        # Free/paid split is the source of truth every doc count derives from.
+        assert FREE_TOOLS.isdisjoint(API_KEY_TOOLS)
+        assert len(FREE_TOOLS) == 18, "18 out-of-the-box tools"
+        assert len(API_KEY_TOOLS) == 8, "8 tools require LIGHTNING_ENABLE_API_KEY"
+        assert tool_names >= FREE_TOOLS
+        assert tool_names >= API_KEY_TOOLS
 
     @pytest.mark.asyncio
     async def test_services_not_initialized_without_nwc(self):

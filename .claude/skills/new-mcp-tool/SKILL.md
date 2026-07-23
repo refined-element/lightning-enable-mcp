@@ -57,8 +57,11 @@ public static class MyNewTool
 - L402 requires preimage — only works with LND, Strike, CoinOS NWC, CLINK NWC, Alby Hub NWC
 
 ## Free vs Paid
-- 18 free tools (no license needed)
-- 2 producer tools require Agentic Commerce subscription ($99/mo+): `create_l402_challenge`, `verify_l402_payment`
-- If the new tool should be paid, add license check logic
+
+**When you add a tool, update the inventory guard tests — they are the single source of truth for the advertised tool count, and they fail until the code and the declared lists match:**
+- `FREE_TOOLS` in `python/lightning-enable-mcp/tests/test_server.py` and `FreeTools` in `dotnet/tests/LightningEnable.Mcp.Tests/ToolInventoryTests.cs` — tools that work with just a wallet (no license).
+- `API_KEY_TOOLS` / `ApiKeyTools` in the same files — tools that require an Agentic Commerce subscription + `LIGHTNING_ENABLE_API_KEY` (e.g. the producer tools `create_l402_challenge`, `verify_l402_payment`). Add license-check logic in the tool itself if it should be paid.
+
+Public docs no longer hard-code the count (except the MCP Complete Guide's self-counting table), so there is nothing else to bump.
 
 Suggested follow-up: `/mcp-publish-prep` when ready to publish

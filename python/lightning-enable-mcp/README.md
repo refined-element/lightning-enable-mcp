@@ -2,7 +2,7 @@
 
 # Lightning Enable MCP Server (Python)
 
-An MCP (Model Context Protocol) server that enables AI agents to make Lightning Network payments. The package exposes **26 tools**: **18 work out of the box** (free, no subscription); the other **8 unlock with an [Agentic Commerce subscription](https://lightningenable.com)** (from $99/mo) and `LIGHTNING_ENABLE_API_KEY` — 2 producer tools (`create_l402_challenge`, `verify_l402_payment`) and 6 Agent Service Agreement (ASA) tools for agent-to-agent commerce over Nostr. One of the out-of-the-box tools, `create_lightning_enable_account`, even *self-provisions* that API key: an agent with a wallet can pay a ~100-sat activation fee and unlock the subscription tools on the spot.
+An MCP (Model Context Protocol) server that enables AI agents to make Lightning Network payments. Wallet, invoice, L402, budget, and API-discovery tools work **out of the box** with just a wallet (free, no subscription). Producer tools (`create_l402_challenge`, `verify_l402_payment`) and Agent Service Agreement (ASA) tools for agent-to-agent commerce over Nostr **unlock with an [Agentic Commerce subscription](https://lightningenable.com)** (from $99/mo) and `LIGHTNING_ENABLE_API_KEY`. One of the out-of-the-box tools, `create_lightning_enable_account`, even *self-provisions* that API key: an agent with a wallet can pay a ~100-sat activation fee and unlock the subscription tools on the spot. See the [MCP Complete Guide](https://docs.lightningenable.com/products/l402-microtransactions/mcp-complete-guide) for the full tool list.
 
 ## Overview
 

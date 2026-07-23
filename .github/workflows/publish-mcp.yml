@@ -181,7 +181,7 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
           repository: refinedelement/lightning-enable-mcp
-          short-description: "MCP server for AI agent Lightning payments. 26 tools, 18 free (L402, Strike, LND, NWC). MIT."
+          short-description: "MCP server: AI agent Lightning payments (L402, Strike, LND, NWC). Free + subscription tools. MIT."
           readme-filepath: ./README.dockerhub.md
 
   publish-registry:

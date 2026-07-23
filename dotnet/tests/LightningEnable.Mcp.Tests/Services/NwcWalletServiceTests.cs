@@ -1161,6 +1161,44 @@ public class NwcWalletServiceTests
         result.PreimageHex.Should().Be(validPreimage);
     }
 
+    // A settled response (no "error" key) whose preimage — or the "result" wrapper —
+    // is the wrong JSON type. result?["preimage"]?.GetValue<string>() throws on a
+    // non-string value, and response["result"]?.AsObject() throws on a non-object
+    // "result"; either exception propagates out of MapPayInvoiceResponse and, in the
+    // live PayInvoiceAsync path, lands in the generic catch -> Failed("EXCEPTION") ->
+    // retryable -> double-pay.
+    public static TheoryData<JsonObject> SettledButUnusablePreimageResponses => new()
+    {
+        // preimage is a JSON number, not a string
+        new JsonObject { ["result_type"] = "pay_invoice", ["result"] = new JsonObject { ["preimage"] = 12345 } },
+        // preimage is a JSON boolean
+        new JsonObject { ["result_type"] = "pay_invoice", ["result"] = new JsonObject { ["preimage"] = true } },
+        // preimage is a nested object
+        new JsonObject { ["result_type"] = "pay_invoice", ["result"] = new JsonObject { ["preimage"] = new JsonObject() } },
+        // "result" itself is a bare non-object value
+        new JsonObject { ["result_type"] = "pay_invoice", ["result"] = 42 },
+    };
+
+    [Theory]
+    [MemberData(nameof(SettledButUnusablePreimageResponses))]
+    public void MapPayInvoiceResponse_SettledButUnusablePreimage_IsSuccessNotFailure(JsonObject response)
+    {
+        // The wallet reported NO error, so the payment SETTLED — the funds are gone. A
+        // preimage of the wrong JSON type (or a non-object "result") is settled-but-
+        // unprovable, NOT a failure. The old code threw here (GetValue<string>() /
+        // AsObject()) and the exception became Failed("EXCEPTION") -> retryable ->
+        // double-pay. It must be SucceededWithoutPreimage (Success=true, HasPreimage=false),
+        // matching the missing/empty-preimage branch.
+        var result = NwcWalletService.MapPayInvoiceResponse(response, KnownPaymentHash);
+
+        result.Success.Should().BeTrue("the payment settled — it is unprovable, not failed");
+        result.HasPreimage.Should().BeFalse();
+        result.PreimageHex.Should().BeNull();
+        result.IsPending.Should().BeFalse();
+        // Reconciliation handle so the operator can look the settled payment up.
+        result.TrackingId.Should().Be(KnownPaymentHashHex);
+    }
+
     #endregion
 
 }

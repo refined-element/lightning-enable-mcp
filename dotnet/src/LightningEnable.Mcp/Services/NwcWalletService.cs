@@ -227,9 +227,21 @@ public class NwcWalletService : IWalletService, IDisposable
             return NwcPaymentResult.Failed(code, message);
         }
 
-        // Extract preimage from result
-        var result = response["result"]?.AsObject();
-        var preimage = result?["preimage"]?.GetValue<string>();
+        // Extract preimage from result. Read every step defensively: a non-object
+        // "result" (response["result"] as a bare value) would throw on .AsObject(), and
+        // a non-string "preimage" (e.g. a JSON number) would throw on .GetValue<string>().
+        // Either exception propagates to the generic catch in PayInvoiceAsync ->
+        // Failed("EXCEPTION") -> retryable -> double-pay. A settled payment (no "error")
+        // whose preimage is missing OR the wrong type is settled-but-unprovable, not a
+        // failure, and must reach the SucceededWithoutPreimage branch below. (Mirrors the
+        // Python nwc_wallet non-dict-result / non-str-preimage guards.)
+        var result = response["result"] as JsonObject;
+        string? preimage = null;
+        if (result?["preimage"] is JsonValue preimageValue
+            && preimageValue.TryGetValue<string>(out var preimageStr))
+        {
+            preimage = preimageStr;
+        }
 
         Log($"Preimage present: {!string.IsNullOrEmpty(preimage)}, length: {preimage?.Length ?? 0}");
 

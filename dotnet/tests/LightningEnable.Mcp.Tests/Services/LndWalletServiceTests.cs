@@ -42,6 +42,21 @@ public class LndWalletServiceTests
         string preimageBase64,
         Func<NwcPaymentResult, Task> assert)
     {
+        var json = $$"""
+            {"payment_preimage":"{{preimageBase64}}","payment_error":"","payment_hash":"aGFzaA=="}
+            """;
+        await WithLndResponse(json, assert);
+    }
+
+    /// <summary>
+    /// Runs a pay_invoice against a fully custom LND JSON response body, restoring env
+    /// vars afterwards. Lets a test drive shapes the preimage-only helper can't
+    /// (a populated payment_error, a non-string preimage, etc.).
+    /// </summary>
+    private static async Task WithLndResponse(
+        string responseJson,
+        Func<NwcPaymentResult, Task> assert)
+    {
         var originalHost = Environment.GetEnvironmentVariable("LND_REST_HOST");
         var originalMacaroon = Environment.GetEnvironmentVariable("LND_MACAROON_HEX");
         try
@@ -49,10 +64,7 @@ public class LndWalletServiceTests
             Environment.SetEnvironmentVariable("LND_REST_HOST", "localhost:8080");
             Environment.SetEnvironmentVariable("LND_MACAROON_HEX", "abc123");
 
-            var json = $$"""
-                {"payment_preimage":"{{preimageBase64}}","payment_error":"","payment_hash":"aGFzaA=="}
-                """;
-            using var httpClient = new HttpClient(CreateMockHandler(json).Object);
+            using var httpClient = new HttpClient(CreateMockHandler(responseJson).Object);
             using var service = new LndWalletService(httpClient);
 
             var result = await service.PayInvoiceAsync("lnbc1000n1p3abcdef");
@@ -107,6 +119,109 @@ public class LndWalletServiceTests
             result.Success.Should().BeTrue();
             result.HasPreimage.Should().BeTrue();
             result.PreimageHex.Should().Be(ValidPreimageHex);
+            return Task.CompletedTask;
+        });
+    }
+
+    [Fact]
+    public async Task PayInvoice_SettledButNoPreimage_IsSuccessNotFailure()
+    {
+        // LND reported no payment_error, so the payment SETTLED — the funds are gone.
+        // The old code returned Failed("NO_PREIMAGE", ...) here (Success=false), which the
+        // consumer (L402HttpClient) surfaces as "Payment failed" WITHOUT recording the
+        // spend — the agent retries and pays twice, and the budget under-counts. A settled
+        // payment with no preimage is settled-but-unprovable, NOT a failure: it must be
+        // SucceededWithoutPreimage (Success=true, HasPreimage=false), matching the adjacent
+        // invalid-format branch and the SucceededWithoutPreimage contract in NwcConfig.cs.
+        await WithConfiguredLnd(preimageBase64: "", result =>
+        {
+            result.Success.Should().BeTrue("the payment settled — it is unprovable, not failed");
+            result.HasPreimage.Should().BeFalse();
+            result.PreimageHex.Should().BeNull();
+            result.IsPending.Should().BeFalse();
+            // payment_hash from the LND response is the reconciliation handle ("aGFzaA==").
+            result.TrackingId.Should().Be("aGFzaA==");
+            return Task.CompletedTask;
+        });
+    }
+
+    // Non-empty values that are NOT decodable base64: Convert.FromBase64String throws
+    // FormatException on each.
+    public static TheoryData<string> MalformedBase64Preimages => new()
+    {
+        "not-valid-base64",  // '-' is outside the base64 alphabet
+        "abc",               // length not a multiple of 4 -> invalid padding
+        "@@@@",              // '@' is outside the base64 alphabet
+    };
+
+    [Theory]
+    [MemberData(nameof(MalformedBase64Preimages))]
+    public async Task PayInvoice_SettledButMalformedBase64Preimage_IsSuccessNotFailure(string malformedBase64)
+    {
+        // LND reported no payment_error, so the payment SETTLED — the funds are gone.
+        // Convert.FromBase64String on a non-base64 value throws FormatException; left
+        // unguarded (LndWalletService.cs:137) it fell through to the generic catch ->
+        // Failed("EXCEPTION") -> a RETRYABLE failure -> the agent retries and pays
+        // twice. A settled-but-undecodable preimage is settled-but-unprovable, NOT a
+        // failure: it must be SucceededWithoutPreimage (Success=true, HasPreimage=false),
+        // matching the no-preimage / invalid-hex branches and the Python LND fix.
+        await WithConfiguredLnd(malformedBase64, result =>
+        {
+            result.Success.Should().BeTrue("the payment settled — it is unprovable, not failed");
+            result.HasPreimage.Should().BeFalse();
+            result.PreimageHex.Should().BeNull();
+            result.IsPending.Should().BeFalse();
+            // payment_hash from the LND response is the reconciliation handle ("aGFzaA==").
+            result.TrackingId.Should().Be("aGFzaA==");
+            return Task.CompletedTask;
+        });
+    }
+
+    // A settled response (payment_error empty) whose payment_preimage is NOT a JSON
+    // string. Reading it into the typed string? model threw JsonException at
+    // deserialization -> generic catch -> Failed("EXCEPTION") -> retryable -> double-pay.
+    public static TheoryData<string> SettledNonStringPreimageResponses => new()
+    {
+        """{"payment_preimage":12345,"payment_error":"","payment_hash":"aGFzaA=="}""",  // number
+        """{"payment_preimage":true,"payment_error":"","payment_hash":"aGFzaA=="}""",   // bool
+        """{"payment_preimage":[1,2],"payment_error":"","payment_hash":"aGFzaA=="}""",  // array
+    };
+
+    [Theory]
+    [MemberData(nameof(SettledNonStringPreimageResponses))]
+    public async Task PayInvoice_SettledButNonStringPreimage_IsSuccessNotFailure(string json)
+    {
+        // LND reported no payment_error, so the payment SETTLED — the funds are gone.
+        // A non-string payment_preimage is settled-but-unprovable, NOT a failure. Reading
+        // it into the typed string? model threw JsonException before payment_error could
+        // even be inspected -> generic catch -> Failed("EXCEPTION") -> a RETRYABLE failure
+        // -> double-pay. It must land on SucceededWithoutPreimage (Success=true,
+        // HasPreimage=false) with the payment_hash as the reconciliation handle.
+        await WithLndResponse(json, result =>
+        {
+            result.Success.Should().BeTrue("the payment settled — it is unprovable, not failed");
+            result.HasPreimage.Should().BeFalse();
+            result.PreimageHex.Should().BeNull();
+            result.IsPending.Should().BeFalse();
+            result.TrackingId.Should().Be("aGFzaA==");
+            return Task.CompletedTask;
+        });
+    }
+
+    [Fact]
+    public async Task PayInvoice_GenuinePaymentError_StaysRetryableFailure()
+    {
+        // No over-correction: LND reported a payment_error, so the payment did NOT
+        // settle. This must stay a (retryable) failure and never be downgraded to a
+        // settled-but-unprovable success.
+        var json = """
+            {"payment_preimage":"","payment_error":"insufficient_balance","payment_hash":"aGFzaA=="}
+            """;
+        await WithLndResponse(json, result =>
+        {
+            result.Success.Should().BeFalse();
+            result.IsPending.Should().BeFalse();
+            result.ErrorCode.Should().Be("PAYMENT_ERROR");
             return Task.CompletedTask;
         });
     }

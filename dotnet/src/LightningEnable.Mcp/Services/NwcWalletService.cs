@@ -192,59 +192,7 @@ public class NwcWalletService : IWalletService, IDisposable
             var response = outcome.Response!;
             DebugLog($"Got response (result_type: {response["result_type"]?.GetValue<string>() ?? "unknown"})");
 
-            // Check for error response
-            var error = response["error"]?.AsObject();
-            if (error != null)
-            {
-                var code = error["code"]?.GetValue<string>() ?? "UNKNOWN";
-                var message = error["message"]?.GetValue<string>() ?? "Unknown error";
-                DebugLog($"NWC Error: {code} - {message}");
-                return NwcPaymentResult.Failed(code, message);
-            }
-
-            // Extract preimage from result
-            var result = response["result"]?.AsObject();
-            var preimage = result?["preimage"]?.GetValue<string>();
-
-            DebugLog($"Preimage present: {!string.IsNullOrEmpty(preimage)}, length: {preimage?.Length ?? 0}");
-
-            if (string.IsNullOrEmpty(preimage))
-            {
-                DebugLog("ERROR: No preimage in response!");
-                DebugLog("No preimage in result object");
-                return NwcPaymentResult.Failed("NO_PREIMAGE", "Payment succeeded but no preimage returned");
-            }
-
-            // Validate preimage format (should be 64 hex chars = 32 bytes).
-            // This detection used to only WARN and then return the value anyway — so a
-            // Coinos UUID went out to the agent in the field L402 treats as proof of
-            // payment, producing an Authorization header the server always rejects.
-            // A value that isn't a preimage is not proof of anything: report the payment
-            // as settled (the funds ARE gone — reporting failure would invite a retry
-            // and a double-spend) but WITHOUT a preimage.
-            if (!Preimage.IsValid(preimage))
-            {
-                DebugLog("WARNING: Preimage is not valid 64 hex chars");
-                var looksLikeUuid = preimage.Contains('-') && preimage.Length == 36;
-                if (looksLikeUuid)
-                {
-                    DebugLog("DETECTED: Preimage looks like a UUID - Coinos internal transfer bug");
-                }
-
-                var detail = looksLikeUuid
-                    ? "The wallet returned a UUID instead of a preimage (known Coinos internal-transfer bug). "
-                    : "The wallet returned a value that is not a valid 64-character hex preimage. ";
-
-                return NwcPaymentResult.SucceededWithoutPreimage(
-                    preimage,
-                    detail +
-                    "The payment settled, but L402/MPP verification is not possible without a real " +
-                    "preimage. Paying an external Lightning invoice (rather than an internal transfer " +
-                    "within the same wallet provider) normally returns one.");
-            }
-
-            DebugLog("Returning preimage");
-            return NwcPaymentResult.Succeeded(preimage);
+            return MapPayInvoiceResponse(response, expectedPaymentHash, DebugLog);
         }
         catch (Exception ex)
         {
@@ -252,6 +200,100 @@ public class NwcWalletService : IWalletService, IDisposable
             DebugLog($"Stack: {ex.StackTrace}");
             return NwcPaymentResult.Failed("EXCEPTION", ex.Message);
         }
+    }
+
+    /// <summary>
+    /// Maps a successful NWC pay_invoice response envelope to an <see cref="NwcPaymentResult"/>.
+    /// Extracted from <see cref="PayInvoiceAsync"/> so the settled-but-unprovable branches can
+    /// be unit-tested without a live relay. <paramref name="expectedPaymentHash"/> (parsed from
+    /// the paid BOLT11) is used as the reconciliation tracking_id when the wallet settles without
+    /// a usable preimage.
+    /// </summary>
+    internal static NwcPaymentResult MapPayInvoiceResponse(
+        JsonObject response,
+        byte[]? expectedPaymentHash,
+        Action<string>? debug = null)
+    {
+        void Log(string msg) => debug?.Invoke(msg);
+
+        // Check for error response — a real provider error means the payment did NOT
+        // settle, so this stays a retryable failure.
+        var error = response["error"]?.AsObject();
+        if (error != null)
+        {
+            var code = error["code"]?.GetValue<string>() ?? "UNKNOWN";
+            var message = error["message"]?.GetValue<string>() ?? "Unknown error";
+            Log($"NWC Error: {code} - {message}");
+            return NwcPaymentResult.Failed(code, message);
+        }
+
+        // Extract preimage from result. Read every step defensively: a non-object
+        // "result" (response["result"] as a bare value) would throw on .AsObject(), and
+        // a non-string "preimage" (e.g. a JSON number) would throw on .GetValue<string>().
+        // Either exception propagates to the generic catch in PayInvoiceAsync ->
+        // Failed("EXCEPTION") -> retryable -> double-pay. A settled payment (no "error")
+        // whose preimage is missing OR the wrong type is settled-but-unprovable, not a
+        // failure, and must reach the SucceededWithoutPreimage branch below. (Mirrors the
+        // Python nwc_wallet non-dict-result / non-str-preimage guards.)
+        var result = response["result"] as JsonObject;
+        string? preimage = null;
+        if (result?["preimage"] is JsonValue preimageValue
+            && preimageValue.TryGetValue<string>(out var preimageStr))
+        {
+            preimage = preimageStr;
+        }
+
+        Log($"Preimage present: {!string.IsNullOrEmpty(preimage)}, length: {preimage?.Length ?? 0}");
+
+        if (string.IsNullOrEmpty(preimage))
+        {
+            // The wallet reported NO error, so the payment SETTLED — the funds are gone.
+            // Returning Failed here made the consumer (L402HttpClient) throw "Payment
+            // failed" WITHOUT recording the spend, so the agent retries and pays twice
+            // (and the budget under-counts). A settled payment with no preimage is
+            // settled-but-unprovable, NOT a failure — return SucceededWithoutPreimage,
+            // exactly like the invalid-format branch below (and the SucceededWithoutPreimage
+            // contract in Models/NwcConfig.cs).
+            Log("No preimage in result object — settled but unprovable");
+            var trackingId = expectedPaymentHash != null
+                ? Convert.ToHexString(expectedPaymentHash).ToLowerInvariant()
+                : "unknown";
+            return NwcPaymentResult.SucceededWithoutPreimage(
+                trackingId,
+                "The payment settled, but the wallet returned no preimage, so L402/MPP " +
+                "verification is not possible without a real preimage.");
+        }
+
+        // Validate preimage format (should be 64 hex chars = 32 bytes).
+        // This detection used to only WARN and then return the value anyway — so a
+        // Coinos UUID went out to the agent in the field L402 treats as proof of
+        // payment, producing an Authorization header the server always rejects.
+        // A value that isn't a preimage is not proof of anything: report the payment
+        // as settled (the funds ARE gone — reporting failure would invite a retry
+        // and a double-spend) but WITHOUT a preimage.
+        if (!Preimage.IsValid(preimage))
+        {
+            Log("WARNING: Preimage is not valid 64 hex chars");
+            var looksLikeUuid = preimage.Contains('-') && preimage.Length == 36;
+            if (looksLikeUuid)
+            {
+                Log("DETECTED: Preimage looks like a UUID - Coinos internal transfer bug");
+            }
+
+            var detail = looksLikeUuid
+                ? "The wallet returned a UUID instead of a preimage (known Coinos internal-transfer bug). "
+                : "The wallet returned a value that is not a valid 64-character hex preimage. ";
+
+            return NwcPaymentResult.SucceededWithoutPreimage(
+                preimage,
+                detail +
+                "The payment settled, but L402/MPP verification is not possible without a real " +
+                "preimage. Paying an external Lightning invoice (rather than an internal transfer " +
+                "within the same wallet provider) normally returns one.");
+        }
+
+        Log("Returning preimage");
+        return NwcPaymentResult.Succeeded(preimage);
     }
 
     public async Task<NwcBalanceInfo> GetBalanceAsync(CancellationToken cancellationToken = default)

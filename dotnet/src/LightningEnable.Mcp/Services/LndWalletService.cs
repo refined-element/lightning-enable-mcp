@@ -131,10 +131,44 @@ public class LndWalletService : IWalletService, IDisposable
                 return NwcPaymentResult.Failed("PAYMENT_ERROR", result.PaymentError);
             }
 
-            // LND returns preimage as base64 - convert to hex
-            if (!string.IsNullOrEmpty(result.PaymentPreimage))
+            // LND returns preimage as base64 - convert to hex. payment_preimage is read
+            // as a raw JsonNode (not a typed string) so a non-string value (e.g. a JSON
+            // number) does NOT throw JsonException at deserialization -> generic catch
+            // -> Failed("EXCEPTION") -> retryable -> double-pay. Any non-string / missing
+            // / empty value falls through to the settled-but-no-preimage branch below,
+            // exactly like NWC.
+            string? preimageB64 = null;
+            if (result.PaymentPreimage is JsonValue preimageValue
+                && preimageValue.TryGetValue<string>(out var preimageStr))
             {
-                var preimageBytes = Convert.FromBase64String(result.PaymentPreimage);
+                preimageB64 = preimageStr;
+            }
+
+            if (!string.IsNullOrEmpty(preimageB64))
+            {
+                byte[] preimageBytes;
+                try
+                {
+                    preimageBytes = Convert.FromBase64String(preimageB64);
+                }
+                catch (FormatException)
+                {
+                    // The payment SETTLED (LND reported no payment_error) — the funds are
+                    // gone. A preimage that is not decodable base64 is settled-but-
+                    // unprovable, NOT a failure. Left unguarded this FormatException fell
+                    // through to the generic catch below and became Failed("EXCEPTION") —
+                    // a RETRYABLE failure that invites a double-pay. Return
+                    // SucceededWithoutPreimage instead, mirroring the no-preimage /
+                    // invalid-hex branches and the Python LND fix. Deliberately does not
+                    // echo the offending value.
+                    Console.Error.WriteLine("[LND] WARNING: Preimage is not valid base64 - L402 verification will NOT work");
+                    var badBase64TrackingId = result.PaymentHash ?? "unknown";
+                    return NwcPaymentResult.SucceededWithoutPreimage(
+                        badBase64TrackingId,
+                        "LND returned a preimage that is not valid base64. The payment settled, " +
+                        "but L402/MPP verification is not possible without a real preimage.");
+                }
+
                 var preimageHex = Convert.ToHexString(preimageBytes).ToLowerInvariant();
 
                 // Validate at the boundary before publishing it as proof. LND "always
@@ -159,7 +193,18 @@ public class LndWalletService : IWalletService, IDisposable
                 return NwcPaymentResult.Succeeded(preimageHex);
             }
 
-            return NwcPaymentResult.Failed("NO_PREIMAGE", "Payment succeeded but no preimage returned");
+            // The payment SETTLED (LND reported no payment_error) — the funds are gone.
+            // Returning Failed here made the consumer (L402HttpClient) throw "Payment
+            // failed" WITHOUT recording the spend, so the agent retries and pays twice
+            // (and the budget under-counts). A settled payment with no preimage is
+            // settled-but-unprovable, NOT a failure — return SucceededWithoutPreimage,
+            // exactly like the adjacent invalid-format branch above.
+            Console.Error.WriteLine("[LND] WARNING: Settled with no preimage - L402 verification will NOT work");
+            var noPreimageTrackingId = result.PaymentHash ?? "unknown";
+            return NwcPaymentResult.SucceededWithoutPreimage(
+                noPreimageTrackingId,
+                "LND returned no preimage. The payment settled, but L402/MPP verification " +
+                "is not possible without a real preimage.");
         }
         catch (HttpRequestException ex)
         {
@@ -429,8 +474,11 @@ public class LndWalletService : IWalletService, IDisposable
         [JsonPropertyName("payment_error")]
         public string? PaymentError { get; set; }
 
+        // Raw JsonNode, not string: a non-string payment_preimage (e.g. a JSON number)
+        // must not throw JsonException at deserialization — it is classified as an
+        // unusable preimage on a settled payment, not a hard (retryable) failure.
         [JsonPropertyName("payment_preimage")]
-        public string? PaymentPreimage { get; set; }
+        public JsonNode? PaymentPreimage { get; set; }
 
         [JsonPropertyName("payment_hash")]
         public string? PaymentHash { get; set; }

@@ -188,16 +188,16 @@ lightning-enable-mcp/
 
 These tools enable agent-to-agent commerce on Nostr:
 
-All six ASA tools require `LIGHTNING_ENABLE_API_KEY` (an [Agentic Commerce subscription](https://lightningenable.com)); `settle_agent_service` additionally spends your wallet balance, subject to budget limits.
+All six ASA tools require `LIGHTNING_ENABLE_API_KEY` (an [Agentic Commerce subscription](https://lightningenable.com)); `settle_agent_service` additionally spends your wallet balance, subject to budget limits. For the authoritative access level of every tool, see the canonical [Tools](#tools) table above — it is the single source of truth pinned to the code by the drift guard.
 
-| Tool | Description | Subscription |
-|------|-------------|-------------|
-| `discover_agent_services` | Search for agent capabilities by category, hashtag, or keyword | Agentic Commerce |
-| `publish_agent_capability` | Publish your agent's services to the Nostr network (kind 38400) | Agentic Commerce |
-| `request_agent_service` | Request a service from another agent (kind 38401) | Agentic Commerce |
-| `settle_agent_service` | Pay for an agent service via L402 Lightning settlement | Agentic Commerce |
-| `publish_agent_attestation` | Leave a review/rating for an agent after service completion (kind 38403) | Agentic Commerce |
-| `get_agent_reputation` | Check an agent's reputation score from on-protocol attestations | Agentic Commerce |
+| Tool | Description |
+|------|-------------|
+| `discover_agent_services` | Search for agent capabilities by category, hashtag, or keyword |
+| `publish_agent_capability` | Publish your agent's services to the Nostr network (kind 38400) |
+| `request_agent_service` | Request a service from another agent (kind 38401) |
+| `settle_agent_service` | Pay for an agent service via L402 Lightning settlement |
+| `publish_agent_attestation` | Leave a review/rating for an agent after service completion (kind 38403) |
+| `get_agent_reputation` | Check an agent's reputation score from on-protocol attestations |
 
 ### How Agent Commerce Works
 

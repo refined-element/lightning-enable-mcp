@@ -55,7 +55,15 @@ def _find_root_readme() -> Path | None:
 
 
 def _parse_tools_table(readme_text: str) -> dict[str, str]:
-    """Return {tool_name: access_label} for every row of the ``## Tools`` table."""
+    """Return {tool_name: access_label} for every row of the ``## Tools`` table.
+
+    Every row whose first column is a backticked tool name is captured. If such a
+    row carries an Access label that is neither "Free" nor "Agentic Commerce", it is
+    a *mislabel* ("Free*", "**Free**", a lowercase or footnote variant, …) — fail
+    loudly naming the tool and the offending label. Silently dropping the row (the
+    old behaviour) made a mislabeled tool masquerade as *missing from README* and hid
+    the real defect — the exact ASA-relabeled-"Free" bug commit 039dab9 hand-fixed.
+    """
     lines = readme_text.splitlines()
     # Scope to the "## Tools" section so unrelated backticked names elsewhere
     # (e.g. the ASA how-it-works prose) can't leak into the parse.
@@ -71,10 +79,19 @@ def _parse_tools_table(readme_text: str) -> dict[str, str]:
         m = _ROW.match(line)
         if not m:
             continue
+        name = m.group("name")
         access = m.group("access").strip()
-        # Ignore the header separator / any non-access rows defensively.
-        if access in (FREE_LABEL, GATED_LABEL):
-            tools[m.group("name")] = access
+        # A backticked tool row MUST carry one of the two accepted Access labels.
+        # Anything else is a mislabel — report the tool AND its bad label rather
+        # than silently excluding the row.
+        assert access in (FREE_LABEL, GATED_LABEL), (
+            f"root README '## Tools' row for `{name}` has an unrecognized Access "
+            f"label {access!r} — expected {FREE_LABEL!r} or {GATED_LABEL!r}. "
+            "A label variant (e.g. 'Free*', '**Free**', lowercase, a footnote) must "
+            "not be used: it would otherwise be dropped and misreported as the tool "
+            "being missing from the README table."
+        )
+        tools[name] = access
     return tools
 
 

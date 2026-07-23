@@ -23,10 +23,13 @@ Give your AI agent a Lightning wallet and it can:
 - **Get BTC price** — Real-time Bitcoin price from Strike
 - **Exchange currency** — Convert between USD/BTC/EUR and more (Strike wallet)
 - **Send on-chain** — Send Bitcoin on-chain (Strike/LND)
+- **Self-bootstrap a Lightning Enable account** — `create_lightning_enable_account` pays a ~100-sat activation fee over L402 and returns a merchant API key: the free→paid signup form that *is* the protocol, unlocking the producer + ASA tools with no browser or checkout page.
 - **Sell services (L402 Producer)** — Create L402 payment challenges and verify payments, enabling agents to be full commerce participants that both buy and sell
 - **Agent commerce (ASA)** — Discover, request, settle, and review agent-to-agent services on Nostr
 
-## Quick Install
+## Quick Start
+
+### 1. Install
 
 ```bash
 # .NET
@@ -41,6 +44,38 @@ uvx lightning-enable-mcp
 # Docker
 docker pull refinedelement/lightning-enable-mcp:latest
 ```
+
+### 2. Configure one L402-capable wallet
+
+L402 — the whole point of this server — needs a wallet that returns the payment **preimage**. Set exactly one of these (as an env var, e.g. in the [Claude Desktop config](#claude-desktop-config) below):
+
+- **Strike** (easiest to start) — `STRIKE_API_KEY`, from https://dashboard.strike.me
+- **NWC** (self-custody, Nostr) — `NWC_CONNECTION_STRING`, from CoinOS / CLINK / Alby Hub
+- **LND** (your own node — always returns a preimage) — `LND_REST_HOST` + `LND_MACAROON_HEX`
+
+> ⚠️ **OpenNode** (`OPENNODE_API_KEY`) works for **invoicing / direct payments only — it never returns a preimage, so it cannot pay L402 challenges.** Don't make it your only wallet if you want L402 (the core use case).
+
+If several are set, priority is: **LND > NWC > Strike > OpenNode**. See [Supported Wallets](#supported-wallets) for the full compatibility matrix.
+
+### 3. Prove the whole loop works — `test_l402_payment`
+
+Ask your agent:
+
+```
+Run test_l402_payment
+```
+
+This pays a public **1-sat** L402 endpoint end to end, proving your wallet is connected, returns a preimage, and can complete a real L402 payment. It's the one-line answer to "is my wallet actually working?" — and it costs about 1 satoshi.
+
+### 4. Then have some fun — buy a t-shirt
+
+Once the loop works, try the [Lightning Enable Store](https://store.lightningenable.com), a live L402-powered web store. Ask Claude:
+
+```
+Buy me a Lightning Enable t-shirt from store.lightningenable.com
+```
+
+(This one needs a funded wallet and a shipping address, which is why `test_l402_payment` — one sat, no shipping — is the faster first proof.)
 
 ## Claude Desktop Config
 
@@ -91,14 +126,6 @@ Config file locations:
 | **NWC (CLINK)** | Connection string | Yes |
 | **NWC (Alby Hub)** | Connection string | Yes |
 | **OpenNode** | API key | No (no preimage) |
-
-## Try It: Lightning Enable Store
-
-The [Lightning Enable Store](https://store.lightningenable.com) is a live L402-powered web store. Ask Claude:
-
-```
-Buy me a Lightning Enable t-shirt from store.lightningenable.com
-```
 
 ## Tools
 

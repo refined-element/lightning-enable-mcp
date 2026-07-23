@@ -159,7 +159,18 @@ public class LndWalletService : IWalletService, IDisposable
                 return NwcPaymentResult.Succeeded(preimageHex);
             }
 
-            return NwcPaymentResult.Failed("NO_PREIMAGE", "Payment succeeded but no preimage returned");
+            // The payment SETTLED (LND reported no payment_error) — the funds are gone.
+            // Returning Failed here made the consumer (L402HttpClient) throw "Payment
+            // failed" WITHOUT recording the spend, so the agent retries and pays twice
+            // (and the budget under-counts). A settled payment with no preimage is
+            // settled-but-unprovable, NOT a failure — return SucceededWithoutPreimage,
+            // exactly like the adjacent invalid-format branch above.
+            Console.Error.WriteLine("[LND] WARNING: Settled with no preimage - L402 verification will NOT work");
+            var noPreimageTrackingId = result.PaymentHash ?? "unknown";
+            return NwcPaymentResult.SucceededWithoutPreimage(
+                noPreimageTrackingId,
+                "LND returned no preimage. The payment settled, but L402/MPP verification " +
+                "is not possible without a real preimage.");
         }
         catch (HttpRequestException ex)
         {

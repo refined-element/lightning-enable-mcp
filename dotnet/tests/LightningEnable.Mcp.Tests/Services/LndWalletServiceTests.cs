@@ -110,4 +110,26 @@ public class LndWalletServiceTests
             return Task.CompletedTask;
         });
     }
+
+    [Fact]
+    public async Task PayInvoice_SettledButNoPreimage_IsSuccessNotFailure()
+    {
+        // LND reported no payment_error, so the payment SETTLED — the funds are gone.
+        // The old code returned Failed("NO_PREIMAGE", ...) here (Success=false), which the
+        // consumer (L402HttpClient) surfaces as "Payment failed" WITHOUT recording the
+        // spend — the agent retries and pays twice, and the budget under-counts. A settled
+        // payment with no preimage is settled-but-unprovable, NOT a failure: it must be
+        // SucceededWithoutPreimage (Success=true, HasPreimage=false), matching the adjacent
+        // invalid-format branch and the SucceededWithoutPreimage contract in NwcConfig.cs.
+        await WithConfiguredLnd(preimageBase64: "", result =>
+        {
+            result.Success.Should().BeTrue("the payment settled — it is unprovable, not failed");
+            result.HasPreimage.Should().BeFalse();
+            result.PreimageHex.Should().BeNull();
+            result.IsPending.Should().BeFalse();
+            // payment_hash from the LND response is the reconciliation handle ("aGFzaA==").
+            result.TrackingId.Should().Be("aGFzaA==");
+            return Task.CompletedTask;
+        });
+    }
 }

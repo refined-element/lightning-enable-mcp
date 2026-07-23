@@ -1085,4 +1085,82 @@ public class NwcWalletServiceTests
 
     #endregion
 
+    #region Settled-but-unprovable: empty preimage must be success, not a failure
+
+    // A known 32-byte payment hash so the reconciliation tracking_id can be asserted.
+    private static readonly byte[] KnownPaymentHash =
+        Convert.FromHexString("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff");
+    private const string KnownPaymentHashHex =
+        "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
+    public static TheoryData<JsonObject> SettledButNoPreimageResponses => new()
+    {
+        // result object present, preimage key absent
+        new JsonObject { ["result_type"] = "pay_invoice", ["result"] = new JsonObject() },
+        // explicit empty-string preimage
+        new JsonObject { ["result_type"] = "pay_invoice", ["result"] = new JsonObject { ["preimage"] = "" } },
+    };
+
+    [Theory]
+    [MemberData(nameof(SettledButNoPreimageResponses))]
+    public void MapPayInvoiceResponse_SettledButNoPreimage_IsSuccessNotFailure(JsonObject response)
+    {
+        // The wallet reported NO error, so the payment SETTLED — the funds are gone.
+        // The old code returned Failed("NO_PREIMAGE", ...) here (Success=false), which the
+        // consumer (L402HttpClient) surfaces as "Payment failed" WITHOUT recording the
+        // spend — the agent retries and pays twice, and the budget under-counts. A settled
+        // payment with no preimage is settled-but-unprovable, NOT a failure: it must be
+        // SucceededWithoutPreimage (Success=true, HasPreimage=false), matching the adjacent
+        // invalid-format branch and the SucceededWithoutPreimage contract in NwcConfig.cs.
+        var result = NwcWalletService.MapPayInvoiceResponse(response, KnownPaymentHash);
+
+        result.Success.Should().BeTrue("the payment settled — it is unprovable, not failed");
+        result.HasPreimage.Should().BeFalse();
+        result.PreimageHex.Should().BeNull();
+        result.IsPending.Should().BeFalse();
+        // Reconciliation handle so the operator can look the settled payment up.
+        result.TrackingId.Should().Be(KnownPaymentHashHex);
+    }
+
+    [Fact]
+    public void MapPayInvoiceResponse_GenuineError_StaysRetryableFailure()
+    {
+        // No over-correction: a real provider error means the payment did NOT settle, so
+        // it must remain a (retryable) failure, never downgraded to SucceededWithoutPreimage.
+        var response = new JsonObject
+        {
+            ["result_type"] = "pay_invoice",
+            ["error"] = new JsonObject
+            {
+                ["code"] = "INSUFFICIENT_BALANCE",
+                ["message"] = "not enough funds",
+            },
+        };
+
+        var result = NwcWalletService.MapPayInvoiceResponse(response, KnownPaymentHash);
+
+        result.Success.Should().BeFalse();
+        result.ErrorCode.Should().Be("INSUFFICIENT_BALANCE");
+    }
+
+    [Fact]
+    public void MapPayInvoiceResponse_ValidPreimage_IsReturned()
+    {
+        const string validPreimage =
+            "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
+        var response = new JsonObject
+        {
+            ["result_type"] = "pay_invoice",
+            ["result"] = new JsonObject { ["preimage"] = validPreimage },
+        };
+
+        var result = NwcWalletService.MapPayInvoiceResponse(response, KnownPaymentHash);
+
+        result.Success.Should().BeTrue();
+        result.HasPreimage.Should().BeTrue();
+        result.PreimageHex.Should().Be(validPreimage);
+    }
+
+    #endregion
+
 }

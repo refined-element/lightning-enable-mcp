@@ -100,6 +100,41 @@ The [Lightning Enable Store](https://store.lightningenable.com) is a live L402-p
 Buy me a Lightning Enable t-shirt from store.lightningenable.com
 ```
 
+## Tools
+
+**Canonical inventory: 26 tools — 18 free (out of the box, just a wallet) + 8 that require `LIGHTNING_ENABLE_API_KEY`** (an [Agentic Commerce subscription](https://lightningenable.com); 2 L402 Producer + 6 Agent Service Agreement). This table is the single source of truth every advertised count derives from — it is pinned to the code by the tool-inventory guard tests in both ports (drift fails CI).
+
+| Tool | Access | What it does |
+|------|--------|--------------|
+| `pay_invoice` | Free | Pay a BOLT11 Lightning invoice directly, get the preimage |
+| `pay_l402_challenge` | Free | Pay an L402 challenge (invoice + macaroon), get the token |
+| `access_l402_resource` | Free | Fetch a URL, auto-paying any L402 challenge |
+| `test_l402_payment` | Free | Self-test the wallet against a public 1-sat L402 endpoint |
+| `discover_api` | Free | Search the L402 API registry / fetch an API manifest |
+| `create_invoice` | Free | Create a BOLT11 invoice to receive payment |
+| `check_invoice_status` | Free | Check whether a created invoice was paid |
+| `check_wallet_balance` | Free | Check the connected wallet balance |
+| `get_all_balances` | Free | Get all currency balances (Strike) |
+| `exchange_currency` | Free | Convert between USD and BTC (Strike) |
+| `send_onchain` | Free | Send an on-chain Bitcoin payment (Strike, LND) |
+| `get_btc_price` | Free | Current Bitcoin price in USD |
+| `get_payment_history` | Free | List payments made this session (in-memory) |
+| `get_receipts` | Free | Read the durable, append-only receipt log |
+| `get_budget_status` | Free | View budget config and session spend (read-only) |
+| `configure_budget` | Free | Tighten runtime spending caps (tighten-only) |
+| `confirm_payment` | Free | Verify an out-of-band payment confirmation code |
+| `create_lightning_enable_account` | Free | Self-bootstrap signup: pay ~100 sats, get a merchant API key |
+| `create_l402_challenge` | Agentic Commerce | L402 Producer: create a challenge to charge for a resource |
+| `verify_l402_payment` | Agentic Commerce | L402 Producer: verify an L402 token (macaroon + preimage) |
+| `discover_agent_services` | Agentic Commerce | ASA: search for agent capabilities on Nostr |
+| `publish_agent_capability` | Agentic Commerce | ASA: publish your agent's services (kind 38400) |
+| `request_agent_service` | Agentic Commerce | ASA: request a service from another agent (kind 38401) |
+| `settle_agent_service` | Agentic Commerce | ASA: pay for an agent service via L402 settlement |
+| `publish_agent_attestation` | Agentic Commerce | ASA: leave a review/rating for an agent (kind 38403) |
+| `get_agent_reputation` | Agentic Commerce | ASA: check an agent's reputation from attestations |
+
+`create_lightning_enable_account` is free and *self-provisions* the API key the 8 gated tools need — an agent with a wallet pays a ~100-sat activation fee and unlocks them on the spot.
+
 ## Documentation
 
 - [.NET README](dotnet/src/LightningEnable.Mcp/README.md) — Full .NET documentation
@@ -126,16 +161,16 @@ lightning-enable-mcp/
 
 These tools enable agent-to-agent commerce on Nostr:
 
+All six ASA tools require `LIGHTNING_ENABLE_API_KEY` (an [Agentic Commerce subscription](https://lightningenable.com)); `settle_agent_service` additionally spends your wallet balance, subject to budget limits.
+
 | Tool | Description | Subscription |
 |------|-------------|-------------|
-| `discover_agent_services` | Search for agent capabilities by category, hashtag, or keyword | Free |
+| `discover_agent_services` | Search for agent capabilities by category, hashtag, or keyword | Agentic Commerce |
 | `publish_agent_capability` | Publish your agent's services to the Nostr network (kind 38400) | Agentic Commerce |
 | `request_agent_service` | Request a service from another agent (kind 38401) | Agentic Commerce |
-| `settle_agent_service` | Pay for an agent service via L402 Lightning settlement | Free* |
+| `settle_agent_service` | Pay for an agent service via L402 Lightning settlement | Agentic Commerce |
 | `publish_agent_attestation` | Leave a review/rating for an agent after service completion (kind 38403) | Agentic Commerce |
-| `get_agent_reputation` | Check an agent's reputation score from on-protocol attestations | Free |
-
-*settle uses wallet balance, subject to budget limits
+| `get_agent_reputation` | Check an agent's reputation score from on-protocol attestations | Agentic Commerce |
 
 ### How Agent Commerce Works
 

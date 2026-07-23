@@ -287,7 +287,24 @@ class LndWallet:
                 logger.info("LND payment succeeded, preimage received")
                 return preimage_hex
 
-            raise LndPaymentError("Payment succeeded but no preimage returned")
+            # LND reported no payment_error above, so the payment SETTLED — the funds
+            # are gone. A missing/empty preimage does NOT mean the payment failed; it
+            # means the payment is UNPROVABLE. Raising LndPaymentError here (the old
+            # behavior) surfaces a settled payment as a failure, and the caller retries
+            # and pays twice. Per the wallet_errors contract this is one of the two
+            # states that are NOT "the payment failed" — the terminal, non-retryable
+            # PreimageUnavailableError (mirrors the .NET SucceededWithoutPreimage
+            # contract in Models/NwcConfig.cs). It is re-raised untouched by the
+            # PaymentProofUnavailableError handler below, not rewrapped as a failure.
+            #
+            # Deliberately does not echo any response content (engineering standard #5).
+            logger.error("LND payment settled but no preimage was returned")
+            raise PreimageUnavailableError(
+                "The payment settled, but LND returned no preimage, so L402/MPP "
+                "verification is not possible without a real preimage.",
+                provider="lnd",
+                tracking_id=result.get("payment_hash"),
+            )
 
         except LndError:
             raise

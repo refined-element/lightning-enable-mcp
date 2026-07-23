@@ -1046,3 +1046,52 @@ class TestNwcPreimageValidation:
         with pytest.raises(PreimageUnavailableError) as excinfo:
             await wallet.pay_invoice("lnbc100n1p3abcdef")
         assert "deadbeef" not in str(excinfo.value)
+
+    def _wallet_returning_raw(self, response):
+        """Build a wallet whose next pay_invoice response is exactly ``response``."""
+        from unittest.mock import AsyncMock
+
+        with patch("lightning_enable_mcp.nwc_wallet._get_pubkey", return_value="aa" * 32):
+            wallet = NWCWallet(self._URI)
+        wallet._send_request = AsyncMock(return_value=response)
+        return wallet
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("response", [
+        {"result": {}},                  # result object present, preimage key absent
+        {"result": {"preimage": None}},  # explicit null preimage
+        {"result": {"preimage": ""}},    # empty-string preimage
+        {},                              # neither error nor a usable preimage
+    ])
+    async def test_settled_but_no_preimage_is_not_a_retryable_failure(self, response):
+        # The wallet reported NO error, so the payment SETTLED — the funds are gone.
+        # A missing/empty preimage means the payment is UNPROVABLE, not that it FAILED.
+        # The old code raised the generic NWCPaymentError("No preimage in payment
+        # response") here, which the caller surfaces as a failure and an agent retries —
+        # paying a second time. Per the wallet_errors contract this must raise the
+        # terminal, non-retryable PreimageUnavailableError instead (mirrors the .NET
+        # SucceededWithoutPreimage contract).
+        from lightning_enable_mcp.nwc_wallet import NWCPaymentError
+        from lightning_enable_mcp.wallet_errors import PreimageUnavailableError
+
+        wallet = self._wallet_returning_raw(response)
+        with pytest.raises(PreimageUnavailableError) as excinfo:
+            await wallet.pay_invoice("lnbc100n1p3abcdef")
+        # Must be the terminal do-not-retry error, NOT the generic payment failure.
+        assert not isinstance(excinfo.value, NWCPaymentError)
+        assert excinfo.value.provider == "nwc"
+
+    @pytest.mark.asyncio
+    async def test_genuine_failure_still_raises_the_retryable_payment_error(self):
+        # No over-correction: when the wallet reports an error the payment did NOT
+        # settle, so this stays a normal (retryable) NWCPaymentError and must NOT be
+        # downgraded to the settled-but-unprovable PreimageUnavailableError.
+        from lightning_enable_mcp.nwc_wallet import NWCPaymentError
+        from lightning_enable_mcp.wallet_errors import PreimageUnavailableError
+
+        wallet = self._wallet_returning_raw(
+            {"error": {"code": "INSUFFICIENT_BALANCE", "message": "not enough funds"}}
+        )
+        with pytest.raises(NWCPaymentError) as excinfo:
+            await wallet.pay_invoice("lnbc100n1p3abcdef")
+        assert not isinstance(excinfo.value, PreimageUnavailableError)

@@ -1022,7 +1022,22 @@ class NWCWallet:
         preimage = result.get("preimage")
 
         if not preimage:
-            raise NWCPaymentError("No preimage in payment response")
+            # No error was reported above, so the payment SETTLED — the funds are gone.
+            # A missing/empty preimage does NOT mean the payment failed; it means the
+            # payment is UNPROVABLE. Raising NWCPaymentError here (the old behavior)
+            # surfaces a settled payment as a failure, and the caller retries and pays
+            # twice. Per the wallet_errors contract this is one of the two states that
+            # are NOT "the payment failed" — the terminal, non-retryable
+            # PreimageUnavailableError (mirrors the .NET SucceededWithoutPreimage
+            # contract in Models/NwcConfig.cs).
+            #
+            # Deliberately does not echo any response content (engineering standard #5).
+            logger.error("NWC payment settled but no preimage was returned")
+            raise PreimageUnavailableError(
+                "The payment settled, but the wallet returned no preimage, so L402/MPP "
+                "verification is not possible (expected a 64-character hex string).",
+                provider="nwc",
+            )
 
         # Some wallets incorrectly return the invoice or other data in the preimage
         # field. Detect that specifically, for a diagnostic the operator can act on.

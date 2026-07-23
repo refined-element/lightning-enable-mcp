@@ -1125,3 +1125,32 @@ class TestNwcPreimageValidation:
         with pytest.raises(PreimageUnavailableError) as excinfo:
             await wallet.pay_invoice(self._REAL_INVOICE)
         assert excinfo.value.tracking_id == self._REAL_INVOICE_PAYMENT_HASH
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad_preimage", [
+        123,          # JSON number -> int.startswith(...) raises AttributeError
+        123.45,       # JSON float -> AttributeError
+        ["lnbc"],     # JSON array -> AttributeError
+        {"hex": 1},   # JSON object -> AttributeError
+    ])
+    async def test_settled_but_non_string_preimage_is_not_a_retryable_failure(
+        self, bad_preimage
+    ):
+        # The wallet reported NO error, so the payment SETTLED — the funds are gone.
+        # A wrong-type preimage (e.g. a JSON number) is truthy, so it slips past the
+        # `if not preimage:` guard and hits preimage.startswith(...) / is_valid_preimage,
+        # which raise AttributeError on a non-string — propagating out of pay_invoice as
+        # a RETRYABLE "Payment failed" and the agent pays twice. A settled payment whose
+        # preimage is the wrong type is settled-but-UNPROVABLE, not a failure: it must
+        # raise the terminal, non-retryable PreimageUnavailableError, carrying the
+        # invoice's payment hash as the reconciliation tracking_id.
+        from lightning_enable_mcp.nwc_wallet import NWCPaymentError
+        from lightning_enable_mcp.wallet_errors import PreimageUnavailableError
+
+        wallet = self._wallet_returning_raw({"result": {"preimage": bad_preimage}})
+        with pytest.raises(PreimageUnavailableError) as excinfo:
+            await wallet.pay_invoice(self._REAL_INVOICE)
+        # Must be the terminal do-not-retry error, NOT the generic payment failure.
+        assert not isinstance(excinfo.value, NWCPaymentError)
+        assert excinfo.value.provider == "nwc"
+        assert excinfo.value.tracking_id == self._REAL_INVOICE_PAYMENT_HASH

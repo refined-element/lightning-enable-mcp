@@ -1066,6 +1066,25 @@ class NWCWallet:
                 tracking_id=_payment_hash_from_bolt11(bolt11),
             )
 
+        # A wrong-type preimage (e.g. a JSON number) is truthy, so it slips past the
+        # `if not preimage:` guard above and would reach preimage.startswith(...) /
+        # is_valid_preimage below, which raise AttributeError on a non-string. That
+        # propagates out of pay_invoice as a RETRYABLE "Payment failed" and the agent
+        # pays twice. The wallet reported no error, so the payment SETTLED — a wrong-type
+        # preimage is settled-but-UNPROVABLE, not a failure: route it to the same
+        # terminal PreimageUnavailableError as the missing/invalid-format cases.
+        #
+        # Deliberately does not echo the offending value (engineering standard #5).
+        if not isinstance(preimage, str):
+            logger.error("NWC payment settled but preimage was not a string")
+            raise PreimageUnavailableError(
+                "The payment settled, but the wallet returned a preimage that is not a "
+                "string, so L402/MPP verification is not possible (expected a "
+                "64-character hex string).",
+                provider="nwc",
+                tracking_id=_payment_hash_from_bolt11(bolt11),
+            )
+
         # Some wallets incorrectly return the invoice or other data in the preimage
         # field. Detect that specifically, for a diagnostic the operator can act on.
         returned_invoice = preimage.startswith(("lnbc", "lntb", "lnurl"))

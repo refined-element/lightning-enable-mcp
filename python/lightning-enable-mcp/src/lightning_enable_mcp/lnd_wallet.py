@@ -261,22 +261,23 @@ class LndWallet:
             if payment_preimage_b64:
                 try:
                     preimage_bytes = base64.b64decode(payment_preimage_b64)
-                except (binascii.Error, ValueError) as decode_err:
+                except (binascii.Error, ValueError, TypeError) as decode_err:
                     # LND reported no payment_error, so the payment SETTLED — the funds
-                    # are gone. A preimage that is not decodable base64 is settled-but-
-                    # UNPROVABLE, not a payment failure. Left to fall through, this
-                    # binascii.Error hits the generic `except` below and becomes a
-                    # RETRYABLE LndPaymentError — inviting a double-pay. Raise the
-                    # terminal PreimageUnavailableError instead, matching the no-preimage
-                    # and invalid-format cases.
+                    # are gone. A preimage that is not decodable base64 — or is the wrong
+                    # type entirely (a JSON number makes base64.b64decode raise TypeError,
+                    # not binascii.Error) — is settled-but-UNPROVABLE, not a payment
+                    # failure. Left to fall through, either error hits the generic
+                    # `except` below and becomes a RETRYABLE LndPaymentError — inviting a
+                    # double-pay. Raise the terminal PreimageUnavailableError instead,
+                    # matching the no-preimage and invalid-format cases.
                     #
                     # Deliberately does not echo the offending value (engineering
                     # standard #5: never log preimage-position content).
-                    logger.error("LND returned a preimage that is not valid base64")
+                    logger.error("LND returned a preimage that is not a decodable base64 string")
                     raise PreimageUnavailableError(
-                        "LND returned a preimage that is not valid base64. The payment "
-                        "settled, but L402/MPP verification is not possible without a "
-                        "real preimage.",
+                        "LND returned a preimage that is not a decodable base64 string. "
+                        "The payment settled, but L402/MPP verification is not possible "
+                        "without a real preimage.",
                         provider="lnd",
                         tracking_id=result.get("payment_hash"),
                     ) from decode_err

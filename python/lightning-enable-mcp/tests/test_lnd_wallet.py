@@ -885,3 +885,37 @@ class TestLndPreimageValidation:
         assert excinfo.value.tracking_id == payment_hash_b64
         # Engineering standard #5: never echo the offending preimage-position value.
         assert bad_b64 not in str(excinfo.value)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad_preimage", [
+        123,            # JSON number -> base64.b64decode(123) raises TypeError
+        123.45,         # JSON float -> TypeError
+        ["deadbeef"],   # JSON array -> TypeError
+        {"hex": "de"},  # JSON object -> TypeError
+    ])
+    async def test_settled_but_non_string_preimage_is_not_a_retryable_failure(
+        self, bad_preimage
+    ):
+        # LND reported no payment_error, so the payment SETTLED — the funds are gone.
+        # A wrong-type payment_preimage (e.g. a JSON number) makes base64.b64decode raise
+        # TypeError, which the round-2 `except (binascii.Error, ValueError)` did NOT catch
+        # — so it fell through to the generic `except` and became a RETRYABLE
+        # LndPaymentError, inviting a double-pay. It must raise the terminal, non-retryable
+        # PreimageUnavailableError instead, matching the no-preimage / malformed-base64
+        # cases, and carry the payment_hash as the reconciliation tracking_id.
+        from lightning_enable_mcp.wallet_errors import PreimageUnavailableError
+
+        payment_hash_b64 = base64.b64encode(b"reconcile-me").decode()
+        wallet = self._wallet_returning_raw(
+            {
+                "payment_preimage": bad_preimage,
+                "payment_error": "",
+                "payment_hash": payment_hash_b64,
+            }
+        )
+        with pytest.raises(PreimageUnavailableError) as excinfo:
+            await wallet.pay_invoice("lnbc100n1...")
+        # Must be the terminal do-not-retry error, NOT the generic payment failure.
+        assert not isinstance(excinfo.value, LndPaymentError)
+        assert excinfo.value.provider == "lnd"
+        assert excinfo.value.tracking_id == payment_hash_b64

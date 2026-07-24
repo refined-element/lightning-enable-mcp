@@ -51,7 +51,7 @@ public static class CreateInvoiceTool
             return JsonSerializer.Serialize(new
             {
                 success = false,
-                error = "Wallet not configured. Set STRIKE_API_KEY, OPENNODE_API_KEY, or NWC_CONNECTION_STRING environment variable."
+                error = WalletMessages.NotConfiguredForReceiving
             });
         }
 

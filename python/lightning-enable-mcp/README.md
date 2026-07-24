@@ -168,6 +168,8 @@ Or if installed via pip, replace `"command": "uvx", "args": ["lightning-enable-m
 
 ## Available Tools
 
+> **The complete, canonical tool list is the [Tools table in the root README](https://github.com/refined-element/lightning-enable-mcp#tools).** It lists all **26 tools** — **18 free** (out of the box, just a wallet) plus **8 that require `LIGHTNING_ENABLE_API_KEY`** (an [Agentic Commerce subscription](https://lightningenable.com); 2 L402 Producer + 6 Agent Service Agreement) — and is pinned to the code by guard tests in both ports, so it never drifts from what the server actually registers. The sections below document a **selected subset** in detail; they are not the full inventory.
+
 ### create_lightning_enable_account
 
 Self-bootstrapping signup: activate a Lightning Enable account with a tiny Lightning payment (~100 sats) and get back a merchant API key. Requires **NO** Lightning Enable API key (it *creates* one) — only a connected wallet. On success the API key is merged into `~/.lightning-enable/config.json` (existing keys preserved) so the producer/ASA tools unlock on the next restart. Above-threshold activation fees require an out-of-band confirmation code, exactly like `pay_l402_challenge`.

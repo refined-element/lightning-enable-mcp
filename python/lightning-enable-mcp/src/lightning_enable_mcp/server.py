@@ -796,9 +796,12 @@ class LightningEnableServer:
                     return [
                         TextContent(
                             type="text",
-                            text="Error: No wallet configured. "
-                            "Set LND_REST_HOST+LND_MACAROON_HEX, NWC_CONNECTION_STRING, "
-                            "STRIKE_API_KEY, or OPENNODE_API_KEY environment variable.",
+                            text="Error: No wallet configured. Set one L402-capable wallet: "
+                            "STRIKE_API_KEY, NWC_CONNECTION_STRING, or "
+                            "LND_REST_HOST+LND_MACAROON_HEX. "
+                            "(OPENNODE_API_KEY is receiving/invoicing only — it cannot pay "
+                            "L402 challenges.) "
+                            "Then run test_l402_payment to confirm the wallet works end to end.",
                         )
                     ]
 
@@ -1078,8 +1081,10 @@ class LightningEnableServer:
 
         if not has_lnd and not has_nwc and not has_strike and not has_opennode:
             logger.warning(
-                "No wallet configured. Set LND_REST_HOST+LND_MACAROON_HEX, "
-                "NWC_CONNECTION_STRING, STRIKE_API_KEY, or OPENNODE_API_KEY"
+                "No wallet configured. Set one L402-capable wallet: STRIKE_API_KEY, "
+                "NWC_CONNECTION_STRING, or LND_REST_HOST+LND_MACAROON_HEX. "
+                "(OPENNODE_API_KEY is receiving/invoicing only — it cannot pay L402 "
+                "challenges.) Then run test_l402_payment to confirm the wallet works."
             )
             return
 

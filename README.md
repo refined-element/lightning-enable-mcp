@@ -23,10 +23,13 @@ Give your AI agent a Lightning wallet and it can:
 - **Get BTC price** — Real-time Bitcoin price from Strike
 - **Exchange currency** — Convert between USD/BTC/EUR and more (Strike wallet)
 - **Send on-chain** — Send Bitcoin on-chain (Strike/LND)
+- **Self-bootstrap a Lightning Enable account** — `create_lightning_enable_account` pays a ~100-sat activation fee over L402 and returns a merchant API key: the free→paid signup form that *is* the protocol, unlocking the producer + ASA tools with no browser or checkout page.
 - **Sell services (L402 Producer)** — Create L402 payment challenges and verify payments, enabling agents to be full commerce participants that both buy and sell
 - **Agent commerce (ASA)** — Discover, request, settle, and review agent-to-agent services on Nostr
 
-## Quick Install
+## Quick Start
+
+### 1. Install
 
 ```bash
 # .NET
@@ -41,6 +44,38 @@ uvx lightning-enable-mcp
 # Docker
 docker pull refinedelement/lightning-enable-mcp:latest
 ```
+
+### 2. Configure one L402-capable wallet
+
+L402 — the whole point of this server — needs a wallet that returns the payment **preimage**. Set exactly one of these (as an env var, e.g. in the [Claude Desktop config](#claude-desktop-config) below):
+
+- **Strike** (easiest to start) — `STRIKE_API_KEY`, from https://dashboard.strike.me
+- **NWC** (self-custody, Nostr) — `NWC_CONNECTION_STRING`, from CoinOS / CLINK / Alby Hub
+- **LND** (your own node — always returns a preimage) — `LND_REST_HOST` + `LND_MACAROON_HEX`
+
+> ⚠️ **OpenNode** (`OPENNODE_API_KEY`) works for **invoicing / direct payments only — it never returns a preimage, so it cannot pay L402 challenges.** Don't make it your only wallet if you want L402 (the core use case).
+
+If several are set, priority is: **LND > NWC > Strike > OpenNode**. See [Supported Wallets](#supported-wallets) for the full compatibility matrix.
+
+### 3. Prove the whole loop works — `test_l402_payment`
+
+Ask your agent:
+
+```
+Run test_l402_payment
+```
+
+This pays a public **1-sat** L402 endpoint end to end, proving your wallet is connected, returns a preimage, and can complete a real L402 payment. It's the one-line answer to "is my wallet actually working?" — and it costs about 1 satoshi.
+
+### 4. Then have some fun — buy a t-shirt
+
+Once the loop works, try the [Lightning Enable Store](https://store.lightningenable.com), a live L402-powered web store. Ask Claude:
+
+```
+Buy me a Lightning Enable t-shirt from store.lightningenable.com
+```
+
+(This one needs a funded wallet and a shipping address, which is why `test_l402_payment` — one sat, no shipping — is the faster first proof.)
 
 ## Claude Desktop Config
 
@@ -92,13 +127,40 @@ Config file locations:
 | **NWC (Alby Hub)** | Connection string | Yes |
 | **OpenNode** | API key | No (no preimage) |
 
-## Try It: Lightning Enable Store
+## Tools
 
-The [Lightning Enable Store](https://store.lightningenable.com) is a live L402-powered web store. Ask Claude:
+**Canonical inventory: 26 tools — 18 free (out of the box, just a wallet) + 8 that require `LIGHTNING_ENABLE_API_KEY`** (an [Agentic Commerce subscription](https://lightningenable.com); 2 L402 Producer + 6 Agent Service Agreement). This table is the single source of truth every advertised count derives from — it is pinned to the code by the tool-inventory guard tests in both ports (drift fails CI).
 
-```
-Buy me a Lightning Enable t-shirt from store.lightningenable.com
-```
+| Tool | Access | What it does |
+|------|--------|--------------|
+| `pay_invoice` | Free | Pay a BOLT11 Lightning invoice directly, get the preimage |
+| `pay_l402_challenge` | Free | Pay an L402 challenge (invoice + macaroon), get the token |
+| `access_l402_resource` | Free | Fetch a URL, auto-paying any L402 challenge |
+| `test_l402_payment` | Free | Self-test the wallet against a public 1-sat L402 endpoint |
+| `discover_api` | Free | Search the L402 API registry / fetch an API manifest |
+| `create_invoice` | Free | Create a BOLT11 invoice to receive payment |
+| `check_invoice_status` | Free | Check whether a created invoice was paid |
+| `check_wallet_balance` | Free | Check the connected wallet balance |
+| `get_all_balances` | Free | Get all currency balances (Strike) |
+| `exchange_currency` | Free | Convert between USD and BTC (Strike) |
+| `send_onchain` | Free | Send an on-chain Bitcoin payment (Strike, LND) |
+| `get_btc_price` | Free | Current Bitcoin price in USD |
+| `get_payment_history` | Free | List payments made this session (in-memory) |
+| `get_receipts` | Free | Read the durable, append-only receipt log |
+| `get_budget_status` | Free | View budget config and session spend (read-only) |
+| `configure_budget` | Free | Tighten runtime spending caps (tighten-only) |
+| `confirm_payment` | Free | Verify an out-of-band payment confirmation code |
+| `create_lightning_enable_account` | Free | Self-bootstrap signup: pay ~100 sats, get a merchant API key |
+| `create_l402_challenge` | Agentic Commerce | L402 Producer: create a challenge to charge for a resource |
+| `verify_l402_payment` | Agentic Commerce | L402 Producer: verify an L402 token (macaroon + preimage) |
+| `discover_agent_services` | Agentic Commerce | ASA: search for agent capabilities on Nostr |
+| `publish_agent_capability` | Agentic Commerce | ASA: publish your agent's services (kind 38400) |
+| `request_agent_service` | Agentic Commerce | ASA: request a service from another agent (kind 38401) |
+| `settle_agent_service` | Agentic Commerce | ASA: pay for an agent service via L402 settlement |
+| `publish_agent_attestation` | Agentic Commerce | ASA: leave a review/rating for an agent (kind 38403) |
+| `get_agent_reputation` | Agentic Commerce | ASA: check an agent's reputation from attestations |
+
+`create_lightning_enable_account` is free and *self-provisions* the API key the 8 gated tools need — an agent with a wallet pays a ~100-sat activation fee and unlocks them on the spot.
 
 ## Documentation
 
@@ -126,16 +188,16 @@ lightning-enable-mcp/
 
 These tools enable agent-to-agent commerce on Nostr:
 
-| Tool | Description | Subscription |
-|------|-------------|-------------|
-| `discover_agent_services` | Search for agent capabilities by category, hashtag, or keyword | Free |
-| `publish_agent_capability` | Publish your agent's services to the Nostr network (kind 38400) | Agentic Commerce |
-| `request_agent_service` | Request a service from another agent (kind 38401) | Agentic Commerce |
-| `settle_agent_service` | Pay for an agent service via L402 Lightning settlement | Free* |
-| `publish_agent_attestation` | Leave a review/rating for an agent after service completion (kind 38403) | Agentic Commerce |
-| `get_agent_reputation` | Check an agent's reputation score from on-protocol attestations | Free |
+All six ASA tools require `LIGHTNING_ENABLE_API_KEY` (an [Agentic Commerce subscription](https://lightningenable.com)); `settle_agent_service` additionally spends your wallet balance, subject to budget limits. For the authoritative access level of every tool, see the canonical [Tools](#tools) table above — it is the single source of truth pinned to the code by the drift guard.
 
-*settle uses wallet balance, subject to budget limits
+| Tool | Description |
+|------|-------------|
+| `discover_agent_services` | Search for agent capabilities by category, hashtag, or keyword |
+| `publish_agent_capability` | Publish your agent's services to the Nostr network (kind 38400) |
+| `request_agent_service` | Request a service from another agent (kind 38401) |
+| `settle_agent_service` | Pay for an agent service via L402 Lightning settlement |
+| `publish_agent_attestation` | Leave a review/rating for an agent after service completion (kind 38403) |
+| `get_agent_reputation` | Check an agent's reputation score from on-protocol attestations |
 
 ### How Agent Commerce Works
 

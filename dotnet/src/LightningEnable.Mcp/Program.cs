@@ -184,16 +184,18 @@ public class Program
             {
                 Console.Error.WriteLine("WARNING: No wallet configured.");
                 Console.Error.WriteLine("");
-                Console.Error.WriteLine("Configure a wallet using environment variables or config file:");
-                Console.Error.WriteLine("  STRIKE_API_KEY        - Strike wallet (recommended, multi-currency)");
-                Console.Error.WriteLine("  OPENNODE_API_KEY      - OpenNode wallet (+ optional OPENNODE_ENVIRONMENT)");
-                Console.Error.WriteLine("  NWC_CONNECTION_STRING - Nostr Wallet Connect");
-                Console.Error.WriteLine("  LND_REST_HOST + LND_MACAROON_HEX - LND node");
+                Console.Error.WriteLine("Configure one L402-capable wallet (env var or ~/.lightning-enable/config.json).");
+                Console.Error.WriteLine("L402 — the core use case — needs a wallet that returns a preimage:");
+                Console.Error.WriteLine("  STRIKE_API_KEY                   - Strike (easiest to start, multi-currency)");
+                Console.Error.WriteLine("  NWC_CONNECTION_STRING            - Nostr Wallet Connect (CoinOS / CLINK / Alby Hub)");
+                Console.Error.WriteLine("  LND_REST_HOST + LND_MACAROON_HEX - LND node (always returns a preimage)");
                 Console.Error.WriteLine("");
-                Console.Error.WriteLine("Or add credentials to ~/.lightning-enable/config.json under 'wallets'");
+                Console.Error.WriteLine("  OPENNODE_API_KEY                 - OpenNode: receiving/invoicing only — CANNOT pay L402 challenges");
+                Console.Error.WriteLine("                                     (+ optional OPENNODE_ENVIRONMENT)");
                 Console.Error.WriteLine("");
-                Console.Error.WriteLine("Note: For L402 auto-pay, use LND, NWC, or Strike (they return preimage).");
-                Console.Error.WriteLine("      OpenNode works for direct payments but not L402.");
+                Console.Error.WriteLine("Priority when several are set: LND > NWC > Strike > OpenNode.");
+                Console.Error.WriteLine("Or add credentials to ~/.lightning-enable/config.json under the \"wallets\" key.");
+                Console.Error.WriteLine("After configuring, run the test_l402_payment tool to confirm the wallet works end to end (~1 sat).");
                 // Register a default that will report "not configured" errors
                 builder.Services.AddHttpClient<IWalletService, NwcWalletService>();
             }

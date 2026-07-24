@@ -27,6 +27,8 @@ class TestGetAllBalances:
         parsed = json.loads(result)
         assert parsed["success"] is False
         assert "Wallet not configured" in parsed["error"]
+        # Info/balance tool: OpenNode is a valid option here.
+        assert "OPENNODE_API_KEY works for these" in parsed["error"]
 
     @pytest.mark.asyncio
     async def test_strike_balances_success(self):

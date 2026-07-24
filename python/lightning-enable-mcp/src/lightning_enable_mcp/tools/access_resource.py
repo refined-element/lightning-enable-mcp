@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 
 from ..config import ApprovalLevel
 from . import sanitize_error
+from ._ssrf_guard import SsrfError, validate_url_allowed
 
 logger = logging.getLogger("lightning-enable-mcp.tools.access")
 
@@ -98,6 +99,20 @@ async def access_l402_resource(
     # Validate method
     if method not in ("GET", "POST", "PUT", "DELETE"):
         return f"Error: Invalid HTTP method: {method}"
+
+    # SSRF guard (F-10e): refuse targets that resolve to a private/internal/reserved
+    # address (loopback, RFC1918, link-local incl. 169.254.169.254 cloud metadata,
+    # etc.) BEFORE any request is made. The message is generic — it never echoes the
+    # resolved internal host/IP. See _ssrf_guard for the DNS-rebind residual window.
+    try:
+        await validate_url_allowed(url)
+    except SsrfError as e:
+        return json.dumps({
+            "success": False,
+            "url": url,
+            "method": method,
+            "error": str(e),
+        }, indent=2)
 
     # Captured for the durable receipt (success path). Overwritten with the real
     # approval tier once the budget check runs.

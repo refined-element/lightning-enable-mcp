@@ -14,6 +14,7 @@ import logging
 import math
 import os
 from . import sanitize_error
+from ._ssrf_guard import SsrfError, validate_url_allowed
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote as url_quote
 
@@ -431,6 +432,18 @@ async def _fetch_and_format_manifest(
     budget_service: "BudgetService | None",
 ) -> str:
     """Fetch and format a manifest from a specific URL."""
+    # SSRF guard (F-10e): the manifest URL is agent-supplied and fetched directly
+    # (plus its /.well-known/ variants, all on the same host). Refuse private/internal
+    # targets before any request. follow_redirects stays False (httpx default), so no
+    # redirect hop can pivot to an internal host either. Generic message — no host echo.
+    try:
+        await validate_url_allowed(url)
+    except SsrfError as e:
+        return json.dumps({
+            "success": False,
+            "error": str(e),
+        })
+
     async with httpx.AsyncClient(timeout=15.0, headers={
         "Accept": "application/json",
         "User-Agent": "LightningEnable-MCP/1.0",

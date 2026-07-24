@@ -6,22 +6,26 @@ using ModelContextProtocol.Server;
 namespace LightningEnable.Mcp.Tools;
 
 /// <summary>
-/// MCP tool for confirming a pending payment via nonce.
-/// This is a separate tool call that appears as a distinct action in Claude Code,
-/// ensuring the user sees and can approve/deny the confirmation.
+/// MCP tool for verifying a payment confirmation code (nonce).
+/// VERIFICATION ONLY — it never executes a payment. It appears as a distinct action in
+/// Claude Code so the user sees and can approve/deny the check; to actually pay, the
+/// agent re-calls the original payment tool with confirmation_nonce set to the code.
 /// </summary>
 [McpServerToolType]
-public static class ConfirmPaymentTool
+public static class VerifyConfirmationCodeTool
 {
     /// <summary>
-    /// Confirms a pending payment using the confirmation code that the SERVER printed to
-    /// its console/stderr (visible to the human operator, not to the model). The
-    /// payment-request tools (pay_invoice, send_onchain, ...) never return the code — the
-    /// model must obtain it from the human — which is what stops a prompt-injected agent
-    /// from self-approving. (This tool does echo the code back once you supply it.)
+    /// Verifies whether a confirmation code (relayed by the human from the server
+    /// console/stderr, never returned in a tool result) is still valid and what it
+    /// authorizes. VERIFICATION ONLY — this does not consume the code or move money.
+    /// The payment-request tools (pay_invoice, send_onchain, ...) never return the code —
+    /// the model must obtain it from the human — which is what stops a prompt-injected
+    /// agent from self-approving. To execute, call the original payment tool again with
+    /// confirmation_nonce set to the code. (This tool does echo the code back once you
+    /// supply it.)
     /// </summary>
-    [McpServerTool(Name = "confirm_payment"), Description("Confirm a pending payment using the code the human operator read from the server console. The payment-request tools never return this code — you must ask the human for it.")]
-    public static string ConfirmPayment(
+    [McpServerTool(Name = "verify_confirmation_code"), Description("Verify whether a payment confirmation code (relayed by the human from the server console) is still valid and what it authorizes. VERIFICATION ONLY — never executes a payment. To pay, call the original payment tool again with confirmation_nonce.")]
+    public static string VerifyConfirmationCode(
         [Description("The confirmation code the human read from the server console/logs")] string nonce,
         IBudgetService? budgetService = null)
     {
@@ -59,8 +63,13 @@ public static class ConfirmPaymentTool
         return JsonSerializer.Serialize(new
         {
             success = true,
+            valid = true,
+            // Retained for backward compatibility with the old confirm_payment shape.
             confirmed = true,
-            message = $"Payment of {confirmation.AmountUsd:C} ({confirmation.AmountSats:N0} sats) confirmed",
+            amount_sats = confirmation.AmountSats,
+            tool = confirmation.ToolName,
+            message = $"Code verified — NOTHING HAS BEEN PAID. To execute, call " +
+                      $"{confirmation.ToolName} again with confirmation_nonce={confirmation.Nonce}.",
             confirmation = new
             {
                 nonce = confirmation.Nonce,

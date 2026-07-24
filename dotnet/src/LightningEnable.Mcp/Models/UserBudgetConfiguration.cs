@@ -121,9 +121,9 @@ public class WalletSettings
 ///
 /// NOTE: FormConfirm and UrlConfirm ideally use MCP elicitation for confirmation.
 /// When elicitation is unavailable (e.g., Claude Code), a nonce-based confirmation
-/// flow is used: the tool returns a one-time nonce, the user must call
-/// confirm_payment(nonce) as a separate tool call (visible in the UI), then
-/// retry the original tool with the confirmed nonce.
+/// flow is used: the tool returns a one-time nonce, the user can call
+/// verify_confirmation_code(nonce) as a separate tool call (visible in the UI) to
+/// check it, then retry the original tool with the confirmed nonce.
 /// </summary>
 public class TierThresholds
 {
@@ -144,7 +144,7 @@ public class TierThresholds
     /// <summary>
     /// Payments above logAndApprove but at or below this amount require confirmation.
     /// With elicitation: User sees a prompt in the AI interface.
-    /// Without elicitation: Nonce-based flow - user approves via separate confirm_payment tool call.
+    /// Without elicitation: Nonce-based flow - user re-calls the payment tool with the confirmed nonce (verify_confirmation_code checks it).
     /// Default: $25.00 (raised from $10.00)
     /// </summary>
     [JsonPropertyName("formConfirm")]
@@ -153,7 +153,7 @@ public class TierThresholds
     /// <summary>
     /// Payments above formConfirm but at or below this amount require strong confirmation.
     /// With elicitation: User must type the exact amount to confirm.
-    /// Without elicitation: Nonce-based flow - user approves via separate confirm_payment tool call.
+    /// Without elicitation: Nonce-based flow - user re-calls the payment tool with the confirmed nonce (verify_confirmation_code checks it).
     /// Default: $100.00
     /// </summary>
     [JsonPropertyName("urlConfirm")]

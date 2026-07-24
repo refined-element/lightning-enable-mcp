@@ -72,7 +72,7 @@ public interface IBudgetService
 
     /// <summary>
     /// Creates a pending confirmation with a random nonce, bound to a specific amount.
-    /// The nonce must be validated via a separate confirm_payment tool call.
+    /// The nonce can be checked via a separate verify_confirmation_code tool call.
     /// </summary>
     /// <param name="amountSats">Payment amount in satoshis.</param>
     /// <param name="amountUsd">Payment amount in USD (for display).</param>
@@ -84,7 +84,7 @@ public interface IBudgetService
 
     /// <summary>
     /// Validates a nonce and checks expiry WITHOUT consuming it.
-    /// Use this in confirm_payment to verify the nonce is valid.
+    /// Use this in verify_confirmation_code to verify the nonce is valid.
     /// Returns null if the nonce is invalid or expired.
     /// </summary>
     /// <param name="nonce">The 6-character confirmation nonce.</param>

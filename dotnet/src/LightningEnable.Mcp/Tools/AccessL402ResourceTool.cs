@@ -37,7 +37,7 @@ public static class AccessL402ResourceTool
         [Description("Optional headers as JSON object")] string? headers = null,
         [Description("Optional request body for POST/PUT requests")] string? body = null,
         [Description("Maximum satoshis to pay for L402 challenge. Defaults to 1000")] int maxSats = 1000,
-        [Description("Confirmation nonce from confirm_payment tool. Required when previous call returned requiresConfirmation=true.")] string? confirmationNonce = null,
+        [Description("Confirmation code relayed by the human operator from the server console (stderr). Required when a previous call returned requiresConfirmation=true.")] string? confirmationNonce = null,
         McpServer? server = null,
         IL402HttpClient? l402Client = null,
         IBudgetService? budgetService = null,

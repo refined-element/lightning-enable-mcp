@@ -24,7 +24,7 @@ public static class PayL402ChallengeTool
         [Description("BOLT11 Lightning invoice string from the L402 challenge")] string invoice,
         [Description("Base64-encoded macaroon from the L402 challenge. Optional for MPP (Machine Payments Protocol) where only invoice + preimage are needed.")] string? macaroon = null,
         [Description("Maximum satoshis allowed to pay. Defaults to 1000")] int maxSats = 1000,
-        [Description("Confirmation nonce from confirm_payment tool. Required when previous call returned requiresConfirmation=true.")] string? confirmationNonce = null,
+        [Description("Confirmation code relayed by the human operator from the server console (stderr). Required when a previous call returned requiresConfirmation=true.")] string? confirmationNonce = null,
         McpServer? server = null,
         IL402HttpClient? l402Client = null,
         IBudgetService? budgetService = null,

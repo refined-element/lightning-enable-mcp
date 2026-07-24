@@ -30,7 +30,7 @@ public static class PayInvoiceTool
     [McpServerTool(Name = "pay_invoice"), Description("Pay a Lightning invoice directly and get the preimage as proof of payment")]
     public static async Task<string> PayInvoice(
         [Description("BOLT11 Lightning invoice string to pay")] string invoice,
-        [Description("Confirmation nonce from confirm_payment tool. Required when previous call returned requiresConfirmation=true.")] string? confirmationNonce = null,
+        [Description("Confirmation code relayed by the human operator from the server console (stderr). Required when a previous call returned requiresConfirmation=true.")] string? confirmationNonce = null,
         McpServer? server = null,
         IWalletService? walletService = null,
         IBudgetService? budgetService = null,

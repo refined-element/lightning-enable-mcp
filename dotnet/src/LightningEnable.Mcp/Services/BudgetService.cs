@@ -466,7 +466,7 @@ public class BudgetService : IBudgetService
         // C-4: cryptographically-random nonce. Previously used System.Random,
         // which is predictable (time-seeded PRNG) — a weak basis for a payment
         // confirmation token. NOTE: even a strong nonce does NOT protect against
-        // the agent itself, because confirm_payment is a model-callable tool; the
+        // the agent itself, because verify_confirmation_code is a model-callable tool; the
         // nonce only guards against accidental auto-approval. True out-of-band
         // confirmation (MCP elicitation / a URL the model can't read) is the
         // deeper fix and a separate design decision.

@@ -28,7 +28,7 @@ public class ToolInventoryTests
         "get_budget_status", "configure_budget", "create_invoice", "check_invoice_status",
         "access_l402_resource", "pay_l402_challenge", "test_l402_payment", "discover_api",
         "get_btc_price", "get_all_balances", "exchange_currency", "send_onchain",
-        "confirm_payment", "create_lightning_enable_account",
+        "verify_confirmation_code", "create_lightning_enable_account",
     };
 
     // 8 tools that require LIGHTNING_ENABLE_API_KEY: 2 producer + 6 ASA.

@@ -66,3 +66,28 @@ async def test_access_resource_paid_then_redirect_surfaces_payment_and_location(
     assert parsed["redirect_location"] == "https://cdn.example.com/asset"
     assert parsed["payment"]["paid"] is True
     assert parsed["payment"]["amountSats"] == 42
+
+
+@pytest.mark.asyncio
+async def test_access_resource_paid_redirect_surfaces_token_and_no_repay_message():
+    """FIX 1 parity — the paid credential and an explicit 'already paid, do NOT re-pay'
+    message are surfaced so a well-behaved agent retries the redirect target WITH the token
+    instead of paying a second time."""
+    err = L402RedirectError("https://cdn.example.com/asset", 302)
+    err.amount_paid = 42
+    err.l402_token = "macaroon:preimage"
+    l402_client = AsyncMock()
+    l402_client.fetch = AsyncMock(side_effect=err)
+
+    result = await access_l402_resource(
+        url="https://api.example.com/paid",
+        l402_client=l402_client,
+        budget_service=None,
+    )
+    parsed = json.loads(result)
+
+    assert parsed["alreadyPaid"] is True
+    assert parsed["payment"]["l402Token"] == "macaroon:preimage"
+    assert "ALREADY PAID" in parsed["message"]
+    assert "do NOT pay again" in parsed["message"]
+    assert "https://cdn.example.com/asset" in parsed["message"]

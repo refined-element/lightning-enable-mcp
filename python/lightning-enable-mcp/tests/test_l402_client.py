@@ -445,3 +445,34 @@ class TestFetchRedirectPosture:
         # 304 < 400 and != 402, so fetch returns the (empty) body, no redirect raised.
         text, amount = await self.client.fetch("https://api.example.com/data")
         assert amount is None
+
+    @pytest.mark.asyncio
+    async def test_paid_retry_redirect_attaches_amount_and_token(self):
+        """FIX 1 — 402 -> pay -> 302 on the retry: the redirect error carries BOTH the
+        settled amount AND the paid token, so the caller records the spend once and the
+        agent can reuse the credential against the redirect target instead of re-paying."""
+        req = httpx.Request("GET", "https://api.provider.com/premium")
+        challenge = httpx.Response(
+            402,
+            headers=[("WWW-Authenticate", 'L402 macaroon="YWJjZGVm", invoice="lnbc100n1pjtest"')],
+            request=req,
+        )
+        redirect = httpx.Response(
+            302, headers={"location": "https://cdn.example.com/asset"}, request=req
+        )
+        mock_wallet = AsyncMock()
+        mock_wallet.pay_invoice = AsyncMock(return_value="preimage456")
+        self.client.wallet = mock_wallet
+        self.client._http_client.request = AsyncMock(side_effect=[challenge, redirect])
+
+        with patch.object(self.client, "_get_invoice_amount_msat", return_value=10_000):
+            with pytest.raises(L402RedirectError) as exc:
+                await self.client.fetch("https://api.provider.com/premium", max_sats=1000)
+
+        assert exc.value.location == "https://cdn.example.com/asset"
+        assert exc.value.amount_paid == 10  # 10_000 msat -> 10 sats
+        assert exc.value.l402_token == "YWJjZGVm:preimage456"
+        # Paid exactly once; the retry was issued (2 requests) but the redirect target
+        # was NEVER fetched (no third request).
+        mock_wallet.pay_invoice.assert_awaited_once()
+        assert self.client._http_client.request.await_count == 2

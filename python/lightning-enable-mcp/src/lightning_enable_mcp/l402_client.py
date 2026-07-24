@@ -9,11 +9,11 @@ import logging
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
-from urllib.parse import urljoin
 
 import httpx
 from bolt11 import decode as decode_bolt11
 
+from ._redirect import resolve_redirect_location
 from .wallet_errors import PaymentProofUnavailableError
 
 if TYPE_CHECKING:
@@ -39,12 +39,23 @@ class L402RedirectError(L402Error):
     pay, receive nothing. Instead the caller surfaces ``location`` as an actionable
     "call this tool again with that URL" result. ``amount_paid`` is attached when a
     payment already settled before the redirect (paid retry), so the caller still records
-    the real spend.
+    the real spend, and ``l402_token`` carries the paid credential so a well-behaved agent
+    retries the redirect target WITH the token instead of paying again.
+
+    KNOWN LIMITATION (same-host paid redirect): a redirect on the paid retry is NOT
+    followed even to the same host — re-issuing the request could trigger a fresh 402 and a
+    second payment, too risky in the money path. L402 providers SHOULD serve the resource
+    directly on the paid retry rather than redirecting; when one redirects after payment we
+    hand the paid token back (``l402_token``) for the agent to reuse against the target.
     """
 
     def __init__(self, location: str | None, status_code: int) -> None:
         self.location = location
         self.status_code = status_code
+        # Attached by the paid-retry path when a payment already settled before the
+        # redirect. Defaulted so callers can read them unconditionally.
+        self.amount_paid: int | None = None
+        self.l402_token: str | None = None
         if location:
             super().__init__(
                 f"Resource redirected to {location}. Call this tool again with that URL."
@@ -340,26 +351,6 @@ class L402Client:
         combined = "; ".join(v[:40] for v in www_auth_values)
         raise L402Error(f"No valid L402 or MPP challenge found in headers: {combined}")
 
-    @staticmethod
-    def _redirect_location(request_url: str, response: "httpx.Response") -> str | None:
-        """Return the resolved (absolute) redirect target for an unfollowed 3xx, else None.
-
-        A 3xx WITHOUT a Location (e.g. a bare 304 Not Modified) is not a redirect and
-        returns None so it flows through normal handling. A relative Location is resolved
-        against ``request_url`` so the agent receives an absolute URL to re-call with. The
-        target is surfaced verbatim as the next URL — re-calling routes back through the
-        SSRF guard, so a redirect pointing at an internal host is refused on that call.
-        """
-        if not (300 <= response.status_code < 400):
-            return None
-        location = response.headers.get("location")
-        if not location:
-            return None
-        try:
-            return urljoin(request_url, location)
-        except Exception:
-            return location
-
     def _get_invoice_amount_msat(self, bolt11: str) -> int | None:
         """
         Extract amount in millisatoshis from a BOLT11 invoice.
@@ -415,7 +406,7 @@ class L402Client:
         # 3xx redirect: NOT followed (follow_redirects=False). Surface it as an actionable
         # error rather than paying/leaking. Checked before the 402/>=400 handling so a
         # provider that host-redirects BEFORE its 402 is never entered into the pay flow.
-        redirect = self._redirect_location(url, response)
+        redirect = resolve_redirect_location(url, response)
         if redirect is not None:
             raise L402RedirectError(redirect, response.status_code)
 
@@ -469,12 +460,21 @@ class L402Client:
             )
 
             # A 3xx on the paid retry is likewise not followed. The payment already
-            # settled, so surface the redirect AND the settled amount (attached) so the
-            # caller records the real spend and can re-call with the target.
-            retry_redirect = self._redirect_location(url, response)
+            # settled, so surface the redirect AND the settled amount + paid token
+            # (attached) so the caller records the real spend once and can re-call the
+            # target WITH the token instead of paying again. Same-host targets are also NOT
+            # auto-followed here (see L402RedirectError) — re-issuing could re-trigger a 402.
+            retry_redirect = resolve_redirect_location(url, response)
             if retry_redirect is not None:
                 err = L402RedirectError(retry_redirect, response.status_code)
                 err.amount_paid = challenge.amount_sats
+                # Raw credential (macaroon:preimage for L402, preimage for MPP) — parity
+                # with the .NET L402Token field — so the agent can authenticate the retry.
+                err.l402_token = (
+                    token.preimage
+                    if isinstance(token, MppToken)
+                    else f"{token.macaroon}:{token.preimage}"
+                )
                 raise err
 
             if response.status_code >= 400:

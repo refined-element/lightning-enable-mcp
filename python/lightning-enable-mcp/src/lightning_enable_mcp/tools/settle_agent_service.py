@@ -19,6 +19,7 @@ from urllib.parse import urlparse
 from typing import TYPE_CHECKING, Optional
 
 from ..config import ApprovalLevel
+from ..l402_client import L402RedirectError
 from . import sanitize_error
 
 if TYPE_CHECKING:
@@ -243,6 +244,44 @@ async def settle_agent_service(
 
     except Exception as e:
         logger.exception(f"Error settling service at {l402_endpoint}")
+
+        # Paid-retry redirect (or any paid-but-failed retry): the L402 invoice already
+        # settled — money left the wallet — even though the resource then redirected /
+        # failed. Record the real spend ONCE (Python's client does not record — the tool
+        # does) so budget/history don't silently omit it. This is NOT a settlement
+        # failure, so we never fall through to the generic "Error settling service" that
+        # would tell the agent nothing was paid and invite a second payment.
+        amount_paid = getattr(e, "amount_paid", None)
+        if amount_paid and budget_service is not None:
+            try:
+                budget_service.record_spend(amount_paid)
+                budget_service.record_payment_time()
+                logger.info(f"Recorded paid-but-not-delivered ASA spend: {amount_paid} sats at {l402_endpoint}")
+            except Exception:
+                logger.warning("Failed to record paid-but-redirected ASA spend")
+
+        # A paid-retry redirect is an honest "already paid, then redirected" outcome:
+        # surface the paid amount + credential + redirect target with an explicit
+        # "do NOT pay again" message so the agent retries the target WITH the token
+        # instead of re-paying (mirrors access_l402_resource; parity with .NET).
+        if isinstance(e, L402RedirectError) and amount_paid:
+            return json.dumps({
+                "success": False,
+                "alreadyPaid": True,
+                "l402Endpoint": l402_endpoint,
+                "agreementId": agreement_id,
+                "redirect_location": e.location,
+                "payment": {
+                    "paid": True,
+                    "amountSats": amount_paid,
+                    "l402Token": getattr(e, "l402_token", None),
+                },
+                "message": (
+                    f"Payment succeeded ({amount_paid} sats). The resource redirected to {e.location}. "
+                    "You have ALREADY PAID — do NOT pay again. Retry the redirect target with the l402Token above."
+                ),
+            }, indent=2)
+
         return json.dumps({
             "success": False,
             "error": f"Error settling service: {sanitize_error(str(e))}",

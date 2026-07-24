@@ -315,6 +315,18 @@ async def access_l402_resource(
         if isinstance(e, L402RedirectError):
             error_result["redirect_location"] = e.location
             if amount_paid:
-                error_result["payment"] = {"paid": True, "amountSats": amount_paid}
+                # Paid-retry redirect: surface the paid amount + credential + an explicit
+                # "already paid, do NOT re-pay" message so the agent retries the redirect
+                # target WITH the token instead of paying a second time (parity with .NET).
+                error_result["alreadyPaid"] = True
+                error_result["payment"] = {
+                    "paid": True,
+                    "amountSats": amount_paid,
+                    "l402Token": getattr(e, "l402_token", None),
+                }
+                error_result["message"] = (
+                    f"Payment succeeded ({amount_paid} sats). The resource redirected to {e.location}. "
+                    "You have ALREADY PAID — do NOT pay again. Retry the redirect target with the l402Token above."
+                )
 
         return json.dumps(error_result, indent=2)

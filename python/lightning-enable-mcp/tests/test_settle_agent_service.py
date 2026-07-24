@@ -12,6 +12,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 from lightning_enable_mcp.config import ApprovalLevel, ApprovalCheckResult
+from lightning_enable_mcp.l402_client import L402RedirectError
 from lightning_enable_mcp.tools.settle_agent_service import settle_agent_service
 
 
@@ -236,3 +237,61 @@ class TestSettleAgentServicePayment:
         assert parsed["success"] is False
         assert "wallet down" in parsed["error"]
         budget.record_spend.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_paid_retry_redirect_records_once_surfaces_token_no_repay(self):
+        """FIX 1 — a paid-retry redirect is NOT a settlement failure. The L402 invoice was
+        paid (money left the wallet) before the resource redirected. The tool must:
+        (a) record the spend EXACTLY ONCE (Python's client doesn't record — the tool does),
+        (b) surface the paid amount + token + redirect target, and
+        (c) tell the agent it ALREADY PAID and must not pay again —
+        rather than falling through to a generic 'Error settling service'."""
+        err = L402RedirectError("https://cdn.example.com/asset", 302)
+        err.amount_paid = 150
+        err.l402_token = "macaroon123:preimage456"
+        client = AsyncMock()
+        client.fetch = AsyncMock(side_effect=err)
+        budget = _budget_with(ApprovalLevel.AUTO_APPROVE)
+
+        result = await settle_agent_service(
+            l402_endpoint="https://example.com/l402", max_sats=1000,
+            l402_client=client, budget_service=budget,
+        )
+        parsed = json.loads(result)
+
+        assert parsed["success"] is False
+        assert parsed["alreadyPaid"] is True
+        assert parsed["redirect_location"] == "https://cdn.example.com/asset"
+        assert parsed["payment"]["paid"] is True
+        assert parsed["payment"]["amountSats"] == 150
+        assert parsed["payment"]["l402Token"] == "macaroon123:preimage456"
+        assert "ALREADY PAID" in parsed["message"]
+        assert "do NOT pay again" in parsed["message"]
+        # NOT the generic failure that would invite a re-pay.
+        assert "Error settling service" not in result
+        # Spend recorded EXACTLY ONCE (never lost, never doubled).
+        budget.record_spend.assert_called_once_with(150)
+        budget.record_payment_time.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_pre_payment_redirect_records_no_spend_and_no_payment_block(self):
+        """A redirect BEFORE any payment (no amount_paid) must record NO spend and surface
+        NO payment block — only the paid-retry redirect (amount_paid set) is treated as an
+        'already paid' outcome. The redirect target still reaches the agent via the error."""
+        err = L402RedirectError("https://www.example.com/moved", 301)  # amount_paid stays None
+        client = AsyncMock()
+        client.fetch = AsyncMock(side_effect=err)
+        budget = _budget_with(ApprovalLevel.AUTO_APPROVE)
+
+        result = await settle_agent_service(
+            l402_endpoint="https://example.com/l402", max_sats=1000,
+            l402_client=client, budget_service=budget,
+        )
+        parsed = json.loads(result)
+
+        assert parsed["success"] is False
+        # No payment happened → nothing recorded, no payment block, no double-pay warning.
+        budget.record_spend.assert_not_called()
+        assert "payment" not in parsed
+        # The agent still learns where it redirected (surfaced in the error text).
+        assert "www.example.com/moved" in parsed["error"]

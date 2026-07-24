@@ -37,7 +37,17 @@ public static class DiscoverApiTool
     // named client, or — when no factory is injected (e.g. a unit test) — through an
     // inline guarded client from CreateGuardedManifestClient(). There is deliberately
     // no unguarded manifest-fetch path (F-10e follow-up).
-    private static readonly HttpClient SharedClient = new()
+    //
+    // AllowAutoRedirect = false (parity with Python's follow_redirects=False on the
+    // registry client): even though the registry is operator-configured, a
+    // compromised / MITM'd / misconfigured registry that answers 302 → 169.254.169.254
+    // would otherwise be SILENTLY FOLLOWED by the default handler (AllowAutoRedirect
+    // defaults true) — an SSRF pivot and a cross-port parity gap. With auto-follow off a
+    // registry 3xx is a first-class response we reject as a "registry returned a
+    // redirect" error rather than chasing. We stop at disabling auto-follow (no
+    // connect-time SSRF guard here) to match Python and to keep a deliberately
+    // operator-configured localhost/private registry usable in dev.
+    private static readonly HttpClient SharedClient = new(CreateRegistrySearchHandler())
     {
         Timeout = TimeSpan.FromSeconds(15),
         DefaultRequestHeaders =
@@ -45,6 +55,16 @@ public static class DiscoverApiTool
             { "Accept", "application/json" },
             { "User-Agent", "LightningEnable-MCP/1.0" }
         }
+    };
+
+    /// <summary>
+    /// Builds the handler for the registry-search client with <c>AllowAutoRedirect =
+    /// false</c> so a registry 3xx is never silently followed (see <see cref="SharedClient"/>).
+    /// Exposed <c>internal</c> so a unit test can assert the no-follow posture directly.
+    /// </summary>
+    internal static SocketsHttpHandler CreateRegistrySearchHandler() => new()
+    {
+        AllowAutoRedirect = false,
     };
 
     /// <summary>
@@ -130,7 +150,7 @@ public static class DiscoverApiTool
     internal static async Task<string> SearchRegistryAsync(
         string? query, string? category, bool budgetAware,
         IBudgetService? budgetService, IPriceService? priceService,
-        CancellationToken ct)
+        CancellationToken ct, HttpClient? httpClient = null)
     {
         var registryUrl = GetRegistryBaseUrl();
         var queryParams = new List<string> { "pageSize=20" };
@@ -141,13 +161,31 @@ public static class DiscoverApiTool
 
         var requestUrl = $"{registryUrl}/api/manifests/registry?{string.Join("&", queryParams)}";
 
-        var response = await SharedClient.GetAsync(requestUrl, ct);
+        // Production uses the no-auto-redirect SharedClient; tests may inject a stub.
+        var response = await (httpClient ?? SharedClient).GetAsync(requestUrl, ct);
+
+        // The registry client does NOT auto-follow (AllowAutoRedirect = false). A 3xx is
+        // therefore surfaced here as a clean, explicit error — NEVER silently followed to
+        // wherever the Location points (which a compromised/misconfigured registry could
+        // aim at an internal/metadata host).
+        var status = (int)response.StatusCode;
+        if (status is >= 300 and < 400)
+        {
+            return JsonSerializer.Serialize(new
+            {
+                success = false,
+                error = $"Registry returned an HTTP {status} redirect. Not following it — the registry endpoint should serve results directly.",
+                registry_url = requestUrl,
+                hint = "Check the configured registry URL (L402_REGISTRY_URL / LIGHTNING_ENABLE_API_URL), or use discover_api(url=...) to fetch a specific manifest directly."
+            });
+        }
+
         if (!response.IsSuccessStatusCode)
         {
             return JsonSerializer.Serialize(new
             {
                 success = false,
-                error = $"Registry search failed with status {(int)response.StatusCode}.",
+                error = $"Registry search failed with status {status}.",
                 registry_url = requestUrl,
                 hint = "The L402 API registry may be temporarily unavailable. Try again later or use discover_api(url=...) to fetch a specific manifest directly."
             });
@@ -279,9 +317,12 @@ public static class DiscoverApiTool
             var (manifestJson, manifestUrl, redirectLocation) = await FetchManifestAsync(client, url, cancellationToken);
             if (manifestJson == null)
             {
-                // A 3xx redirect (not followed — AllowAutoRedirect = false) is surfaced as
-                // actionable rather than a generic "not found", so the agent can re-call
-                // with the target. We never follow it here (header-leak / redirect-hop reasons).
+                // A 3xx redirect (not followed — AllowAutoRedirect = false) on the USER's
+                // explicit url argument is surfaced as actionable rather than a generic
+                // "not found", so the agent can re-call with the target. We never follow it
+                // here (header-leak / redirect-hop reasons). A redirect seen only on a
+                // synthesized /.well-known/ probe is NOT promoted (see FetchManifestAsync) —
+                // it flows to the not-found + tried_urls result below.
                 if (redirectLocation != null)
                 {
                     return JsonSerializer.Serialize(new
@@ -460,10 +501,13 @@ public static class DiscoverApiTool
         var baseUrl = url.TrimEnd('/');
         var endsInJson = baseUrl.EndsWith(".json", StringComparison.OrdinalIgnoreCase);
 
-        // A 3xx on the exact user-supplied URL (`baseUrl`) is the meaningful signal —
-        // prefer it over a redirect seen on one of our synthesized /.well-known/ guesses.
+        // ONLY a 3xx on the exact user-supplied URL (`baseUrl`) is surfaced as an
+        // actionable redirect. A redirect on one of our SYNTHESIZED /.well-known/ probe
+        // paths is NOT the user's URL — promoting it would send the agent chasing a
+        // catch-all/login page and suppress the honest "no manifest here, tried_urls"
+        // result. So a well-known-probe redirect is treated as "no manifest at this path"
+        // (recorded via GetTriedUrls) and we continue to the next probe.
         string? primaryRedirect = null;
-        string? wellKnownRedirect = null;
 
         // If URL ends in .json, try it directly first
         if (endsInJson)
@@ -473,13 +517,11 @@ public static class DiscoverApiTool
             primaryRedirect ??= redirect;
         }
 
-        // Try well-known paths
+        // Try well-known paths. A redirect here is deliberately discarded (see above).
         foreach (var path in WellKnownPaths)
         {
-            var fullUrl = baseUrl + path;
-            var (json, redirect) = await TryFetchAsync(client, fullUrl, ct);
-            if (json != null) return (json, fullUrl, null);
-            wellKnownRedirect ??= redirect;
+            var (json, _) = await TryFetchAsync(client, baseUrl + path, ct);
+            if (json != null) return (json, baseUrl + path, null);
         }
 
         // Try the URL directly if not already tried
@@ -490,7 +532,7 @@ public static class DiscoverApiTool
             primaryRedirect ??= redirect;
         }
 
-        return (null, null, primaryRedirect ?? wellKnownRedirect);
+        return (null, null, primaryRedirect);
     }
 
     /// <summary>
@@ -507,21 +549,11 @@ public static class DiscoverApiTool
             var response = await client.GetAsync(url, ct);
 
             // Unfollowed 3xx with a Location: surface the (resolved absolute) target as
-            // actionable instead of silently failing over to the next candidate.
-            var code = (int)response.StatusCode;
-            if (code is >= 300 and < 400 && response.Headers.Location is { } loc)
+            // actionable instead of silently failing over to the next candidate. Uses the
+            // shared RedirectResolver so the resolution rules (304 excluded, relative
+            // resolved against the request URI) match the L402 fetch path exactly.
+            if (RedirectResolver.TryResolve(response, url, out var redirect))
             {
-                string? redirect;
-                try
-                {
-                    redirect = loc.IsAbsoluteUri
-                        ? loc.AbsoluteUri
-                        : Uri.TryCreate(new Uri(url), loc, out var resolved) ? resolved.AbsoluteUri : loc.OriginalString;
-                }
-                catch
-                {
-                    redirect = loc.OriginalString;
-                }
                 return (null, redirect);
             }
 

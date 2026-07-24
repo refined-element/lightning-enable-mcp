@@ -49,7 +49,7 @@ docker pull refinedelement/lightning-enable-mcp:latest
 | `OPENNODE_ENVIRONMENT` | No | production | `production` or `dev` for testnet |
 | `LND_REST_HOST` | If using LND | - | LND REST API host |
 | `LND_MACAROON_HEX` | If using LND | - | LND admin macaroon in hex |
-| `LIGHTNING_ENABLE_API_KEY` | For producer + ASA tools | - | API key for the 8 subscription tools. Requires Agentic Commerce subscription. |
+| `LIGHTNING_ENABLE_API_KEY` | For producer + ASA publish/request tools | - | Unlocks the producer tools and the ASA request/publish tools. Requires an Agentic Commerce subscription. (ASA discovery, settlement, and reputation reads work without it.) |
 
 Spending limits are a **single source of truth: `BudgetService`**, configured by USD-denominated approval tiers in `~/.lightning-enable/config.json`. These tiers drive the out-of-band confirmation flow. An agent can additionally **tighten** the runtime per-request / per-session sats caps via the `configure_budget` tool (tighten-only — it can never raise a limit above the config file). See `configure_budget` and `get_budget_status` below.
 

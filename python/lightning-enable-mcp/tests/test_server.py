@@ -18,8 +18,11 @@ from lightning_enable_mcp.nwc_wallet import NWCWallet
 # (dotnet/tests/LightningEnable.Mcp.Tests/ToolInventoryTests.cs) and the docs'
 # MCP Complete Guide — the one place that itemizes the tools for humans.
 #
-# Canonical: 26 total = 18 out-of-the-box (free, just a wallet) + 8 that require
-# LIGHTNING_ENABLE_API_KEY (2 producer + 6 ASA).
+# Canonical: 26 total = 18 out-of-the-box (free, just a wallet) + 8 producer/ASA
+# tools (2 producer + 6 ASA). Of the 8, the producer tools and the ASA
+# request/publish tools require LIGHTNING_ENABLE_API_KEY; discover_agent_services,
+# settle_agent_service, and get_agent_reputation read the public registry with just
+# a wallet, but are grouped here as the producer/agent-marketplace surface.
 FREE_TOOLS = {
     "pay_invoice",
     "check_wallet_balance",
@@ -98,7 +101,7 @@ class TestLightningEnableServer:
         # Free/paid split is the source of truth every doc count derives from.
         assert FREE_TOOLS.isdisjoint(API_KEY_TOOLS)
         assert len(FREE_TOOLS) == 18, "18 out-of-the-box tools"
-        assert len(API_KEY_TOOLS) == 8, "8 tools require LIGHTNING_ENABLE_API_KEY"
+        assert len(API_KEY_TOOLS) == 8, "8 producer + ASA tools (2 producer + 6 ASA)"
         assert tool_names >= FREE_TOOLS
         assert tool_names >= API_KEY_TOOLS
 

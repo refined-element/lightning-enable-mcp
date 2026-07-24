@@ -120,7 +120,10 @@ jobs:
           # release. Anchor on a line that STARTS with `version = "` so the `[tool.*]`
           # python_version / target-version keys can never be mistaken for it. Fail
           # loudly on drift, up front, before any package/image is pushed.
-          PY_VERSION=$(grep -oP '^version = "\K[^"]+' python/lightning-enable-mcp/pyproject.toml | head -n1)
+          # `|| true` so a no-match grep (exit 1) under `bash -eo pipefail` can't kill the
+          # step at the assignment BEFORE the descriptive -z guard below runs. Fails closed
+          # either way (empty PY_VERSION -> the guard exits 1), just with the intended message.
+          PY_VERSION=$(grep -oP '^version = "\K[^"]+' python/lightning-enable-mcp/pyproject.toml | head -n1 || true)
           if [ -z "$PY_VERSION" ]; then
             echo "::error::Could not read the [project] version from python/lightning-enable-mcp/pyproject.toml"
             exit 1
@@ -173,7 +176,6 @@ jobs:
 
       - name: Build and publish Python MCP
         if: github.event_name == 'push' || github.event.inputs.publish_pypi == 'true'
-        continue-on-error: true
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
@@ -257,6 +259,9 @@ jobs:
           head -n 40 README.dockerhub.md
 
       - name: Update Docker Hub description
+        # Cosmetic README sync only — the image is already pushed by this point, so a transient
+        # failure here must NOT fail the job and strand publish-registry (which needs: publish-docker).
+        continue-on-error: true
         uses: peter-evans/dockerhub-description@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}

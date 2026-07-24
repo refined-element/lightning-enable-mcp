@@ -8,49 +8,95 @@ limits converted to sats). Neither the Python nor the .NET server reads those en
 vars anymore, so no published manifest may advertise them: doing so promises the
 operator a spending cap that silently does nothing — a funds-safety hazard.
 
-``server.json`` (the official MCP Registry source) and ``smithery.yaml`` both live
-at the monorepo root, three levels above this ``tests/`` directory.
+``server.json`` (the official MCP Registry source) and ``smithery.yaml`` live at
+the monorepo root, above this package. They are intentionally NOT shipped in the
+sdist (see pyproject ``[tool.hatch.build.targets.sdist]``), so we locate the root
+by walking upward and skip cleanly when the manifests aren't present (e.g. running
+from an unpacked sdist) rather than failing on a path that doesn't exist there.
 """
 
 import json
+import re
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-SERVER_JSON = REPO_ROOT / "server.json"
-SMITHERY_YAML = REPO_ROOT / "smithery.yaml"
+import pytest
 
-# Env vars removed from the code — must not appear in any published manifest.
+# Env-var names (SCREAMING_SNAKE) as they appear in server.json and in the
+# smithery ``commandFunction`` env mapping.
 REMOVED_ENV_VARS = {"L402_MAX_SATS_PER_REQUEST", "L402_MAX_SATS_PER_SESSION"}
 
+# The camelCase ``configSchema`` property names Smithery actually renders as input
+# fields in its "Add MCP server" UI — the user-facing half of the same promise.
+REMOVED_SMITHERY_PROPS = {"l402MaxSatsPerRequest", "l402MaxSatsPerSession"}
 
+
+def _find_repo_root() -> Path | None:
+    """Nearest ancestor containing both root manifests, or None if absent."""
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "server.json").is_file() and (parent / "smithery.yaml").is_file():
+            return parent
+    return None
+
+
+REPO_ROOT = _find_repo_root()
+_skip_if_no_root = pytest.mark.skipif(
+    REPO_ROOT is None,
+    reason="root manifests (server.json / smithery.yaml) not present — installed/sdist context",
+)
+
+
+def _iter_strings(obj):
+    """Yield every string scalar in a nested JSON structure."""
+    if isinstance(obj, str):
+        yield obj
+    elif isinstance(obj, dict):
+        for value in obj.values():
+            yield from _iter_strings(value)
+    elif isinstance(obj, list):
+        for value in obj:
+            yield from _iter_strings(value)
+
+
+@_skip_if_no_root
 def test_server_json_does_not_advertise_removed_env_vars():
-    """server.json must not declare budget-cap env vars the server ignores."""
-    assert SERVER_JSON.exists(), f"server.json not found at {SERVER_JSON}"
-    data = json.loads(SERVER_JSON.read_text(encoding="utf-8"))
+    """server.json must not reference the removed budget-cap env vars anywhere.
 
-    offenders = []
-    for package in data.get("packages", []):
-        registry = package.get("registryType", "?")
-        for env in package.get("environmentVariables", []):
-            if env.get("name") in REMOVED_ENV_VARS:
-                offenders.append(f"{registry}:{env['name']}")
+    Exact-match over every string scalar (not a substring scan): catches a removed
+    name reintroduced as an env-var name OR an argument value, in any package,
+    without false-positiving on a description that merely mentions the name.
+    """
+    data = json.loads((REPO_ROOT / "server.json").read_text(encoding="utf-8"))
+
+    offenders = sorted({s for s in _iter_strings(data) if s in REMOVED_ENV_VARS})
 
     assert not offenders, (
-        "server.json advertises budget-cap env vars the server no longer reads "
-        f"(they silently no-op): {offenders}. Caps now come from the "
-        "configure_budget tool / ~/.lightning-enable/config.json."
+        "server.json references budget-cap env vars the server no longer reads "
+        f"(they silently no-op): {offenders}. Caps now come from the configure_budget "
+        "tool / ~/.lightning-enable/config.json."
     )
 
 
+@_skip_if_no_root
 def test_smithery_yaml_does_not_advertise_removed_env_vars():
-    """smithery.yaml must not map removed budget-cap env vars for the same reason."""
-    assert SMITHERY_YAML.exists(), f"smithery.yaml not found at {SMITHERY_YAML}"
-    text = SMITHERY_YAML.read_text(encoding="utf-8")
+    """smithery.yaml must not re-add the config field or its env mapping.
 
-    offenders = sorted(name for name in REMOVED_ENV_VARS if name in text)
+    Checks the two structural surfaces precisely so a benign comment mentioning a
+    removed name does not trip the guard: (1) a ``configSchema`` property key like
+    ``l402MaxSatsPerRequest:``, and (2) a ``commandFunction`` assignment like
+    ``env.L402_MAX_SATS_PER_REQUEST``.
+    """
+    text = (REPO_ROOT / "smithery.yaml").read_text(encoding="utf-8")
 
+    prop_pattern = re.compile(
+        r"^[ \t]*(" + "|".join(re.escape(p) for p in REMOVED_SMITHERY_PROPS) + r")[ \t]*:",
+        re.MULTILINE,
+    )
+    schema_offenders = sorted(set(prop_pattern.findall(text)))
+    mapping_offenders = sorted(name for name in REMOVED_ENV_VARS if f"env.{name}" in text)
+
+    offenders = schema_offenders + mapping_offenders
     assert not offenders, (
-        "smithery.yaml still references budget-cap env vars the server no longer "
-        f"reads (they silently no-op): {offenders}. Caps now come from the "
+        "smithery.yaml still advertises budget-cap config fields / env vars the server "
+        f"no longer reads (they silently no-op): {offenders}. Caps now come from the "
         "configure_budget tool / ~/.lightning-enable/config.json."
     )

@@ -33,6 +33,12 @@ double-clicking, or drag it into Settings → Extensions.
 
 ## Release sync
 
-On each release, bump **both** the `version` in `manifest.json` and the pinned
-`lightning-enable-mcp==<version>` in `pyproject.toml` to match the package version (kept in
-lockstep with `LightningEnable.Mcp.csproj` / `pyproject.toml`).
+CI (`.github/workflows/mcpb.yml`) stamps the `version` in `manifest.json` and the pinned
+`lightning-enable-mcp==<version>` in `pyproject.toml` from the package version in
+`LightningEnable.Mcp.csproj` (the single source of truth) at build time, then validates, packs,
+and uploads the `.mcpb` as a workflow artifact. So the committed values here are a template — the
+released bundle always tracks the package version automatically. For a local build, either match
+them by hand or run the workflow's stamp step first.
+
+The workflow intentionally does **not** create a tag or GitHub release: `publish-mcp.yml` triggers
+on `mcp-v*` tags, so creating one here would double-publish the packages.

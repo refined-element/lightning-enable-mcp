@@ -18,11 +18,16 @@ from lightning_enable_mcp.nwc_wallet import NWCWallet
 # (dotnet/tests/LightningEnable.Mcp.Tests/ToolInventoryTests.cs) and the docs'
 # MCP Complete Guide — the one place that itemizes the tools for humans.
 #
-# Canonical: 26 total = 18 out-of-the-box (free, just a wallet) + 8 that require
+# Canonical: 25 total = 17 out-of-the-box (free, just a wallet) + 8 that require
 # LIGHTNING_ENABLE_API_KEY (2 producer + 6 ASA).
+#
+# The three renamed/merged tools' OLD names (confirm_payment, check_wallet_balance,
+# get_all_balances) remain accepted-but-unadvertised forwarding aliases — they still
+# dispatch, but are intentionally NOT in this advertised inventory (see
+# TestDeprecatedAliases).
 FREE_TOOLS = {
     "pay_invoice",
-    "check_wallet_balance",
+    "get_balance",
     "get_payment_history",
     "get_receipts",
     "get_budget_status",
@@ -34,7 +39,6 @@ FREE_TOOLS = {
     "test_l402_payment",
     "discover_api",
     "get_btc_price",
-    "get_all_balances",
     "exchange_currency",
     "send_onchain",
     "verify_confirmation_code",
@@ -93,11 +97,13 @@ class TestLightningEnableServer:
         tool_names = {tool.name for tool in tools}
 
         # The registered set must exactly equal the declared inventory (no drift).
+        # Aliases (confirm_payment, check_wallet_balance, get_all_balances) still
+        # dispatch but must NOT appear here.
         assert tool_names == ALL_TOOLS
-        assert len(tool_names) == 26
+        assert len(tool_names) == 25
         # Free/paid split is the source of truth every doc count derives from.
         assert FREE_TOOLS.isdisjoint(API_KEY_TOOLS)
-        assert len(FREE_TOOLS) == 18, "18 out-of-the-box tools"
+        assert len(FREE_TOOLS) == 17, "17 out-of-the-box tools"
         assert len(API_KEY_TOOLS) == 8, "8 tools require LIGHTNING_ENABLE_API_KEY"
         assert tool_names >= FREE_TOOLS
         assert tool_names >= API_KEY_TOOLS
@@ -303,3 +309,31 @@ class TestDeprecatedAliases:
         advertised = await _advertised_tool_names(server)
         assert "confirm_payment" not in advertised
         assert "verify_confirmation_code" in advertised
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("alias", ["check_wallet_balance", "get_all_balances"])
+    async def test_balance_alias_forwards_and_is_deprecated(self, alias):
+        server = LightningEnableServer()
+        # Pre-set wallet + l402 client so call_tool skips _initialize_services.
+        server.wallet = MagicMock()
+        server.wallet.get_balance = AsyncMock(return_value=50_000)
+        server.wallet.get_info = AsyncMock(return_value=None)
+        server.l402_client = MagicMock()
+
+        text = await _call_tool(server, alias, {})
+        data = json.loads(text)
+
+        # Forwarded to the unified get_balance (real result), plus deprecation marker.
+        assert data["success"] is True
+        assert data["balance_sats"] == 50_000
+        assert data["balances"][0]["currency"] == "BTC"
+        assert data["deprecated"]["replaced_by"] == "get_balance"
+        assert data["deprecated"]["removal"] == "v2.0.0"
+
+    @pytest.mark.asyncio
+    async def test_balance_aliases_are_not_advertised(self):
+        server = LightningEnableServer()
+        advertised = await _advertised_tool_names(server)
+        assert "check_wallet_balance" not in advertised
+        assert "get_all_balances" not in advertised
+        assert "get_balance" in advertised

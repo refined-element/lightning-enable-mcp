@@ -129,7 +129,9 @@ Config file locations:
 
 ## Tools
 
-**Canonical inventory: 26 tools — 18 free (out of the box, just a wallet) + 8 that require `LIGHTNING_ENABLE_API_KEY`** (an [Agentic Commerce subscription](https://lightningenable.com); 2 L402 Producer + 6 Agent Service Agreement). This table is the single source of truth every advertised count derives from — it is pinned to the code by the tool-inventory guard tests in both ports (drift fails CI).
+**Canonical inventory: 25 tools — 17 free (out of the box, just a wallet) + 8 that require `LIGHTNING_ENABLE_API_KEY`** (an [Agentic Commerce subscription](https://lightningenable.com); 2 L402 Producer + 6 Agent Service Agreement). This table is the single source of truth every advertised count derives from — it is pinned to the code by the tool-inventory guard tests in both ports (drift fails CI).
+
+**Deprecated aliases** (accepted but unadvertised, forward to the new tool, removed in v2.0.0): `confirm_payment` → `verify_confirmation_code`; `check_wallet_balance`, `get_all_balances` → `get_balance`.
 
 | Tool | Access | What it does |
 |------|--------|--------------|
@@ -140,8 +142,7 @@ Config file locations:
 | `discover_api` | Free | Search the L402 API registry / fetch an API manifest |
 | `create_invoice` | Free | Create a BOLT11 invoice to receive payment |
 | `check_invoice_status` | Free | Check whether a created invoice was paid |
-| `check_wallet_balance` | Free | Check the connected wallet balance |
-| `get_all_balances` | Free | Get all currency balances (Strike) |
+| `get_balance` | Free | Wallet balance: sats, all currencies (Strike), and wallet info |
 | `exchange_currency` | Free | Convert between USD and BTC (Strike) |
 | `send_onchain` | Free | Send an on-chain Bitcoin payment (Strike, LND) |
 | `get_btc_price` | Free | Current Bitcoin price in USD |

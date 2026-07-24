@@ -41,13 +41,12 @@ from .tools.create_invoice import create_invoice
 from .tools.create_l402_challenge import create_l402_challenge
 from .tools.discover_api import discover_api
 from .tools.exchange_currency import exchange_currency
-from .tools.get_all_balances import get_all_balances
+from .tools.get_balance import get_balance
 from .tools.get_btc_price import get_btc_price
 from .tools.pay_challenge import pay_l402_challenge
 from .tools.pay_invoice import pay_invoice
 from .tools.send_onchain import send_onchain
 from .tools.verify_l402_payment import verify_l402_payment
-from .tools.wallet import check_wallet_balance
 from .tools.budget import configure_budget, get_payment_history
 from .tools.budget_status import get_budget_status
 from .tools.discover_agent_services import discover_agent_services
@@ -265,8 +264,12 @@ class LightningEnableServer:
                     },
                 ),
                 Tool(
-                    name="check_wallet_balance",
-                    description="Check the connected Lightning wallet balance via NWC.",
+                    name="get_balance",
+                    description=(
+                        "Get the connected wallet's balance. Returns the sats balance plus, where "
+                        "available, all currency balances (USD, BTC, ... — most useful with Strike) "
+                        "and wallet info. Supersedes check_wallet_balance and get_all_balances."
+                    ),
                     inputSchema={
                         "type": "object",
                         "properties": {},
@@ -396,17 +399,6 @@ class LightningEnableServer:
                             },
                         },
                         "required": ["invoice_id"],
-                    },
-                ),
-                Tool(
-                    name="get_all_balances",
-                    description=(
-                        "Get all currency balances from your wallet (USD, BTC, etc.). "
-                        "Most useful with Strike wallet which supports multiple currencies."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {},
                     },
                 ),
                 Tool(
@@ -890,8 +882,16 @@ class LightningEnableServer:
                         receipt_service=self.receipt_service,
                     )
 
-                elif name == "check_wallet_balance":
-                    result = await check_wallet_balance(wallet=self.wallet)
+                elif name in ("get_balance", "check_wallet_balance", "get_all_balances"):
+                    # check_wallet_balance and get_all_balances are deprecated, unadvertised
+                    # aliases that forward to the unified get_balance implementation.
+                    result = await get_balance(
+                        wallet=self.wallet,
+                        strike_wallet=self.strike_wallet,
+                        budget_service=self.budget_service,
+                    )
+                    if name in DEPRECATED_ALIASES:
+                        result = _mark_deprecated(result, DEPRECATED_ALIASES[name])
 
                 elif name == "get_payment_history":
                     result = await get_payment_history(
@@ -929,13 +929,6 @@ class LightningEnableServer:
                     result = await check_invoice_status(
                         invoice_id=arguments.get("invoice_id", ""),
                         wallet=self.wallet,
-                    )
-
-                elif name == "get_all_balances":
-                    result = await get_all_balances(
-                        wallet=self.wallet,
-                        strike_wallet=self.strike_wallet,
-                        budget_service=self.budget_service,
                     )
 
                 elif name == "get_btc_price":

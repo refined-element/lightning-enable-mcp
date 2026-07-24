@@ -3,7 +3,18 @@
 All notable changes to the Lightning Enable MCP server are documented here.
 Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-enable-mcp`).
 
-## [Unreleased]
+## [1.18.0]
+
+### Added
+
+- **`unpublish_agent_capability`** (both ports) — take a published capability down
+  (NIP-A5 listing lifecycle). In `remove` mode the backend soft-retires the L402
+  proxy and publishes a NIP-09 `kind:5` deletion plus a `status=removed` 38400
+  replacement, so other agents stop seeing a dead listing. Requires
+  `LIGHTNING_ENABLE_API_KEY`. The advertised tool surface grows **25 → 26** (9
+  API-key tools: 2 producer + 7 ASA).
+
+## [1.17.0]
 
 Tool-surface consolidation. The advertised tool surface drops from **26 to 25**
 (**18 → 17 free**, 8 gated unchanged). No payment or L402 logic changed — this is a

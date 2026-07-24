@@ -69,17 +69,6 @@ startCommand:
         description: >-
           Optional. OpenNode environment — "production" or "dev" (testnet).
           Defaults to production.
-      l402MaxSatsPerRequest:
-        type: integer
-        minimum: 0
-        description: >-
-          Optional. Per-request spending cap in satoshis for L402 payments.
-          Defaults to a conservative value if unset.
-      l402MaxSatsPerSession:
-        type: integer
-        minimum: 0
-        description: >-
-          Optional. Per-session spending cap in satoshis for L402 payments.
   commandFunction: |-
     (config) => {
       const env = {};
@@ -91,8 +80,6 @@ startCommand:
       if (config.lndSkipTlsVerify === true) env.LND_SKIP_TLS_VERIFY   = 'true';
       if (config.opennodeApiKey)        env.OPENNODE_API_KEY          = config.opennodeApiKey;
       if (config.opennodeEnvironment)   env.OPENNODE_ENVIRONMENT      = config.opennodeEnvironment;
-      if (typeof config.l402MaxSatsPerRequest === 'number') env.L402_MAX_SATS_PER_REQUEST = String(config.l402MaxSatsPerRequest);
-      if (typeof config.l402MaxSatsPerSession === 'number') env.L402_MAX_SATS_PER_SESSION = String(config.l402MaxSatsPerSession);
       return {
         command: 'uvx',
         args: ['lightning-enable-mcp'],

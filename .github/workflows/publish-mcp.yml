@@ -7,8 +7,12 @@ on:
       - 'dotnet/src/LightningEnable.Mcp/LightningEnable.Mcp.csproj'
       - 'python/lightning-enable-mcp/pyproject.toml'
       - 'python/lightning-enable-mcp/Dockerfile'
-      - 'server.json'
-      - '.github/workflows/publish-mcp.yml'
+      # server.json and this workflow file are deliberately NOT push-path triggers.
+      # A change to either with no package-content change would re-run the full
+      # release: Docker gets rebuilt from current code while NuGet/PyPI skip-duplicate
+      # the already-published version — making the Docker image diverge from the
+      # packages for the same version number. Recover a drifted server.json with a
+      # manual workflow_dispatch run instead (see the verify-versions failure message).
     tags:
       - 'mcp-v*'
   workflow_dispatch:
@@ -102,11 +106,30 @@ jobs:
             echo "::error::server.json .packages[2].identifier (docker) is '$SJ_DOCKER' but expected '$EXPECTED_DOCKER'"; FAIL=1
           fi
           if [ "$FAIL" -ne 0 ]; then
-            echo "::error::server.json is out of sync with release version $VERSION. Bump server.json (.version, both .packages[].version, and the docker image pin) in the SAME commit as the csproj/pyproject version bump, then re-run. (server.json and this workflow are in the push-path filter, so a server.json-only fix commit re-triggers the workflow on the new SHA.)"
+            echo "::error::server.json is out of sync with release version $VERSION. Bump server.json (.version, both .packages[].version, and the docker image pin) in the SAME commit as the csproj/pyproject version bump and merge to main. To recover an ALREADY-drifted server.json, start a manual 'Run workflow' (workflow_dispatch) run — it checks out current main and re-verifies against the corrected file. Do NOT 're-run the failed job': that replays the old commit SHA (the drifted server.json) and fails again. server.json is intentionally not a push-path trigger, so committing the fix by itself will not auto-start a release."
             exit 1
           fi
           echo "server.json is in sync with release version $VERSION"
           jq '.version, .packages[].version, .packages[2].identifier' server.json
+
+      - name: Verify pyproject.toml version matches release
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          # pyproject.toml carries its OWN version (the PyPI package version). If it is
+          # not bumped alongside the csproj, NuGet would ship ahead of PyPI for the same
+          # release. Anchor on a line that STARTS with `version = "` so the `[tool.*]`
+          # python_version / target-version keys can never be mistaken for it. Fail
+          # loudly on drift, up front, before any package/image is pushed.
+          PY_VERSION=$(grep -oP '^version = "\K[^"]+' python/lightning-enable-mcp/pyproject.toml | head -n1)
+          if [ -z "$PY_VERSION" ]; then
+            echo "::error::Could not read the [project] version from python/lightning-enable-mcp/pyproject.toml"
+            exit 1
+          fi
+          if [ "$PY_VERSION" != "$VERSION" ]; then
+            echo "::error::pyproject.toml version is '$PY_VERSION' but the release version is '$VERSION'. Bump python/lightning-enable-mcp/pyproject.toml in the SAME commit as the csproj/server.json version bump so NuGet cannot ship ahead of PyPI."
+            exit 1
+          fi
+          echo "pyproject.toml version is in sync with release version $VERSION"
 
   publish-packages:
     runs-on: ubuntu-latest
@@ -169,10 +192,12 @@ jobs:
 
   publish-docker:
     runs-on: ubuntu-latest
-    # Only the up-front version gate — NOT publish-packages. The Docker image is
-    # built from the Python source tree and does not depend on the NuGet/PyPI
-    # pushes, so it runs in parallel with them once the gate is green.
-    needs: [verify-versions]
+    # Gate on BOTH the up-front version check AND the package pushes. Docker's mutable
+    # `latest` tag must never advance to a version that failed to publish to NuGet/PyPI —
+    # otherwise `docker pull refinedelement/lightning-enable-mcp:latest` would ship a
+    # version that does not exist on the other two registries. Waiting on
+    # publish-packages means a NuGet/PyPI failure blocks Docker instead of racing it.
+    needs: [verify-versions, publish-packages]
     if: github.event_name == 'push' || github.event.inputs.publish_docker == 'true'
 
     steps:
@@ -243,16 +268,16 @@ jobs:
   publish-registry:
     runs-on: ubuntu-latest
     # The registry entry pins VERSIONED NuGet/PyPI/Docker artifacts, so it must only
-    # ever be published once all three actually exist. `needs: publish-packages`
-    # gives ordering (registry runs after the package pushes), but ordering is NOT
-    # the guarantee — the "Wait for all published artifacts to exist" step below is.
-    # It HARD-polls NuGet, PyPI, AND the pinned Docker tag and fails loudly (exit 1)
-    # if any is still missing, so the registry can never advertise a phantom ref.
-    # publish-docker is deliberately NOT in `needs`: depending on it would SKIP this
-    # job whenever the Docker job failed (the old bug that stranded the registry on a
-    # stale version). Instead, a missing image makes the existence gate fail visibly
-    # and re-runnably. verify-versions is in `needs` only to read its version output.
-    needs: [verify-versions, publish-packages]
+    # ever be published once all three actually exist. It `needs` all three publish
+    # jobs, which makes it run last and inherit their success/skip semantics:
+    #  - If publish-docker is SKIPPED (workflow_dispatch with publish_docker=false) or
+    #    FAILS, this job is cleanly skipped too — instead of the old behavior of polling
+    #    a never-built image for 10 minutes and then red-failing a valid run.
+    #  - Because publish-docker SUCCEEDED before control reaches here, the pinned Docker
+    #    tag is guaranteed to exist, so there is NO Docker existence poll below. Only the
+    #    NuGet + PyPI indexing polls remain — those registries are eventually-consistent
+    #    and can briefly 404 right after a successful push, so they still need polling.
+    needs: [verify-versions, publish-packages, publish-docker]
     permissions:
       contents: read
       id-token: write
@@ -265,15 +290,22 @@ jobs:
         run: |
           curl -sL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
 
-      - name: Wait for all published artifacts to exist (NuGet, PyPI, Docker)
+      - name: Wait for published packages to exist (NuGet, PyPI)
         run: |
           VERSION="${{ needs.verify-versions.outputs.version }}"
-          # HARD existence gate. server.json advertises a versioned NuGet package, a
-          # versioned PyPI package, AND a pinned Docker tag
-          # (docker.io/refinedelement/lightning-enable-mcp:$VERSION). Publishing the
-          # registry entry before any of those exists would advertise an artifact that
-          # 404s. Each check bounded-retries, then `exit 1` on exhaustion so the JOB
-          # FAILS (and is re-runnable) instead of silently advertising a phantom ref.
+          # HARD existence gate for the eventually-consistent package registries.
+          # server.json advertises a versioned NuGet package and a versioned PyPI
+          # package; both can briefly 404 immediately after their push while the index
+          # catches up. Publishing the registry entry before they resolve would
+          # advertise an artifact that 404s. Each check bounded-retries, then `exit 1`
+          # on exhaustion so the JOB FAILS (and is re-runnable) instead of silently
+          # advertising a phantom ref.
+          #
+          # The pinned Docker tag is intentionally NOT polled here: publish-registry
+          # `needs: publish-docker`, so reaching this step means the Docker job already
+          # succeeded and the tag exists. (Skipping the poll also avoids false-failing a
+          # slow cold multi-arch arm64/QEMU build, and cleanly skips this whole job when
+          # Docker was disabled via workflow_dispatch.)
           poll() {
             # poll <label> <url> <attempts>  -> 0 if it ever returns HTTP 200
             local label="$1" url="$2" attempts="$3" status
@@ -302,16 +334,8 @@ jobs:
             exit 1
           fi
 
-          # Docker Hub tag (the pin in server.json .packages[2].identifier). The public
-          # Docker Hub registry-tags API needs no auth/secrets for a public repo, and a
-          # 200 means the tag exists. Given the ARM+AMD build can lag the package pushes,
-          # this gets a longer budget (40 x 15s = 10 min).
-          if ! poll "Docker" "https://hub.docker.com/v2/repositories/refinedelement/lightning-enable-mcp/tags/$VERSION" 40; then
-            echo "::error::Docker tag refinedelement/lightning-enable-mcp:$VERSION (pinned in server.json .packages[2].identifier) does not exist — refusing to advertise it in the MCP Registry. Re-run once the publish-docker job has succeeded."
-            exit 1
-          fi
-
-          echo "All three artifacts exist for $VERSION — safe to publish the registry entry."
+          # The Docker tag is guaranteed by `needs: publish-docker` — no poll needed.
+          echo "NuGet + PyPI are indexed for $VERSION and the Docker job succeeded — safe to publish the registry entry."
 
       - name: Authenticate to MCP Registry
         run: ./mcp-publisher login github-oidc

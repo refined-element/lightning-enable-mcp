@@ -7,6 +7,7 @@ Check wallet balance and status via NWC.
 import json
 import logging
 from . import sanitize_error
+from ..wallet_messages import WALLET_NOT_CONFIGURED_FOR_RECEIVING
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -25,8 +26,14 @@ async def check_wallet_balance(
         JSON with balance information or error message
     """
     if not wallet:
+        # Balance reads are receiving-side, so OpenNode is a valid option here — use the
+        # shared receiving constant (matches .NET CheckWalletBalanceTool).
         return json.dumps(
-            {"success": False, "error": "Wallet not initialized. Check NWC connection."}
+            {
+                "success": False,
+                "error": WALLET_NOT_CONFIGURED_FOR_RECEIVING,
+                "configured": False,
+            }
         )
 
     try:

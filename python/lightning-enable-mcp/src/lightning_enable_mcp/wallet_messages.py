@@ -4,7 +4,8 @@ Single source of truth so the per-tool "wallet not configured" errors can't drif
 
 There are TWO messages because OpenNode has ASYMMETRIC capability:
   - It fully supports receiving/invoicing/info tools (create_invoice,
-    check_invoice_status, get_all_balances), so those list OPENNODE_API_KEY as valid.
+    check_invoice_status, get_all_balances, check_wallet_balance), so those list
+    OPENNODE_API_KEY as valid.
   - It cannot pay L402 challenges (it never returns a preimage), so the L402-paying
     tools (pay_invoice, pay_l402_challenge, access_l402_resource, test_l402_payment)
     demote/exclude it.
@@ -30,7 +31,8 @@ WALLET_NOT_CONFIGURED_FOR_PAYMENT = (
 )
 
 # Returned by the RECEIVING / INVOICING / INFO tools (create_invoice,
-# check_invoice_status, get_all_balances) when no wallet is configured. These
+# check_invoice_status, get_all_balances, check_wallet_balance) when no wallet is
+# configured. These
 # operations work with OpenNode, so OPENNODE_API_KEY is listed as a valid option here
 # (restoring the guidance these tools gave before the messages were consolidated),
 # while still noting it can't pay L402.

@@ -48,6 +48,16 @@ public class L402HttpClient : IL402HttpClient
             // Send request
             var response = await _httpClient.SendAsync(request, cancellationToken);
 
+            // 3xx redirect: the handler is configured with AllowAutoRedirect = false, so
+            // it does NOT follow. Surface the target as an actionable result instead of a
+            // cryptic "HTTP 301". Crucially this happens BEFORE any 402/payment handling,
+            // so a provider that host-redirects before its 402 is never paid, and no
+            // agent-supplied custom header is ever sent to the redirect host.
+            if (TryGetRedirectLocation(response, url, out var redirectLocation))
+            {
+                return L402FetchResult.Redirected(url, (int)response.StatusCode, redirectLocation);
+            }
+
             // Check for 402 Payment Required
             if (response.StatusCode == HttpStatusCode.PaymentRequired)
             {
@@ -316,6 +326,40 @@ public class L402HttpClient : IL402HttpClient
         }
 
         var retryResponse = await _httpClient.SendAsync(retryRequest, cancellationToken);
+
+        // Consistency with the initial-fetch path: a 3xx on the paid retry is not
+        // auto-followed (AllowAutoRedirect = false). The payment already settled, so
+        // surface the redirect target as actionable AND report the paid amount + token
+        // so the caller warns the agent off a double-pay and can reuse the token.
+        if (TryGetRedirectLocation(retryResponse, url, out var retryRedirect))
+        {
+            // Record the settled payment in session history (the normal path below always
+            // does; the early return must not drop it — the sats already left the wallet).
+            _historyService.RecordPayment(
+                url: url,
+                method: method,
+                amountSats: amountSats.Value,
+                invoice: parsed.Invoice!,
+                preimageHex: paymentResult.PreimageHex,
+                l402Token: authToken,
+                statusCode: (int)retryResponse.StatusCode);
+
+            return new L402FetchResult
+            {
+                Success = false,
+                Url = url,
+                StatusCode = (int)retryResponse.StatusCode,
+                RedirectLocation = retryRedirect,
+                PaidAmountSats = amountSats.Value,
+                L402Token = authToken,
+                Protocol = protocol,
+                ErrorMessage = retryRedirect != null
+                    ? $"Payment settled, but the resource redirected to {retryRedirect}. " +
+                      "Call this tool again with that URL (the payment token above is valid)."
+                    : $"Payment settled, but the resource returned an HTTP {(int)retryResponse.StatusCode} redirect with no Location header."
+            };
+        }
+
         var content = await retryResponse.Content.ReadAsStringAsync(cancellationToken);
         var contentType = retryResponse.Content.Headers.ContentType?.MediaType;
 
@@ -335,6 +379,48 @@ public class L402HttpClient : IL402HttpClient
         }
 
         return L402FetchResult.Failed(url, $"Request failed after payment: HTTP {(int)retryResponse.StatusCode}: {content}", (int)retryResponse.StatusCode, amountSats.Value, authToken, protocol);
+    }
+
+    /// <summary>
+    /// True when <paramref name="response"/> is a 3xx redirect that we are NOT following
+    /// (AllowAutoRedirect = false). Resolves a relative Location against
+    /// <paramref name="requestUrl"/> so the agent gets an absolute URL to re-call with.
+    /// A 304 Not Modified (or any 3xx without a Location) is not a redirect and returns
+    /// false so it flows through normal handling. The Location is surfaced verbatim to the
+    /// agent as an actionable next URL — re-calling routes back through the SSRF guard, so
+    /// a redirect that points at an internal host is refused on that next call, not here.
+    /// </summary>
+    private static bool TryGetRedirectLocation(HttpResponseMessage response, string requestUrl, out string? location)
+    {
+        location = null;
+        var code = (int)response.StatusCode;
+        if (code is < 300 or >= 400)
+        {
+            return false;
+        }
+
+        var loc = response.Headers.Location;
+        if (loc == null)
+        {
+            // A 3xx with no Location (e.g. a bare 304): treat as non-redirect so it flows
+            // through normal handling rather than being reported as a broken redirect.
+            return false;
+        }
+
+        try
+        {
+            location = loc.IsAbsoluteUri
+                ? loc.AbsoluteUri
+                : Uri.TryCreate(new Uri(requestUrl), loc, out var resolved)
+                    ? resolved.AbsoluteUri
+                    : loc.OriginalString;
+        }
+        catch
+        {
+            location = loc.OriginalString;
+        }
+
+        return true;
     }
 
     private static HttpRequestMessage CreateRequest(string url, string method, string? headers, string? body)

@@ -98,26 +98,40 @@ public class Program
         //  - ConnectCallback: validates the ACTUAL connect-time IP and connects to
         //    exactly that validated set (no re-resolution), closing the DNS-rebind
         //    TOCTOU window between the initial-URL check and the socket connect.
-        //  - AllowAutoRedirect = true: SAFE precisely because of the ConnectCallback.
-        //    Every connection the handler opens — including each auto-redirect hop —
-        //    goes through the callback and is IP-validated at connect time, so a 3xx
-        //    pivot to http://169.254.169.254/ (cloud metadata) or a private range is
-        //    blocked on the redirected hop. SocketsHttpHandler additionally refuses
-        //    https→http downgrade redirects. Keeping redirects OFF broke common
-        //    http→https / apex→canonical redirects and any L402 provider that
-        //    redirects before its 402, so we follow them and rely on the callback.
+        //  - AllowAutoRedirect = false: the SAFE posture, and NOT the same thing as
+        //    "the ConnectCallback makes redirects safe" — it does not, for two reasons
+        //    the callback cannot see:
+        //      (1) HEADER LEAK. .NET's redirect handler only auto-strips the
+        //          Authorization header on a cross-origin redirect; arbitrary custom
+        //          headers the agent supplied via L402HttpClient.CreateRequest
+        //          (X-Api-Key, Cookie, ...) are RE-SENT to the redirect target. A
+        //          302 → attacker host would exfiltrate them. The IP guard fires per
+        //          hop but says nothing about which headers travel.
+        //      (2) L402 MID-PAYMENT HOST CHANGE. HandleL402ChallengeAsync retries the
+        //          ORIGINAL url. A provider that host-redirects BEFORE its 402 would,
+        //          with auto-redirect on, get paid (sats debited via RecordSpend) and
+        //          then the paid retry — following the redirect to a new host — drops
+        //          its Authorization: L402 header on the host change and 402s again:
+        //          the agent pays and receives nothing.
+        //    With redirects unfollowed the initial URL is the ONLY fetch and it is
+        //    fully validated (pre-check + connect-time IP guard); there is no
+        //    cross-origin header leak, no L402 host change mid-payment, and no
+        //    unvalidated redirect-hop. A 3xx is surfaced to the agent as an actionable
+        //    "call again with the redirect target" result (see L402HttpClient), never
+        //    followed.
         builder.Services.AddHttpClient<IL402HttpClient, L402HttpClient>()
             .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
             {
-                AllowAutoRedirect = true,
+                AllowAutoRedirect = false,
                 ConnectCallback = SsrfConnectValidator.ConnectAsync,
             });
 
         // Register the guarded HTTP client for discover_api's manifest fetch (F-10e).
         // The manifest URL is agent-supplied, so this client carries the SAME
         // connect-time SSRF guard as the L402 client — an agent cannot use discover_api
-        // to reach 169.254.169.254 / a private range, and every redirect hop is
-        // IP-validated too (AllowAutoRedirect = true is safe for the same reason as above).
+        // to reach 169.254.169.254 / a private range. AllowAutoRedirect = false for the
+        // same header-leak / redirect-hop reasons as the L402 client above; a 3xx is
+        // surfaced as an actionable redirect result (see DiscoverApiTool), never followed.
         builder.Services.AddHttpClient(DiscoverApiTool.ManifestHttpClientName, client =>
             {
                 client.Timeout = TimeSpan.FromSeconds(15);
@@ -126,7 +140,7 @@ public class Program
             })
             .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
             {
-                AllowAutoRedirect = true,
+                AllowAutoRedirect = false,
                 ConnectCallback = SsrfConnectValidator.ConnectAsync,
             });
 

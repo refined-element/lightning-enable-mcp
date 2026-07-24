@@ -233,6 +233,41 @@ public static class AccessL402ResourceTool
                 catch { /* audit convenience must never break the payment */ }
             }
 
+            // Unfollowed 3xx redirect (AllowAutoRedirect = false): return a clear,
+            // actionable result naming the redirect target instead of a cryptic HTTP
+            // failure. We do NOT follow it here — following would leak the agent's custom
+            // headers to a cross-origin host and, on the L402 path, risk paying a provider
+            // that then drops the L402 header on the host change. If a payment already
+            // settled before the redirect (paid retry), the token is surfaced too.
+            if (!string.IsNullOrEmpty(result.RedirectLocation))
+            {
+                decimal? redirectAmountUsd = null;
+                if (result.PaidAmountSats > 0 && priceService != null)
+                {
+                    try { redirectAmountUsd = Math.Round(await priceService.SatsToUsdAsync(result.PaidAmountSats, cancellationToken), 2); }
+                    catch { /* USD conversion is best-effort */ }
+                }
+
+                return JsonSerializer.Serialize(new
+                {
+                    success = false,
+                    url = result.Url,
+                    statusCode = result.StatusCode,
+                    error = result.ErrorMessage,
+                    redirect_location = result.RedirectLocation,
+                    payment = result.PaidAmountSats > 0
+                        ? new
+                        {
+                            paid = true,
+                            amountSats = result.PaidAmountSats,
+                            amountUsd = redirectAmountUsd,
+                            l402Token = result.L402Token,
+                            protocol = result.Protocol ?? "L402"
+                        }
+                        : null
+                });
+            }
+
             if (result.Success)
             {
                 if (result.PaidAmountSats > 0)

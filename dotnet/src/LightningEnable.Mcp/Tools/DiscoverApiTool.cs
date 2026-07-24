@@ -30,10 +30,13 @@ public static class DiscoverApiTool
         "/l402.json"
     };
 
-    // Fallback client for the registry search (operator-controlled URL — NOT the
-    // agent-supplied SSRF vector) and for unit tests that invoke the tool without a
-    // DI-provided IHttpClientFactory. The manifest-fetch path uses the guarded named
-    // client above instead.
+    // Client for the registry search ONLY — that URL is operator-controlled
+    // (L402_REGISTRY_URL / LIGHTNING_ENABLE_API_URL / the api.lightningenable.com
+    // default), NOT the agent-supplied SSRF vector. The agent-supplied manifest fetch
+    // must NEVER use this unguarded client; it goes through the DI-provided guarded
+    // named client, or — when no factory is injected (e.g. a unit test) — through an
+    // inline guarded client from CreateGuardedManifestClient(). There is deliberately
+    // no unguarded manifest-fetch path (F-10e follow-up).
     private static readonly HttpClient SharedClient = new()
     {
         Timeout = TimeSpan.FromSeconds(15),
@@ -43,6 +46,29 @@ public static class DiscoverApiTool
             { "User-Agent", "LightningEnable-MCP/1.0" }
         }
     };
+
+    /// <summary>
+    /// Builds a one-off HttpClient carrying the SAME connect-time SSRF guard
+    /// (<see cref="SsrfConnectValidator.ConnectAsync"/>, AllowAutoRedirect = false) as the
+    /// DI-registered manifest client in <c>Program.cs</c>. Used only on the fallback path
+    /// where no <see cref="IHttpClientFactory"/> was injected (unit tests / direct tool
+    /// invocation), so that even the fallback manifest fetch is guarded — the agent-supplied
+    /// URL never reaches an unguarded client. The caller owns and disposes it.
+    /// </summary>
+    internal static HttpClient CreateGuardedManifestClient() =>
+        new(new SocketsHttpHandler
+        {
+            AllowAutoRedirect = false,
+            ConnectCallback = SsrfConnectValidator.ConnectAsync,
+        })
+        {
+            Timeout = TimeSpan.FromSeconds(15),
+            DefaultRequestHeaders =
+            {
+                { "Accept", "application/json" },
+                { "User-Agent", "LightningEnable-MCP/1.0" }
+            }
+        };
 
     /// <summary>
     /// Discovers L402-enabled API endpoints by searching the registry or fetching a manifest.
@@ -239,16 +265,33 @@ public static class DiscoverApiTool
             });
         }
 
-        // Guarded client for the agent-supplied fetch. Fall back to the shared client
-        // only when no factory was injected (e.g. a unit test invoking the tool directly).
-        var client = httpClientFactory?.CreateClient(ManifestHttpClientName) ?? SharedClient;
+        // Guarded client for the agent-supplied fetch. Prefer the DI-registered guarded
+        // named client; when no factory was injected (unit test / direct invocation) build
+        // an inline guarded client — NEVER the unguarded SharedClient. `ownedClient` is
+        // non-null only when we created it, so only then do we dispose it (a factory client
+        // is owned by the factory).
+        HttpClient? ownedClient = httpClientFactory == null ? CreateGuardedManifestClient() : null;
+        var client = httpClientFactory?.CreateClient(ManifestHttpClientName) ?? ownedClient!;
 
         try
         {
             // Try to fetch manifest from well-known locations
-            var (manifestJson, manifestUrl) = await FetchManifestAsync(client, url, cancellationToken);
+            var (manifestJson, manifestUrl, redirectLocation) = await FetchManifestAsync(client, url, cancellationToken);
             if (manifestJson == null)
             {
+                // A 3xx redirect (not followed — AllowAutoRedirect = false) is surfaced as
+                // actionable rather than a generic "not found", so the agent can re-call
+                // with the target. We never follow it here (header-leak / redirect-hop reasons).
+                if (redirectLocation != null)
+                {
+                    return JsonSerializer.Serialize(new
+                    {
+                        success = false,
+                        error = $"Resource redirected to {redirectLocation}. Call this tool again with that URL.",
+                        redirect_location = redirectLocation
+                    });
+                }
+
                 return JsonSerializer.Serialize(new
                 {
                     success = false,
@@ -314,6 +357,11 @@ public static class DiscoverApiTool
                 success = false,
                 error = $"Failed to parse manifest JSON: {ex.Message}"
             });
+        }
+        finally
+        {
+            // Dispose only the client we created inline; a factory client is owned by the factory.
+            ownedClient?.Dispose();
         }
     }
 
@@ -406,42 +454,78 @@ public static class DiscoverApiTool
         }
     }
 
-    private static async Task<(string? Json, string? Url)> FetchManifestAsync(
+    private static async Task<(string? Json, string? Url, string? Redirect)> FetchManifestAsync(
         HttpClient client, string url, CancellationToken ct)
     {
         var baseUrl = url.TrimEnd('/');
+        var endsInJson = baseUrl.EndsWith(".json", StringComparison.OrdinalIgnoreCase);
+
+        // A 3xx on the exact user-supplied URL (`baseUrl`) is the meaningful signal —
+        // prefer it over a redirect seen on one of our synthesized /.well-known/ guesses.
+        string? primaryRedirect = null;
+        string? wellKnownRedirect = null;
 
         // If URL ends in .json, try it directly first
-        if (baseUrl.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+        if (endsInJson)
         {
-            var json = await TryFetchAsync(client, baseUrl, ct);
-            if (json != null) return (json, baseUrl);
+            var (json, redirect) = await TryFetchAsync(client, baseUrl, ct);
+            if (json != null) return (json, baseUrl, null);
+            primaryRedirect ??= redirect;
         }
 
         // Try well-known paths
         foreach (var path in WellKnownPaths)
         {
             var fullUrl = baseUrl + path;
-            var json = await TryFetchAsync(client, fullUrl, ct);
-            if (json != null) return (json, fullUrl);
+            var (json, redirect) = await TryFetchAsync(client, fullUrl, ct);
+            if (json != null) return (json, fullUrl, null);
+            wellKnownRedirect ??= redirect;
         }
 
         // Try the URL directly if not already tried
-        if (!baseUrl.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+        if (!endsInJson)
         {
-            var json = await TryFetchAsync(client, baseUrl, ct);
-            if (json != null) return (json, baseUrl);
+            var (json, redirect) = await TryFetchAsync(client, baseUrl, ct);
+            if (json != null) return (json, baseUrl, null);
+            primaryRedirect ??= redirect;
         }
 
-        return (null, null);
+        return (null, null, primaryRedirect ?? wellKnownRedirect);
     }
 
-    private static async Task<string?> TryFetchAsync(HttpClient client, string url, CancellationToken ct)
+    /// <summary>
+    /// Fetches one candidate URL. Returns the manifest JSON when the response is a valid
+    /// manifest; a resolved redirect target (2nd tuple slot) when the response is an
+    /// unfollowed 3xx with a Location (AllowAutoRedirect = false — we surface it rather
+    /// than pivot through it); or (null, null) otherwise.
+    /// </summary>
+    private static async Task<(string? Json, string? Redirect)> TryFetchAsync(
+        HttpClient client, string url, CancellationToken ct)
     {
         try
         {
             var response = await client.GetAsync(url, ct);
-            if (!response.IsSuccessStatusCode) return null;
+
+            // Unfollowed 3xx with a Location: surface the (resolved absolute) target as
+            // actionable instead of silently failing over to the next candidate.
+            var code = (int)response.StatusCode;
+            if (code is >= 300 and < 400 && response.Headers.Location is { } loc)
+            {
+                string? redirect;
+                try
+                {
+                    redirect = loc.IsAbsoluteUri
+                        ? loc.AbsoluteUri
+                        : Uri.TryCreate(new Uri(url), loc, out var resolved) ? resolved.AbsoluteUri : loc.OriginalString;
+                }
+                catch
+                {
+                    redirect = loc.OriginalString;
+                }
+                return (null, redirect);
+            }
+
+            if (!response.IsSuccessStatusCode) return (null, null);
 
             var content = await response.Content.ReadAsStringAsync(ct);
 
@@ -451,14 +535,14 @@ public static class DiscoverApiTool
                 doc.RootElement.TryGetProperty("l402", out _) ||
                 doc.RootElement.TryGetProperty("service", out _))
             {
-                return content;
+                return (content, null);
             }
 
-            return null;
+            return (null, null);
         }
         catch
         {
-            return null;
+            return (null, null);
         }
     }
 

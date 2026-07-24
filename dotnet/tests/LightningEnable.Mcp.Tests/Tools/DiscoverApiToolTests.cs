@@ -441,4 +441,86 @@ public class DiscoverApiToolTests
     }
 
     #endregion
+
+    #region FIX C — discover_api fallback fetch path has NO unguarded client
+
+    // Before FIX C, when no IHttpClientFactory was injected, the manifest fetch fell back
+    // to a static, UNGUARDED HttpClient (no ConnectCallback) — an unguarded SSRF path that
+    // a DNS-rebind target could ride. The fallback now uses an INLINE client carrying the
+    // SAME connect-time SsrfConnectValidator as the DI-registered client. This proves that
+    // exact fallback client (the one FetchAndFormatManifestAsync builds when the factory is
+    // null) blocks a private/metadata target at connect time. An IP literal makes it
+    // deterministic — the socket rejects before any DNS.
+
+    [Theory]
+    [InlineData("http://10.0.0.5/")]              // RFC1918
+    [InlineData("http://169.254.169.254/")]       // cloud metadata (link-local)
+    [InlineData("http://127.0.0.1/")]             // loopback
+    public async Task FallbackManifestClient_BlocksPrivateTargetAtConnect(string url)
+    {
+        using var client = DiscoverApiTool.CreateGuardedManifestClient();
+
+        var act = async () => await client.GetAsync(url);
+
+        var ex = (await act.Should().ThrowAsync<HttpRequestException>()).Which;
+        var chain = ex.Message + " " + (ex.InnerException?.Message ?? string.Empty);
+        chain.Should().Contain("private/reserved",
+            because: "the fallback manifest client must carry the connect-time SSRF guard, never be unguarded");
+    }
+
+    #endregion
+
+    #region FIX A — discover_api surfaces an unfollowed 3xx as an actionable redirect
+
+    /// <summary>Fake handler returning a canned response and recording every URL fetched.</summary>
+    private sealed class StubHandler : System.Net.Http.HttpMessageHandler
+    {
+        private readonly Func<Uri, HttpResponseMessage> _responder;
+        public List<Uri> Received { get; } = new();
+        public StubHandler(Func<Uri, HttpResponseMessage> responder) => _responder = responder;
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            Received.Add(request.RequestUri!);
+            return Task.FromResult(_responder(request.RequestUri!));
+        }
+    }
+
+    private sealed class StubHttpClientFactory : IHttpClientFactory
+    {
+        private readonly System.Net.Http.HttpMessageHandler _handler;
+        public StubHttpClientFactory(System.Net.Http.HttpMessageHandler handler) => _handler = handler;
+        public HttpClient CreateClient(string name) => new(_handler, disposeHandler: false);
+    }
+
+    [Fact]
+    public async Task DiscoverApi_ManifestUrlRedirects_ReturnsActionableRedirect_NotFollowed()
+    {
+        // The manifest URL returns a 302 to a different host. With AllowAutoRedirect off the
+        // client does not follow — the tool must surface the target as actionable, not chase it.
+        var handler = new StubHandler(_ =>
+        {
+            var r = new HttpResponseMessage(System.Net.HttpStatusCode.Found);
+            r.Headers.Location = new Uri("https://canonical.example.com/.well-known/l402-manifest.json");
+            r.Content = new StringContent("moved");
+            return r;
+        });
+        var factory = new StubHttpClientFactory(handler);
+
+        var result = await DiscoverApiTool.DiscoverApi(
+            url: "https://api.example.com",
+            budgetAware: false,
+            httpClientFactory: factory,
+            cancellationToken: CancellationToken.None);
+
+        var json = JsonDocument.Parse(result);
+        json.RootElement.GetProperty("success").GetBoolean().Should().BeFalse();
+        json.RootElement.GetProperty("redirect_location").GetString()
+            .Should().Be("https://canonical.example.com/.well-known/l402-manifest.json");
+        json.RootElement.GetProperty("error").GetString().Should().Contain("redirected to");
+
+        // Every request went to the ORIGINAL host — the redirect target was never fetched.
+        handler.Received.Should().OnlyContain(u => u.Host == "api.example.com");
+    }
+
+    #endregion
 }

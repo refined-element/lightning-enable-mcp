@@ -25,6 +25,11 @@ public class PrivateIpAddressDetectorTests
     [InlineData("169.254.169.254")] // canonical cloud metadata endpoint
     [InlineData("0.0.0.0")]
     [InlineData("0.1.2.3")]
+    // IPv4 RFC 6598 shared / CGNAT (100.64.0.0/10)
+    [InlineData("100.64.0.1")]
+    [InlineData("100.64.0.0")]
+    [InlineData("100.100.100.100")]
+    [InlineData("100.127.255.255")]
     // IPv4 multicast + reserved + broadcast
     [InlineData("224.0.0.1")]
     [InlineData("239.255.255.255")]
@@ -36,6 +41,8 @@ public class PrivateIpAddressDetectorTests
     [InlineData("fe80::1")]
     [InlineData("fc00::1")]
     [InlineData("fd12:3456:789a::1")]
+    [InlineData("fec0::1")]              // IPv6 site-local (fec0::/10, deprecated but still blocked)
+    [InlineData("feff:ffff::1")]        // top of the fec0::/10 site-local block
     [InlineData("ff02::1")]
     // IPv4-mapped IPv6 forms of private addresses must not slip through
     [InlineData("::ffff:127.0.0.1")]
@@ -54,6 +61,8 @@ public class PrivateIpAddressDetectorTests
     [InlineData("172.32.0.1")]      // just above the 172.16/12 private block
     [InlineData("169.253.0.1")]     // just below link-local
     [InlineData("11.0.0.1")]
+    [InlineData("100.63.255.255")]  // just below the 100.64/10 CGNAT block
+    [InlineData("100.128.0.1")]     // just above the 100.64/10 CGNAT block
     [InlineData("223.255.255.255")] // just below multicast
     [InlineData("2606:4700:4700::1111")] // public IPv6 (Cloudflare)
     [InlineData("2001:4860:4860::8888")] // public IPv6 (Google)

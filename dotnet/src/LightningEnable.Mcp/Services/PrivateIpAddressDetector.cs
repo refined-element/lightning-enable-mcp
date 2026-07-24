@@ -22,12 +22,14 @@ public static class PrivateIpAddressDetector
     /// <list type="bullet">
     ///   <item>IPv4 loopback (<c>127.0.0.0/8</c>)</item>
     ///   <item>IPv4 private (<c>10.0.0.0/8</c>, <c>172.16.0.0/12</c>, <c>192.168.0.0/16</c>)</item>
+    ///   <item>IPv4 shared / CGNAT (<c>100.64.0.0/10</c>, RFC 6598 — reaches carrier-grade NAT infrastructure)</item>
     ///   <item>IPv4 link-local (<c>169.254.0.0/16</c> — includes the cloud metadata IP <c>169.254.169.254</c>)</item>
     ///   <item>IPv4 "this network" (<c>0.0.0.0/8</c>)</item>
     ///   <item>IPv4 multicast (<c>224.0.0.0/4</c>) and reserved (<c>240.0.0.0/4</c>, incl. broadcast)</item>
     ///   <item>IPv6 loopback (<c>::1</c>) and unspecified (<c>::</c>)</item>
     ///   <item>IPv6 unique local (<c>fc00::/7</c>)</item>
     ///   <item>IPv6 link-local (<c>fe80::/10</c>)</item>
+    ///   <item>IPv6 site-local (<c>fec0::/10</c> — deprecated by RFC 3879 but still internally routable)</item>
     ///   <item>IPv6 multicast (<c>ff00::/8</c>)</item>
     /// </list>
     /// IPv4-mapped IPv6 addresses (e.g., <c>::ffff:127.0.0.1</c>) are unwrapped to
@@ -59,6 +61,13 @@ public static class PrivateIpAddressDetector
             if (bytes[0] == 0xFE && (bytes[1] & 0xC0) == 0x80)
                 return true;
 
+            // fec0::/10 — site-local (deprecated by RFC 3879, but a resolver can still
+            // hand one back and it addresses internal infrastructure). The pre-F-10d
+            // detector caught this via IPAddress.IsIPv6SiteLocal; keep parity here and
+            // with the Python guard's is_site_local check.
+            if (bytes[0] == 0xFE && (bytes[1] & 0xC0) == 0xC0)
+                return true;
+
             // ff00::/8 — multicast
             if (bytes[0] == 0xFF)
                 return true;
@@ -83,6 +92,14 @@ public static class PrivateIpAddressDetector
 
         // 10.0.0.0/8 — private
         if (ipBytes[0] == 10)
+            return true;
+
+        // 100.64.0.0/10 — RFC 6598 shared address space (carrier-grade NAT).
+        // Not RFC 1918, but it addresses internal CGNAT infrastructure and is a
+        // legitimate SSRF pivot, so block it. Python's ipaddress.is_private does NOT
+        // cover this range, so the Python guard blocks it explicitly too — the two
+        // ports must stay consistent.
+        if (ipBytes[0] == 100 && ipBytes[1] >= 64 && ipBytes[1] <= 127)
             return true;
 
         // 172.16.0.0/12 — private (172.16.0.0 through 172.31.255.255)

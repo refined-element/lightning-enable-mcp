@@ -134,6 +134,38 @@ jobs:
           fi
           echo "pyproject.toml version is in sync with release version $VERSION"
 
+      - name: Verify mcpb/ bundle version matches release
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          # The MCP Bundle (mcpb/) is a FIFTH published artifact (Claude Desktop / Smithery
+          # Local / Anthropic Directory). mcpb.yml auto-stamps it from the csproj at build
+          # time, but the COMMITTED mcpb/ files must ALSO match the release so the repo never
+          # advertises a stale bundle version — and so a hand-edit that drifts them from the
+          # csproj is caught here up front, before anything publishes. Three places must agree:
+          # manifest.json .version, pyproject.toml [project] version, and the pyproject pin on
+          # the published package the bundle wraps. Same fail-loud pattern as the pyproject check.
+          MCPB_MANIFEST=$(jq -r '.version' mcpb/manifest.json)
+          # Anchor on the `version = "` line (the [project] version), same as pyproject above.
+          MCPB_PY=$(grep -oP '^version = "\K[^"]+' mcpb/pyproject.toml | head -n1 || true)
+          # The bundle pins the exact package version it wraps — it must match too, or the
+          # bundle would install a different version than it claims.
+          MCPB_PIN=$(grep -oP 'lightning-enable-mcp==\K[0-9][0-9.]*' mcpb/pyproject.toml | head -n1 || true)
+          FAIL=0
+          if [ "$MCPB_MANIFEST" != "$VERSION" ]; then
+            echo "::error::mcpb/manifest.json .version is '$MCPB_MANIFEST' but the release version is '$VERSION'"; FAIL=1
+          fi
+          if [ -z "$MCPB_PY" ] || [ "$MCPB_PY" != "$VERSION" ]; then
+            echo "::error::mcpb/pyproject.toml version is '$MCPB_PY' but the release version is '$VERSION'"; FAIL=1
+          fi
+          if [ -z "$MCPB_PIN" ] || [ "$MCPB_PIN" != "$VERSION" ]; then
+            echo "::error::mcpb/pyproject.toml pins lightning-enable-mcp==$MCPB_PIN but the release version is '$VERSION'"; FAIL=1
+          fi
+          if [ "$FAIL" -ne 0 ]; then
+            echo "::error::mcpb/ bundle is out of sync with release version $VERSION. Bump mcpb/manifest.json (.version) and mcpb/pyproject.toml (version + the lightning-enable-mcp== pin) in the SAME commit as the csproj/pyproject/server.json bump."
+            exit 1
+          fi
+          echo "mcpb/ bundle is in sync with release version $VERSION"
+
   publish-packages:
     runs-on: ubuntu-latest
     needs: [verify-versions]

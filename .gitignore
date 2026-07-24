@@ -49,3 +49,8 @@ Thumbs.db
 # Build artifacts
 mcp-publisher.exe
 mcp-publisher.tar.gz
+
+# MCPB build artifacts (bundle is built in CI / on demand, not committed)
+mcpb/*.mcpb
+mcpb/.venv/
+mcpb/uv.lock

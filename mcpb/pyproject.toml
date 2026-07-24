@@ -1,0 +1,13 @@
+# Dependency shim for the MCPB (MCP Bundle) build. The uv runtime reads this at
+# install time and pulls the published lightning-enable-mcp package (and its
+# native deps — coincurve, cryptography — as prebuilt wheels) from PyPI, so the
+# bundle itself stays tiny and cross-platform. Keep the pin in lockstep with the
+# manifest.json "version" on each release.
+[project]
+name = "lightning-enable-mcp-bundle"
+version = "1.16.2"
+description = "MCPB bundle entry for the Lightning Enable MCP server"
+requires-python = ">=3.10"
+dependencies = [
+    "lightning-enable-mcp==1.16.2",
+]

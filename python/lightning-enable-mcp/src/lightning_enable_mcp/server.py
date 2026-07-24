@@ -813,9 +813,15 @@ class LightningEnableServer:
                 # return its own structured no_wallet verdict (parity with .NET), instead
                 # of this generic guard string (which also wrongly suggests OpenNode, which
                 # cannot do L402).
+                #
+                # get_balance (and its deprecated aliases) is a READ-ONLY balance tool: it
+                # returns its own receiving-oriented no-wallet message (which correctly does
+                # NOT claim OpenNode can't pay L402), so it is exempt from this payment guard.
+                balance_read_tools = {"get_balance", "check_wallet_balance", "get_all_balances"}
                 if (
                     self.wallet is None
                     and name not in producer_tools
+                    and name not in balance_read_tools
                     and name != "test_l402_payment"
                     and name != "get_receipts"  # reads the durable log; no wallet needed
                 ):

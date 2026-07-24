@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from ..receipt_service import ReceiptService
 
 from ..config import ApprovalLevel
+from ..l402_client import L402RedirectError
 from . import sanitize_error
 from ._ssrf_guard import SsrfError, validate_url_allowed
 
@@ -306,5 +307,14 @@ async def access_l402_resource(
             "method": method,
             "error": sanitize_error(str(e)),
         }
+
+        # Unfollowed 3xx redirect (follow_redirects=False): surface the target as an
+        # actionable next URL so the agent can re-call, instead of a cryptic HTTP error.
+        # We never follow it (header-leak / L402 host-change reasons). Parity with .NET's
+        # redirect_location field. amount_paid, if present, was already recorded above.
+        if isinstance(e, L402RedirectError):
+            error_result["redirect_location"] = e.location
+            if amount_paid:
+                error_result["payment"] = {"paid": True, "amountSats": amount_paid}
 
         return json.dumps(error_result, indent=2)

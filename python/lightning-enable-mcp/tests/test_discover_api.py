@@ -245,6 +245,33 @@ class TestDiscoverApi:
             assert "tried_urls" in parsed
 
     @pytest.mark.asyncio
+    async def test_manifest_url_redirect_returns_actionable_result(self):
+        """FIX A (Python): an unfollowed 3xx (follow_redirects=False) on the manifest URL
+        is surfaced as an actionable redirect_location, not chased and not a generic
+        'not found'. Parity with the .NET redirect_location shape."""
+        mock_response = MagicMock()
+        mock_response.status_code = 302
+        # A real dict so headers.get("location") works as in production httpx.
+        mock_response.headers = {"location": "https://canonical.example.com/.well-known/l402-manifest.json"}
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch.object(discover_api_module, "httpx") as mock_httpx:
+            mock_httpx.AsyncClient.return_value = mock_client
+
+            result = await discover_api(url="https://api.example.com")
+            parsed = json.loads(result)
+
+            assert parsed["success"] is False
+            assert parsed["redirect_location"] == "https://canonical.example.com/.well-known/l402-manifest.json"
+            assert "redirected to" in parsed["error"]
+            # A redirect is surfaced instead of the generic not-found shape.
+            assert "tried_urls" not in parsed
+
+    @pytest.mark.asyncio
     async def test_httpx_not_available(self):
         """Test error when httpx is not installed."""
         with patch.object(discover_api_module, "httpx", None):

@@ -9,6 +9,7 @@ import logging
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
+from urllib.parse import urljoin
 
 import httpx
 from bolt11 import decode as decode_bolt11
@@ -25,6 +26,33 @@ class L402Error(Exception):
     """Exception for L402-related errors."""
 
     pass
+
+
+class L402RedirectError(L402Error):
+    """Raised when a fetch hits an unfollowed 3xx redirect.
+
+    Redirects are deliberately NOT followed (httpx ``follow_redirects=False``). Parity
+    with the .NET port, which reverted an ``AllowAutoRedirect=true`` experiment: following
+    a redirect would (1) re-send agent-supplied custom headers (X-Api-Key, Cookie, ...) to
+    a cross-origin target, and (2) on the L402 path, pay a provider that host-redirects
+    before its 402 and then loses its ``Authorization: L402`` header on the host change —
+    pay, receive nothing. Instead the caller surfaces ``location`` as an actionable
+    "call this tool again with that URL" result. ``amount_paid`` is attached when a
+    payment already settled before the redirect (paid retry), so the caller still records
+    the real spend.
+    """
+
+    def __init__(self, location: str | None, status_code: int) -> None:
+        self.location = location
+        self.status_code = status_code
+        if location:
+            super().__init__(
+                f"Resource redirected to {location}. Call this tool again with that URL."
+            )
+        else:
+            super().__init__(
+                f"Resource returned an HTTP {status_code} redirect with no Location header."
+            )
 
 
 class L402PaymentError(L402Error):
@@ -110,6 +138,10 @@ class L402Client:
         self._http_client = httpx.AsyncClient(
             timeout=30.0,
             headers={"Accept-Encoding": "identity"},
+            # Do NOT auto-follow redirects (this is httpx's default; pinned explicitly so a
+            # future default change can't silently re-enable it). A 3xx is surfaced as an
+            # actionable L402RedirectError, never followed — see L402RedirectError for why.
+            follow_redirects=False,
         )
 
     async def close(self) -> None:
@@ -308,6 +340,26 @@ class L402Client:
         combined = "; ".join(v[:40] for v in www_auth_values)
         raise L402Error(f"No valid L402 or MPP challenge found in headers: {combined}")
 
+    @staticmethod
+    def _redirect_location(request_url: str, response: "httpx.Response") -> str | None:
+        """Return the resolved (absolute) redirect target for an unfollowed 3xx, else None.
+
+        A 3xx WITHOUT a Location (e.g. a bare 304 Not Modified) is not a redirect and
+        returns None so it flows through normal handling. A relative Location is resolved
+        against ``request_url`` so the agent receives an absolute URL to re-call with. The
+        target is surfaced verbatim as the next URL — re-calling routes back through the
+        SSRF guard, so a redirect pointing at an internal host is refused on that call.
+        """
+        if not (300 <= response.status_code < 400):
+            return None
+        location = response.headers.get("location")
+        if not location:
+            return None
+        try:
+            return urljoin(request_url, location)
+        except Exception:
+            return location
+
     def _get_invoice_amount_msat(self, bolt11: str) -> int | None:
         """
         Extract amount in millisatoshis from a BOLT11 invoice.
@@ -360,6 +412,13 @@ class L402Client:
             method=method, url=url, headers=headers, content=content
         )
 
+        # 3xx redirect: NOT followed (follow_redirects=False). Surface it as an actionable
+        # error rather than paying/leaking. Checked before the 402/>=400 handling so a
+        # provider that host-redirects BEFORE its 402 is never entered into the pay flow.
+        redirect = self._redirect_location(url, response)
+        if redirect is not None:
+            raise L402RedirectError(redirect, response.status_code)
+
         # Check for L402 challenge
         if response.status_code == 402:
             # Use get_list to properly handle multiple WWW-Authenticate headers
@@ -408,6 +467,15 @@ class L402Client:
             response = await self._http_client.request(
                 method=method, url=url, headers=auth_headers, content=content
             )
+
+            # A 3xx on the paid retry is likewise not followed. The payment already
+            # settled, so surface the redirect AND the settled amount (attached) so the
+            # caller records the real spend and can re-call with the target.
+            retry_redirect = self._redirect_location(url, response)
+            if retry_redirect is not None:
+                err = L402RedirectError(retry_redirect, response.status_code)
+                err.amount_paid = challenge.amount_sats
+                raise err
 
             if response.status_code >= 400:
                 # The invoice was already paid (preimage obtained) but the authorized

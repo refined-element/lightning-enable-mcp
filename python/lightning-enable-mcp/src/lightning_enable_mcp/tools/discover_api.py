@@ -16,7 +16,7 @@ import os
 from . import sanitize_error
 from ._ssrf_guard import SsrfError, validate_url_allowed
 from typing import TYPE_CHECKING, Any
-from urllib.parse import quote as url_quote
+from urllib.parse import quote as url_quote, urljoin
 
 if TYPE_CHECKING:
     from ..budget_service import BudgetService
@@ -117,57 +117,85 @@ def _get_tried_urls(url: str) -> list[str]:
     return urls
 
 
-async def _try_fetch(client: "httpx.AsyncClient", url: str) -> str | None:
+async def _try_fetch(client: "httpx.AsyncClient", url: str) -> tuple[str | None, str | None]:
     """
     Try to fetch a manifest from a URL.
 
-    Returns the JSON content if it looks like a valid L402 manifest, else None.
+    Returns ``(content, None)`` when the response is a valid L402 manifest;
+    ``(None, redirect)`` when the response is an unfollowed 3xx with a Location
+    (``follow_redirects=False`` — we surface the target rather than pivot through it,
+    for the header-leak / redirect-hop reasons in the L402 client); else ``(None, None)``.
+    A relative Location is resolved against ``url`` so the agent gets an absolute URL.
     """
     try:
         response = await client.get(url)
+
+        # Unfollowed 3xx with a Location: surface the (resolved) target as actionable
+        # instead of silently failing over to the next candidate.
+        if 300 <= response.status_code < 400:
+            location = response.headers.get("location")
+            if location:
+                try:
+                    return None, urljoin(url, location)
+                except Exception:
+                    return None, location
+            return None, None
+
         if response.status_code >= 400:
-            return None
+            return None, None
 
         content = response.text
         doc = json.loads(content)
 
         # Quick validation: must have expected structure
         if any(key in doc for key in ("endpoints", "l402", "service")):
-            return content
+            return content, None
 
-        return None
+        return None, None
     except Exception:
-        return None
+        return None, None
 
 
-async def _fetch_manifest(client: "httpx.AsyncClient", url: str) -> tuple[str | None, str | None]:
+async def _fetch_manifest(
+    client: "httpx.AsyncClient", url: str
+) -> tuple[str | None, str | None, str | None]:
     """
     Fetch manifest from well-known locations.
 
-    Returns (json_content, manifest_url) or (None, None).
+    Returns ``(json_content, manifest_url, None)`` on success, or
+    ``(None, None, redirect)`` when no manifest was found but a 3xx redirect was seen
+    (``redirect`` is None when neither). A redirect on the exact user-supplied URL is
+    preferred over one seen on a synthesized /.well-known/ guess.
     """
     base_url = url.rstrip("/")
+    ends_in_json = base_url.lower().endswith(".json")
+
+    primary_redirect: str | None = None
+    well_known_redirect: str | None = None
 
     # If URL ends in .json, try it directly first
-    if base_url.lower().endswith(".json"):
-        content = await _try_fetch(client, base_url)
+    if ends_in_json:
+        content, redirect = await _try_fetch(client, base_url)
         if content:
-            return content, base_url
+            return content, base_url, None
+        primary_redirect = primary_redirect or redirect
 
     # Try well-known paths
     for path in WELL_KNOWN_PATHS:
         full_url = base_url + path
-        content = await _try_fetch(client, full_url)
+        content, redirect = await _try_fetch(client, full_url)
         if content:
-            return content, full_url
+            return content, full_url, None
+        well_known_redirect = well_known_redirect or redirect
 
     # Try the URL directly if not already tried
-    if not base_url.lower().endswith(".json"):
-        content = await _try_fetch(client, base_url)
+    if not ends_in_json:
+        content, redirect = await _try_fetch(client, base_url)
         if content:
-            return content, base_url
+            return content, base_url, None
+        primary_redirect = primary_redirect or redirect
 
-    return None, None
+    return None, None, primary_redirect or well_known_redirect
 
 
 def _extract_service_info(root: dict[str, Any]) -> dict[str, Any]:
@@ -331,7 +359,10 @@ async def _search_registry(
 
     request_url = f"{registry_url}/api/manifests/registry?{'&'.join(query_params)}"
 
-    async with httpx.AsyncClient(timeout=15.0, headers={
+    # follow_redirects=False (httpx default, pinned explicitly): the registry URL is
+    # operator-controlled, but keep the same no-follow posture as the manifest client so a
+    # misconfigured registry redirect can't silently pivot the fetch.
+    async with httpx.AsyncClient(timeout=15.0, follow_redirects=False, headers={
         "Accept": "application/json",
         "User-Agent": "LightningEnable-MCP/1.0",
     }) as client:
@@ -444,13 +475,22 @@ async def _fetch_and_format_manifest(
             "error": str(e),
         })
 
-    async with httpx.AsyncClient(timeout=15.0, headers={
+    async with httpx.AsyncClient(timeout=15.0, follow_redirects=False, headers={
         "Accept": "application/json",
         "User-Agent": "LightningEnable-MCP/1.0",
     }) as client:
-        manifest_json, manifest_url = await _fetch_manifest(client, url)
+        manifest_json, manifest_url, redirect_location = await _fetch_manifest(client, url)
 
     if manifest_json is None:
+        # A 3xx redirect (not followed) is surfaced as actionable rather than a generic
+        # "not found", so the agent can re-call with the target. Never followed here.
+        if redirect_location:
+            return json.dumps({
+                "success": False,
+                "error": f"Resource redirected to {redirect_location}. Call this tool again with that URL.",
+                "redirect_location": redirect_location,
+            })
+
         return json.dumps({
             "success": False,
             "error": "Could not find an L402 manifest at the given URL or any well-known locations.",

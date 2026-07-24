@@ -384,4 +384,61 @@ public class DiscoverApiToolTests
     }
 
     #endregion
+
+    #region SSRF guard (F-10e — discover_api manifest fetch is now guarded on .NET)
+
+    // Before this fix the .NET discover_api tool fetched agent-supplied URLs through an
+    // UNGUARDED static HttpClient, leaving SSRF fully open (an agent could pass
+    // url=http://169.254.169.254/... or a private range). The manifest fetch now runs a
+    // cheap synchronous pre-check BEFORE any request and (in Program.cs) routes through a
+    // client carrying the connect-time SsrfConnectValidator. These prove the pre-check
+    // refuses private/metadata targets with a generic, non-echoing error and never reaches
+    // the fetch path (no tried_urls is emitted — that only appears once a fetch is attempted).
+
+    [Theory]
+    [InlineData("http://169.254.169.254/")]              // cloud metadata (link-local literal)
+    [InlineData("http://169.254.169.254/latest/meta-data/")]
+    [InlineData("http://127.0.0.1/l402.json")]           // loopback literal
+    [InlineData("http://[::1]/l402.json")]               // IPv6 loopback literal
+    [InlineData("http://10.0.0.5/")]                      // RFC1918 literal
+    [InlineData("http://192.168.1.1/l402.json")]         // RFC1918 literal
+    [InlineData("http://100.64.0.1/")]                    // RFC6598 CGNAT literal
+    [InlineData("http://localhost/l402.json")]           // localhost hostname
+    [InlineData("http://metadata.google.internal/")]      // metadata hostname
+    [InlineData("http://foo.internal/l402.json")]        // .internal suffix
+    public async Task DiscoverApi_PrivateOrMetadataUrl_RefusedBeforeAnyFetch(string url)
+    {
+        var result = await DiscoverApiTool.DiscoverApi(
+            url: url, budgetAware: false, cancellationToken: CancellationToken.None);
+
+        var json = JsonDocument.Parse(result);
+        json.RootElement.GetProperty("success").GetBoolean().Should().BeFalse();
+        json.RootElement.GetProperty("error").GetString().Should().Contain("not allowed");
+
+        // Refused by the pre-check BEFORE the manifest-fetch path ran → no tried_urls.
+        json.RootElement.TryGetProperty("tried_urls", out _).Should()
+            .BeFalse("a private/metadata target must be refused before any fetch is attempted");
+
+        // Generic message — the internal host/IP is never echoed back to the caller.
+        var error = json.RootElement.GetProperty("error").GetString()!;
+        error.Should().NotContain("169.254.169.254");
+        error.Should().NotContain("10.0.0.5");
+        error.Should().NotContain("192.168.1.1");
+    }
+
+    [Theory]
+    [InlineData("ftp://example.com/manifest.json")]
+    [InlineData("file:///etc/passwd")]
+    [InlineData("gopher://example.com/")]
+    public async Task DiscoverApi_NonHttpUrl_Refused(string url)
+    {
+        var result = await DiscoverApiTool.DiscoverApi(
+            url: url, budgetAware: false, cancellationToken: CancellationToken.None);
+
+        var json = JsonDocument.Parse(result);
+        json.RootElement.GetProperty("success").GetBoolean().Should().BeFalse();
+        json.RootElement.TryGetProperty("tried_urls", out _).Should().BeFalse();
+    }
+
+    #endregion
 }

@@ -15,6 +15,14 @@ namespace LightningEnable.Mcp.Tools;
 [McpServerToolType]
 public static class DiscoverApiTool
 {
+    /// <summary>
+    /// Named <see cref="IHttpClientFactory"/> client (registered in Program.cs) used
+    /// for the agent-supplied manifest fetch. It carries the connect-time
+    /// <see cref="Services.SsrfConnectValidator"/> SSRF guard, so discover_api cannot
+    /// be used to reach a private/metadata target (F-10e).
+    /// </summary>
+    public const string ManifestHttpClientName = "DiscoverApi";
+
     private static readonly string[] WellKnownPaths =
     {
         "/.well-known/l402-manifest.json",
@@ -22,6 +30,10 @@ public static class DiscoverApiTool
         "/l402.json"
     };
 
+    // Fallback client for the registry search (operator-controlled URL — NOT the
+    // agent-supplied SSRF vector) and for unit tests that invoke the tool without a
+    // DI-provided IHttpClientFactory. The manifest-fetch path uses the guarded named
+    // client above instead.
     private static readonly HttpClient SharedClient = new()
     {
         Timeout = TimeSpan.FromSeconds(15),
@@ -46,6 +58,7 @@ public static class DiscoverApiTool
         [Description("If true, annotate endpoints with affordable call counts based on remaining budget. Default: true.")] bool budgetAware = true,
         IBudgetService? budgetService = null,
         IPriceService? priceService = null,
+        IHttpClientFactory? httpClientFactory = null,
         CancellationToken cancellationToken = default)
     {
         try
@@ -53,7 +66,7 @@ public static class DiscoverApiTool
             // Route: URL provided → fetch manifest (existing behavior)
             if (!string.IsNullOrWhiteSpace(url))
             {
-                return await FetchAndFormatManifestAsync(url, budgetAware, budgetService, priceService, cancellationToken);
+                return await FetchAndFormatManifestAsync(url, budgetAware, budgetService, priceService, httpClientFactory, cancellationToken);
             }
 
             // Route: query/category provided → search registry
@@ -208,12 +221,32 @@ public static class DiscoverApiTool
     private static async Task<string> FetchAndFormatManifestAsync(
         string url, bool budgetAware,
         IBudgetService? budgetService, IPriceService? priceService,
+        IHttpClientFactory? httpClientFactory,
         CancellationToken cancellationToken)
     {
+        // SSRF pre-check (F-10e): the manifest URL is agent-supplied. Refuse a
+        // private/internal/metadata target with a generic (non-echoing) error BEFORE
+        // any request. This is the cheap synchronous check; the guarded client's
+        // connect-time SsrfConnectValidator is the authoritative IP guard (and covers
+        // the /.well-known/ variants and any redirect hops).
+        var preCheckError = SsrfUrlGuard.Validate(url);
+        if (preCheckError != null)
+        {
+            return JsonSerializer.Serialize(new
+            {
+                success = false,
+                error = preCheckError
+            });
+        }
+
+        // Guarded client for the agent-supplied fetch. Fall back to the shared client
+        // only when no factory was injected (e.g. a unit test invoking the tool directly).
+        var client = httpClientFactory?.CreateClient(ManifestHttpClientName) ?? SharedClient;
+
         try
         {
             // Try to fetch manifest from well-known locations
-            var (manifestJson, manifestUrl) = await FetchManifestAsync(url, cancellationToken);
+            var (manifestJson, manifestUrl) = await FetchManifestAsync(client, url, cancellationToken);
             if (manifestJson == null)
             {
                 return JsonSerializer.Serialize(new
@@ -374,14 +407,14 @@ public static class DiscoverApiTool
     }
 
     private static async Task<(string? Json, string? Url)> FetchManifestAsync(
-        string url, CancellationToken ct)
+        HttpClient client, string url, CancellationToken ct)
     {
         var baseUrl = url.TrimEnd('/');
 
         // If URL ends in .json, try it directly first
         if (baseUrl.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
         {
-            var json = await TryFetchAsync(baseUrl, ct);
+            var json = await TryFetchAsync(client, baseUrl, ct);
             if (json != null) return (json, baseUrl);
         }
 
@@ -389,25 +422,25 @@ public static class DiscoverApiTool
         foreach (var path in WellKnownPaths)
         {
             var fullUrl = baseUrl + path;
-            var json = await TryFetchAsync(fullUrl, ct);
+            var json = await TryFetchAsync(client, fullUrl, ct);
             if (json != null) return (json, fullUrl);
         }
 
         // Try the URL directly if not already tried
         if (!baseUrl.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
         {
-            var json = await TryFetchAsync(baseUrl, ct);
+            var json = await TryFetchAsync(client, baseUrl, ct);
             if (json != null) return (json, baseUrl);
         }
 
         return (null, null);
     }
 
-    private static async Task<string?> TryFetchAsync(string url, CancellationToken ct)
+    private static async Task<string?> TryFetchAsync(HttpClient client, string url, CancellationToken ct)
     {
         try
         {
-            var response = await SharedClient.GetAsync(url, ct);
+            var response = await client.GetAsync(url, ct);
             if (!response.IsSuccessStatusCode) return null;
 
             var content = await response.Content.ReadAsStringAsync(ct);

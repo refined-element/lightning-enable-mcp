@@ -1,4 +1,5 @@
 using LightningEnable.Mcp.Services;
+using LightningEnable.Mcp.Tools;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -91,20 +92,41 @@ public class Program
 
         // Register HTTP client for L402.
         //
-        // SSRF hardening (F-10d): the URL is attacker-influenceable and only the
-        // INITIAL URL is validated in AccessL402ResourceTool.ValidateUrl.
-        //  - AllowAutoRedirect = false: a 3xx to http://169.254.169.254/ (cloud
-        //    metadata) or a private range is NOT auto-followed to an unvalidated
-        //    host. L402HttpClient does not follow redirects itself, so a 3xx now
-        //    surfaces to the caller as a non-success status instead of being
-        //    chased — the connect guard below + this flag are together sufficient.
+        // SSRF hardening (F-10d/F-10e): the URL is attacker-influenceable and only a
+        // cheap pre-check runs in AccessL402ResourceTool.ValidateUrl. The definitive
+        // guard is the ConnectCallback below.
         //  - ConnectCallback: validates the ACTUAL connect-time IP and connects to
         //    exactly that validated set (no re-resolution), closing the DNS-rebind
         //    TOCTOU window between the initial-URL check and the socket connect.
+        //  - AllowAutoRedirect = true: SAFE precisely because of the ConnectCallback.
+        //    Every connection the handler opens — including each auto-redirect hop —
+        //    goes through the callback and is IP-validated at connect time, so a 3xx
+        //    pivot to http://169.254.169.254/ (cloud metadata) or a private range is
+        //    blocked on the redirected hop. SocketsHttpHandler additionally refuses
+        //    https→http downgrade redirects. Keeping redirects OFF broke common
+        //    http→https / apex→canonical redirects and any L402 provider that
+        //    redirects before its 402, so we follow them and rely on the callback.
         builder.Services.AddHttpClient<IL402HttpClient, L402HttpClient>()
             .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
             {
-                AllowAutoRedirect = false,
+                AllowAutoRedirect = true,
+                ConnectCallback = SsrfConnectValidator.ConnectAsync,
+            });
+
+        // Register the guarded HTTP client for discover_api's manifest fetch (F-10e).
+        // The manifest URL is agent-supplied, so this client carries the SAME
+        // connect-time SSRF guard as the L402 client — an agent cannot use discover_api
+        // to reach 169.254.169.254 / a private range, and every redirect hop is
+        // IP-validated too (AllowAutoRedirect = true is safe for the same reason as above).
+        builder.Services.AddHttpClient(DiscoverApiTool.ManifestHttpClientName, client =>
+            {
+                client.Timeout = TimeSpan.FromSeconds(15);
+                client.DefaultRequestHeaders.Add("Accept", "application/json");
+                client.DefaultRequestHeaders.Add("User-Agent", "LightningEnable-MCP/1.0");
+            })
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            {
+                AllowAutoRedirect = true,
                 ConnectCallback = SsrfConnectValidator.ConnectAsync,
             });
 

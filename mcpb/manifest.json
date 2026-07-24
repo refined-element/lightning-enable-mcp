@@ -82,7 +82,7 @@
     "lightning_enable_api_key": {
       "type": "string",
       "title": "Lightning Enable API Key (optional)",
-      "description": "Optional. Unlocks the L402 producer tools and agent-to-agent (Nostr) tools. Requires a Lightning Enable Agentic Commerce subscription. The wallet and L402 tools work without it.",
+      "description": "Optional. Unlocks the L402 producer tools and the ASA request/publish tools. Requires a Lightning Enable Agentic Commerce subscription. The wallet, L402, and ASA discovery/settlement/reputation tools work without it.",
       "sensitive": true,
       "required": false
     }

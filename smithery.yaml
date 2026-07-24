@@ -23,9 +23,10 @@ startCommand:
       lightningEnableApiKey:
         type: string
         description: >-
-          Optional. Your Lightning Enable API key. Required only to enable the
-          subscription-gated producer + ASA tools. The out-of-the-box tools
-          work without it. Get a key at https://lightningenable.com.
+          Optional. Your Lightning Enable API key. Required only for the producer
+          tools and the ASA request/publish tools. The out-of-the-box tools — and
+          ASA discovery/settlement/reputation — work without it. Get a key at
+          https://lightningenable.com.
         secret: true
       strikeApiKey:
         type: string

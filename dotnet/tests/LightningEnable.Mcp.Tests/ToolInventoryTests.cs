@@ -14,7 +14,7 @@ namespace LightningEnable.Mcp.Tests;
 /// free / API-key split. Add or remove a tool and this test fails until you update the
 /// ONE list below — which is what every human-facing count is expected to derive from.
 ///
-/// Canonical: 25 total = 17 out-of-the-box (free, just a wallet) + 8 that require
+/// Canonical: 26 total = 17 out-of-the-box (free, just a wallet) + 9 that require
 /// <c>LIGHTNING_ENABLE_API_KEY</c> (2 producer + 6 ASA). Keep in lockstep with the Python
 /// guard (python/lightning-enable-mcp/tests/test_server.py) and the docs' MCP Complete
 /// Guide — the one place that itemizes the tools for humans.
@@ -37,12 +37,13 @@ public class ToolInventoryTests
         "verify_confirmation_code", "create_lightning_enable_account",
     };
 
-    // 8 tools that require LIGHTNING_ENABLE_API_KEY: 2 producer + 6 ASA.
+    // 9 tools that require LIGHTNING_ENABLE_API_KEY: 2 producer + 7 ASA.
     private static readonly IReadOnlySet<string> ApiKeyTools = new HashSet<string>
     {
         "create_l402_challenge", "verify_l402_payment",
         "discover_agent_services", "request_agent_service", "settle_agent_service",
-        "publish_agent_capability", "publish_agent_attestation", "get_agent_reputation",
+        "publish_agent_capability", "unpublish_agent_capability",
+        "publish_agent_attestation", "get_agent_reputation",
     };
 
     /// <summary>
@@ -97,11 +98,11 @@ public class ToolInventoryTests
     }
 
     [Fact]
-    public void ToolCounts_AreCanonical_25_17_8()
+    public void ToolCounts_AreCanonical_26_17_9()
     {
         FreeTools.Count.Should().Be(17, "17 out-of-the-box tools");
-        ApiKeyTools.Count.Should().Be(8, "8 tools require LIGHTNING_ENABLE_API_KEY (2 producer + 6 ASA)");
-        (FreeTools.Count + ApiKeyTools.Count).Should().Be(25, "25 tools total");
+        ApiKeyTools.Count.Should().Be(9, "9 tools require LIGHTNING_ENABLE_API_KEY (2 producer + 7 ASA)");
+        (FreeTools.Count + ApiKeyTools.Count).Should().Be(26, "26 tools total");
         FreeTools.Overlaps(ApiKeyTools).Should().BeFalse("a tool is either free or API-key-gated, never both");
     }
 }

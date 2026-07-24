@@ -134,9 +134,9 @@ def test_readme_free_gated_split_matches_inventory(tools_table: dict[str, str]) 
 
 
 def test_readme_tool_counts_are_canonical(tools_table: dict[str, str]) -> None:
-    """25 total = 17 free + 8 gated, matching the guard tests."""
+    """26 total = 17 free + 9 gated, matching the guard tests."""
     free = sum(1 for a in tools_table.values() if a == FREE_LABEL)
     gated = sum(1 for a in tools_table.values() if a == GATED_LABEL)
     assert free == 17, f"expected 17 free tools in README, found {free}"
-    assert gated == 8, f"expected 8 gated tools in README, found {gated}"
-    assert free + gated == 25, f"expected 25 tools total in README, found {free + gated}"
+    assert gated == 9, f"expected 9 gated tools in README, found {gated}"
+    assert free + gated == 26, f"expected 26 tools total in README, found {free + gated}"

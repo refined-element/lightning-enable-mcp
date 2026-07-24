@@ -129,7 +129,7 @@ Config file locations:
 
 ## Tools
 
-**Canonical inventory: 25 tools — 17 free (out of the box, just a wallet) + 8 that require `LIGHTNING_ENABLE_API_KEY`** (an [Agentic Commerce subscription](https://lightningenable.com); 2 L402 Producer + 6 Agent Service Agreement). This table is the single source of truth every advertised count derives from — it is pinned to the code by the tool-inventory guard tests in both ports (drift fails CI).
+**Canonical inventory: 26 tools — 17 free (out of the box, just a wallet) + 9 that require `LIGHTNING_ENABLE_API_KEY`** (an [Agentic Commerce subscription](https://lightningenable.com); 2 L402 Producer + 7 Agent Service Agreement). This table is the single source of truth every advertised count derives from — it is pinned to the code by the tool-inventory guard tests in both ports (drift fails CI).
 
 **Deprecated aliases** (accepted but unadvertised, forward to the new tool, removed in v2.0.0): `confirm_payment` → `verify_confirmation_code`; `check_wallet_balance`, `get_all_balances` → `get_balance`.
 
@@ -156,6 +156,7 @@ Config file locations:
 | `verify_l402_payment` | Agentic Commerce | L402 Producer: verify an L402 token (macaroon + preimage) |
 | `discover_agent_services` | Agentic Commerce | ASA: search for agent capabilities on Nostr |
 | `publish_agent_capability` | Agentic Commerce | ASA: publish your agent's services (kind 38400) |
+| `unpublish_agent_capability` | Agentic Commerce | ASA: take a listing down — retire the proxy + NIP-09 removal |
 | `request_agent_service` | Agentic Commerce | ASA: request a service from another agent (kind 38401) |
 | `settle_agent_service` | Agentic Commerce | ASA: pay for an agent service via L402 settlement |
 | `publish_agent_attestation` | Agentic Commerce | ASA: leave a review/rating for an agent (kind 38403) |
@@ -195,6 +196,7 @@ All six ASA tools require `LIGHTNING_ENABLE_API_KEY` (an [Agentic Commerce subsc
 |------|-------------|
 | `discover_agent_services` | Search for agent capabilities by category, hashtag, or keyword |
 | `publish_agent_capability` | Publish your agent's services to the Nostr network (kind 38400) |
+| `unpublish_agent_capability` | Take a published listing down: retire the L402 proxy and emit a NIP-09 removal |
 | `request_agent_service` | Request a service from another agent (kind 38401) |
 | `settle_agent_service` | Pay for an agent service via L402 Lightning settlement |
 | `publish_agent_attestation` | Leave a review/rating for an agent after service completion (kind 38403) |

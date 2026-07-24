@@ -51,6 +51,7 @@ from .tools.budget import configure_budget, get_payment_history
 from .tools.budget_status import get_budget_status
 from .tools.discover_agent_services import discover_agent_services
 from .tools.publish_agent_capability import publish_agent_capability
+from .tools.unpublish_agent_capability import unpublish_agent_capability
 from .tools.request_agent_service import request_agent_service
 from .tools.publish_agent_attestation import publish_agent_attestation
 from .tools.get_agent_reputation import get_agent_reputation
@@ -654,6 +655,38 @@ class LightningEnableServer:
                     },
                 ),
                 Tool(
+                    name="unpublish_agent_capability",
+                    description=(
+                        "Take a published agent capability down (listing lifecycle). "
+                        "In 'remove' mode it retires the L402 proxy and publishes a NIP-09 "
+                        "kind 5 deletion plus a status=removed 38400 replacement, so other "
+                        "agents stop seeing a dead listing. Requires LIGHTNING_ENABLE_API_KEY."
+                    ),
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "pubkey": {
+                                "type": "string",
+                                "description": "Nostr public key (64-hex) of the agent that owns the listing",
+                            },
+                            "service_id": {
+                                "type": "string",
+                                "description": "The listing's service identifier (its d-tag / proxy id)",
+                            },
+                            "mode": {
+                                "type": "string",
+                                "enum": ["remove", "pause"],
+                                "description": "'remove' (default) withdraws the listing and retires its proxy; 'pause' is reserved",
+                            },
+                            "reason": {
+                                "type": "string",
+                                "description": "Optional free-text reason recorded on the removal event",
+                            },
+                        },
+                        "required": ["pubkey", "service_id"],
+                    },
+                ),
+                Tool(
                     name="request_agent_service",
                     description=(
                         "Sends a service request (kind 38401 event) referencing the provider's capability. "
@@ -804,6 +837,7 @@ class LightningEnableServer:
                     "confirm_payment",  # deprecated alias of verify_confirmation_code
                     "discover_agent_services",
                     "publish_agent_capability",
+                    "unpublish_agent_capability",
                     "request_agent_service",
                     "publish_agent_attestation",
                     "get_agent_reputation",
@@ -1021,6 +1055,15 @@ class LightningEnableServer:
                         l402_endpoint=arguments.get("l402_endpoint"),
                         target_url=arguments.get("target_url"),
                         hashtags=arguments.get("hashtags"),
+                        api_client=self.api_client,
+                    )
+
+                elif name == "unpublish_agent_capability":
+                    result = await unpublish_agent_capability(
+                        pubkey=arguments.get("pubkey", ""),
+                        service_id=arguments.get("service_id", ""),
+                        mode=arguments.get("mode", "remove"),
+                        reason=arguments.get("reason"),
                         api_client=self.api_client,
                     )
 

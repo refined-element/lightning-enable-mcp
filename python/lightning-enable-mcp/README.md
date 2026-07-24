@@ -168,7 +168,7 @@ Or if installed via pip, replace `"command": "uvx", "args": ["lightning-enable-m
 
 ## Available Tools
 
-> **The complete, canonical tool list is the [Tools table in the root README](https://github.com/refined-element/lightning-enable-mcp#tools).** It lists all **25 tools** — **17 free** (out of the box, just a wallet) plus **8 that require `LIGHTNING_ENABLE_API_KEY`** (an [Agentic Commerce subscription](https://lightningenable.com); 2 L402 Producer + 6 Agent Service Agreement) — and is pinned to the code by guard tests in both ports, so it never drifts from what the server actually registers. The sections below document a **selected subset** in detail; they are not the full inventory.
+> **The complete, canonical tool list is the [Tools table in the root README](https://github.com/refined-element/lightning-enable-mcp#tools).** It lists all **26 tools** — **17 free** (out of the box, just a wallet) plus **9 that require `LIGHTNING_ENABLE_API_KEY`** (an [Agentic Commerce subscription](https://lightningenable.com); 2 L402 Producer + 7 Agent Service Agreement) — and is pinned to the code by guard tests in both ports, so it never drifts from what the server actually registers. The sections below document a **selected subset** in detail; they are not the full inventory.
 >
 > **Deprecated aliases** (accepted but unadvertised, forward to the new tool, removed in v2.0.0): `confirm_payment` → `verify_confirmation_code`; `check_wallet_balance` and `get_all_balances` → `get_balance`.
 

@@ -55,6 +55,7 @@ from .budget import configure_budget, get_payment_history
 from .budget_status import get_budget_status
 from .discover_agent_services import discover_agent_services
 from .publish_agent_capability import publish_agent_capability
+from .unpublish_agent_capability import unpublish_agent_capability
 from .request_agent_service import request_agent_service
 from .publish_agent_attestation import publish_agent_attestation
 from .get_agent_reputation import get_agent_reputation
@@ -80,6 +81,7 @@ __all__ = [
     "get_budget_status",
     "discover_agent_services",
     "publish_agent_capability",
+    "unpublish_agent_capability",
     "request_agent_service",
     "publish_agent_attestation",
     "get_agent_reputation",

@@ -55,7 +55,7 @@ public class AgentServiceTests
     }
 
     [Fact]
-    public async Task UnpublishCapability_PercentEncodesServiceIdPath()
+    public async Task UnpublishCapability_TargetsProxyEndpoint_AndEncodesPath()
     {
         HttpRequestMessage? captured = null;
         var handlerMock = new Mock<HttpMessageHandler>();
@@ -69,18 +69,21 @@ public class AgentServiceTests
             {
                 StatusCode = HttpStatusCode.OK,
                 Content = new StringContent(
-                    "{\"serviceId\":\"x\",\"proxyId\":\"p\",\"mode\":\"remove\",\"retired\":true}",
+                    "{\"proxyId\":\"p\",\"retired\":true}",
                     System.Text.Encoding.UTF8, "application/json")
             });
         var service = new AgentService(new HttpClient(handlerMock.Object), _configServiceMock.Object);
 
         var result = await service.UnpublishCapabilityAsync(
-            new string('a', 64), "svc/../danger", "remove", null, CancellationToken.None);
+            "svc/../danger", null, CancellationToken.None);
 
         result.Success.Should().BeTrue();
         captured.Should().NotBeNull();
-        // The slash in service_id is percent-encoded, so it can't traverse the path.
-        captured!.RequestUri!.AbsoluteUri.Should().Contain("%2F");
+        // Targets the ungated proxy management endpoint…
+        captured!.RequestUri!.AbsoluteUri.Should().Contain("/api/proxy/");
+        captured.RequestUri.AbsoluteUri.Should().EndWith("/unpublish");
+        // …and the slash in the proxy id is percent-encoded (no path traversal).
+        captured.RequestUri.AbsoluteUri.Should().Contain("%2F");
         captured.RequestUri.AbsolutePath.Should().NotContain("/svc/../danger/");
     }
 

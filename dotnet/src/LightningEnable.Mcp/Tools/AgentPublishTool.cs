@@ -19,7 +19,10 @@ public static class AgentPublishTool
         "Publish an agent capability advertisement to the Nostr network. " +
         "Makes your agent discoverable by other agents. Creates a kind 38400 event. " +
         "Optionally creates an L402 proxy for payment settlement. " +
-        "Requires LIGHTNING_ENABLE_API_KEY.")]
+        "Requires LIGHTNING_ENABLE_API_KEY. " +
+        "NOTE: this uses the agent-to-agent capability backend, which is not yet enabled on the " +
+        "hosted Lightning Enable API (calls there currently return an error). Today, marketplace " +
+        "listings are published via the Lightning Enable dashboard / L402 proxy pipeline.")]
     public static async Task<string> PublishAgentCapability(
         [Description("Unique service identifier (used as d-tag)")] string serviceId,
         [Description("Service categories (e.g., ['ai', 'translation'])")] string[] categories,

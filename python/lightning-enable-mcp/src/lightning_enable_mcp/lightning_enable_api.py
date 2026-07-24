@@ -413,20 +413,19 @@ class LightningEnableApiClient:
 
     async def unpublish_capability(
         self,
-        pubkey: str,
-        service_id: str,
-        mode: str,
+        proxy_id: str,
         reason: str | None,
     ) -> dict[str, Any]:
         """
-        Take a published capability down (NIP-A5 listing lifecycle).
+        Take a published listing down via the L402 proxy management API.
 
-        Calls the backend unpublish endpoint, which soft-retires the L402 proxy
-        and emits the on-Nostr removal (NIP-09 kind 5 + status=removed 38400).
-        Requires an API key.
+        Targets the *ungated* proxy pipeline that the live marketplace listings
+        use (POST /api/proxy/{proxyId}/unpublish): soft-retires the proxy (stops
+        the L402 endpoint serving and republishing) and emits the on-Nostr removal
+        (NIP-09 kind 5 + status=removed 38400). Requires an API key.
 
         Returns:
-            Dict with success, serviceId, proxyId, mode, retired, or error.
+            Dict with success, proxyId, retired, alreadyRetired, or error.
         """
         if not self.is_configured:
             return {
@@ -440,15 +439,14 @@ class LightningEnableApiClient:
 
         from urllib.parse import quote
 
-        path_pubkey = quote(pubkey, safe="")
-        path_service = quote(service_id, safe="")
-        request_body: dict[str, Any] = {"mode": mode}
+        path_proxy = quote(proxy_id, safe="")
+        request_body: dict[str, Any] = {}
         if reason:
             request_body["reason"] = reason
 
         try:
             response = await self._client.post(
-                f"{self._base_url}/api/agents/{path_pubkey}/capabilities/{path_service}/unpublish",
+                f"{self._base_url}/api/proxy/{path_proxy}/unpublish",
                 json=request_body,
             )
             data = self._safe_json(response)
@@ -458,13 +456,12 @@ class LightningEnableApiClient:
 
             return {
                 "success": True,
-                "serviceId": (
-                    data.get("serviceId") if isinstance(data, dict) else None
-                )
-                or service_id,
-                "proxyId": data.get("proxyId") if isinstance(data, dict) else None,
-                "mode": (data.get("mode") if isinstance(data, dict) else None) or mode,
+                "proxyId": (data.get("proxyId") if isinstance(data, dict) else None)
+                or proxy_id,
                 "retired": data.get("retired") if isinstance(data, dict) else None,
+                "alreadyRetired": (
+                    data.get("alreadyRetired") if isinstance(data, dict) else None
+                ),
             }
 
         except httpx.TimeoutException:

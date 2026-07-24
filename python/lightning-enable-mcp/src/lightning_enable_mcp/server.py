@@ -615,7 +615,11 @@ class LightningEnableServer:
                         "Publish an agent capability advertisement to the Nostr network. "
                         "Makes your agent discoverable by other agents. Creates a kind 38400 event. "
                         "Optionally creates an L402 proxy for payment settlement. "
-                        "Requires LIGHTNING_ENABLE_API_KEY."
+                        "Requires LIGHTNING_ENABLE_API_KEY. "
+                        "NOTE: this uses the agent-to-agent capability backend, which is not yet "
+                        "enabled on the hosted Lightning Enable API (calls there currently return "
+                        "an error). Today, marketplace listings are published via the Lightning "
+                        "Enable dashboard / L402 proxy pipeline."
                     ),
                     inputSchema={
                         "type": "object",
@@ -657,33 +661,24 @@ class LightningEnableServer:
                 Tool(
                     name="unpublish_agent_capability",
                     description=(
-                        "Take a published agent capability down (listing lifecycle). "
-                        "In 'remove' mode it retires the L402 proxy and publishes a NIP-09 "
-                        "kind 5 deletion plus a status=removed 38400 replacement, so other "
-                        "agents stop seeing a dead listing. Requires LIGHTNING_ENABLE_API_KEY."
+                        "Take a published listing down. Retires the L402 proxy and publishes a "
+                        "NIP-09 kind 5 deletion plus a status=removed 38400 replacement, so other "
+                        "agents stop seeing a dead listing. Works for marketplace listings created "
+                        "via the L402 proxy/dashboard pipeline. Requires LIGHTNING_ENABLE_API_KEY."
                     ),
                     inputSchema={
                         "type": "object",
                         "properties": {
-                            "pubkey": {
-                                "type": "string",
-                                "description": "Nostr public key (64-hex) of the agent that owns the listing",
-                            },
                             "service_id": {
                                 "type": "string",
-                                "description": "The listing's service identifier (its d-tag / proxy id)",
-                            },
-                            "mode": {
-                                "type": "string",
-                                "enum": ["remove", "pause"],
-                                "description": "'remove' (default) withdraws the listing and retires its proxy; 'pause' is reserved",
+                                "description": "The listing's identifier — its Nostr d-tag / proxy id (the value after the last ':' in the card's nw: footer)",
                             },
                             "reason": {
                                 "type": "string",
                                 "description": "Optional free-text reason recorded on the removal event",
                             },
                         },
-                        "required": ["pubkey", "service_id"],
+                        "required": ["service_id"],
                     },
                 ),
                 Tool(
@@ -692,7 +687,9 @@ class LightningEnableServer:
                         "Sends a service request (kind 38401 event) referencing the provider's capability. "
                         "The provider responds with agreement/settlement terms; settle via settle_agent_service. "
                         "If the provider has an L402 endpoint, you can skip this step "
-                        "and use settle_agent_service directly. Requires LIGHTNING_ENABLE_API_KEY."
+                        "and use settle_agent_service directly. Requires LIGHTNING_ENABLE_API_KEY. "
+                        "NOTE: the agent-to-agent capability backend is not yet enabled on the "
+                        "hosted Lightning Enable API; calls there currently return an error."
                     ),
                     inputSchema={
                         "type": "object",
@@ -718,7 +715,9 @@ class LightningEnableServer:
                     description=(
                         "Publish an attestation (review) for an agent after a completed agreement. "
                         "Creates a kind 38403 event that builds the agent's on-protocol reputation. "
-                        "Requires LIGHTNING_ENABLE_API_KEY."
+                        "Requires LIGHTNING_ENABLE_API_KEY. "
+                        "NOTE: the agent-to-agent capability backend is not yet enabled on the "
+                        "hosted Lightning Enable API; calls there currently return an error."
                     ),
                     inputSchema={
                         "type": "object",
@@ -752,7 +751,9 @@ class LightningEnableServer:
                     description=(
                         "Get an agent's reputation score and reviews. "
                         "Queries kind 38403 attestation events for the given pubkey. "
-                        "Returns average rating and individual reviews."
+                        "Returns average rating and individual reviews. "
+                        "NOTE: the agent-to-agent capability backend is not yet enabled on the "
+                        "hosted Lightning Enable API; calls there currently return an error."
                     ),
                     inputSchema={
                         "type": "object",
@@ -1060,9 +1061,7 @@ class LightningEnableServer:
 
                 elif name == "unpublish_agent_capability":
                     result = await unpublish_agent_capability(
-                        pubkey=arguments.get("pubkey", ""),
                         service_id=arguments.get("service_id", ""),
-                        mode=arguments.get("mode", "remove"),
                         reason=arguments.get("reason"),
                         api_client=self.api_client,
                     )

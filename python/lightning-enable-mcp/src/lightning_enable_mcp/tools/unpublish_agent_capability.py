@@ -1,16 +1,15 @@
 """
 Unpublish Agent Capability Tool
 
-Takes a previously published capability down (NIP-A5 listing lifecycle). In
-`remove` mode the backend soft-retires the L402 proxy and emits the on-Nostr
-removal (a NIP-09 kind 5 deletion plus a status=removed 38400 replacement), so
-agents watching the marketplace stop seeing a dead endpoint. Requires
-LIGHTNING_ENABLE_API_KEY (same auth/signing path as publish).
+Takes a previously published listing down. Targets the L402 proxy management API
+(the *ungated* pipeline the live marketplace listings use): it soft-retires the
+proxy and emits the on-Nostr removal — a NIP-09 kind 5 deletion plus a
+status=removed 38400 replacement — so agents watching the marketplace stop
+seeing a dead endpoint. Requires LIGHTNING_ENABLE_API_KEY.
 """
 
 import json
 import logging
-import re
 from typing import TYPE_CHECKING
 
 from . import sanitize_error
@@ -20,25 +19,18 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("lightning-enable-mcp.tools.unpublish_agent_capability")
 
-_HEX64 = re.compile(r"^[0-9a-f]{64}$", re.IGNORECASE)
-_VALID_MODES = ("remove", "pause")
-
 
 async def unpublish_agent_capability(
-    pubkey: str,
     service_id: str,
-    mode: str = "remove",
     reason: str | None = None,
     api_client: "LightningEnableApiClient | None" = None,
 ) -> str:
     """
-    Take a published agent capability down.
+    Take a published listing down.
 
     Args:
-        pubkey: Nostr public key (64-hex) of the agent that owns the listing.
-        service_id: The listing's service identifier (its d-tag / proxy id).
-        mode: "remove" (default) permanently withdraws the listing and retires
-            its L402 proxy; "pause" is reserved (not yet supported by the backend).
+        service_id: The listing's identifier — its Nostr d-tag / proxy id
+            (e.g. the value after the last ':' in the card's nw: footer).
         reason: Optional free-text reason recorded on the removal event.
         api_client: Lightning Enable API client instance.
 
@@ -46,23 +38,10 @@ async def unpublish_agent_capability(
         JSON with the unpublish result or an error message.
     """
     try:
-        if not pubkey or not _HEX64.match(pubkey.strip()):
-            return json.dumps({
-                "success": False,
-                "error": "A valid 64-character hex Nostr pubkey is required.",
-            })
-
         if not service_id or not service_id.strip():
             return json.dumps({
                 "success": False,
-                "error": "Service ID is required (the d-tag of the listing to take down).",
-            })
-
-        normalized_mode = (mode or "remove").strip().lower()
-        if normalized_mode not in _VALID_MODES:
-            return json.dumps({
-                "success": False,
-                "error": f"Mode must be one of {list(_VALID_MODES)} (got '{mode}').",
+                "error": "Service ID is required (the listing's d-tag / proxy id to take down).",
             })
 
         if api_client is None:
@@ -76,34 +55,34 @@ async def unpublish_agent_capability(
                 "success": False,
                 "error": "Lightning Enable API key not configured. "
                          "Set LIGHTNING_ENABLE_API_KEY environment variable or add 'lightningEnableApiKey' to ~/.lightning-enable/config.json. "
-                         "Required for unpublishing agent capabilities.",
+                         "Required for unpublishing listings.",
             })
 
-        result = await api_client.unpublish_capability(
-            pubkey.strip(), service_id.strip(), normalized_mode, reason,
-        )
+        result = await api_client.unpublish_capability(service_id.strip(), reason)
 
         if not result.get("success"):
             return json.dumps({
                 "success": False,
-                "error": result.get("error", "Unknown error unpublishing capability"),
+                "error": result.get("error", "Unknown error unpublishing listing"),
             })
 
+        already = result.get("alreadyRetired")
         return json.dumps({
             "success": True,
-            "serviceId": result.get("serviceId", service_id),
-            "proxyId": result.get("proxyId"),
-            "mode": result.get("mode", normalized_mode),
+            "serviceId": service_id,
+            "proxyId": result.get("proxyId", service_id),
             "retired": result.get("retired"),
+            "alreadyRetired": already,
             "message": (
-                f"Capability '{service_id}' removed: the L402 proxy is retired and a "
+                f"Listing '{service_id}' was already retired." if already else
+                f"Listing '{service_id}' removed: the L402 proxy is retired and a "
                 "NIP-09 deletion (+ status=removed replacement) was published to Nostr."
             ),
         }, indent=2)
 
     except Exception as e:
-        logger.exception("Error unpublishing capability")
+        logger.exception("Error unpublishing listing")
         return json.dumps({
             "success": False,
-            "error": f"Error unpublishing capability: {sanitize_error(str(e))}",
+            "error": f"Error unpublishing listing: {sanitize_error(str(e))}",
         })

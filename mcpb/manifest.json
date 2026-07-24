@@ -1,0 +1,90 @@
+{
+  "manifest_version": "0.4",
+  "name": "lightning-enable-mcp",
+  "display_name": "Lightning Enable",
+  "version": "1.16.2",
+  "description": "Give your AI agent a Bitcoin Lightning wallet: pay invoices, access L402-protected APIs, and manage spending budgets.",
+  "long_description": "Lightning Enable gives an AI agent a Bitcoin Lightning wallet. Out of the box it can pay BOLT11 invoices, automatically pay L402 (402 Payment Required) challenges to access paid APIs, discover paid APIs in the L402 registry, and enforce per-request and per-session spending budgets. Agents can also act as sellers (mint and verify L402 payment challenges) and transact agent-to-agent over Nostr with a Lightning Enable API key. Spending is bounded by the operator's config; payments above an auto-approve threshold require an out-of-band human confirmation code. Lightning Enable does not hold funds — the connected wallet or payment provider does.",
+  "author": {
+    "name": "Lightning Enable",
+    "email": "support@lightningenable.com",
+    "url": "https://lightningenable.com"
+  },
+  "homepage": "https://lightningenable.com",
+  "documentation": "https://docs.lightningenable.com/products/l402-microtransactions/mcp-complete-guide",
+  "support": "https://github.com/refined-element/lightning-enable-mcp/issues",
+  "icon": "icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/refined-element/lightning-enable-mcp"
+  },
+  "license": "MIT",
+  "keywords": ["lightning", "bitcoin", "l402", "payments", "wallet", "ai-agents", "nostr"],
+  "privacy_policies": ["https://docs.lightningenable.com/legal/privacy-policy"],
+  "server": {
+    "type": "uv",
+    "entry_point": "src/run.py",
+    "mcp_config": {
+      "command": "uv",
+      "args": ["run", "--directory", "${__dirname}", "src/run.py"],
+      "env": {
+        "STRIKE_API_KEY": "${user_config.strike_api_key}",
+        "NWC_CONNECTION_STRING": "${user_config.nwc_connection_string}",
+        "LND_REST_HOST": "${user_config.lnd_rest_host}",
+        "LND_MACAROON_HEX": "${user_config.lnd_macaroon_hex}",
+        "OPENNODE_API_KEY": "${user_config.opennode_api_key}",
+        "LIGHTNING_ENABLE_API_KEY": "${user_config.lightning_enable_api_key}"
+      }
+    }
+  },
+  "compatibility": {
+    "platforms": ["darwin", "linux", "win32"],
+    "runtimes": {
+      "python": ">=3.10"
+    }
+  },
+  "user_config": {
+    "strike_api_key": {
+      "type": "string",
+      "title": "Strike API Key",
+      "description": "Strike API key (recommended wallet — returns a preimage, so L402 works). Generate at dashboard.strike.me. Leave blank if using another wallet.",
+      "sensitive": true,
+      "required": false
+    },
+    "nwc_connection_string": {
+      "type": "string",
+      "title": "Nostr Wallet Connect string",
+      "description": "NWC connection string (nostr+walletconnect://...) for CoinOS, CLINK, or Alby Hub. Alternative to Strike/LND. Leave blank if unused.",
+      "sensitive": true,
+      "required": false
+    },
+    "lnd_rest_host": {
+      "type": "string",
+      "title": "LND REST host",
+      "description": "Your LND node REST host, e.g. https://your-lnd:8080. Pair with the LND macaroon below. Leave blank if unused.",
+      "sensitive": false,
+      "required": false
+    },
+    "lnd_macaroon_hex": {
+      "type": "string",
+      "title": "LND admin macaroon (hex)",
+      "description": "Hex-encoded LND admin.macaroon for REST auth. Used with the LND REST host above. Leave blank if unused.",
+      "sensitive": true,
+      "required": false
+    },
+    "opennode_api_key": {
+      "type": "string",
+      "title": "OpenNode API Key",
+      "description": "OpenNode API key. Note: OpenNode does not return a preimage, so L402 auto-pay does not work with it. Leave blank if unused.",
+      "sensitive": true,
+      "required": false
+    },
+    "lightning_enable_api_key": {
+      "type": "string",
+      "title": "Lightning Enable API Key (optional)",
+      "description": "Optional. Unlocks the L402 producer tools and agent-to-agent (Nostr) tools. Requires a Lightning Enable Agentic Commerce subscription. The wallet and L402 tools work without it.",
+      "sensitive": true,
+      "required": false
+    }
+  }
+}

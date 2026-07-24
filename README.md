@@ -152,6 +152,10 @@ For dynamic pricing, providers use `create_l402_challenge` to generate invoices 
 - [le-agent-sdk (TypeScript)](https://github.com/refined-element/le-agent-sdk-ts) — `npm install le-agent-sdk`
 - [le-agent-sdk (.NET)](https://github.com/refined-element/le-agent-sdk-dotnet) — `dotnet add package LightningEnable.AgentSdk`
 
+## Privacy
+
+Lightning Enable does not hold funds — the connected wallet or payment provider (Strike, OpenNode, LND, or an NWC wallet) does. The MCP server runs locally and talks to the wallet/provider you configure and, for L402 discovery, the L402 API registry. Wallet credentials you supply stay on your machine (or, for the hosted API, are encrypted at rest). See the full [Privacy Policy](https://docs.lightningenable.com/legal/privacy-policy) for what data is collected, third parties involved, retention, and contact (privacy@lightningenable.com).
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

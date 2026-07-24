@@ -269,11 +269,46 @@ public class Program
         // Durable, append-only spend receipts (~/.lightning-enable/receipts.jsonl).
         builder.Services.AddSingleton<IReceiptService, ReceiptService>();
 
-        // Configure MCP server with stdio transport
+        // Configure MCP server with stdio transport.
+        //
+        // WithToolsFromAssembly() populates the advertised ToolCollection (the 25
+        // canonical tools). The custom CallToolHandler below is consulted by the SDK
+        // ONLY for tool names absent from that collection — i.e. the deprecated
+        // forwarding aliases (confirm_payment, check_wallet_balance, get_all_balances).
+        // Because they are not [McpServerTool] and no ListToolsHandler adds them, they
+        // never appear in list_tools yet remain callable — true hidden aliases, matching
+        // the Python port.
         builder.Services
             .AddMcpServer()
             .WithStdioServerTransport()
-            .WithToolsFromAssembly();
+            .WithToolsFromAssembly()
+            .WithCallToolHandler(async (context, cancellationToken) =>
+            {
+                var name = context.Params?.Name ?? string.Empty;
+
+                if (!Tools.DeprecatedAliasDispatcher.IsAlias(name))
+                {
+                    // The 25 advertised tools are served from the ToolCollection before
+                    // this handler runs, so anything reaching here that is not an alias
+                    // is a genuinely unknown tool.
+                    return new ModelContextProtocol.Protocol.CallToolResult
+                    {
+                        IsError = true,
+                        Content = { new ModelContextProtocol.Protocol.TextContentBlock { Text = $"Unknown tool: {name}" } },
+                    };
+                }
+
+                var json = await Tools.DeprecatedAliasDispatcher.DispatchAsync(
+                    name,
+                    context.Params?.Arguments as IReadOnlyDictionary<string, System.Text.Json.JsonElement>,
+                    context.Services!,
+                    cancellationToken);
+
+                return new ModelContextProtocol.Protocol.CallToolResult
+                {
+                    Content = { new ModelContextProtocol.Protocol.TextContentBlock { Text = json } },
+                };
+            });
 
         var host = builder.Build();
         await host.RunAsync();

@@ -31,11 +31,11 @@ WALLET_NOT_CONFIGURED_FOR_PAYMENT = (
 )
 
 # Returned by the RECEIVING / INVOICING / INFO tools (create_invoice,
-# check_invoice_status, get_all_balances, check_wallet_balance) when no wallet is
-# configured. These
+# check_invoice_status, get_all_balances, check_wallet_balance, get_balance) when no
+# wallet is configured. These
 # operations work with OpenNode, so OPENNODE_API_KEY is listed as a valid option here
 # (restoring the guidance these tools gave before the messages were consolidated),
-# while still noting it can't pay L402.
+# while still noting it can't pay L402. A balance read makes NO L402/payment claim.
 WALLET_NOT_CONFIGURED_FOR_RECEIVING = (
     "Wallet not configured. Set any wallet — STRIKE_API_KEY, OPENNODE_API_KEY, "
     "NWC_CONNECTION_STRING, or LND_REST_HOST+LND_MACAROON_HEX — to create/check "

@@ -6,7 +6,7 @@ to access paid APIs with automatic payment handling.
 
 Available tools:
 - pay_invoice - Pay any Lightning invoice
-- check_wallet_balance - Check wallet balance
+- get_balance - Check wallet balance (sats, multi-currency, wallet info)
 - get_payment_history - View payment history
 - get_budget_status - View current budget limits
 - access_l402_resource - Auto-pay L402 challenges

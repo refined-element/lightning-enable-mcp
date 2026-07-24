@@ -32,10 +32,11 @@ internal static class WalletMessages
 
     /// <summary>
     /// Returned by the RECEIVING / INVOICING / INFO tools (create_invoice,
-    /// check_invoice_status, get_all_balances, check_wallet_balance) when no wallet is
-    /// configured. These operations work with OpenNode, so OPENNODE_API_KEY is listed as
-    /// a valid option here (restoring the guidance these tools gave before the messages
-    /// were consolidated), while still noting it can't pay L402.
+    /// check_invoice_status, get_all_balances, check_wallet_balance, get_balance) when no
+    /// wallet is configured. These operations work with OpenNode, so OPENNODE_API_KEY is
+    /// listed as a valid option here (restoring the guidance these tools gave before the
+    /// messages were consolidated), while still noting it can't pay L402. A balance read
+    /// makes no L402/payment claim.
     /// </summary>
     public const string NotConfiguredForReceiving =
         "Wallet not configured. Set any wallet — STRIKE_API_KEY, OPENNODE_API_KEY, NWC_CONNECTION_STRING, or LND_REST_HOST+LND_MACAROON_HEX — to create/check invoices and read balances. (OPENNODE_API_KEY works for these; for paying L402 challenges you need STRIKE_API_KEY, NWC_CONNECTION_STRING, or LND instead.)";

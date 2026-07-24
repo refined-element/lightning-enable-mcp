@@ -165,6 +165,10 @@ Add to your Claude Desktop configuration file:
 
 ## Available Tools
 
+The canonical inventory is the [Tools table in the root README](https://github.com/refined-element/lightning-enable-mcp#tools): 25 tools (17 free / 8 gated). The sections below document a selected subset.
+
+**Deprecated aliases** (accepted but unadvertised, forward to the new tool, removed in v2.0.0): `confirm_payment` → `verify_confirmation_code`; `check_wallet_balance` and `get_all_balances` → `get_balance`.
+
 ### create_lightning_enable_account
 
 Self-bootstrapping signup: activate a Lightning Enable account with a tiny Lightning payment (~100 sats) and get back a merchant API key. Requires **NO** Lightning Enable API key (it *creates* one) — only a connected wallet. On success the API key is merged into `~/.lightning-enable/config.json` (existing keys preserved) so the producer/ASA tools unlock on the next restart. Above-threshold activation fees require a human-supplied confirmation code (same out-of-band flow as `pay_l402_challenge`).
@@ -194,13 +198,13 @@ Pay a Lightning invoice directly and get the preimage as proof of payment.
 - Set appropriate budget limits
 - Review payment history regularly
 
-### check_wallet_balance
+### get_balance
 
-Checks the connected wallet balance and session spending.
+Gets the connected wallet's balance. Supersedes `check_wallet_balance` and `get_all_balances`.
 
 **Parameters:** None
 
-**Returns:** Wallet balance in satoshis, session spending summary, budget remaining
+**Returns:** A single superset shape — the scalar balance (`wallet.balanceSats` / `wallet.balanceMsat`), a `balances[]` array (all currencies for Strike; a single BTC entry otherwise), the session spending summary, and budget remaining.
 
 ### get_receipts
 
@@ -288,10 +292,6 @@ Manually pays an L402 invoice when you have the macaroon and invoice separately.
 ### get_btc_price (Strike only)
 
 Get the current Bitcoin price in USD.
-
-### get_all_balances (Strike only)
-
-Get all currency balances (USD and BTC).
 
 ### exchange_currency (Strike only)
 

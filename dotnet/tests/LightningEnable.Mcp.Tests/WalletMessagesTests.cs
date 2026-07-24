@@ -70,16 +70,12 @@ public class WalletMessagesTests
     }
 
     [Fact]
-    public async Task GetAllBalances_Unconfigured_UsesReceivingMessage_ListingOpenNode()
+    public async Task GetBalance_Unconfigured_UsesReceivingMessage_ListingOpenNode()
     {
-        var result = await GetAllBalancesTool.GetAllBalances(walletService: Unconfigured().Object);
-        Error(result).Should().Contain("OPENNODE_API_KEY works for these");
-    }
-
-    [Fact]
-    public async Task CheckWalletBalance_Unconfigured_UsesReceivingMessage_ListingOpenNode()
-    {
-        var result = await CheckWalletBalanceTool.CheckWalletBalance(walletService: Unconfigured().Object);
+        // get_balance superseded get_all_balances + check_wallet_balance (the tool
+        // consolidation merged both into it). As a receiving/info tool it must still emit
+        // the receiving message that lists OpenNode as a valid option.
+        var result = await GetBalanceTool.GetBalance(walletService: Unconfigured().Object);
         Error(result).Should().Contain("OPENNODE_API_KEY works for these");
     }
 

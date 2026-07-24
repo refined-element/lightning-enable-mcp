@@ -5,6 +5,7 @@ Main server module providing L402 payment capabilities to AI agents via MCP.
 """
 
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -35,18 +36,17 @@ from .tools.test_l402_payment import test_l402_payment
 from .tools.get_receipts import get_receipts
 from .receipt_service import ReceiptService, wallet_label_from
 from .tools.check_invoice_status import check_invoice_status
-from .tools.confirm_payment import confirm_payment
+from .tools.verify_confirmation_code import verify_confirmation_code
 from .tools.create_invoice import create_invoice
 from .tools.create_l402_challenge import create_l402_challenge
 from .tools.discover_api import discover_api
 from .tools.exchange_currency import exchange_currency
-from .tools.get_all_balances import get_all_balances
+from .tools.get_balance import get_balance
 from .tools.get_btc_price import get_btc_price
 from .tools.pay_challenge import pay_l402_challenge
 from .tools.pay_invoice import pay_invoice
 from .tools.send_onchain import send_onchain
 from .tools.verify_l402_payment import verify_l402_payment
-from .tools.wallet import check_wallet_balance
 from .tools.budget import configure_budget, get_payment_history
 from .tools.budget_status import get_budget_status
 from .tools.discover_agent_services import discover_agent_services
@@ -80,6 +80,36 @@ def _sanitize_error(msg: str) -> str:
     for pattern in _CREDENTIAL_PATTERNS:
         msg = pattern.sub("[REDACTED]", msg)
     return msg
+
+
+# Renamed/merged tools keep their old names as accepted-but-unadvertised forwarding
+# aliases for one minor cycle. An alias dispatches to the new implementation and the
+# forwarded JSON gains a `deprecated` marker. The aliases are intentionally ABSENT from
+# list_tools() (dispatcher-only), so the advertised surface is the new names.
+DEPRECATED_ALIASES = {
+    "confirm_payment": "verify_confirmation_code",
+    "check_wallet_balance": "get_balance",
+    "get_all_balances": "get_balance",
+}
+_ALIAS_REMOVAL = "v2.0.0"
+
+
+def _mark_deprecated(result: str, replaced_by: str) -> str:
+    """Annotate a forwarded tool result (JSON string) with a deprecation marker.
+
+    Parses the underlying tool's JSON response and injects
+    ``deprecated: {replaced_by, removal}``. If the payload is not a JSON object
+    (unexpected), the original string is returned unchanged so an alias never breaks
+    a caller that the new tool would have served.
+    """
+    try:
+        data = json.loads(result)
+    except (ValueError, TypeError):
+        return result
+    if not isinstance(data, dict):
+        return result
+    data["deprecated"] = {"replaced_by": replaced_by, "removal": _ALIAS_REMOVAL}
+    return json.dumps(data, indent=2)
 
 
 class LightningEnableServer:
@@ -234,8 +264,12 @@ class LightningEnableServer:
                     },
                 ),
                 Tool(
-                    name="check_wallet_balance",
-                    description="Check the connected Lightning wallet balance via NWC.",
+                    name="get_balance",
+                    description=(
+                        "Get the connected wallet's balance. Returns the sats balance plus, where "
+                        "available, all currency balances (USD, BTC, ... — most useful with Strike) "
+                        "and wallet info. Supersedes check_wallet_balance and get_all_balances."
+                    ),
                     inputSchema={
                         "type": "object",
                         "properties": {},
@@ -368,17 +402,6 @@ class LightningEnableServer:
                     },
                 ),
                 Tool(
-                    name="get_all_balances",
-                    description=(
-                        "Get all currency balances from your wallet (USD, BTC, etc.). "
-                        "Most useful with Strike wallet which supports multiple currencies."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {},
-                    },
-                ),
-                Tool(
                     name="get_btc_price",
                     description=(
                         "Get the current Bitcoin price in USD. "
@@ -506,10 +529,12 @@ class LightningEnableServer:
                     },
                 ),
                 Tool(
-                    name="confirm_payment",
+                    name="verify_confirmation_code",
                     description=(
-                        "Confirm a pending payment using the nonce code from a previous payment request. "
-                        "Call this after a payment tool returns requiresConfirmation=true with a nonce."
+                        "Verify whether a payment confirmation code (relayed by the human from the "
+                        "server console) is still valid and what it authorizes. VERIFICATION ONLY — "
+                        "never executes a payment. To pay, call the original payment tool again with "
+                        "confirmation_nonce."
                     ),
                     inputSchema={
                         "type": "object",
@@ -775,7 +800,8 @@ class LightningEnableServer:
                     "create_l402_challenge",
                     "verify_l402_payment",
                     "discover_api",
-                    "confirm_payment",
+                    "verify_confirmation_code",
+                    "confirm_payment",  # deprecated alias of verify_confirmation_code
                     "discover_agent_services",
                     "publish_agent_capability",
                     "request_agent_service",
@@ -787,9 +813,15 @@ class LightningEnableServer:
                 # return its own structured no_wallet verdict (parity with .NET), instead
                 # of this generic guard string (which also wrongly suggests OpenNode, which
                 # cannot do L402).
+                #
+                # get_balance (and its deprecated aliases) is a READ-ONLY balance tool: it
+                # returns its own receiving-oriented no-wallet message (which correctly does
+                # NOT claim OpenNode can't pay L402), so it is exempt from this payment guard.
+                balance_read_tools = {"get_balance", "check_wallet_balance", "get_all_balances"}
                 if (
                     self.wallet is None
                     and name not in producer_tools
+                    and name not in balance_read_tools
                     and name != "test_l402_payment"
                     and name != "get_receipts"  # reads the durable log; no wallet needed
                 ):
@@ -856,8 +888,16 @@ class LightningEnableServer:
                         receipt_service=self.receipt_service,
                     )
 
-                elif name == "check_wallet_balance":
-                    result = await check_wallet_balance(wallet=self.wallet)
+                elif name in ("get_balance", "check_wallet_balance", "get_all_balances"):
+                    # check_wallet_balance and get_all_balances are deprecated, unadvertised
+                    # aliases that forward to the unified get_balance implementation.
+                    result = await get_balance(
+                        wallet=self.wallet,
+                        strike_wallet=self.strike_wallet,
+                        budget_service=self.budget_service,
+                    )
+                    if name in DEPRECATED_ALIASES:
+                        result = _mark_deprecated(result, DEPRECATED_ALIASES[name])
 
                 elif name == "get_payment_history":
                     result = await get_payment_history(
@@ -895,13 +935,6 @@ class LightningEnableServer:
                     result = await check_invoice_status(
                         invoice_id=arguments.get("invoice_id", ""),
                         wallet=self.wallet,
-                    )
-
-                elif name == "get_all_balances":
-                    result = await get_all_balances(
-                        wallet=self.wallet,
-                        strike_wallet=self.strike_wallet,
-                        budget_service=self.budget_service,
                     )
 
                 elif name == "get_btc_price":
@@ -951,11 +984,14 @@ class LightningEnableServer:
                         api_client=self.api_client,
                     )
 
-                elif name == "confirm_payment":
-                    result = await confirm_payment(
+                elif name in ("verify_confirmation_code", "confirm_payment"):
+                    # confirm_payment is a deprecated, unadvertised alias that forwards here.
+                    result = await verify_confirmation_code(
                         nonce=arguments.get("nonce", ""),
                         budget_service=self.budget_service,
                     )
+                    if name in DEPRECATED_ALIASES:
+                        result = _mark_deprecated(result, DEPRECATED_ALIASES[name])
 
                 elif name == "discover_api":
                     result = await discover_api(

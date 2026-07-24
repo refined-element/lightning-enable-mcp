@@ -3,6 +3,46 @@
 All notable changes to the Lightning Enable MCP server are documented here.
 Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-enable-mcp`).
 
+## [Unreleased]
+
+Tool-surface consolidation. The advertised tool surface drops from **26 to 25**
+(**18 → 17 free**, 8 gated unchanged). No payment or L402 logic changed — this is a
+tool-surface-only change. The three renamed/merged tools keep their **old names as
+accepted-but-unadvertised forwarding aliases** for one minor cycle (removed in
+**v2.0.0**); an alias still dispatches, forwards to the new tool, and its result carries
+a `deprecated: { replaced_by, removal: "v2.0.0" }` marker.
+
+### Changed
+
+- **`confirm_payment` → `verify_confirmation_code`** (both ports). The tool only ever
+  *verified* a confirmation code — it never moved money — so it is renamed to say so.
+  Old name still works as a hidden alias.
+- **`check_wallet_balance` + `get_all_balances` → `get_balance`** (both ports). A single
+  tool returns the **superset** of what both returned — the scalar sats balance (plus
+  `balanceMsat` on the .NET NWC path), the NWC `wallet_info` block (Python), a `balances[]`
+  array (multi-currency for Strike, a single BTC entry otherwise), and the session spend
+  summary — dropping nothing either old tool returned. Both old names still work as hidden
+  aliases.
+
+### Fixed
+
+- **`verify_confirmation_code` (was `confirm_payment`) no longer implies money moved.**
+  On a valid code the .NET port returned `"Payment of $X confirmed"`, which reads as a
+  completed payment. Both ports now return `"Code verified — NOTHING HAS BEEN PAID. To
+  execute, call <tool> again with confirmation_nonce=<code>."`, plus `valid: true`,
+  `amount_sats`, and `tool`.
+- **Stale confirmation parameter descriptions.** The `confirmationNonce` parameters on
+  `access_l402_resource`, `pay_invoice`, and `pay_l402_challenge` (.NET) pointed at the
+  old `confirm_payment` tool; they now describe the out-of-band, human-relayed console
+  code.
+
+### Migration
+
+- Replace `confirm_payment` with `verify_confirmation_code`, and `check_wallet_balance` /
+  `get_all_balances` with `get_balance`. The old names keep working (with a `deprecated`
+  marker in the response) until they are removed in **v2.0.0**. `get_balance` is a strict
+  superset, so existing fields your code read still appear.
+
 ## [1.16.0] — 2026-07-17
 
 Payment-correctness fixes. **Upgrade recommended** if you pay invoices through

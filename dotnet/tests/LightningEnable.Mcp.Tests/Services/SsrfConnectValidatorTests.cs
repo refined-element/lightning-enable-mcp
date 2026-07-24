@@ -65,23 +65,23 @@ public class SsrfConnectValidatorTests
             .Which.Message.Should().NotContain("192.168.13.37");
     }
 
-    // ---- FIX 2: AllowAutoRedirect = true is safe because the ConnectCallback fires
-    // on every connection the handler opens (initial request AND each redirect hop). ----
+    // ---- The ConnectCallback blocks a private/metadata target at connect time,
+    // closing the DNS-rebind window on the ONLY fetch. Production runs the clients with
+    // AllowAutoRedirect = false (see Program.cs): the callback firing per-hop does NOT
+    // make auto-redirect safe (a redirect would re-send agent custom headers cross-origin
+    // and can lose the L402 header mid-payment), so redirects are surfaced as actionable,
+    // never followed. This pins the connect-time guard with the production redirect flag. ----
 
     [Fact]
-    public async Task ConnectCallback_OnHandlerWithAutoRedirect_BlocksPrivateTargetAtConnect()
+    public async Task ConnectCallback_BlocksPrivateTargetAtConnect()
     {
         // A handler configured exactly like the L402 / discover_api clients
-        // (AllowAutoRedirect = true + this ConnectCallback). UseProxy = false pins the
+        // (AllowAutoRedirect = false + this ConnectCallback). UseProxy = false pins the
         // connect target to the direct address so the test is deterministic regardless
-        // of any ambient HTTP_PROXY. The callback rejects the private target at connect
-        // time — and because a redirected hop opens a NEW connection through the SAME
-        // callback, a 3xx pivot to a private/metadata IP is rejected identically, while
-        // a hop to a public host resolves to validated public addresses
-        // (ResolveValidated_PublicIpLiteral_ReturnsValidatedAddress).
+        // of any ambient HTTP_PROXY. The callback rejects the private target at connect time.
         using var handler = new SocketsHttpHandler
         {
-            AllowAutoRedirect = true,
+            AllowAutoRedirect = false,
             UseProxy = false,
             ConnectCallback = SsrfConnectValidator.ConnectAsync,
         };
@@ -156,5 +156,89 @@ public class SsrfConnectValidatorTests
             "10.0.0.9", CancellationToken.None, enforcePrivateIpGuard: false);
 
         addresses.Should().ContainSingle().Which.Should().Be(IPAddress.Parse("10.0.0.9"));
+    }
+
+    // ---- FIX B: proxy-trust re-opened target SSRF. Trusting the proxy ENDPOINT must NOT
+    // leave the TARGET unvalidated. When a proxy is configured the proxy (not our
+    // ConnectCallback) resolves+connects to the target, so we DNS-pre-resolve the target
+    // host and reject a private/metadata result before the fetch. The cheap hostname
+    // pre-check cannot catch a hostname that RESOLVES to a private IP — these prove the
+    // pre-resolution does, fails closed on resolution error, and still allows a public
+    // target. A test resolver keeps them deterministic without touching the network. ----
+
+    private static Func<string, CancellationToken, Task<IPAddress[]>> ResolverReturning(params string[] ips) =>
+        (_, _) => Task.FromResult(ips.Select(IPAddress.Parse).ToArray());
+
+    [Fact]
+    public async Task ValidateProxiedTargetHost_TargetResolvesToMetadataIp_Refused()
+    {
+        // The canonical SSRF pivot: a benign-looking hostname whose DNS answer is the
+        // cloud-metadata IP. Even with a (trusted) proxy configured, this must be refused
+        // BEFORE the proxy is asked to fetch it.
+        var act = async () => await SsrfConnectValidator.ValidateProxiedTargetHostAsync(
+            new Uri("http://totally-legit.example.com/"), CancellationToken.None,
+            ResolverReturning("169.254.169.254"));
+
+        await act.Should().ThrowAsync<HttpRequestException>();
+    }
+
+    [Fact]
+    public async Task ValidateProxiedTargetHost_TargetResolvesToPrivateIp_Refused()
+    {
+        var act = async () => await SsrfConnectValidator.ValidateProxiedTargetHostAsync(
+            new Uri("http://internal-thing.example.com/"), CancellationToken.None,
+            ResolverReturning("10.1.2.3"));
+
+        (await act.Should().ThrowAsync<HttpRequestException>())
+            .Which.Message.Should().NotContain("10.1.2.3", "the internal target must not be echoed back");
+    }
+
+    [Fact]
+    public async Task ValidateProxiedTargetHost_MixedPublicAndPrivate_FailsClosedOnAny()
+    {
+        // Fail closed: one private answer in the set blocks the whole target, even if a
+        // public answer is also present (a rebinder can round-robin).
+        var act = async () => await SsrfConnectValidator.ValidateProxiedTargetHostAsync(
+            new Uri("http://mixed.example.com/"), CancellationToken.None,
+            ResolverReturning("93.184.216.34", "127.0.0.1"));
+
+        await act.Should().ThrowAsync<HttpRequestException>();
+    }
+
+    [Fact]
+    public async Task ValidateProxiedTargetHost_ResolutionError_FailsClosed()
+    {
+        // If the target host cannot be resolved at all, refuse — this pre-resolution is
+        // the only target protection available in the proxy case, so it must not allow.
+        Func<string, CancellationToken, Task<IPAddress[]>> throwingResolver =
+            (_, _) => throw new System.Net.Sockets.SocketException();
+
+        var act = async () => await SsrfConnectValidator.ValidateProxiedTargetHostAsync(
+            new Uri("http://does-not-resolve.example.com/"), CancellationToken.None, throwingResolver);
+
+        (await act.Should().ThrowAsync<HttpRequestException>())
+            .Which.Message.Should().Contain("refusing to fetch through the proxy");
+    }
+
+    [Fact]
+    public async Task ValidateProxiedTargetHost_EmptyResolution_FailsClosed()
+    {
+        var act = async () => await SsrfConnectValidator.ValidateProxiedTargetHostAsync(
+            new Uri("http://empty.example.com/"), CancellationToken.None,
+            ResolverReturning());
+
+        await act.Should().ThrowAsync<HttpRequestException>();
+    }
+
+    [Fact]
+    public async Task ValidateProxiedTargetHost_PublicTarget_Allowed()
+    {
+        // A public target resolves cleanly → no throw. This is the corporate-proxy-to-a
+        // -public-API happy path that FIX B must keep working.
+        var act = async () => await SsrfConnectValidator.ValidateProxiedTargetHostAsync(
+            new Uri("http://public-api.example.com/"), CancellationToken.None,
+            ResolverReturning("93.184.216.34"));
+
+        await act.Should().NotThrowAsync();
     }
 }

@@ -89,8 +89,24 @@ public class Program
         var configService = new BudgetConfigurationService();
         var config = configService.Configuration;
 
-        // Register HTTP client for L402
-        builder.Services.AddHttpClient<IL402HttpClient, L402HttpClient>();
+        // Register HTTP client for L402.
+        //
+        // SSRF hardening (F-10d): the URL is attacker-influenceable and only the
+        // INITIAL URL is validated in AccessL402ResourceTool.ValidateUrl.
+        //  - AllowAutoRedirect = false: a 3xx to http://169.254.169.254/ (cloud
+        //    metadata) or a private range is NOT auto-followed to an unvalidated
+        //    host. L402HttpClient does not follow redirects itself, so a 3xx now
+        //    surfaces to the caller as a non-success status instead of being
+        //    chased — the connect guard below + this flag are together sufficient.
+        //  - ConnectCallback: validates the ACTUAL connect-time IP and connects to
+        //    exactly that validated set (no re-resolution), closing the DNS-rebind
+        //    TOCTOU window between the initial-URL check and the socket connect.
+        builder.Services.AddHttpClient<IL402HttpClient, L402HttpClient>()
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            {
+                AllowAutoRedirect = false,
+                ConnectCallback = SsrfConnectValidator.ConnectAsync,
+            });
 
         // Register wallet service
         // Default priority for L402: LND > NWC > Strike > OpenNode

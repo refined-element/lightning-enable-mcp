@@ -347,4 +347,49 @@ public class L402ToolsTests
     }
 
     #endregion
+
+    #region SSRF ValidateUrl Tests (F-10d — initial-URL guard)
+
+    // The definitive SSRF guard is the connect-time SsrfConnectValidator on the L402
+    // HTTP client (closes the DNS-rebind window + blocks redirect pivots). ValidateUrl
+    // is the belt-and-suspenders initial-URL check. These prove it refuses the direct
+    // private/metadata targets with a GENERIC message that never echoes the target.
+
+    [Theory]
+    [InlineData("http://169.254.169.254/latest/meta-data/")] // cloud metadata (link-local literal)
+    [InlineData("http://127.0.0.1/admin")]                    // loopback literal
+    [InlineData("http://[::1]/admin")]                         // IPv6 loopback literal
+    [InlineData("http://10.0.0.5/internal")]                   // RFC1918 literal
+    [InlineData("http://192.168.1.1/")]                        // RFC1918 literal
+    [InlineData("http://localhost/secret")]                    // localhost hostname
+    [InlineData("http://metadata.google.internal/")]           // metadata hostname
+    [InlineData("http://foo.internal/")]                        // .internal suffix
+    public void ValidateUrl_RejectsPrivateAndMetadataTargets(string url)
+    {
+        var error = AccessL402ResourceTool.ValidateUrl(url);
+        error.Should().NotBeNull();
+        // Generic — must not echo the internal host/IP back to the caller.
+        error!.Should().NotContain("169.254.169.254");
+        error.Should().NotContain("10.0.0.5");
+        error.Should().NotContain("192.168.1.1");
+    }
+
+    [Theory]
+    [InlineData("ftp://example.com/file")]
+    [InlineData("file:///etc/passwd")]
+    [InlineData("gopher://example.com/")]
+    public void ValidateUrl_RejectsNonHttpSchemes(string url)
+    {
+        AccessL402ResourceTool.ValidateUrl(url).Should().NotBeNull();
+    }
+
+    [Theory]
+    [InlineData("https://api.example.com/v1/data")]
+    [InlineData("https://api.lightningenable.com/")]
+    public void ValidateUrl_AllowsPublicHttpsUrls(string url)
+    {
+        AccessL402ResourceTool.ValidateUrl(url).Should().BeNull();
+    }
+
+    #endregion
 }

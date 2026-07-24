@@ -391,5 +391,41 @@ public class L402ToolsTests
         AccessL402ResourceTool.ValidateUrl(url).Should().BeNull();
     }
 
+    // FIX 4: the old ValidateUrl did a synchronous blocking Dns.GetHostAddresses that
+    // only caught SocketException — a >255-char host threw ArgumentOutOfRangeException,
+    // which escaped UNHANDLED out of the tool (leaking an internal error / stack trace,
+    // violating the "never leak stack traces / never return blank error" standard).
+    // The blocking DNS is gone (the ConnectCallback is the definitive IP guard), so
+    // ValidateUrl now never throws and the tool degrades gracefully.
+
+    [Fact]
+    public void ValidateUrl_WithOverlongHost_DoesNotThrow()
+    {
+        var url = "http://" + new string('a', 300) + ".example.com/path";
+
+        var act = () => AccessL402ResourceTool.ValidateUrl(url);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public async Task AccessL402Resource_WithOverlongHost_ReturnsGracefulJson_NotException()
+    {
+        // 300-char label host: must return well-formed JSON, never throw an internal
+        // ArgumentOutOfRangeException out of the tool.
+        var url = "http://" + new string('a', 300) + ".example.com/path";
+
+        // The unset l402 client mock returns null, so the tool's own try/catch produces
+        // a graceful {success:false} — the key point is nothing throws out of the tool.
+        var result = await AccessL402ResourceTool.AccessL402Resource(
+            url: url, l402Client: _l402ClientMock.Object);
+
+        var json = JsonDocument.Parse(result);
+        json.RootElement.GetProperty("success").GetBoolean().Should().BeFalse();
+        // No stack trace / internal type name leaked in the error text.
+        var error = json.RootElement.TryGetProperty("error", out var e) ? e.GetString() : null;
+        (error ?? string.Empty).Should().NotContain("ArgumentOutOfRange");
+    }
+
     #endregion
 }

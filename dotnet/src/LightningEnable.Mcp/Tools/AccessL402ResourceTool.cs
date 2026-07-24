@@ -1,6 +1,4 @@
 using System.ComponentModel;
-using System.Net;
-using System.Net.Sockets;
 using System.Text.Json;
 using LightningEnable.Mcp.Models;
 using LightningEnable.Mcp.Services;
@@ -401,71 +399,18 @@ public static class AccessL402ResourceTool
     /// Validates URL to prevent SSRF attacks.
     /// Blocks access to private IPs, localhost, and internal networks.
     /// <para/>
-    /// This is the INITIAL-URL check (belt-and-suspenders). The definitive guard is
-    /// the connect-time <see cref="SsrfConnectValidator"/> wired onto the L402 HTTP
-    /// client in Program.cs, which re-validates the actual IP the socket connects to
-    /// (closing the DNS-rebind window) and, with <c>AllowAutoRedirect = false</c>,
-    /// prevents a redirect pivot to a private/metadata host. Error messages here are
-    /// deliberately generic — they never echo the resolved internal host or IP.
+    /// This is the INITIAL-URL check (belt-and-suspenders) and delegates to the
+    /// shared <see cref="SsrfUrlGuard"/> — a cheap, synchronous, never-throwing
+    /// pre-check (scheme + IP-literal classification + blocked-hostname match). It
+    /// deliberately does NOT resolve DNS: the definitive guard is the connect-time
+    /// <see cref="SsrfConnectValidator"/> wired onto the L402 HTTP client in
+    /// Program.cs, which validates the actual IP the socket connects to (closing the
+    /// DNS-rebind window) and re-validates every auto-redirect hop. Removing the old
+    /// blocking <c>Dns.GetHostAddresses</c> here also fixes the double-resolution
+    /// and the unhandled <see cref="ArgumentOutOfRangeException"/> an overlong host
+    /// used to throw. Error messages are generic — they never echo the internal host/IP.
     /// </summary>
-    internal static string? ValidateUrl(string url)
-    {
-        // Validate URL format
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
-        {
-            return "Invalid URL format";
-        }
-
-        // Only allow HTTP and HTTPS schemes
-        if (uri.Scheme != "http" && uri.Scheme != "https")
-        {
-            return "Only HTTP and HTTPS URLs are allowed";
-        }
-
-        // Check for localhost variations
-        var host = uri.Host.ToLowerInvariant();
-        if (host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]")
-        {
-            return "Access to localhost is not allowed";
-        }
-
-        // Check for link-local addresses
-        if (host.StartsWith("169.254.") || host == "fe80::")
-        {
-            return "Access to link-local addresses is not allowed";
-        }
-
-        // Check for cloud metadata endpoints
-        if (host == "169.254.169.254" || host == "metadata.google.internal" ||
-            host == "metadata.azure.com" || host.EndsWith(".internal"))
-        {
-            return "Access to cloud metadata endpoints is not allowed";
-        }
-
-        // Try to resolve hostname and check for private IPs
-        try
-        {
-            var addresses = Dns.GetHostAddresses(uri.Host);
-            foreach (var addr in addresses)
-            {
-                // Single source of truth for private/reserved classification —
-                // shared with the connect-time SsrfConnectValidator.
-                if (PrivateIpAddressDetector.IsPrivate(addr))
-                {
-                    return "Access to private or internal networks is not allowed";
-                }
-            }
-        }
-        catch (SocketException)
-        {
-            // DNS resolution failed - allow the request to proceed. The connect-time
-            // SsrfConnectValidator re-validates the actual IP before any bytes are
-            // sent, so an unresolvable-now / resolvable-later host cannot reach a
-            // private target.
-        }
-
-        return null; // Valid URL
-    }
+    internal static string? ValidateUrl(string url) => SsrfUrlGuard.Validate(url);
 
     /// <summary>
     /// Requests user confirmation for L402 payments based on the approval level.

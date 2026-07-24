@@ -272,6 +272,71 @@ class TestDiscoverApi:
             assert "tried_urls" not in parsed
 
     @pytest.mark.asyncio
+    async def test_wellknown_probe_redirect_not_promoted_returns_not_found(self):
+        """FIX 2 (Python): a 3xx on a SYNTHESIZED /.well-known/ probe is NOT the user's URL.
+        It must be treated as 'no manifest here' (tried_urls) — NOT promoted to an actionable
+        redirect that would send the agent chasing a catch-all/login page."""
+        def _per_url(url, *args, **kwargs):
+            resp = MagicMock()
+            # The user's explicit URL (fetched at the bare base) 404s...
+            if url.rstrip("/") == "https://api.example.com":
+                resp.status_code = 404
+                resp.headers = {}
+            else:
+                # ...while every synthesized /.well-known/ probe 302s to a login trap.
+                resp.status_code = 302
+                resp.headers = {"location": "https://login.example.com/sso"}
+            return resp
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(side_effect=_per_url)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch.object(discover_api_module, "httpx") as mock_httpx:
+            mock_httpx.AsyncClient.return_value = mock_client
+
+            result = await discover_api(url="https://api.example.com")
+            parsed = json.loads(result)
+
+            assert parsed["success"] is False
+            # The probe's Location must NOT be promoted to an actionable redirect.
+            assert "redirect_location" not in parsed
+            assert "login.example.com" not in result
+            # The honest not-found + tried_urls result stands.
+            assert "Could not find" in parsed["error"]
+            assert "tried_urls" in parsed
+
+    @pytest.mark.asyncio
+    async def test_registry_redirect_returns_clean_error_and_is_not_followed(self):
+        """FIX 4 (Python): the registry client is follow_redirects=False. A registry 3xx is
+        surfaced as a clean 'registry returned a redirect' error — never parsed as a body
+        and never followed to wherever the Location points (a compromised/misconfigured
+        registry could aim it at an internal/metadata host)."""
+        mock_response = MagicMock()
+        mock_response.status_code = 302
+        mock_response.headers = {"location": "http://169.254.169.254/latest/meta-data/"}
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        with patch.object(discover_api_module, "httpx") as mock_httpx:
+            mock_httpx.AsyncClient.return_value = mock_client
+
+            result = await discover_api(query="weather")
+            parsed = json.loads(result)
+
+            assert parsed["success"] is False
+            assert "redirect" in parsed["error"].lower()
+            # The internal metadata target is never echoed nor followed.
+            assert "169.254.169.254" not in result
+            assert mock_client.get.await_count == 1
+            # The redirect body was never parsed as JSON.
+            mock_response.json.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_httpx_not_available(self):
         """Test error when httpx is not installed."""
         with patch.object(discover_api_module, "httpx", None):

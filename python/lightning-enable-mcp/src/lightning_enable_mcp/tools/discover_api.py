@@ -13,10 +13,11 @@ import json
 import logging
 import math
 import os
+from .._redirect import resolve_redirect_location
 from . import sanitize_error
 from ._ssrf_guard import SsrfError, validate_url_allowed
 from typing import TYPE_CHECKING, Any
-from urllib.parse import quote as url_quote, urljoin
+from urllib.parse import quote as url_quote
 
 if TYPE_CHECKING:
     from ..budget_service import BudgetService
@@ -130,18 +131,16 @@ async def _try_fetch(client: "httpx.AsyncClient", url: str) -> tuple[str | None,
     try:
         response = await client.get(url)
 
-        # Unfollowed 3xx with a Location: surface the (resolved) target as actionable
-        # instead of silently failing over to the next candidate.
-        if 300 <= response.status_code < 400:
-            location = response.headers.get("location")
-            if location:
-                try:
-                    return None, urljoin(url, location)
-                except Exception:
-                    return None, location
-            return None, None
+        # Unfollowed 3xx with a Location: surface the (resolved absolute) target as
+        # actionable instead of silently failing over to the next candidate. Uses the
+        # shared resolver so the resolution rules (304 excluded, relative resolved against
+        # the request URL) match the L402 fetch path exactly.
+        redirect = resolve_redirect_location(url, response)
+        if redirect is not None:
+            return None, redirect
 
-        if response.status_code >= 400:
+        # Any other non-2xx (a 3xx without a Location, or a 4xx/5xx) is "no manifest here".
+        if response.status_code >= 300:
             return None, None
 
         content = response.text
@@ -163,15 +162,17 @@ async def _fetch_manifest(
     Fetch manifest from well-known locations.
 
     Returns ``(json_content, manifest_url, None)`` on success, or
-    ``(None, None, redirect)`` when no manifest was found but a 3xx redirect was seen
-    (``redirect`` is None when neither). A redirect on the exact user-supplied URL is
-    preferred over one seen on a synthesized /.well-known/ guess.
+    ``(None, None, redirect)`` when no manifest was found but a 3xx redirect was seen on the
+    USER's explicit URL (``redirect`` is None otherwise). ONLY a redirect on the exact
+    user-supplied URL is surfaced: a redirect on a SYNTHESIZED /.well-known/ probe is NOT
+    the user's URL, and promoting it would send the agent chasing a catch-all/login page and
+    suppress the honest "no manifest here" (tried_urls) result — so such a probe redirect is
+    treated as "no manifest at this path" and we continue to the next probe.
     """
     base_url = url.rstrip("/")
     ends_in_json = base_url.lower().endswith(".json")
 
     primary_redirect: str | None = None
-    well_known_redirect: str | None = None
 
     # If URL ends in .json, try it directly first
     if ends_in_json:
@@ -180,13 +181,12 @@ async def _fetch_manifest(
             return content, base_url, None
         primary_redirect = primary_redirect or redirect
 
-    # Try well-known paths
+    # Try well-known paths. A redirect here is deliberately discarded (see docstring).
     for path in WELL_KNOWN_PATHS:
         full_url = base_url + path
-        content, redirect = await _try_fetch(client, full_url)
+        content, _ = await _try_fetch(client, full_url)
         if content:
             return content, full_url, None
-        well_known_redirect = well_known_redirect or redirect
 
     # Try the URL directly if not already tried
     if not ends_in_json:
@@ -195,7 +195,7 @@ async def _fetch_manifest(
             return content, base_url, None
         primary_redirect = primary_redirect or redirect
 
-    return None, None, primary_redirect or well_known_redirect
+    return None, None, primary_redirect
 
 
 def _extract_service_info(root: dict[str, Any]) -> dict[str, Any]:
@@ -368,6 +368,18 @@ async def _search_registry(
     }) as client:
         response = await client.get(request_url)
 
+        # follow_redirects=False, so a registry 3xx is a first-class response — surface it
+        # as a clean, explicit error rather than trying to parse a redirect body (or, with
+        # auto-follow, chasing wherever the Location points — which a compromised /
+        # misconfigured registry could aim at an internal/metadata host).
+        if 300 <= response.status_code < 400:
+            return json.dumps({
+                "success": False,
+                "error": f"Registry returned an HTTP {response.status_code} redirect. Not following it — the registry endpoint should serve results directly.",
+                "registry_url": request_url,
+                "hint": "Check the configured registry URL (L402_REGISTRY_URL / LIGHTNING_ENABLE_API_URL), or use discover_api(url=...) to fetch a specific manifest directly."
+            })
+
         if response.status_code >= 400:
             return json.dumps({
                 "success": False,
@@ -482,8 +494,10 @@ async def _fetch_and_format_manifest(
         manifest_json, manifest_url, redirect_location = await _fetch_manifest(client, url)
 
     if manifest_json is None:
-        # A 3xx redirect (not followed) is surfaced as actionable rather than a generic
-        # "not found", so the agent can re-call with the target. Never followed here.
+        # A 3xx redirect (not followed) on the USER's explicit url is surfaced as
+        # actionable rather than a generic "not found", so the agent can re-call with the
+        # target. Never followed here. A redirect seen only on a synthesized /.well-known/
+        # probe is NOT promoted (see _fetch_manifest) — it flows to the not-found result.
         if redirect_location:
             return json.dumps({
                 "success": False,

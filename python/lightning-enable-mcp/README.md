@@ -168,7 +168,9 @@ Or if installed via pip, replace `"command": "uvx", "args": ["lightning-enable-m
 
 ## Available Tools
 
-> **The complete, canonical tool list is the [Tools table in the root README](https://github.com/refined-element/lightning-enable-mcp#tools).** It lists all **26 tools** — **18 free** (out of the box, just a wallet) plus **8 that require `LIGHTNING_ENABLE_API_KEY`** (an [Agentic Commerce subscription](https://lightningenable.com); 2 L402 Producer + 6 Agent Service Agreement) — and is pinned to the code by guard tests in both ports, so it never drifts from what the server actually registers. The sections below document a **selected subset** in detail; they are not the full inventory.
+> **The complete, canonical tool list is the [Tools table in the root README](https://github.com/refined-element/lightning-enable-mcp#tools).** It lists all **25 tools** — **17 free** (out of the box, just a wallet) plus **8 that require `LIGHTNING_ENABLE_API_KEY`** (an [Agentic Commerce subscription](https://lightningenable.com); 2 L402 Producer + 6 Agent Service Agreement) — and is pinned to the code by guard tests in both ports, so it never drifts from what the server actually registers. The sections below document a **selected subset** in detail; they are not the full inventory.
+>
+> **Deprecated aliases** (accepted but unadvertised, forward to the new tool, removed in v2.0.0): `confirm_payment` → `verify_confirmation_code`; `check_wallet_balance` and `get_all_balances` → `get_balance`.
 
 ### create_lightning_enable_account
 
@@ -219,13 +221,13 @@ Manually pay an L402 invoice and get the authorization token.
 
 **Returns:** L402 token in format `macaroon:preimage` for use in Authorization header
 
-### check_wallet_balance
+### get_balance
 
-Check the connected wallet balance.
+Get the connected wallet's balance. Supersedes `check_wallet_balance` and `get_all_balances`.
 
 **Parameters:** None
 
-**Returns:** Current balance in satoshis
+**Returns:** A single superset shape — the sats balance (`balance_sats` / `balance_btc`), an optional `wallet_info` block (NWC `get_info`), a `balances[]` array (multi-currency for Strike, a single BTC entry otherwise), and the session spend summary.
 
 ### get_payment_history
 
@@ -364,7 +366,7 @@ This MCP server handles steps 2-5 automatically when you use `access_l402_resour
   prints a confirmation code to its **console / stderr** —
   where the human operator can see it — and **never** returns the code in a tool result.
   The agent must ask the **human** for the code, then re-call the original payment tool with
-  its `confirmation_nonce` parameter to proceed. (The separate `confirm_payment` tool only
+  its `confirmation_nonce` parameter to proceed. (The separate `verify_confirmation_code` tool only
   *verifies* a code — it does not execute the payment.) This closes a self-approval hole: a prompt-injected
   agent cannot read or generate its own confirmation code. Codes are bound to the exact
   amount **and** tool approved, so they can't be reused across a different payment. Applies to
@@ -427,7 +429,7 @@ lightning_enable_mcp/
     ├── pay_challenge.py         # pay_l402_challenge tool
     ├── create_l402_challenge.py # create_l402_challenge tool (producer)
     ├── verify_l402_payment.py   # verify_l402_payment tool (producer)
-    ├── wallet.py                # check_wallet_balance tool
+    ├── get_balance.py           # get_balance tool
     └── budget.py                # configure_budget, get_payment_history tools
 ```
 

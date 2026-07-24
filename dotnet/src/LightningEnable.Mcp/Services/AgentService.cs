@@ -36,6 +36,15 @@ public interface IAgentService
         string[]? hashtags, CancellationToken ct);
 
     /// <summary>
+    /// Take a published capability down (NIP-A5 listing lifecycle). In "remove"
+    /// mode the backend retires the L402 proxy and emits the on-Nostr removal
+    /// (NIP-09 kind 5 + status=removed 38400). Requires API key.
+    /// </summary>
+    Task<AgentUnpublishResult> UnpublishCapabilityAsync(
+        string pubkey, string serviceId, string mode, string? reason,
+        CancellationToken ct);
+
+    /// <summary>
     /// Send a service request referencing a provider's capability (kind 38401 event).
     /// </summary>
     Task<AgentRequestResult> RequestServiceAsync(
@@ -91,6 +100,21 @@ public record AgentPublishResult
     public bool Success { get; init; }
     public string? EventId { get; init; }
     public string? L402Endpoint { get; init; }
+    public string? ErrorMessage { get; init; }
+}
+
+/// <summary>
+/// Result of taking a capability down (NIP-A5 listing lifecycle).
+/// </summary>
+public record AgentUnpublishResult
+{
+    public bool Success { get; init; }
+    public string? ServiceId { get; init; }
+    public string? ProxyId { get; init; }
+    public string? Mode { get; init; }
+    // Nullable so an omitted backend `retired` surfaces as null (parity with the
+    // Python port), not a misleading false.
+    public bool? Retired { get; init; }
     public string? ErrorMessage { get; init; }
 }
 
@@ -323,6 +347,73 @@ public class AgentService : IAgentService
         catch (HttpRequestException ex)
         {
             return new AgentPublishResult { Success = false, ErrorMessage = $"HTTP error: {ex.Message}" };
+        }
+    }
+
+    public async Task<AgentUnpublishResult> UnpublishCapabilityAsync(
+        string pubkey, string serviceId, string mode, string? reason, CancellationToken ct)
+    {
+        if (!IsConfigured)
+        {
+            return new AgentUnpublishResult
+            {
+                Success = false,
+                ErrorMessage = "Lightning Enable API key not configured. " +
+                    "Set LIGHTNING_ENABLE_API_KEY environment variable or add 'lightningEnableApiKey' to ~/.lightning-enable/config.json."
+            };
+        }
+
+        try
+        {
+            var requestBody = reason is null ? (object)new { mode } : new { mode, reason };
+
+            var httpContent = new StringContent(
+                JsonSerializer.Serialize(requestBody, JsonOptions),
+                Encoding.UTF8,
+                "application/json");
+
+            var path = $"{_baseUrl}/api/agents/{Uri.EscapeDataString(pubkey)}/capabilities/{Uri.EscapeDataString(serviceId)}/unpublish";
+            var response = await _httpClient.PostAsync(path, httpContent, ct);
+            var responseBody = await response.Content.ReadAsStringAsync(ct);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorMessage = $"API returned {(int)response.StatusCode}";
+                try
+                {
+                    using var errorDoc = JsonDocument.Parse(responseBody);
+                    if (errorDoc.RootElement.TryGetProperty("message", out var msg))
+                        errorMessage = msg.GetString() ?? errorMessage;
+                    else if (errorDoc.RootElement.TryGetProperty("error", out var err))
+                        errorMessage = err.GetString() ?? errorMessage;
+                }
+                catch { /* use default error message */ }
+
+                return new AgentUnpublishResult { Success = false, ErrorMessage = errorMessage };
+            }
+
+            using var doc = JsonDocument.Parse(responseBody);
+            var root = doc.RootElement;
+
+            return new AgentUnpublishResult
+            {
+                Success = true,
+                ServiceId = root.TryGetProperty("serviceId", out var sid) ? sid.GetString() : serviceId,
+                ProxyId = root.TryGetProperty("proxyId", out var pid) ? pid.GetString() : null,
+                Mode = root.TryGetProperty("mode", out var m) ? m.GetString() : mode,
+                Retired = root.TryGetProperty("retired", out var r)
+                    && r.ValueKind is JsonValueKind.True or JsonValueKind.False
+                    ? r.GetBoolean()
+                    : (bool?)null
+            };
+        }
+        catch (TaskCanceledException)
+        {
+            return new AgentUnpublishResult { Success = false, ErrorMessage = "Request timed out" };
+        }
+        catch (HttpRequestException ex)
+        {
+            return new AgentUnpublishResult { Success = false, ErrorMessage = $"HTTP error: {ex.Message}" };
         }
     }
 

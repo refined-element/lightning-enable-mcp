@@ -411,6 +411,67 @@ class LightningEnableApiClient:
         except httpx.HTTPError as e:
             return {"success": False, "error": f"HTTP error: {e}"}
 
+    async def unpublish_capability(
+        self,
+        pubkey: str,
+        service_id: str,
+        mode: str,
+        reason: str | None,
+    ) -> dict[str, Any]:
+        """
+        Take a published capability down (NIP-A5 listing lifecycle).
+
+        Calls the backend unpublish endpoint, which soft-retires the L402 proxy
+        and emits the on-Nostr removal (NIP-09 kind 5 + status=removed 38400).
+        Requires an API key.
+
+        Returns:
+            Dict with success, serviceId, proxyId, mode, retired, or error.
+        """
+        if not self.is_configured:
+            return {
+                "success": False,
+                "error": (
+                    "Lightning Enable API key not configured. "
+                    "Set LIGHTNING_ENABLE_API_KEY environment variable or add "
+                    "'lightningEnableApiKey' to ~/.lightning-enable/config.json."
+                ),
+            }
+
+        from urllib.parse import quote
+
+        path_pubkey = quote(pubkey, safe="")
+        path_service = quote(service_id, safe="")
+        request_body: dict[str, Any] = {"mode": mode}
+        if reason:
+            request_body["reason"] = reason
+
+        try:
+            response = await self._client.post(
+                f"{self._base_url}/api/agents/{path_pubkey}/capabilities/{path_service}/unpublish",
+                json=request_body,
+            )
+            data = self._safe_json(response)
+
+            if response.status_code >= 400:
+                return {"success": False, "error": self._error_message(response, data)}
+
+            return {
+                "success": True,
+                "serviceId": (
+                    data.get("serviceId") if isinstance(data, dict) else None
+                )
+                or service_id,
+                "proxyId": data.get("proxyId") if isinstance(data, dict) else None,
+                "mode": (data.get("mode") if isinstance(data, dict) else None) or mode,
+                "retired": data.get("retired") if isinstance(data, dict) else None,
+            }
+
+        except httpx.TimeoutException:
+            return {"success": False, "error": "Request timed out"}
+        except httpx.HTTPError as e:
+            return {"success": False, "error": f"HTTP error: {e}"}
+
     async def request_service(
         self,
         capability_event_id: str,

@@ -54,20 +54,6 @@
           "default": "production"
         },
         {
-          "name": "L402_MAX_SATS_PER_REQUEST",
-          "description": "Maximum satoshis allowed per single payment request",
-          "isRequired": false,
-          "isSecret": false,
-          "default": "1000"
-        },
-        {
-          "name": "L402_MAX_SATS_PER_SESSION",
-          "description": "Maximum total satoshis allowed per session",
-          "isRequired": false,
-          "isSecret": false,
-          "default": "10000"
-        },
-        {
           "name": "LIGHTNING_ENABLE_API_KEY",
           "description": "Lightning Enable API key for agent registration and ASA publishing (Agentic Commerce subscription)",
           "isRequired": false,
@@ -122,20 +108,6 @@
           "isSecret": true
         },
         {
-          "name": "L402_MAX_SATS_PER_REQUEST",
-          "description": "Maximum satoshis allowed per single payment request",
-          "isRequired": false,
-          "isSecret": false,
-          "default": "1000"
-        },
-        {
-          "name": "L402_MAX_SATS_PER_SESSION",
-          "description": "Maximum total satoshis allowed per session",
-          "isRequired": false,
-          "isSecret": false,
-          "default": "10000"
-        },
-        {
           "name": "LIGHTNING_ENABLE_API_KEY",
           "description": "Lightning Enable API key for agent registration and ASA publishing (Agentic Commerce subscription)",
           "isRequired": false,
@@ -187,20 +159,6 @@
           "description": "OpenNode API key (direct payments only, no L402 support)",
           "isRequired": false,
           "isSecret": true
-        },
-        {
-          "name": "L402_MAX_SATS_PER_REQUEST",
-          "description": "Maximum satoshis allowed per single payment request",
-          "isRequired": false,
-          "isSecret": false,
-          "default": "1000"
-        },
-        {
-          "name": "L402_MAX_SATS_PER_SESSION",
-          "description": "Maximum total satoshis allowed per session",
-          "isRequired": false,
-          "isSecret": false,
-          "default": "10000"
         },
         {
           "name": "LIGHTNING_ENABLE_API_KEY",

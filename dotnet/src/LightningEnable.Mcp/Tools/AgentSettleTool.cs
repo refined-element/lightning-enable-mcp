@@ -90,18 +90,15 @@ public static class AgentSettleTool
                 });
             }
 
-            // Budget check before settlement
+            // Budget gate before settlement (early deny; no network I/O if the ceiling
+            // can't be covered). This tool is PASSIVE on recording — it does NOT record a
+            // failed payment here: no payment was attempted, and the client (L402HttpClient)
+            // is the single source of truth for all payment/failed-payment recording.
             if (budgetService != null)
             {
                 var budgetCheck = budgetService.CheckBudget(maxSats);
                 if (!budgetCheck.Allowed)
                 {
-                    paymentHistoryService?.RecordFailedPayment(
-                        l402Endpoint,
-                        "ASA-Settlement",
-                        maxSats,
-                        budgetCheck.DenialReason ?? "Budget limit exceeded");
-
                     return JsonSerializer.Serialize(new
                     {
                         success = false,
@@ -162,18 +159,8 @@ public static class AgentSettleTool
             {
                 if (result.PaidAmountSats > 0)
                 {
-                    // Record the payment
-                    budgetService?.RecordSpend(result.PaidAmountSats);
-                    budgetService?.RecordPaymentTime();
-                    paymentHistoryService?.RecordPayment(
-                        l402Endpoint,
-                        "ASA-Settlement",
-                        result.PaidAmountSats,
-                        null,
-                        null,
-                        result.L402Token,
-                        result.StatusCode);
-
+                    // PASSIVE: the client (L402HttpClient) already recorded the spend, the
+                    // payment history, and the cooldown EXACTLY ONCE. The tool only formats.
                     return JsonSerializer.Serialize(new
                     {
                         success = true,
@@ -216,14 +203,41 @@ public static class AgentSettleTool
                     }, new JsonSerializerOptions { WriteIndented = true });
                 }
             }
+            else if (result.PaidAmountSats > 0)
+            {
+                // PAID, then the authorized retry returned a non-2xx, non-redirect status
+                // (e.g. HTTP 500). The L402 invoice was ALREADY paid — the client recorded
+                // the spend + payment + cooldown once. This is NOT a settlement failure: the
+                // tool must NEVER record a failed payment here (that would contradict the
+                // client's settled RecordPayment and invite a double-pay) and must NEVER
+                // return a "verify the URL" result. Surface the paid amount + token so the
+                // agent reuses the credential instead of paying again.
+                return JsonSerializer.Serialize(new
+                {
+                    success = false,
+                    alreadyPaid = true,
+                    l402Endpoint,
+                    agreementId,
+                    statusCode = result.StatusCode,
+                    payment = new
+                    {
+                        paid = true,
+                        amountSats = result.PaidAmountSats,
+                        l402Token = result.L402Token,
+                        protocol = result.Protocol ?? "L402"
+                    },
+                    error = result.ErrorMessage,
+                    message = $"Payment succeeded ({result.PaidAmountSats} sats), but the endpoint returned " +
+                              $"HTTP {result.StatusCode} on the authorized retry. You have ALREADY PAID — do NOT " +
+                              "pay again. Retry the endpoint with the l402Token above."
+                }, new JsonSerializerOptions { WriteIndented = true });
+            }
             else
             {
-                paymentHistoryService?.RecordFailedPayment(
-                    l402Endpoint,
-                    "ASA-Settlement",
-                    maxSats,
-                    result.ErrorMessage ?? "Settlement failed");
-
+                // Genuine pre-payment failure: no invoice was paid (PaidAmountSats == 0).
+                // This is the ONLY not-paid failure the tool surfaces, and it still records
+                // nothing — the client already recorded a failed payment if an actual
+                // payment attempt failed; a budget/challenge denial simply returns clean.
                 return JsonSerializer.Serialize(new
                 {
                     success = false,
@@ -232,8 +246,8 @@ public static class AgentSettleTool
                     agreementId,
                     statusCode = result.StatusCode,
                     hint = result.StatusCode == 402
-                        ? "The L402 payment challenge could not be completed. Check wallet balance and configuration."
-                        : "The endpoint returned an error. Verify the L402 endpoint URL is correct."
+                        ? "The L402 payment challenge could not be completed. No payment was made. Check wallet balance and configuration."
+                        : "The endpoint returned an error and no payment was made. Verify the L402 endpoint URL is correct."
                 });
             }
         }

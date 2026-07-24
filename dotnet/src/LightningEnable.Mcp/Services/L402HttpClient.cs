@@ -292,8 +292,16 @@ public class L402HttpClient : IL402HttpClient
                 $"{protocolName} requires a preimage for verification. Use NWC or LND wallet for L402/MPP support.", 402, amountSats.Value);
         }
 
-        // Record successful payment
+        // SINGLE SOURCE OF TRUTH for recording a real payment. The invoice is paid (the
+        // preimage is in hand), so the client records the spend and arms the cooldown here,
+        // EXACTLY ONCE, before the retry — and the history entry once after it (below).
+        // This holds regardless of whether the authorized retry returns 2xx / 3xx-redirect /
+        // 4xx / 5xx. The consuming tools (access_l402_resource, settle_agent_service) are
+        // passive: they MUST NOT record spend / payment / payment-time / failed-payment
+        // themselves. RecordPaymentTime arms the cross-payment cooldown on EVERY real
+        // payment — success, redirect, or post-payment error — matching the Python port.
         _budgetService.RecordSpend(amountSats.Value);
+        _budgetService.RecordPaymentTime();
 
         string authToken;
         string protocol;
@@ -327,6 +335,20 @@ public class L402HttpClient : IL402HttpClient
 
         var retryResponse = await _httpClient.SendAsync(retryRequest, cancellationToken);
 
+        // Record the settled payment in session history EXACTLY ONCE, here, regardless of
+        // the retry outcome (2xx / 3xx-redirect / 4xx / 5xx). The invoice was paid, so this
+        // is always a settled RecordPayment and NEVER a RecordFailedPayment. Deduped from
+        // the two identical calls the redirect branch and the normal branch used to each
+        // make (the review flagged the duplicated block).
+        _historyService.RecordPayment(
+            url: url,
+            method: method,
+            amountSats: amountSats.Value,
+            invoice: parsed.Invoice!,
+            preimageHex: paymentResult.PreimageHex,
+            l402Token: authToken,
+            statusCode: (int)retryResponse.StatusCode);
+
         // Consistency with the initial-fetch path: a 3xx on the paid retry is not
         // auto-followed (AllowAutoRedirect = false). The payment already settled, so
         // surface the redirect target as actionable AND report the paid amount + token
@@ -341,17 +363,6 @@ public class L402HttpClient : IL402HttpClient
         // again. See the "ALREADY PAID" message below.
         if (RedirectResolver.TryResolve(retryResponse, url, out var retryRedirect))
         {
-            // Record the settled payment in session history (the normal path below always
-            // does; the early return must not drop it — the sats already left the wallet).
-            _historyService.RecordPayment(
-                url: url,
-                method: method,
-                amountSats: amountSats.Value,
-                invoice: parsed.Invoice!,
-                preimageHex: paymentResult.PreimageHex,
-                l402Token: authToken,
-                statusCode: (int)retryResponse.StatusCode);
-
             return new L402FetchResult
             {
                 Success = false,
@@ -361,29 +372,20 @@ public class L402HttpClient : IL402HttpClient
                 PaidAmountSats = amountSats.Value,
                 L402Token = authToken,
                 Protocol = protocol,
-                // Explicit "already paid, do NOT pay again" wording so the agent reuses the
-                // token against the redirect target instead of re-paying. Surfaced verbatim
-                // by both access_l402_resource and settle_agent_service.
-                ErrorMessage = retryRedirect != null
-                    ? $"Payment succeeded ({amountSats.Value} sats). The resource redirected to {retryRedirect}. " +
-                      "You have ALREADY PAID — do NOT pay again. Retry the redirect target with the returned L402 token."
-                    : $"Payment succeeded ({amountSats.Value} sats), but the resource returned an HTTP {(int)retryResponse.StatusCode} redirect with no Location header. " +
-                      "You have ALREADY PAID — do NOT pay again."
+                // TryResolve == true guarantees a non-null, absolute http(s) Location, so
+                // the redirect message is unconditional. (The old ternary's "redirect with
+                // no Location header" branch was unreachable and has been removed.) Explicit
+                // "already paid, do NOT pay again" wording so the agent reuses the token
+                // against the redirect target instead of re-paying. Surfaced verbatim by
+                // both access_l402_resource and settle_agent_service.
+                ErrorMessage =
+                    $"Payment succeeded ({amountSats.Value} sats). The resource redirected to {retryRedirect}. " +
+                    "You have ALREADY PAID — do NOT pay again. Retry the redirect target with the returned L402 token."
             };
         }
 
         var content = await retryResponse.Content.ReadAsStringAsync(cancellationToken);
         var contentType = retryResponse.Content.Headers.ContentType?.MediaType;
-
-        // Record in history
-        _historyService.RecordPayment(
-            url: url,
-            method: method,
-            amountSats: amountSats.Value,
-            invoice: parsed.Invoice!,
-            preimageHex: paymentResult.PreimageHex,
-            l402Token: authToken,
-            statusCode: (int)retryResponse.StatusCode);
 
         if (retryResponse.IsSuccessStatusCode)
         {

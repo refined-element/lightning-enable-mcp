@@ -208,8 +208,10 @@ public class L402HttpClientRedirectTests
         result.ErrorMessage.Should().Contain("do NOT pay again");
         result.ErrorMessage.Should().Contain("https://cdn.example.com/delivered-asset");
 
-        // Recorded EXACTLY ONCE — a settled payment, never a failed one.
+        // Recorded EXACTLY ONCE — a settled payment, never a failed one. The cooldown is
+        // armed exactly once too (parity with Python's settle-redirect path — FIX b).
         budget.Verify(b => b.RecordSpend(10), Times.Once);
+        budget.Verify(b => b.RecordPaymentTime(), Times.Once);
         history.Verify(h => h.RecordPayment(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
             It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<int?>(),
@@ -223,6 +225,127 @@ public class L402HttpClientRedirectTests
         handler.Received.Should().NotContain(r => r.Uri.Host == "cdn.example.com");
     }
 
+    /// <summary>Builds a client whose initial request 402s (10-sat L402 challenge) and whose
+    /// paid retry (carries the Authorization) returns <paramref name="paidRetry"/>.</summary>
+    private static (L402HttpClient client, Mock<IBudgetService> budget, Mock<IPaymentHistoryService> history)
+        BuildPaidRetryClient(Func<HttpResponseMessage> paidRetry)
+    {
+        var handler = new RecordingHandler(request =>
+        {
+            if (request.Headers.Authorization != null)
+                return paidRetry();
+            var challenge = new HttpResponseMessage(HttpStatusCode.PaymentRequired)
+            {
+                Content = new StringContent("payment required")
+            };
+            challenge.Headers.WwwAuthenticate.Add(new AuthenticationHeaderValue(
+                "L402", "macaroon=\"YWJjZGVm\", invoice=\"lnbc100n1pjtest\""));
+            return challenge;
+        });
+
+        var wallet = new Mock<IWalletService>();
+        wallet.SetupGet(w => w.IsConfigured).Returns(true);
+        wallet.Setup(w => w.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new NwcPaymentResult
+            {
+                Success = true,
+                PreimageHex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            });
+        var budget = new Mock<IBudgetService>();
+        budget.Setup(b => b.CheckBudget(It.IsAny<long>())).Returns(BudgetCheckResult.Allow(100000, 1000));
+        var history = new Mock<IPaymentHistoryService>();
+        var client = new L402HttpClient(new HttpClient(handler), wallet.Object, budget.Object, history.Object);
+        return (client, budget, history);
+    }
+
+    private static void VerifyRecordedExactlyOnce(Mock<IBudgetService> budget, Mock<IPaymentHistoryService> history)
+    {
+        budget.Verify(b => b.RecordSpend(10), Times.Once);
+        budget.Verify(b => b.RecordPaymentTime(), Times.Once);
+        history.Verify(h => h.RecordPayment(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
+            It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<int?>(),
+            It.IsAny<PaymentStatus>(), It.IsAny<string?>()), Times.Once);
+        history.Verify(h => h.RecordFailedPayment(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
+            It.IsAny<string>(), It.IsAny<string?>()), Times.Never);
+    }
+
+    // Single source of truth — a fully successful paid fetch (402 → pay → 200) records the
+    // spend + payment + cooldown EXACTLY ONCE in the client, never a failed payment.
+    [Fact]
+    public async Task Fetch_402ThenPaidRetry200_RecordsSpendPaymentCooldown_ExactlyOnce()
+    {
+        var (client, budget, history) = BuildPaidRetryClient(() =>
+            new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"ok\":true}") });
+
+        var result = await client.FetchWithL402Async("https://api.provider.com/premium", maxSats: 1000);
+
+        result.Success.Should().BeTrue();
+        result.PaidAmountSats.Should().Be(10);
+        result.L402Token.Should().Be("YWJjZGVm:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
+        VerifyRecordedExactlyOnce(budget, history);
+    }
+
+    // FIX a — a paid retry that returns HTTP 500 (non-2xx, non-redirect) is still a SETTLED
+    // payment: the client records spend + payment + cooldown EXACTLY ONCE and NEVER a failed
+    // payment, and surfaces the paid amount + token so the consumer warns off a double-pay.
+    [Fact]
+    public async Task Fetch_402ThenPaidRetry500_RecordsSettledPaymentOnce_NeverFailed_SurfacesToken()
+    {
+        var (client, budget, history) = BuildPaidRetryClient(() =>
+            new HttpResponseMessage(HttpStatusCode.InternalServerError) { Content = new StringContent("boom") });
+
+        var result = await client.FetchWithL402Async("https://api.provider.com/premium", maxSats: 1000);
+
+        result.Success.Should().BeFalse();
+        result.StatusCode.Should().Be(500);
+        result.RedirectLocation.Should().BeNull();
+        result.PaidAmountSats.Should().Be(10);
+        result.L402Token.Should().Be("YWJjZGVm:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef");
+        VerifyRecordedExactlyOnce(budget, history);
+    }
+
+    // A genuine PRE-payment failure (the wallet payment itself fails — no invoice ever paid)
+    // records a failed payment and NO spend / payment / cooldown.
+    [Fact]
+    public async Task Fetch_402ThenWalletPaymentFails_RecordsFailedPayment_NoSpendNoCooldown()
+    {
+        var handler = new RecordingHandler(_ =>
+        {
+            var challenge = new HttpResponseMessage(HttpStatusCode.PaymentRequired)
+            {
+                Content = new StringContent("payment required")
+            };
+            challenge.Headers.WwwAuthenticate.Add(new AuthenticationHeaderValue(
+                "L402", "macaroon=\"YWJjZGVm\", invoice=\"lnbc100n1pjtest\""));
+            return challenge;
+        });
+        var wallet = new Mock<IWalletService>();
+        wallet.SetupGet(w => w.IsConfigured).Returns(true);
+        wallet.Setup(w => w.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new NwcPaymentResult { Success = false, ErrorMessage = "insufficient balance" });
+        var budget = new Mock<IBudgetService>();
+        budget.Setup(b => b.CheckBudget(It.IsAny<long>())).Returns(BudgetCheckResult.Allow(100000, 1000));
+        var history = new Mock<IPaymentHistoryService>();
+        var client = new L402HttpClient(new HttpClient(handler), wallet.Object, budget.Object, history.Object);
+
+        var result = await client.FetchWithL402Async("https://api.provider.com/premium", maxSats: 1000);
+
+        result.Success.Should().BeFalse();
+        result.PaidAmountSats.Should().Be(0);
+        // Genuine pre-payment failure: a failed-payment record, and NOTHING settled.
+        history.Verify(h => h.RecordFailedPayment(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
+            It.IsAny<string>(), It.IsAny<string?>()), Times.Once);
+        budget.Verify(b => b.RecordSpend(It.IsAny<long>()), Times.Never);
+        budget.Verify(b => b.RecordPaymentTime(), Times.Never);
+        history.Verify(h => h.RecordPayment(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
+            It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<int?>(),
+            It.IsAny<PaymentStatus>(), It.IsAny<string?>()), Times.Never);
+    }
+
     // A 304 Not Modified is NOT a redirect (no Location) — it must flow through normal
     // handling, not be reported as a broken redirect.
     [Fact]
@@ -231,6 +354,29 @@ public class L402HttpClientRedirectTests
         var (client, _, _, _) = BuildClient(_ => new HttpResponseMessage(HttpStatusCode.NotModified)
         {
             Content = new StringContent("")
+        });
+
+        var result = await client.FetchWithL402Async("https://api.example.com/data");
+
+        result.RedirectLocation.Should().BeNull();
+    }
+
+    // Resolver parity — a Location that does NOT resolve to a valid absolute http/https URL
+    // (here a non-http(s) scheme) is treated as NO redirect, identical to the Python port's
+    // resolve_redirect_location. It flows through normal handling rather than being surfaced
+    // as an actionable redirect target.
+    [Theory]
+    [InlineData("ftp://files.example.com/data")]
+    [InlineData("javascript:alert(1)")]
+    [InlineData("mailto:someone@example.com")]
+    public async Task Fetch_3xxWithNonHttpLocation_IsNotTreatedAsRedirect(string location)
+    {
+        var (client, _, _, _) = BuildClient(_ =>
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.Found);
+            response.Headers.TryAddWithoutValidation("Location", location);
+            response.Content = new StringContent("moved");
+            return response;
         });
 
         var result = await client.FetchWithL402Async("https://api.example.com/data");

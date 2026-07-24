@@ -100,13 +100,10 @@ public static class AccessL402ResourceTool
 
             if (approvalResult.Level == ApprovalLevel.Deny)
             {
-                paymentHistory?.RecordFailedPayment(
-                    url,
-                    "L402",
-                    maxSats,
-                    approvalResult.DenialReason ?? "Budget limit exceeded",
-                    null);
-
+                // PASSIVE: no payment was attempted, so the tool records nothing. The client
+                // (L402HttpClient) is the single source of truth for payment/failed-payment
+                // recording — the tool must not call RecordFailedPayment (a budget denial is
+                // a clean not-paid refusal, and double-recording would fragment the ledger).
                 return JsonSerializer.Serialize(new
                 {
                     success = false,
@@ -325,6 +322,7 @@ public static class AccessL402ResourceTool
                     return JsonSerializer.Serialize(new
                     {
                         success = false,
+                        alreadyPaid = true,
                         url = result.Url,
                         statusCode = result.StatusCode,
                         error = result.ErrorMessage,
@@ -335,8 +333,9 @@ public static class AccessL402ResourceTool
                             amountUsd,
                             l402Token = result.L402Token,
                             protocol = result.Protocol ?? "L402",
-                            note = "Payment succeeded but the server returned a non-success status on retry. " +
-                                   "The payment token above is valid and can be used with the correct endpoint."
+                            note = "Payment succeeded but the server returned a non-success status on the authorized " +
+                                   "retry. You have ALREADY PAID — do NOT pay again. The payment token above is valid; " +
+                                   "retry the target with it instead of re-paying."
                         }
                     });
                 }

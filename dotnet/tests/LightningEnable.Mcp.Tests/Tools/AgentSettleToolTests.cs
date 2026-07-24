@@ -22,8 +22,13 @@ public class AgentSettleToolTests
         _paymentHistoryMock = new Mock<IPaymentHistoryService>();
     }
 
+    // Single source of truth — on a successful paid settlement the tool is PASSIVE: it
+    // formats the client's result but records NOTHING. The client (L402HttpClient) already
+    // recorded the spend + payment + cooldown exactly once inside FetchWithL402Async, so a
+    // tool-level RecordSpend/RecordPaymentTime/RecordPayment here would DOUBLE-COUNT the
+    // budget (the pre-existing defect c). This test asserts the tool no longer records.
     [Fact]
-    public async Task SettleAgentService_ValidL402_ReturnsSuccess()
+    public async Task SettleAgentService_ValidL402_ReturnsSuccess_AndDoesNotRecord()
     {
         // Arrange
         _budgetServiceMock.Setup(b => b.CheckBudget(1000))
@@ -55,9 +60,101 @@ public class AgentSettleToolTests
         json.RootElement.GetProperty("response").GetProperty("statusCode").GetInt32().Should().Be(200);
         json.RootElement.GetProperty("response").GetProperty("content").GetString().Should().Contain("Hola mundo");
 
-        // Verify budget was recorded
-        _budgetServiceMock.Verify(b => b.RecordSpend(100), Times.Once);
-        _budgetServiceMock.Verify(b => b.RecordPaymentTime(), Times.Once);
+        // The tool must NOT record — the client is the single source of truth (no double-count).
+        _budgetServiceMock.Verify(b => b.RecordSpend(It.IsAny<long>()), Times.Never);
+        _budgetServiceMock.Verify(b => b.RecordPaymentTime(), Times.Never);
+        _paymentHistoryMock.Verify(h => h.RecordPayment(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
+            It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<int?>(),
+            It.IsAny<PaymentStatus>(), It.IsAny<string?>()), Times.Never);
+        _paymentHistoryMock.Verify(h => h.RecordFailedPayment(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
+            It.IsAny<string>(), It.IsAny<string?>()), Times.Never);
+    }
+
+    // FIX a — a paid settlement whose authorized retry returns HTTP 500 (non-2xx, non-
+    // redirect) is NOT a settlement failure. The client already paid + recorded once. The
+    // tool must surface the paid amount + token + an "ALREADY PAID — do NOT pay again"
+    // message, and must NEVER record a failed payment (which would contradict the client's
+    // settled RecordPayment and invite a double-pay).
+    [Fact]
+    public async Task SettleAgentService_PaidThen500_SurfacesTokenAndAlreadyPaid_NoFailedRecord()
+    {
+        _budgetServiceMock.Setup(b => b.CheckBudget(1000))
+            .Returns(BudgetCheckResult.Allow(8000, 1000));
+
+        _l402ClientMock.Setup(c => c.FetchWithL402Async(
+                TestEndpoint, "GET", null, null, 1000, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(L402FetchResult.Failed(
+                TestEndpoint,
+                "Request failed after payment: HTTP 500: boom",
+                statusCode: 500,
+                paidAmountSats: 175,
+                l402Token: "macaroon123:preimage456",
+                protocol: "L402"));
+
+        var result = await AgentSettleTool.SettleAgentService(
+            l402Endpoint: TestEndpoint,
+            l402Client: _l402ClientMock.Object,
+            budgetService: _budgetServiceMock.Object,
+            paymentHistoryService: _paymentHistoryMock.Object,
+            cancellationToken: CancellationToken.None);
+
+        var root = JsonDocument.Parse(result).RootElement;
+        root.GetProperty("success").GetBoolean().Should().BeFalse();
+        root.GetProperty("alreadyPaid").GetBoolean().Should().BeTrue();
+        root.GetProperty("statusCode").GetInt32().Should().Be(500);
+        root.GetProperty("payment").GetProperty("paid").GetBoolean().Should().BeTrue();
+        root.GetProperty("payment").GetProperty("amountSats").GetInt64().Should().Be(175);
+        root.GetProperty("payment").GetProperty("l402Token").GetString().Should().Be("macaroon123:preimage456");
+        var message = root.GetProperty("message").GetString()!;
+        message.Should().Contain("ALREADY PAID");
+        message.Should().Contain("do NOT pay again");
+
+        // MUST NOT record a failed payment for a settlement whose invoice was paid.
+        _paymentHistoryMock.Verify(h => h.RecordFailedPayment(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
+            It.IsAny<string>(), It.IsAny<string?>()), Times.Never);
+        // And no double-record of the spend/payment (the client already did).
+        _budgetServiceMock.Verify(b => b.RecordSpend(It.IsAny<long>()), Times.Never);
+        _budgetServiceMock.Verify(b => b.RecordPaymentTime(), Times.Never);
+        _paymentHistoryMock.Verify(h => h.RecordPayment(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
+            It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<string?>(), It.IsAny<int?>(),
+            It.IsAny<PaymentStatus>(), It.IsAny<string?>()), Times.Never);
+    }
+
+    // Genuine pre-payment failure (no invoice paid — PaidAmountSats == 0): the tool returns a
+    // clean not-paid error and records NOTHING (the client already recorded the failed
+    // payment if an actual attempt failed; a challenge/endpoint error simply returns clean).
+    [Fact]
+    public async Task SettleAgentService_GenuineFailureNoPayment_ReturnsCleanError_NoRecord()
+    {
+        _budgetServiceMock.Setup(b => b.CheckBudget(1000))
+            .Returns(BudgetCheckResult.Allow(8000, 1000));
+
+        _l402ClientMock.Setup(c => c.FetchWithL402Async(
+                TestEndpoint, "GET", null, null, 1000, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(L402FetchResult.Failed(
+                TestEndpoint, "Payment failed: insufficient balance", statusCode: 402));
+
+        var result = await AgentSettleTool.SettleAgentService(
+            l402Endpoint: TestEndpoint,
+            l402Client: _l402ClientMock.Object,
+            budgetService: _budgetServiceMock.Object,
+            paymentHistoryService: _paymentHistoryMock.Object,
+            cancellationToken: CancellationToken.None);
+
+        var root = JsonDocument.Parse(result).RootElement;
+        root.GetProperty("success").GetBoolean().Should().BeFalse();
+        root.TryGetProperty("alreadyPaid", out _).Should().BeFalse();
+        root.GetProperty("error").GetString().Should().Contain("insufficient balance");
+
+        _paymentHistoryMock.Verify(h => h.RecordFailedPayment(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
+            It.IsAny<string>(), It.IsAny<string?>()), Times.Never);
+        _budgetServiceMock.Verify(b => b.RecordSpend(It.IsAny<long>()), Times.Never);
+        _budgetServiceMock.Verify(b => b.RecordPaymentTime(), Times.Never);
     }
 
     [Fact]
@@ -160,12 +257,14 @@ public class AgentSettleToolTests
         json.RootElement.TryGetProperty("details", out var details).Should().BeTrue();
         details.GetProperty("remainingSats").GetInt64().Should().Be(500);
 
-        // Verify failed payment was recorded
+        // The tool is PASSIVE on recording: a budget denial attempts no payment, so it must
+        // NOT record a failed payment (the client is the single source of truth). The client
+        // is never even reached on a pre-flight budget denial.
         _paymentHistoryMock.Verify(h => h.RecordFailedPayment(
-            TestEndpoint,
-            "ASA-Settlement",
-            1000,
-            It.IsAny<string>(),
-            It.IsAny<string>()), Times.Once);
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
+            It.IsAny<string>(), It.IsAny<string?>()), Times.Never);
+        _l402ClientMock.Verify(c => c.FetchWithL402Async(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
+            It.IsAny<long>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 }

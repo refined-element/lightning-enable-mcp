@@ -87,12 +87,19 @@ def test_smithery_yaml_does_not_advertise_removed_env_vars():
     """
     text = (REPO_ROOT / "smithery.yaml").read_text(encoding="utf-8")
 
+    # Property key, bare or quoted: `l402MaxSatsPerRequest:` or `"l402MaxSatsPerRequest":`.
     prop_pattern = re.compile(
-        r"^[ \t]*(" + "|".join(re.escape(p) for p in REMOVED_SMITHERY_PROPS) + r")[ \t]*:",
+        r"^[ \t]*[\"']?(" + "|".join(re.escape(p) for p in REMOVED_SMITHERY_PROPS) + r")[\"']?[ \t]*:",
         re.MULTILINE,
     )
     schema_offenders = sorted(set(prop_pattern.findall(text)))
-    mapping_offenders = sorted(name for name in REMOVED_ENV_VARS if f"env.{name}" in text)
+
+    # commandFunction env assignment, dot- or bracket-notation:
+    # `env.NAME`, `env['NAME']`, `env["NAME"]`.
+    def _maps_env(name: str) -> bool:
+        return re.search(r"env\s*(?:\.\s*|\[\s*[\"'])" + re.escape(name), text) is not None
+
+    mapping_offenders = sorted(name for name in REMOVED_ENV_VARS if _maps_env(name))
 
     offenders = schema_offenders + mapping_offenders
     assert not offenders, (

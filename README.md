@@ -131,6 +131,8 @@ Config file locations:
 
 **Canonical inventory: 26 tools — 17 free (out of the box, just a wallet) + 9 that require `LIGHTNING_ENABLE_API_KEY`** (an [Agentic Commerce subscription](https://lightningenable.com); 2 L402 Producer + 7 Agent Service Agreement). This table is the single source of truth every advertised count derives from — it is pinned to the code by the tool-inventory guard tests in both ports (drift fails CI).
 
+> **ASA availability note.** The L402/producer tools, `discover_agent_services`, `settle_agent_service`, and `unpublish_agent_capability` work against the hosted API today. The agent-to-agent coordination tools — `publish_agent_capability`, `request_agent_service`, `publish_agent_attestation`, `get_agent_reputation` — use the agent capability backend, which is **not yet enabled on the hosted Lightning Enable API** (calls there currently return an error) and are in preview. Marketplace listings are published today via the Lightning Enable dashboard / L402 proxy pipeline.
+
 **Deprecated aliases** (accepted but unadvertised, forward to the new tool, removed in v2.0.0): `confirm_payment` → `verify_confirmation_code`; `check_wallet_balance`, `get_all_balances` → `get_balance`.
 
 | Tool | Access | What it does |

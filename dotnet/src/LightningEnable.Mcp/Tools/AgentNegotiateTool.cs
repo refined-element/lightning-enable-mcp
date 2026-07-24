@@ -19,7 +19,9 @@ public static class AgentNegotiateTool
         "Sends a service request (kind 38401 event) referencing the provider's capability. " +
         "The provider responds with agreement/settlement terms; settle via settle_agent_service. " +
         "If the provider has an L402 endpoint, you can skip this step " +
-        "and use settle_agent_service directly.")]
+        "and use settle_agent_service directly. " +
+        "NOTE: the agent-to-agent capability backend is not yet enabled on the hosted " +
+        "Lightning Enable API; calls there currently return an error.")]
     public static async Task<string> RequestAgentService(
         [Description("Event ID of the capability to request")] string capabilityEventId,
         [Description("Maximum budget in satoshis")] int budgetSats,

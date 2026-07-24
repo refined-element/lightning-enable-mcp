@@ -18,7 +18,9 @@ public static class AgentAttestationTool
     [McpServerTool(Name = "publish_agent_attestation"), Description(
         "Publish an attestation (review) for an agent after a completed agreement. " +
         "Creates a kind 38403 event that builds the agent's on-protocol reputation. " +
-        "Requires LIGHTNING_ENABLE_API_KEY.")]
+        "Requires LIGHTNING_ENABLE_API_KEY. " +
+        "NOTE: the agent-to-agent capability backend is not yet enabled on the hosted " +
+        "Lightning Enable API; calls there currently return an error.")]
     public static async Task<string> PublishAgentAttestation(
         [Description("Pubkey of the agent being reviewed")] string subjectPubkey,
         [Description("Event ID of the agreement this review is for")] string agreementId,
@@ -131,7 +133,9 @@ public static class AgentAttestationTool
     [McpServerTool(Name = "get_agent_reputation"), Description(
         "Get an agent's reputation score and reviews. " +
         "Queries kind 38403 attestation events for the given pubkey. " +
-        "Returns average rating and individual reviews.")]
+        "Returns average rating and individual reviews. " +
+        "NOTE: the agent-to-agent capability backend is not yet enabled on the hosted " +
+        "Lightning Enable API; calls there currently return an error.")]
     public static async Task<string> GetAgentReputation(
         [Description("Pubkey of the agent to query reputation for")] string pubkey,
         [Description("Maximum number of attestations to return (default: 20)")] int limit = 20,

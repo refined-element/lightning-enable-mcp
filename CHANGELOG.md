@@ -3,6 +3,22 @@
 All notable changes to the Lightning Enable MCP server are documented here.
 Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-enable-mcp`).
 
+## [1.19.0]
+
+### Changed
+
+- **`unpublish_agent_capability` now targets the ungated L402 proxy pipeline**
+  (`POST /api/proxy/{proxyId}/unpublish`) instead of the agent-capabilities
+  backend, so it actually works for the marketplace listings created via the
+  proxy/dashboard path. Params simplified to `service_id` (the listing's d-tag /
+  proxy id) + optional `reason` (dropped `pubkey` and `mode`).
+- **Honest availability notes** added to the agent-to-agent coordination tools
+  (`publish_agent_capability`, `request_agent_service`, `publish_agent_attestation`,
+  `get_agent_reputation`) and the README: those use the agent capability backend,
+  which is not yet enabled on the hosted API, so calls there currently error.
+  L402/producer, `discover_agent_services`, `settle_agent_service`, and
+  `unpublish_agent_capability` work against the hosted API today.
+
 ## [1.18.0]
 
 ### Added

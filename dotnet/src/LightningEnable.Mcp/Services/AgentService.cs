@@ -36,13 +36,12 @@ public interface IAgentService
         string[]? hashtags, CancellationToken ct);
 
     /// <summary>
-    /// Take a published capability down (NIP-A5 listing lifecycle). In "remove"
-    /// mode the backend retires the L402 proxy and emits the on-Nostr removal
-    /// (NIP-09 kind 5 + status=removed 38400). Requires API key.
+    /// Take a published listing down via the ungated L402 proxy management API
+    /// (POST /api/proxy/{proxyId}/unpublish): soft-retires the proxy and emits the
+    /// on-Nostr removal (NIP-09 kind 5 + status=removed 38400). Requires API key.
     /// </summary>
     Task<AgentUnpublishResult> UnpublishCapabilityAsync(
-        string pubkey, string serviceId, string mode, string? reason,
-        CancellationToken ct);
+        string proxyId, string? reason, CancellationToken ct);
 
     /// <summary>
     /// Send a service request referencing a provider's capability (kind 38401 event).
@@ -109,12 +108,11 @@ public record AgentPublishResult
 public record AgentUnpublishResult
 {
     public bool Success { get; init; }
-    public string? ServiceId { get; init; }
     public string? ProxyId { get; init; }
-    public string? Mode { get; init; }
-    // Nullable so an omitted backend `retired` surfaces as null (parity with the
+    // Nullable so an omitted backend field surfaces as null (parity with the
     // Python port), not a misleading false.
     public bool? Retired { get; init; }
+    public bool? AlreadyRetired { get; init; }
     public string? ErrorMessage { get; init; }
 }
 
@@ -351,7 +349,7 @@ public class AgentService : IAgentService
     }
 
     public async Task<AgentUnpublishResult> UnpublishCapabilityAsync(
-        string pubkey, string serviceId, string mode, string? reason, CancellationToken ct)
+        string proxyId, string? reason, CancellationToken ct)
     {
         if (!IsConfigured)
         {
@@ -365,14 +363,15 @@ public class AgentService : IAgentService
 
         try
         {
-            var requestBody = reason is null ? (object)new { mode } : new { mode, reason };
+            // Parity with the Python port: an empty reason is omitted, not sent as "".
+            var requestBody = string.IsNullOrEmpty(reason) ? (object)new { } : new { reason };
 
             var httpContent = new StringContent(
                 JsonSerializer.Serialize(requestBody, JsonOptions),
                 Encoding.UTF8,
                 "application/json");
 
-            var path = $"{_baseUrl}/api/agents/{Uri.EscapeDataString(pubkey)}/capabilities/{Uri.EscapeDataString(serviceId)}/unpublish";
+            var path = $"{_baseUrl}/api/proxy/{Uri.EscapeDataString(proxyId)}/unpublish";
             var response = await _httpClient.PostAsync(path, httpContent, ct);
             var responseBody = await response.Content.ReadAsStringAsync(ct);
 
@@ -395,16 +394,16 @@ public class AgentService : IAgentService
             using var doc = JsonDocument.Parse(responseBody);
             var root = doc.RootElement;
 
+            static bool? ReadBool(JsonElement e, string name) =>
+                e.TryGetProperty(name, out var v) && v.ValueKind is JsonValueKind.True or JsonValueKind.False
+                    ? v.GetBoolean() : (bool?)null;
+
             return new AgentUnpublishResult
             {
                 Success = true,
-                ServiceId = root.TryGetProperty("serviceId", out var sid) ? sid.GetString() : serviceId,
-                ProxyId = root.TryGetProperty("proxyId", out var pid) ? pid.GetString() : null,
-                Mode = root.TryGetProperty("mode", out var m) ? m.GetString() : mode,
-                Retired = root.TryGetProperty("retired", out var r)
-                    && r.ValueKind is JsonValueKind.True or JsonValueKind.False
-                    ? r.GetBoolean()
-                    : (bool?)null
+                ProxyId = root.TryGetProperty("proxyId", out var pid) ? pid.GetString() : proxyId,
+                Retired = ReadBool(root, "retired"),
+                AlreadyRetired = ReadBool(root, "alreadyRetired")
             };
         }
         catch (TaskCanceledException)

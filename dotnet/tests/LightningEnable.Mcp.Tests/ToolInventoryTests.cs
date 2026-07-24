@@ -15,7 +15,7 @@ namespace LightningEnable.Mcp.Tests;
 /// ONE list below — which is what every human-facing count is expected to derive from.
 ///
 /// Canonical: 26 total = 17 out-of-the-box (free, just a wallet) + 9 that require
-/// <c>LIGHTNING_ENABLE_API_KEY</c> (2 producer + 6 ASA). Keep in lockstep with the Python
+/// <c>LIGHTNING_ENABLE_API_KEY</c> (2 producer + 7 ASA). Keep in lockstep with the Python
 /// guard (python/lightning-enable-mcp/tests/test_server.py) and the docs' MCP Complete
 /// Guide — the one place that itemizes the tools for humans.
 ///

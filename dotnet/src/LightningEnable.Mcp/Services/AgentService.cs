@@ -112,7 +112,9 @@ public record AgentUnpublishResult
     public string? ServiceId { get; init; }
     public string? ProxyId { get; init; }
     public string? Mode { get; init; }
-    public bool Retired { get; init; }
+    // Nullable so an omitted backend `retired` surfaces as null (parity with the
+    // Python port), not a misleading false.
+    public bool? Retired { get; init; }
     public string? ErrorMessage { get; init; }
 }
 
@@ -399,7 +401,10 @@ public class AgentService : IAgentService
                 ServiceId = root.TryGetProperty("serviceId", out var sid) ? sid.GetString() : serviceId,
                 ProxyId = root.TryGetProperty("proxyId", out var pid) ? pid.GetString() : null,
                 Mode = root.TryGetProperty("mode", out var m) ? m.GetString() : mode,
-                Retired = root.TryGetProperty("retired", out var r) && r.ValueKind == JsonValueKind.True
+                Retired = root.TryGetProperty("retired", out var r)
+                    && r.ValueKind is JsonValueKind.True or JsonValueKind.False
+                    ? r.GetBoolean()
+                    : (bool?)null
             };
         }
         catch (TaskCanceledException)

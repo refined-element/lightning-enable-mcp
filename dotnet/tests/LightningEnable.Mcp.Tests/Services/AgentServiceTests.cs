@@ -55,6 +55,36 @@ public class AgentServiceTests
     }
 
     [Fact]
+    public async Task UnpublishCapability_PercentEncodesServiceIdPath()
+    {
+        HttpRequestMessage? captured = null;
+        var handlerMock = new Mock<HttpMessageHandler>();
+        handlerMock.Protected()
+            .Setup<Task<HttpResponseMessage>>(
+                "SendAsync",
+                ItExpr.IsAny<HttpRequestMessage>(),
+                ItExpr.IsAny<CancellationToken>())
+            .Callback<HttpRequestMessage, CancellationToken>((req, _) => captured = req)
+            .ReturnsAsync(new HttpResponseMessage
+            {
+                StatusCode = HttpStatusCode.OK,
+                Content = new StringContent(
+                    "{\"serviceId\":\"x\",\"proxyId\":\"p\",\"mode\":\"remove\",\"retired\":true}",
+                    System.Text.Encoding.UTF8, "application/json")
+            });
+        var service = new AgentService(new HttpClient(handlerMock.Object), _configServiceMock.Object);
+
+        var result = await service.UnpublishCapabilityAsync(
+            new string('a', 64), "svc/../danger", "remove", null, CancellationToken.None);
+
+        result.Success.Should().BeTrue();
+        captured.Should().NotBeNull();
+        // The slash in service_id is percent-encoded, so it can't traverse the path.
+        captured!.RequestUri!.AbsoluteUri.Should().Contain("%2F");
+        captured.RequestUri.AbsolutePath.Should().NotContain("/svc/../danger/");
+    }
+
+    [Fact]
     public async Task DiscoverCapabilities_SuccessfulResponse_ParsesCorrectly()
     {
         // Arrange

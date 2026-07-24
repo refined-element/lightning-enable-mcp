@@ -190,7 +190,7 @@ lightning-enable-mcp/
 
 These tools enable agent-to-agent commerce on Nostr:
 
-All six ASA tools require `LIGHTNING_ENABLE_API_KEY` (an [Agentic Commerce subscription](https://lightningenable.com)); `settle_agent_service` additionally spends your wallet balance, subject to budget limits. For the authoritative access level of every tool, see the canonical [Tools](#tools) table above — it is the single source of truth pinned to the code by the drift guard.
+All seven ASA tools require `LIGHTNING_ENABLE_API_KEY` (an [Agentic Commerce subscription](https://lightningenable.com)); `settle_agent_service` additionally spends your wallet balance, subject to budget limits. For the authoritative access level of every tool, see the canonical [Tools](#tools) table above — it is the single source of truth pinned to the code by the drift guard.
 
 | Tool | Description |
 |------|-------------|

@@ -14,10 +14,13 @@ namespace LightningEnable.Mcp.Tests;
 /// free / API-key split. Add or remove a tool and this test fails until you update the
 /// ONE list below — which is what every human-facing count is expected to derive from.
 ///
-/// Canonical: 26 total = 17 out-of-the-box (free, just a wallet) + 9 that require
-/// <c>LIGHTNING_ENABLE_API_KEY</c> (2 producer + 7 ASA). Keep in lockstep with the Python
-/// guard (python/lightning-enable-mcp/tests/test_server.py) and the docs' MCP Complete
-/// Guide — the one place that itemizes the tools for humans.
+/// Canonical: 26 total = 17 out-of-the-box (free, just a wallet) + 9 producer/ASA
+/// tools (2 producer + 7 ASA). Of the 9, the producer tools and the ASA request/publish/
+/// unpublish tools require <c>LIGHTNING_ENABLE_API_KEY</c>; ASA discovery, settlement, and
+/// reputation reads (discover_agent_services, settle_agent_service, get_agent_reputation)
+/// work against the public registry with just a wallet, but are grouped here as the
+/// producer/agent-marketplace surface. Keep in lockstep with the Python guard
+/// (python/lightning-enable-mcp/tests/test_server.py) and the docs' MCP Complete Guide.
 ///
 /// The three renamed/merged tools' OLD names (confirm_payment, check_wallet_balance,
 /// get_all_balances) remain accepted-but-unadvertised forwarding aliases (see
@@ -37,7 +40,9 @@ public class ToolInventoryTests
         "verify_confirmation_code", "create_lightning_enable_account",
     };
 
-    // 9 tools that require LIGHTNING_ENABLE_API_KEY: 2 producer + 7 ASA.
+    // 9 producer + ASA (agent-marketplace) tools. The producer tools and the ASA
+    // request/publish/unpublish tools require LIGHTNING_ENABLE_API_KEY; discover_agent_services,
+    // settle_agent_service, and get_agent_reputation read the public registry with just a wallet.
     private static readonly IReadOnlySet<string> ApiKeyTools = new HashSet<string>
     {
         "create_l402_challenge", "verify_l402_payment",
@@ -101,7 +106,7 @@ public class ToolInventoryTests
     public void ToolCounts_AreCanonical_26_17_9()
     {
         FreeTools.Count.Should().Be(17, "17 out-of-the-box tools");
-        ApiKeyTools.Count.Should().Be(9, "9 tools require LIGHTNING_ENABLE_API_KEY (2 producer + 7 ASA)");
+        ApiKeyTools.Count.Should().Be(9, "9 producer + ASA tools (2 producer + 7 ASA)");
         (FreeTools.Count + ApiKeyTools.Count).Should().Be(26, "26 tools total");
         FreeTools.Overlaps(ApiKeyTools).Should().BeFalse("a tool is either free or API-key-gated, never both");
     }

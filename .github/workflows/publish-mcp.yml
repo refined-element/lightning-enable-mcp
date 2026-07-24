@@ -237,6 +237,9 @@ jobs:
           platforms: linux/amd64,linux/arm64
 
       - name: Prepare Docker Hub README (rewrite relative links to absolute GitHub URLs)
+        # Cosmetic README prep for the description sync below — the image is already pushed,
+        # so a failure here must NOT fail the job and strand publish-registry (needs: publish-docker).
+        continue-on-error: true
         run: |
           # README.md uses relative paths (dotnet/..., python/..., etc.) which don't
           # resolve on Docker Hub. Generate a Docker-Hub-specific copy with absolute
@@ -349,8 +352,8 @@ jobs:
         run: |
           # Tolerate a duplicate version the same way the NuGet (--skip-duplicate)
           # and PyPI (--skip-existing) steps do. The publish workflow triggers on any
-          # change to the csproj/pyproject/Dockerfile/server.json — not only version
-          # bumps — so a non-version-bump change would otherwise hard-fail this job with
+          # change to the csproj/pyproject/Dockerfile (server.json is not a push trigger) —
+          # not only version bumps — so a non-version-bump change would otherwise hard-fail this job with
           # "cannot publish duplicate version" even though the package jobs correctly
           # no-op. Only the duplicate case is swallowed; any other failure still fails.
           set +e

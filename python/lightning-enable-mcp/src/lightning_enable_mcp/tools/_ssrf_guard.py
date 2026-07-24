@@ -61,14 +61,24 @@ Resolver = Callable[[str], Awaitable[list[str]]]
 _BLOCKED_MESSAGE = "Target host is not allowed (resolves to a private, loopback, or reserved address)."
 
 # Hostnames that must never be fetched regardless of what they resolve to.
+# MUST stay in sync with the .NET guard's blocked-hostname set in
+# Services/SsrfUrlGuard.cs — the two ports block the same union set; update both
+# together. (.localhost and .internal SUFFIXES are handled separately below.)
 _BLOCKED_HOSTNAMES = frozenset(
     {
         "localhost",
+        "metadata",
         "metadata.google.internal",
         "metadata.goog",
-        "metadata",
+        "metadata.azure.com",
     }
 )
+
+# RFC 6598 shared address space (carrier-grade NAT). Python's ipaddress.is_private
+# does NOT include this range, but it addresses internal CGNAT infrastructure and is
+# a legitimate SSRF pivot, so block it explicitly. The .NET PrivateIpAddressDetector
+# blocks the same range — the two ports must stay consistent.
+_CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 
 
 class SsrfError(Exception):
@@ -92,6 +102,12 @@ def is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
         ip = ip.ipv4_mapped
 
+    # RFC 6598 CGNAT (100.64.0.0/10): not covered by is_private — block explicitly
+    # (parity with the .NET detector). Guarded by isinstance so the network-version
+    # match is correct.
+    if isinstance(ip, ipaddress.IPv4Address) and ip in _CGNAT_NETWORK:
+        return True
+
     return (
         ip.is_private
         or ip.is_loopback
@@ -99,6 +115,10 @@ def is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
         or ip.is_reserved
         or ip.is_multicast
         or ip.is_unspecified
+        # IPv6 site-local fec0::/10 (deprecated by RFC 3879 but still internally
+        # routable). is_private does NOT cover it; is_site_local exists only on
+        # IPv6Address, hence getattr. The .NET detector blocks fec0::/10 too.
+        or getattr(ip, "is_site_local", False)
     )
 
 
@@ -153,6 +173,14 @@ async def validate_url_allowed(url: str, *, resolver: Resolver | None = None) ->
         # Unresolvable now — allow (matches the .NET/API reference). Nothing is
         # fetched until a real connection is made.
         return
+
+    # Fail CLOSED on an empty resolution. This is distinct from the unresolvable case
+    # above (which RAISES and is deliberately allowed): a resolver that returns an
+    # empty list gave us no address to validate, so the validation loop below would be
+    # skipped and the function would fall through to "allow". Treat it as hostile,
+    # matching the .NET SsrfConnectValidator which throws on an empty address set.
+    if not addresses:
+        raise SsrfError()
 
     for address in addresses:
         try:

@@ -57,9 +57,16 @@ class TestIsBlockedIp:
             "fe80::1",
             "fc00::1",
             "fd00::1",
+            "fec0::1",  # IPv6 site-local (fec0::/10) — is_private misses it (FIX 3)
+            "feff:ffff::1",  # top of the fec0::/10 site-local block
             "ff02::1",
             "::ffff:127.0.0.1",  # IPv4-mapped loopback
             "::ffff:169.254.169.254",  # IPv4-mapped metadata
+            # RFC 6598 shared / CGNAT (100.64.0.0/10) — is_private misses it (FIX 3)
+            "100.64.0.1",
+            "100.64.0.0",
+            "100.100.100.100",
+            "100.127.255.255",
         ],
     )
     def test_blocked(self, ip):
@@ -73,6 +80,8 @@ class TestIsBlockedIp:
             "93.184.216.34",
             "172.15.255.255",  # just below 172.16/12
             "172.32.0.1",  # just above 172.16/12
+            "100.63.255.255",  # just below the 100.64/10 CGNAT block
+            "100.128.0.1",  # just above the 100.64/10 CGNAT block
             "2606:4700:4700::1111",
             "2001:4860:4860::8888",
         ],
@@ -95,7 +104,10 @@ class TestValidateUrlAllowed:
             "http://localhost/x",
             "http://svc.internal/x",
             "http://foo.localhost/x",
+            "http://metadata/x",  # bare metadata (FIX 7 union set)
             "http://metadata.google.internal/x",
+            "http://metadata.goog/x",
+            "http://metadata.azure.com/x",  # was missing on the Python side (FIX 7)
         ],
     )
     async def test_rejects_internal_hostnames(self, url):
@@ -161,6 +173,17 @@ class TestValidateUrlAllowed:
             "https://not-registered.example/",
             resolver=_raising_resolver(socket.gaierror("Name or service not known")),
         )  # no raise
+
+    @pytest.mark.asyncio
+    async def test_fail_closed_on_empty_resolution(self):
+        # FIX 6: a resolver returning an EMPTY list (not raising) previously skipped the
+        # validation loop and fell through to "allow". It must fail closed instead —
+        # parity with the .NET SsrfConnectValidator which throws on an empty address set.
+        # This is distinct from the unresolvable (raising) case above, which stays allowed.
+        with pytest.raises(SsrfError):
+            await validate_url_allowed(
+                "https://empty-answer.example/", resolver=_fake_resolver()
+            )
 
     @pytest.mark.asyncio
     async def test_generic_message_does_not_echo_host_or_ip(self):

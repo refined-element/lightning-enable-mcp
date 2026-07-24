@@ -543,7 +543,7 @@ class BudgetService:
             return pc
 
     def validate_confirmation(self, nonce: str) -> Optional[PendingConfirmation]:
-        """Peek at a confirmation by code WITHOUT consuming it (used by confirm_payment).
+        """Peek at a confirmation by code WITHOUT consuming it (used by verify_confirmation_code).
 
         Returns None if the code is unknown or expired (expired codes are purged).
         """

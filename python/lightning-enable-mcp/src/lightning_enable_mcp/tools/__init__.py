@@ -40,7 +40,7 @@ def sanitize_error(msg: str, max_len: int = _MAX_ERROR_LEN) -> str:
 from .access_resource import access_l402_resource
 from .create_account import create_lightning_enable_account
 from .check_invoice_status import check_invoice_status
-from .confirm_payment import confirm_payment
+from .verify_confirmation_code import verify_confirmation_code
 from .create_invoice import create_invoice
 from .create_l402_challenge import create_l402_challenge
 from .discover_api import discover_api
@@ -65,7 +65,7 @@ __all__ = [
     "access_l402_resource",
     "create_lightning_enable_account",
     "check_invoice_status",
-    "confirm_payment",
+    "verify_confirmation_code",
     "create_invoice",
     "create_l402_challenge",
     "discover_api",

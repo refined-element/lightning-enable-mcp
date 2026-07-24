@@ -37,7 +37,7 @@ FREE_TOOLS = {
     "get_all_balances",
     "exchange_currency",
     "send_onchain",
-    "confirm_payment",
+    "verify_confirmation_code",
     "create_lightning_enable_account",
 }
 API_KEY_TOOLS = {
@@ -233,3 +233,73 @@ class TestToolResponses:
         parsed = json.loads(success_response)
 
         assert parsed["success"] is True
+
+
+async def _advertised_tool_names(server: LightningEnableServer) -> set[str]:
+    """The tools the server advertises via list_tools (aliases are excluded)."""
+    from mcp.types import ListToolsRequest
+
+    handler = server.server.request_handlers[ListToolsRequest]
+    result = await handler(ListToolsRequest(method="tools/list"))
+    return {tool.name for tool in result.root.tools}
+
+
+async def _call_tool(server: LightningEnableServer, name: str, arguments: dict) -> str:
+    """Invoke the registered call_tool handler the way the SDK does for a tools/call."""
+    from mcp.types import CallToolRequest, CallToolRequestParams
+
+    handler = server.server.request_handlers[CallToolRequest]
+    req = CallToolRequest(
+        method="tools/call",
+        params=CallToolRequestParams(name=name, arguments=arguments),
+    )
+    result = await handler(req)
+    return result.root.content[0].text
+
+
+class TestDeprecatedAliases:
+    """The old tool names remain accepted-but-unadvertised forwarding aliases.
+
+    Each alias must: (1) dispatch to the new implementation, (2) carry a
+    ``deprecated`` marker in its result, and (3) be ABSENT from the advertised list.
+    """
+
+    @pytest.mark.asyncio
+    async def test_confirm_payment_alias_forwards_and_is_deprecated(self):
+        from datetime import datetime, timezone, timedelta
+        from decimal import Decimal
+        from lightning_enable_mcp.budget_service import PendingConfirmation
+
+        server = LightningEnableServer()
+        # Pre-set wallet + l402 client so call_tool skips _initialize_services.
+        server.wallet = MagicMock()
+        server.l402_client = MagicMock()
+        now = datetime.now(timezone.utc)
+        server.budget_service = MagicMock()
+        server.budget_service.validate_confirmation.return_value = PendingConfirmation(
+            nonce="ABC123",
+            amount_sats=21000,
+            amount_usd=Decimal("21.00"),
+            tool_name="pay_invoice",
+            description="Invoice payment",
+            destination="lnbc-test-invoice",
+            created_at=now,
+            expires_at=now + timedelta(minutes=2),
+        )
+
+        text = await _call_tool(server, "confirm_payment", {"nonce": "abc123"})
+        data = json.loads(text)
+
+        # Forwarded to verify_confirmation_code (real result), plus deprecation marker.
+        assert data["success"] is True
+        assert data["valid"] is True
+        assert data["tool"] == "pay_invoice"
+        assert data["deprecated"]["replaced_by"] == "verify_confirmation_code"
+        assert data["deprecated"]["removal"] == "v2.0.0"
+
+    @pytest.mark.asyncio
+    async def test_confirm_payment_is_not_advertised(self):
+        server = LightningEnableServer()
+        advertised = await _advertised_tool_names(server)
+        assert "confirm_payment" not in advertised
+        assert "verify_confirmation_code" in advertised

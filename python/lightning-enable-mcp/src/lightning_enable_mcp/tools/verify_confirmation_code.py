@@ -1,9 +1,10 @@
 """
-Confirm Payment Tool
+Verify Confirmation Code Tool
 
-Confirm a pending payment using the nonce code from a previous payment request.
-This is a separate tool call that appears as a distinct action in Claude Code,
-ensuring the user sees and can approve/deny the confirmation.
+Verify a payment confirmation code (relayed by the human from the server console).
+VERIFICATION ONLY — this never executes a payment. It appears as a distinct action in
+Claude Code so the user sees and can approve/deny the check. To actually pay, the agent
+re-calls the original payment tool with confirmation_nonce set to the code.
 """
 
 import json
@@ -14,10 +15,10 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from ..budget_service import BudgetService
 
-logger = logging.getLogger("lightning-enable-mcp.tools.confirm_payment")
+logger = logging.getLogger("lightning-enable-mcp.tools.verify_confirmation_code")
 
 
-async def confirm_payment(
+async def verify_confirmation_code(
     nonce: str,
     budget_service: "BudgetService | None" = None,
 ) -> str:
@@ -35,7 +36,7 @@ async def confirm_payment(
         budget_service: BudgetService for confirmation validation
 
     Returns:
-        JSON with confirmation result or error message
+        JSON with verification result or error message
     """
     if not nonce or not nonce.strip():
         return json.dumps({
@@ -62,11 +63,14 @@ async def confirm_payment(
 
         return json.dumps({
             "success": True,
+            "valid": True,
+            # Retained for backward compatibility with the old confirm_payment shape.
             "confirmed": True,
+            "amount_sats": confirmation.amount_sats,
+            "tool": confirmation.tool_name,
             "message": (
-                f"Confirmation code is valid for a payment of ${float(confirmation.amount_usd):.2f} "
-                f"({confirmation.amount_sats:,} sats) via {confirmation.tool_name}. To actually pay, call "
-                "that tool again with confirmation_nonce set to this code (it is consumed then, one-time)."
+                f"Code verified — NOTHING HAS BEEN PAID. To execute, call "
+                f"{confirmation.tool_name} again with confirmation_nonce={confirmation.nonce}."
             ),
             "confirmation": {
                 "nonce": confirmation.nonce,
@@ -85,7 +89,7 @@ async def confirm_payment(
             "hint": "Upgrade the MCP server to support payment confirmations."
         })
     except Exception as e:
-        logger.exception("Error confirming payment")
+        logger.exception("Error verifying confirmation code")
         return json.dumps({
             "success": False,
             "error": sanitize_error(str(e))

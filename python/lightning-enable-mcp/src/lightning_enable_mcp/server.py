@@ -5,6 +5,7 @@ Main server module providing L402 payment capabilities to AI agents via MCP.
 """
 
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -35,7 +36,7 @@ from .tools.test_l402_payment import test_l402_payment
 from .tools.get_receipts import get_receipts
 from .receipt_service import ReceiptService, wallet_label_from
 from .tools.check_invoice_status import check_invoice_status
-from .tools.confirm_payment import confirm_payment
+from .tools.verify_confirmation_code import verify_confirmation_code
 from .tools.create_invoice import create_invoice
 from .tools.create_l402_challenge import create_l402_challenge
 from .tools.discover_api import discover_api
@@ -80,6 +81,36 @@ def _sanitize_error(msg: str) -> str:
     for pattern in _CREDENTIAL_PATTERNS:
         msg = pattern.sub("[REDACTED]", msg)
     return msg
+
+
+# Renamed/merged tools keep their old names as accepted-but-unadvertised forwarding
+# aliases for one minor cycle. An alias dispatches to the new implementation and the
+# forwarded JSON gains a `deprecated` marker. The aliases are intentionally ABSENT from
+# list_tools() (dispatcher-only), so the advertised surface is the new names.
+DEPRECATED_ALIASES = {
+    "confirm_payment": "verify_confirmation_code",
+    "check_wallet_balance": "get_balance",
+    "get_all_balances": "get_balance",
+}
+_ALIAS_REMOVAL = "v2.0.0"
+
+
+def _mark_deprecated(result: str, replaced_by: str) -> str:
+    """Annotate a forwarded tool result (JSON string) with a deprecation marker.
+
+    Parses the underlying tool's JSON response and injects
+    ``deprecated: {replaced_by, removal}``. If the payload is not a JSON object
+    (unexpected), the original string is returned unchanged so an alias never breaks
+    a caller that the new tool would have served.
+    """
+    try:
+        data = json.loads(result)
+    except (ValueError, TypeError):
+        return result
+    if not isinstance(data, dict):
+        return result
+    data["deprecated"] = {"replaced_by": replaced_by, "removal": _ALIAS_REMOVAL}
+    return json.dumps(data, indent=2)
 
 
 class LightningEnableServer:
@@ -506,10 +537,12 @@ class LightningEnableServer:
                     },
                 ),
                 Tool(
-                    name="confirm_payment",
+                    name="verify_confirmation_code",
                     description=(
-                        "Confirm a pending payment using the nonce code from a previous payment request. "
-                        "Call this after a payment tool returns requiresConfirmation=true with a nonce."
+                        "Verify whether a payment confirmation code (relayed by the human from the "
+                        "server console) is still valid and what it authorizes. VERIFICATION ONLY — "
+                        "never executes a payment. To pay, call the original payment tool again with "
+                        "confirmation_nonce."
                     ),
                     inputSchema={
                         "type": "object",
@@ -775,7 +808,8 @@ class LightningEnableServer:
                     "create_l402_challenge",
                     "verify_l402_payment",
                     "discover_api",
-                    "confirm_payment",
+                    "verify_confirmation_code",
+                    "confirm_payment",  # deprecated alias of verify_confirmation_code
                     "discover_agent_services",
                     "publish_agent_capability",
                     "request_agent_service",
@@ -951,11 +985,14 @@ class LightningEnableServer:
                         api_client=self.api_client,
                     )
 
-                elif name == "confirm_payment":
-                    result = await confirm_payment(
+                elif name in ("verify_confirmation_code", "confirm_payment"):
+                    # confirm_payment is a deprecated, unadvertised alias that forwards here.
+                    result = await verify_confirmation_code(
                         nonce=arguments.get("nonce", ""),
                         budget_service=self.budget_service,
                     )
+                    if name in DEPRECATED_ALIASES:
+                        result = _mark_deprecated(result, DEPRECATED_ALIASES[name])
 
                 elif name == "discover_api":
                     result = await discover_api(

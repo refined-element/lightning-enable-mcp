@@ -149,7 +149,7 @@ Config file locations:
 | `get_receipts` | Free | Read the durable, append-only receipt log |
 | `get_budget_status` | Free | View budget config and session spend (read-only) |
 | `configure_budget` | Free | Tighten runtime spending caps (tighten-only) |
-| `confirm_payment` | Free | Verify an out-of-band payment confirmation code |
+| `verify_confirmation_code` | Free | Verify an out-of-band payment confirmation code (verification only — never pays) |
 | `create_lightning_enable_account` | Free | Self-bootstrap signup: pay ~100 sats, get a merchant API key |
 | `create_l402_challenge` | Agentic Commerce | L402 Producer: create a challenge to charge for a resource |
 | `verify_l402_payment` | Agentic Commerce | L402 Producer: verify an L402 token (macaroon + preimage) |

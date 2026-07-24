@@ -14,20 +14,26 @@ namespace LightningEnable.Mcp.Tests;
 /// free / API-key split. Add or remove a tool and this test fails until you update the
 /// ONE list below — which is what every human-facing count is expected to derive from.
 ///
-/// Canonical: 26 total = 18 out-of-the-box (free, just a wallet) + 8 that require
+/// Canonical: 25 total = 17 out-of-the-box (free, just a wallet) + 8 that require
 /// <c>LIGHTNING_ENABLE_API_KEY</c> (2 producer + 6 ASA). Keep in lockstep with the Python
 /// guard (python/lightning-enable-mcp/tests/test_server.py) and the docs' MCP Complete
 /// Guide — the one place that itemizes the tools for humans.
+///
+/// The three renamed/merged tools' OLD names (confirm_payment, check_wallet_balance,
+/// get_all_balances) remain accepted-but-unadvertised forwarding aliases (see
+/// <see cref="DeprecatedAliasTests"/>). They are NOT [McpServerTool] methods — they are
+/// dispatched by a custom CallToolHandler in Program.cs — so they never appear in this
+/// reflected inventory, matching the Python port's hidden-alias behaviour exactly.
 /// </summary>
 public class ToolInventoryTests
 {
-    // 18 tools that work with just a wallet — no LIGHTNING_ENABLE_API_KEY.
+    // 17 tools that work with just a wallet — no LIGHTNING_ENABLE_API_KEY.
     private static readonly IReadOnlySet<string> FreeTools = new HashSet<string>
     {
-        "pay_invoice", "check_wallet_balance", "get_payment_history", "get_receipts",
+        "pay_invoice", "get_balance", "get_payment_history", "get_receipts",
         "get_budget_status", "configure_budget", "create_invoice", "check_invoice_status",
         "access_l402_resource", "pay_l402_challenge", "test_l402_payment", "discover_api",
-        "get_btc_price", "get_all_balances", "exchange_currency", "send_onchain",
+        "get_btc_price", "exchange_currency", "send_onchain",
         "verify_confirmation_code", "create_lightning_enable_account",
     };
 
@@ -91,11 +97,11 @@ public class ToolInventoryTests
     }
 
     [Fact]
-    public void ToolCounts_AreCanonical_26_18_8()
+    public void ToolCounts_AreCanonical_25_17_8()
     {
-        FreeTools.Count.Should().Be(18, "18 out-of-the-box tools");
+        FreeTools.Count.Should().Be(17, "17 out-of-the-box tools");
         ApiKeyTools.Count.Should().Be(8, "8 tools require LIGHTNING_ENABLE_API_KEY (2 producer + 6 ASA)");
-        (FreeTools.Count + ApiKeyTools.Count).Should().Be(26, "26 tools total");
+        (FreeTools.Count + ApiKeyTools.Count).Should().Be(25, "25 tools total");
         FreeTools.Overlaps(ApiKeyTools).Should().BeFalse("a tool is either free or API-key-gated, never both");
     }
 }

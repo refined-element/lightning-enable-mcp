@@ -51,7 +51,7 @@ public static class CreateInvoiceTool
             return JsonSerializer.Serialize(new
             {
                 success = false,
-                error = WalletMessages.NotConfigured
+                error = WalletMessages.NotConfiguredForReceiving
             });
         }
 

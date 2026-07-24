@@ -113,6 +113,9 @@ class TestPayInvoice:
         data = json.loads(result)
         assert data["success"] is False
         assert "Wallet not configured" in data["error"]
+        # L402-paying tool: OpenNode is demoted (no preimage), not offered as valid.
+        assert "cannot pay L402 challenges" in data["error"]
+        assert "OPENNODE_API_KEY works for these" not in data["error"]
 
     @pytest.mark.asyncio
     async def test_budget_deny_returns_error(self):

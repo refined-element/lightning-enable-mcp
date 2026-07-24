@@ -47,7 +47,7 @@ public static class CheckInvoiceStatusTool
             return JsonSerializer.Serialize(new
             {
                 success = false,
-                error = WalletMessages.NotConfigured
+                error = WalletMessages.NotConfiguredForReceiving
             });
         }
 

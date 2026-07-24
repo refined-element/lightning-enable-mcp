@@ -42,6 +42,8 @@ class TestCheckInvoiceStatus:
         parsed = json.loads(result)
         assert parsed["success"] is False
         assert "Wallet not configured" in parsed["error"]
+        # Receiving/invoicing tool: OpenNode is a valid option here.
+        assert "OPENNODE_API_KEY works for these" in parsed["error"]
 
     @pytest.mark.asyncio
     async def test_paid_invoice_strike(self):

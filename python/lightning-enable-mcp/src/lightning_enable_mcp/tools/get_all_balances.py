@@ -8,7 +8,7 @@ Most useful with Strike wallet which supports multiple currencies.
 import json
 import logging
 from . import sanitize_error
-from ..wallet_messages import WALLET_NOT_CONFIGURED
+from ..wallet_messages import WALLET_NOT_CONFIGURED_FOR_RECEIVING
 from typing import TYPE_CHECKING, Union
 
 if TYPE_CHECKING:
@@ -164,6 +164,6 @@ async def get_all_balances(
 
     return json.dumps({
         "success": False,
-        "error": WALLET_NOT_CONFIGURED,
+        "error": WALLET_NOT_CONFIGURED_FOR_RECEIVING,
         "configured": False,
     })

@@ -61,7 +61,7 @@ public static class PayInvoiceTool
             return JsonSerializer.Serialize(new
             {
                 success = false,
-                error = WalletMessages.NotConfigured
+                error = WalletMessages.NotConfiguredForPayment
             });
         }
 

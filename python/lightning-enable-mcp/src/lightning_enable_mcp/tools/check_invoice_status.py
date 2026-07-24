@@ -7,7 +7,7 @@ Check the payment status of a previously created Lightning invoice.
 import json
 import logging
 from . import sanitize_error
-from ..wallet_messages import WALLET_NOT_CONFIGURED
+from ..wallet_messages import WALLET_NOT_CONFIGURED_FOR_RECEIVING
 from typing import TYPE_CHECKING, Union
 
 if TYPE_CHECKING:
@@ -45,7 +45,7 @@ async def check_invoice_status(
     if not wallet:
         return json.dumps({
             "success": False,
-            "error": WALLET_NOT_CONFIGURED
+            "error": WALLET_NOT_CONFIGURED_FOR_RECEIVING
         })
 
     try:

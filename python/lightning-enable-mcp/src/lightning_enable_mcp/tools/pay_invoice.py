@@ -20,7 +20,7 @@ from bolt11 import decode as decode_bolt11
 
 from ..config import ApprovalLevel
 from ..wallet_errors import PaymentPendingError, PreimageUnavailableError
-from ..wallet_messages import WALLET_NOT_CONFIGURED
+from ..wallet_messages import WALLET_NOT_CONFIGURED_FOR_PAYMENT
 from . import sanitize_error
 
 logger = logging.getLogger("lightning-enable-mcp.tools.pay_invoice")
@@ -69,7 +69,7 @@ async def pay_invoice(
     if not wallet:
         return json.dumps({
             "success": False,
-            "error": WALLET_NOT_CONFIGURED
+            "error": WALLET_NOT_CONFIGURED_FOR_PAYMENT
         })
 
     try:

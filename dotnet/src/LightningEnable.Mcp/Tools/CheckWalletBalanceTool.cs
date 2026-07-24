@@ -38,7 +38,7 @@ public static class CheckWalletBalanceTool
             return JsonSerializer.Serialize(new
             {
                 success = false,
-                error = WalletMessages.NotConfigured,
+                error = WalletMessages.NotConfiguredForReceiving,
                 configured = false
             });
         }

@@ -363,7 +363,8 @@ public class AgentService : IAgentService
 
         try
         {
-            var requestBody = reason is null ? (object)new { } : new { reason };
+            // Parity with the Python port: an empty reason is omitted, not sent as "".
+            var requestBody = string.IsNullOrEmpty(reason) ? (object)new { } : new { reason };
 
             var httpContent = new StringContent(
                 JsonSerializer.Serialize(requestBody, JsonOptions),

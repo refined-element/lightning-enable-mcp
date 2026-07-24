@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 import json
 import pytest
 
-from lightning_enable_mcp.l402_client import L402RedirectError
+from lightning_enable_mcp.l402_client import L402Error, L402RedirectError
 from lightning_enable_mcp.tools.access_resource import access_l402_resource
 
 
@@ -91,3 +91,32 @@ async def test_access_resource_paid_redirect_surfaces_token_and_no_repay_message
     assert "ALREADY PAID" in parsed["message"]
     assert "do NOT pay again" in parsed["message"]
     assert "https://cdn.example.com/asset" in parsed["message"]
+
+
+@pytest.mark.asyncio
+async def test_access_resource_paid_retry_error_surfaces_token_already_paid():
+    """FIX a parity — a paid retry that ERRORS (e.g. HTTP 500, not a redirect) is NOT a
+    not-paid failure: the invoice was paid + recorded once inside the client, so the tool
+    surfaces the token + an ALREADY PAID message (never a bare 'verify the URL' error) so the
+    agent reuses the credential instead of paying again."""
+    err = L402Error("Request failed after payment: 500 boom")
+    err.amount_paid = 42
+    err.l402_token = "macaroon:preimage"
+    l402_client = AsyncMock()
+    l402_client.fetch = AsyncMock(side_effect=err)
+
+    result = await access_l402_resource(
+        url="https://api.example.com/paid",
+        l402_client=l402_client,
+        budget_service=None,
+    )
+    parsed = json.loads(result)
+
+    assert parsed["success"] is False
+    assert "redirect_location" not in parsed  # a 500 is not a redirect
+    assert parsed["alreadyPaid"] is True
+    assert parsed["payment"]["paid"] is True
+    assert parsed["payment"]["amountSats"] == 42
+    assert parsed["payment"]["l402Token"] == "macaroon:preimage"
+    assert "ALREADY PAID" in parsed["message"]
+    assert "do NOT pay again" in parsed["message"]

@@ -190,12 +190,12 @@ async def settle_agent_service(
             max_sats=max_sats,
         )
 
-        # Record spend ONLY after a payment actually happened
+        # PASSIVE: the client (l402_client.fetch) already recorded the spend + payment
+        # history + cooldown EXACTLY ONCE. The tool must NOT record any of that again — it
+        # only formats the result and READS (never writes) the session totals for display.
         session_info = None
         if amount_paid is not None and amount_paid > 0:
             if budget_service is not None:
-                budget_service.record_spend(amount_paid)
-                budget_service.record_payment_time()
                 logger.info(f"Settled {amount_paid} sats for ASA service at {l402_endpoint}")
                 status = budget_service.get_status()
                 session_info = {
@@ -245,42 +245,45 @@ async def settle_agent_service(
     except Exception as e:
         logger.exception(f"Error settling service at {l402_endpoint}")
 
-        # Paid-retry redirect (or any paid-but-failed retry): the L402 invoice already
-        # settled — money left the wallet — even though the resource then redirected /
-        # failed. Record the real spend ONCE (Python's client does not record — the tool
-        # does) so budget/history don't silently omit it. This is NOT a settlement
-        # failure, so we never fall through to the generic "Error settling service" that
-        # would tell the agent nothing was paid and invite a second payment.
+        # PASSIVE: the L402 invoice was paid inside l402_client.fetch, which ALREADY recorded
+        # the spend + cooldown (once) before raising. The tool must NOT record anything here —
+        # doing so would double-count. ``amount_paid`` is attached to the raised error purely
+        # so the tool can SURFACE the settled amount + token; it is not a signal to record.
         amount_paid = getattr(e, "amount_paid", None)
-        if amount_paid and budget_service is not None:
-            try:
-                budget_service.record_spend(amount_paid)
-                budget_service.record_payment_time()
-                logger.info(f"Recorded paid-but-not-delivered ASA spend: {amount_paid} sats at {l402_endpoint}")
-            except Exception:
-                logger.warning("Failed to record paid-but-redirected ASA spend")
+        l402_token = getattr(e, "l402_token", None)
 
-        # A paid-retry redirect is an honest "already paid, then redirected" outcome:
-        # surface the paid amount + credential + redirect target with an explicit
-        # "do NOT pay again" message so the agent retries the target WITH the token
-        # instead of re-paying (mirrors access_l402_resource; parity with .NET).
-        if isinstance(e, L402RedirectError) and amount_paid:
-            return json.dumps({
+        # A paid-but-not-2xx retry (a 3xx redirect OR an error such as HTTP 500) is an honest
+        # "already paid, then not delivered" outcome, NEVER a settlement failure. Surface the
+        # paid amount + credential (+ redirect target if any) with an explicit "do NOT pay
+        # again" message so the agent retries the target WITH the token instead of re-paying —
+        # rather than falling through to the generic "Error settling service" that would tell
+        # the agent nothing was paid and invite a second payment. (Parity with .NET.)
+        if amount_paid:
+            redirect_location = e.location if isinstance(e, L402RedirectError) else None
+            payload = {
                 "success": False,
                 "alreadyPaid": True,
                 "l402Endpoint": l402_endpoint,
                 "agreementId": agreement_id,
-                "redirect_location": e.location,
                 "payment": {
                     "paid": True,
                     "amountSats": amount_paid,
-                    "l402Token": getattr(e, "l402_token", None),
+                    "l402Token": l402_token,
                 },
-                "message": (
-                    f"Payment succeeded ({amount_paid} sats). The resource redirected to {e.location}. "
+            }
+            if redirect_location is not None:
+                payload["redirect_location"] = redirect_location
+                payload["message"] = (
+                    f"Payment succeeded ({amount_paid} sats). The resource redirected to {redirect_location}. "
                     "You have ALREADY PAID — do NOT pay again. Retry the redirect target with the l402Token above."
-                ),
-            }, indent=2)
+                )
+            else:
+                payload["message"] = (
+                    f"Payment succeeded ({amount_paid} sats), but the endpoint returned an error on the "
+                    "authorized retry. You have ALREADY PAID — do NOT pay again. Retry the endpoint with the "
+                    "l402Token above."
+                )
+            return json.dumps(payload, indent=2)
 
         return json.dumps({
             "success": False,

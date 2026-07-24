@@ -18,39 +18,11 @@ if TYPE_CHECKING:
 
 from ..config import ApprovalLevel
 from ..l402_client import L402RedirectError
+from .._url_redact import redact_url_for_display as _redact_url_for_display
 from . import sanitize_error
 from ._ssrf_guard import SsrfError, validate_url_allowed
 
 logger = logging.getLogger("lightning-enable-mcp.tools.access")
-
-
-def _redact_url_for_display(url: str, limit: int = 50) -> str:
-    """Return a display-safe URL with credentials stripped.
-
-    The query string, fragment, and userinfo can carry secrets (e.g. ``?token=...``).
-    This is printed to stderr / logged, so keep only scheme://host[:port]/path and mark
-    when anything was dropped — never leak the sensitive parts (engineering standard #5).
-    """
-    try:
-        from urllib.parse import urlsplit, urlunsplit
-
-        parts = urlsplit(url)
-        host = parts.hostname or ""
-        if ":" in host:  # IPv6 literal — urlsplit unbrackets it; re-bracket so host:port is unambiguous
-            host = f"[{host}]"
-        netloc = f"{host}:{parts.port}" if parts.port else host
-        dropped = bool(parts.query or parts.fragment or parts.username or parts.password)
-        safe = urlunsplit((parts.scheme, netloc, parts.path, "", ""))
-        if dropped:
-            safe = f"{safe} (redacted)"
-    except Exception:
-        safe = url.split("?", 1)[0].split("#", 1)[0]
-        if "//" in safe:
-            scheme_sep, rest = safe.split("//", 1)
-            if "@" in rest:
-                rest = rest.split("@", 1)[1]
-            safe = scheme_sep + "//" + rest
-    return safe[:limit] + "..." if len(safe) > limit else safe
 
 
 async def access_l402_resource(
@@ -210,15 +182,16 @@ async def access_l402_resource(
             max_sats=max_sats,
         )
 
-        # Record payment if one was made
+        # PASSIVE: the client (l402_client.fetch) already recorded the spend + payment
+        # history + cooldown EXACTLY ONCE. The tool must NOT record any of that again — it
+        # only READS (never writes) the session totals for display and writes the durable
+        # off-context receipt (a separate audit sink, not one of the budget/history ledgers).
         session_info = None
         if amount_paid is not None:
             if budget_service:
-                budget_service.record_spend(amount_paid)
-                budget_service.record_payment_time()
                 logger.info(f"Paid {amount_paid} sats for L402 access to {_redact_url_for_display(url)}")
 
-                # Get updated session info
+                # Read (do not write) the updated session info for display.
                 status = budget_service.get_status()
                 session_info = {
                     "spentSats": status["session"]["spentSats"],
@@ -226,14 +199,6 @@ async def access_l402_resource(
                     "remainingUsd": status["session"]["remainingUsd"],
                     "requestCount": status["session"]["requestCount"],
                 }
-
-            # Audit trail (separate from limits). Preimage is NEVER stored.
-            if payment_history_service:
-                payment_history_service.record_payment(
-                    url=_redact_url_for_display(url),
-                    amount_sats=amount_paid,
-                    status="success",
-                )
 
             # Durable, off-context-path spend receipt (redacted endpoint, no secrets).
             # Best-effort — a receipt failure must NEVER turn a settled payment into
@@ -269,37 +234,29 @@ async def access_l402_resource(
     except Exception as e:
         logger.exception(f"Error accessing {_redact_url_for_display(url)}")
 
-        # Paid-but-retry-failed (store split-flow): the invoice settled — money left the
-        # wallet — even though the resource retry failed. Record the real spend so the
-        # budget/history/receipt don't silently omit it (parity with the .NET runtime).
-        # Best-effort; never mask the original error.
+        # Paid-but-retry-failed (a 3xx redirect OR an error such as HTTP 500): the invoice
+        # settled inside l402_client.fetch, which ALREADY recorded the spend + cooldown once
+        # before raising. The tool is PASSIVE — it must NOT record spend/payment/cooldown
+        # again (that would double-count). It only writes the durable off-context receipt
+        # (a separate audit sink) best-effort, and surfaces the settled amount + token.
         amount_paid = getattr(e, "amount_paid", None)
-        if amount_paid:
+        l402_token = getattr(e, "l402_token", None)
+        if amount_paid and receipt_service is not None:
             try:
+                spent = None
                 if budget_service:
-                    budget_service.record_spend(amount_paid)
-                    budget_service.record_payment_time()
-                if payment_history_service:
-                    payment_history_service.record_payment(
-                        url=_redact_url_for_display(url),
-                        amount_sats=amount_paid,
-                        status="paid_retry_failed",
-                    )
-                if receipt_service is not None:
-                    spent = None
-                    if budget_service:
-                        try:
-                            spent = budget_service.get_status()["session"]["spentSats"]
-                        except Exception:
-                            spent = None
-                    receipt_service.log_payment(
-                        endpoint=_redact_url_for_display(url),
-                        amount_sats=amount_paid,
-                        policy=payment_policy,
-                        session_spent_sats=spent,
-                    )
+                    try:
+                        spent = budget_service.get_status()["session"]["spentSats"]
+                    except Exception:
+                        spent = None
+                receipt_service.log_payment(
+                    endpoint=_redact_url_for_display(url),
+                    amount_sats=amount_paid,
+                    policy=payment_policy,
+                    session_spent_sats=spent,
+                )
             except Exception:
-                logger.warning("Failed to record paid-but-retry-failed spend")
+                logger.warning("Receipt logging failed (payment already settled)")
 
         error_result = {
             "success": False,
@@ -311,22 +268,32 @@ async def access_l402_resource(
         # Unfollowed 3xx redirect (follow_redirects=False): surface the target as an
         # actionable next URL so the agent can re-call, instead of a cryptic HTTP error.
         # We never follow it (header-leak / L402 host-change reasons). Parity with .NET's
-        # redirect_location field. amount_paid, if present, was already recorded above.
+        # redirect_location field.
         if isinstance(e, L402RedirectError):
             error_result["redirect_location"] = e.location
-            if amount_paid:
-                # Paid-retry redirect: surface the paid amount + credential + an explicit
-                # "already paid, do NOT re-pay" message so the agent retries the redirect
-                # target WITH the token instead of paying a second time (parity with .NET).
-                error_result["alreadyPaid"] = True
-                error_result["payment"] = {
-                    "paid": True,
-                    "amountSats": amount_paid,
-                    "l402Token": getattr(e, "l402_token", None),
-                }
+
+        # Paid-but-not-2xx (redirect OR error): surface the paid amount + credential + an
+        # explicit "already paid, do NOT re-pay" message so the agent retries the target WITH
+        # the token instead of paying a second time (parity with .NET). This covers BOTH a
+        # paid-retry redirect and a paid-retry error (e.g. HTTP 500) — never a "verify the
+        # URL" / not-paid result for a settlement whose invoice was paid.
+        if amount_paid:
+            error_result["alreadyPaid"] = True
+            error_result["payment"] = {
+                "paid": True,
+                "amountSats": amount_paid,
+                "l402Token": l402_token,
+            }
+            if isinstance(e, L402RedirectError):
                 error_result["message"] = (
                     f"Payment succeeded ({amount_paid} sats). The resource redirected to {e.location}. "
                     "You have ALREADY PAID — do NOT pay again. Retry the redirect target with the l402Token above."
+                )
+            else:
+                error_result["message"] = (
+                    f"Payment succeeded ({amount_paid} sats), but the endpoint returned an error on the "
+                    "authorized retry. You have ALREADY PAID — do NOT pay again. Retry the endpoint with the "
+                    "l402Token above."
                 )
 
         return json.dumps(error_result, indent=2)

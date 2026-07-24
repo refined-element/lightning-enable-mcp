@@ -12,7 +12,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 from lightning_enable_mcp.config import ApprovalLevel, ApprovalCheckResult
-from lightning_enable_mcp.l402_client import L402RedirectError
+from lightning_enable_mcp.l402_client import L402Error, L402RedirectError
 from lightning_enable_mcp.tools.settle_agent_service import settle_agent_service
 
 
@@ -162,7 +162,7 @@ class TestSettleAgentServiceBudget:
         budget.record_spend.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_human_relayed_nonce_proceeds_and_records_spend(self):
+    async def test_human_relayed_nonce_proceeds_and_is_passive_on_recording(self):
         client = AsyncMock()
         client.fetch.return_value = ("service result body", 500)
         budget = _budget_with(ApprovalLevel.FORM_CONFIRM)
@@ -178,16 +178,17 @@ class TestSettleAgentServiceBudget:
         assert parsed["settlement"]["paid"] is True
         assert parsed["settlement"]["amountSats"] == 500
         client.fetch.assert_called_once()
-        # Spend recorded AFTER a successful paid fetch.
-        budget.record_spend.assert_called_once_with(500)
-        budget.record_payment_time.assert_called_once()
+        # PASSIVE: the client (l402_client.fetch) is the single source of truth for recording.
+        # The tool must NOT record the spend/cooldown itself (that was the double-count bug).
+        budget.record_spend.assert_not_called()
+        budget.record_payment_time.assert_not_called()
 
 
 class TestSettleAgentServicePayment:
     """The actual settlement / spend-recording behavior."""
 
     @pytest.mark.asyncio
-    async def test_auto_approve_paid_records_spend(self):
+    async def test_auto_approve_paid_is_passive_on_recording(self):
         client = AsyncMock()
         client.fetch.return_value = ("paid body", 200)
         budget = _budget_with(ApprovalLevel.AUTO_APPROVE)
@@ -202,8 +203,9 @@ class TestSettleAgentServicePayment:
         assert parsed["settlement"]["paid"] is True
         assert parsed["settlement"]["amountSats"] == 200
         assert parsed["settlement"]["agreementId"] == "agr-1"
-        budget.record_spend.assert_called_once_with(200)
-        budget.record_payment_time.assert_called_once()
+        # PASSIVE: recording is the client's job (single source of truth) — not the tool's.
+        budget.record_spend.assert_not_called()
+        budget.record_payment_time.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_no_payment_required_does_not_record_spend(self):
@@ -239,10 +241,11 @@ class TestSettleAgentServicePayment:
         budget.record_spend.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_paid_retry_redirect_records_once_surfaces_token_no_repay(self):
+    async def test_paid_retry_redirect_surfaces_token_no_repay_and_is_passive(self):
         """FIX 1 — a paid-retry redirect is NOT a settlement failure. The L402 invoice was
-        paid (money left the wallet) before the resource redirected. The tool must:
-        (a) record the spend EXACTLY ONCE (Python's client doesn't record — the tool does),
+        paid (money left the wallet, recorded ONCE inside the client) before the resource
+        redirected. The tool must:
+        (a) NOT record anything itself — the client is the single source of truth,
         (b) surface the paid amount + token + redirect target, and
         (c) tell the agent it ALREADY PAID and must not pay again —
         rather than falling through to a generic 'Error settling service'."""
@@ -269,9 +272,41 @@ class TestSettleAgentServicePayment:
         assert "do NOT pay again" in parsed["message"]
         # NOT the generic failure that would invite a re-pay.
         assert "Error settling service" not in result
-        # Spend recorded EXACTLY ONCE (never lost, never doubled).
-        budget.record_spend.assert_called_once_with(150)
-        budget.record_payment_time.assert_called_once()
+        # PASSIVE: the client already recorded (once); the tool must not double-record.
+        budget.record_spend.assert_not_called()
+        budget.record_payment_time.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_paid_retry_error_surfaces_token_already_paid_not_generic_failure(self):
+        """FIX a (Python) — a paid retry that returns an error (e.g. HTTP 500) is NOT a
+        settlement failure. The invoice was paid + recorded once inside the client; the tool
+        must surface the token + an ALREADY PAID message (never the generic 'Error settling
+        service' that invites a re-pay), and must NOT record anything itself."""
+        err = L402Error("Request failed after payment: 500 boom")
+        err.amount_paid = 175
+        err.l402_token = "macaroon123:preimage456"
+        client = AsyncMock()
+        client.fetch = AsyncMock(side_effect=err)
+        budget = _budget_with(ApprovalLevel.AUTO_APPROVE)
+
+        result = await settle_agent_service(
+            l402_endpoint="https://example.com/l402", max_sats=1000,
+            l402_client=client, budget_service=budget,
+        )
+        parsed = json.loads(result)
+
+        assert parsed["success"] is False
+        assert parsed["alreadyPaid"] is True
+        assert "redirect_location" not in parsed  # a 500 is not a redirect
+        assert parsed["payment"]["paid"] is True
+        assert parsed["payment"]["amountSats"] == 175
+        assert parsed["payment"]["l402Token"] == "macaroon123:preimage456"
+        assert "ALREADY PAID" in parsed["message"]
+        assert "do NOT pay again" in parsed["message"]
+        assert "Error settling service" not in result
+        # PASSIVE: the client already recorded (once); the tool must not double-record.
+        budget.record_spend.assert_not_called()
+        budget.record_payment_time.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_pre_payment_redirect_records_no_spend_and_no_payment_block(self):

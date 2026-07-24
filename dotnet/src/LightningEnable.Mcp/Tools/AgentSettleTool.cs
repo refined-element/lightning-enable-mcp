@@ -126,6 +126,38 @@ public static class AgentSettleTool
                 maxSats,
                 cancellationToken);
 
+            // Paid-retry redirect: the L402 invoice was paid (the client already recorded
+            // the spend + a successful payment in history) and THEN the resource returned an
+            // unfollowed 3xx. This is NOT a settlement failure — do NOT RecordFailedPayment
+            // (that would contradict the client's successful RecordPayment) and do NOT
+            // re-record the spend here (the client already did — no double-record). Surface
+            // the paid amount + token + redirect target with an explicit "already paid, do
+            // NOT pay again" message so the agent retries the redirect target WITH the token
+            // instead of re-paying. See L402HttpClient's paid-retry redirect branch.
+            if (!string.IsNullOrEmpty(result.RedirectLocation) && result.PaidAmountSats > 0)
+            {
+                return JsonSerializer.Serialize(new
+                {
+                    success = false,
+                    alreadyPaid = true,
+                    l402Endpoint,
+                    agreementId,
+                    statusCode = result.StatusCode,
+                    redirect_location = result.RedirectLocation,
+                    payment = new
+                    {
+                        paid = true,
+                        amountSats = result.PaidAmountSats,
+                        l402Token = result.L402Token,
+                        protocol = result.Protocol ?? "L402"
+                    },
+                    error = result.ErrorMessage,
+                    message = $"Payment succeeded ({result.PaidAmountSats} sats). The resource redirected to " +
+                              $"{result.RedirectLocation}. You have ALREADY PAID — do NOT pay again. Retry the " +
+                              "redirect target with the l402Token above."
+                }, new JsonSerializerOptions { WriteIndented = true });
+            }
+
             if (result.Success)
             {
                 if (result.PaidAmountSats > 0)

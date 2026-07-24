@@ -53,7 +53,7 @@ public class L402HttpClient : IL402HttpClient
             // cryptic "HTTP 301". Crucially this happens BEFORE any 402/payment handling,
             // so a provider that host-redirects before its 402 is never paid, and no
             // agent-supplied custom header is ever sent to the redirect host.
-            if (TryGetRedirectLocation(response, url, out var redirectLocation))
+            if (RedirectResolver.TryResolve(response, url, out var redirectLocation))
             {
                 return L402FetchResult.Redirected(url, (int)response.StatusCode, redirectLocation);
             }
@@ -331,7 +331,15 @@ public class L402HttpClient : IL402HttpClient
         // auto-followed (AllowAutoRedirect = false). The payment already settled, so
         // surface the redirect target as actionable AND report the paid amount + token
         // so the caller warns the agent off a double-pay and can reuse the token.
-        if (TryGetRedirectLocation(retryResponse, url, out var retryRedirect))
+        //
+        // KNOWN LIMITATION (same-host paid redirect): a redirect whose target is the SAME
+        // host is deliberately still NOT followed here — auto-follow on the paid retry is
+        // too risky in the money path (a re-issued 402 could trigger a second payment).
+        // L402 providers SHOULD serve the resource directly on the paid retry rather than
+        // redirecting; if one redirects after payment, we hand the paid token back so a
+        // well-behaved agent retries the redirect target WITH the token instead of paying
+        // again. See the "ALREADY PAID" message below.
+        if (RedirectResolver.TryResolve(retryResponse, url, out var retryRedirect))
         {
             // Record the settled payment in session history (the normal path below always
             // does; the early return must not drop it — the sats already left the wallet).
@@ -353,10 +361,14 @@ public class L402HttpClient : IL402HttpClient
                 PaidAmountSats = amountSats.Value,
                 L402Token = authToken,
                 Protocol = protocol,
+                // Explicit "already paid, do NOT pay again" wording so the agent reuses the
+                // token against the redirect target instead of re-paying. Surfaced verbatim
+                // by both access_l402_resource and settle_agent_service.
                 ErrorMessage = retryRedirect != null
-                    ? $"Payment settled, but the resource redirected to {retryRedirect}. " +
-                      "Call this tool again with that URL (the payment token above is valid)."
-                    : $"Payment settled, but the resource returned an HTTP {(int)retryResponse.StatusCode} redirect with no Location header."
+                    ? $"Payment succeeded ({amountSats.Value} sats). The resource redirected to {retryRedirect}. " +
+                      "You have ALREADY PAID — do NOT pay again. Retry the redirect target with the returned L402 token."
+                    : $"Payment succeeded ({amountSats.Value} sats), but the resource returned an HTTP {(int)retryResponse.StatusCode} redirect with no Location header. " +
+                      "You have ALREADY PAID — do NOT pay again."
             };
         }
 
@@ -379,48 +391,6 @@ public class L402HttpClient : IL402HttpClient
         }
 
         return L402FetchResult.Failed(url, $"Request failed after payment: HTTP {(int)retryResponse.StatusCode}: {content}", (int)retryResponse.StatusCode, amountSats.Value, authToken, protocol);
-    }
-
-    /// <summary>
-    /// True when <paramref name="response"/> is a 3xx redirect that we are NOT following
-    /// (AllowAutoRedirect = false). Resolves a relative Location against
-    /// <paramref name="requestUrl"/> so the agent gets an absolute URL to re-call with.
-    /// A 304 Not Modified (or any 3xx without a Location) is not a redirect and returns
-    /// false so it flows through normal handling. The Location is surfaced verbatim to the
-    /// agent as an actionable next URL — re-calling routes back through the SSRF guard, so
-    /// a redirect that points at an internal host is refused on that next call, not here.
-    /// </summary>
-    private static bool TryGetRedirectLocation(HttpResponseMessage response, string requestUrl, out string? location)
-    {
-        location = null;
-        var code = (int)response.StatusCode;
-        if (code is < 300 or >= 400)
-        {
-            return false;
-        }
-
-        var loc = response.Headers.Location;
-        if (loc == null)
-        {
-            // A 3xx with no Location (e.g. a bare 304): treat as non-redirect so it flows
-            // through normal handling rather than being reported as a broken redirect.
-            return false;
-        }
-
-        try
-        {
-            location = loc.IsAbsoluteUri
-                ? loc.AbsoluteUri
-                : Uri.TryCreate(new Uri(requestUrl), loc, out var resolved)
-                    ? resolved.AbsoluteUri
-                    : loc.OriginalString;
-        }
-        catch
-        {
-            location = loc.OriginalString;
-        }
-
-        return true;
     }
 
     private static HttpRequestMessage CreateRequest(string url, string method, string? headers, string? body)

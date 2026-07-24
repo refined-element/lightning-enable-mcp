@@ -291,6 +291,13 @@ public record L402FetchResult
     /// Redirects are deliberately NOT auto-followed (see <c>Program.cs</c>): following
     /// them would leak agent-supplied custom headers to a cross-origin target and, on the
     /// L402 path, pay a provider that then drops the L402 header on the host change.
+    /// <para/>
+    /// KNOWN LIMITATION — a redirect AFTER a paid retry (<see cref="PaidAmountSats"/> &gt; 0)
+    /// is still not followed, even to the same host, because re-issuing the request could
+    /// trigger a fresh 402 and a second payment. L402 providers SHOULD serve the resource
+    /// directly on the paid retry rather than redirecting; when one redirects after payment,
+    /// <see cref="L402Token"/> is returned so a well-behaved agent retries the target WITH
+    /// the existing token instead of paying again (see the "ALREADY PAID" error message).
     /// </summary>
     public string? RedirectLocation { get; init; }
 

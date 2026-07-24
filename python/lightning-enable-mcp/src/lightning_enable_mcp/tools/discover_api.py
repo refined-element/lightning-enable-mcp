@@ -13,7 +13,9 @@ import json
 import logging
 import math
 import os
+from .._redirect import resolve_redirect_location
 from . import sanitize_error
+from ._ssrf_guard import SsrfError, validate_url_allowed
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote as url_quote
 
@@ -116,57 +118,84 @@ def _get_tried_urls(url: str) -> list[str]:
     return urls
 
 
-async def _try_fetch(client: "httpx.AsyncClient", url: str) -> str | None:
+async def _try_fetch(client: "httpx.AsyncClient", url: str) -> tuple[str | None, str | None]:
     """
     Try to fetch a manifest from a URL.
 
-    Returns the JSON content if it looks like a valid L402 manifest, else None.
+    Returns ``(content, None)`` when the response is a valid L402 manifest;
+    ``(None, redirect)`` when the response is an unfollowed 3xx with a Location
+    (``follow_redirects=False`` — we surface the target rather than pivot through it,
+    for the header-leak / redirect-hop reasons in the L402 client); else ``(None, None)``.
+    A relative Location is resolved against ``url`` so the agent gets an absolute URL.
     """
     try:
         response = await client.get(url)
-        if response.status_code >= 400:
-            return None
+
+        # Unfollowed 3xx with a Location: surface the (resolved absolute) target as
+        # actionable instead of silently failing over to the next candidate. Uses the
+        # shared resolver so the resolution rules (304 excluded, relative resolved against
+        # the request URL) match the L402 fetch path exactly.
+        redirect = resolve_redirect_location(url, response)
+        if redirect is not None:
+            return None, redirect
+
+        # Any other non-2xx (a 3xx without a Location, or a 4xx/5xx) is "no manifest here".
+        if response.status_code >= 300:
+            return None, None
 
         content = response.text
         doc = json.loads(content)
 
         # Quick validation: must have expected structure
         if any(key in doc for key in ("endpoints", "l402", "service")):
-            return content
+            return content, None
 
-        return None
+        return None, None
     except Exception:
-        return None
+        return None, None
 
 
-async def _fetch_manifest(client: "httpx.AsyncClient", url: str) -> tuple[str | None, str | None]:
+async def _fetch_manifest(
+    client: "httpx.AsyncClient", url: str
+) -> tuple[str | None, str | None, str | None]:
     """
     Fetch manifest from well-known locations.
 
-    Returns (json_content, manifest_url) or (None, None).
+    Returns ``(json_content, manifest_url, None)`` on success, or
+    ``(None, None, redirect)`` when no manifest was found but a 3xx redirect was seen on the
+    USER's explicit URL (``redirect`` is None otherwise). ONLY a redirect on the exact
+    user-supplied URL is surfaced: a redirect on a SYNTHESIZED /.well-known/ probe is NOT
+    the user's URL, and promoting it would send the agent chasing a catch-all/login page and
+    suppress the honest "no manifest here" (tried_urls) result — so such a probe redirect is
+    treated as "no manifest at this path" and we continue to the next probe.
     """
     base_url = url.rstrip("/")
+    ends_in_json = base_url.lower().endswith(".json")
+
+    primary_redirect: str | None = None
 
     # If URL ends in .json, try it directly first
-    if base_url.lower().endswith(".json"):
-        content = await _try_fetch(client, base_url)
+    if ends_in_json:
+        content, redirect = await _try_fetch(client, base_url)
         if content:
-            return content, base_url
+            return content, base_url, None
+        primary_redirect = primary_redirect or redirect
 
-    # Try well-known paths
+    # Try well-known paths. A redirect here is deliberately discarded (see docstring).
     for path in WELL_KNOWN_PATHS:
         full_url = base_url + path
-        content = await _try_fetch(client, full_url)
+        content, _ = await _try_fetch(client, full_url)
         if content:
-            return content, full_url
+            return content, full_url, None
 
     # Try the URL directly if not already tried
-    if not base_url.lower().endswith(".json"):
-        content = await _try_fetch(client, base_url)
+    if not ends_in_json:
+        content, redirect = await _try_fetch(client, base_url)
         if content:
-            return content, base_url
+            return content, base_url, None
+        primary_redirect = primary_redirect or redirect
 
-    return None, None
+    return None, None, primary_redirect
 
 
 def _extract_service_info(root: dict[str, Any]) -> dict[str, Any]:
@@ -330,11 +359,26 @@ async def _search_registry(
 
     request_url = f"{registry_url}/api/manifests/registry?{'&'.join(query_params)}"
 
-    async with httpx.AsyncClient(timeout=15.0, headers={
+    # follow_redirects=False (httpx default, pinned explicitly): the registry URL is
+    # operator-controlled, but keep the same no-follow posture as the manifest client so a
+    # misconfigured registry redirect can't silently pivot the fetch.
+    async with httpx.AsyncClient(timeout=15.0, follow_redirects=False, headers={
         "Accept": "application/json",
         "User-Agent": "LightningEnable-MCP/1.0",
     }) as client:
         response = await client.get(request_url)
+
+        # follow_redirects=False, so a registry 3xx is a first-class response — surface it
+        # as a clean, explicit error rather than trying to parse a redirect body (or, with
+        # auto-follow, chasing wherever the Location points — which a compromised /
+        # misconfigured registry could aim at an internal/metadata host).
+        if 300 <= response.status_code < 400:
+            return json.dumps({
+                "success": False,
+                "error": f"Registry returned an HTTP {response.status_code} redirect. Not following it — the registry endpoint should serve results directly.",
+                "registry_url": request_url,
+                "hint": "Check the configured registry URL (L402_REGISTRY_URL / LIGHTNING_ENABLE_API_URL), or use discover_api(url=...) to fetch a specific manifest directly."
+            })
 
         if response.status_code >= 400:
             return json.dumps({
@@ -431,13 +475,36 @@ async def _fetch_and_format_manifest(
     budget_service: "BudgetService | None",
 ) -> str:
     """Fetch and format a manifest from a specific URL."""
-    async with httpx.AsyncClient(timeout=15.0, headers={
+    # SSRF guard (F-10e): the manifest URL is agent-supplied and fetched directly
+    # (plus its /.well-known/ variants, all on the same host). Refuse private/internal
+    # targets before any request. follow_redirects stays False (httpx default), so no
+    # redirect hop can pivot to an internal host either. Generic message — no host echo.
+    try:
+        await validate_url_allowed(url)
+    except SsrfError as e:
+        return json.dumps({
+            "success": False,
+            "error": str(e),
+        })
+
+    async with httpx.AsyncClient(timeout=15.0, follow_redirects=False, headers={
         "Accept": "application/json",
         "User-Agent": "LightningEnable-MCP/1.0",
     }) as client:
-        manifest_json, manifest_url = await _fetch_manifest(client, url)
+        manifest_json, manifest_url, redirect_location = await _fetch_manifest(client, url)
 
     if manifest_json is None:
+        # A 3xx redirect (not followed) on the USER's explicit url is surfaced as
+        # actionable rather than a generic "not found", so the agent can re-call with the
+        # target. Never followed here. A redirect seen only on a synthesized /.well-known/
+        # probe is NOT promoted (see _fetch_manifest) — it flows to the not-found result.
+        if redirect_location:
+            return json.dumps({
+                "success": False,
+                "error": f"Resource redirected to {redirect_location}. Call this tool again with that URL.",
+                "redirect_location": redirect_location,
+            })
+
         return json.dumps({
             "success": False,
             "error": "Could not find an L402 manifest at the given URL or any well-known locations.",

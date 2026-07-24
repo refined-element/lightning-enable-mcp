@@ -1,6 +1,4 @@
 using System.ComponentModel;
-using System.Net;
-using System.Net.Sockets;
 using System.Text.Json;
 using LightningEnable.Mcp.Models;
 using LightningEnable.Mcp.Services;
@@ -102,13 +100,10 @@ public static class AccessL402ResourceTool
 
             if (approvalResult.Level == ApprovalLevel.Deny)
             {
-                paymentHistory?.RecordFailedPayment(
-                    url,
-                    "L402",
-                    maxSats,
-                    approvalResult.DenialReason ?? "Budget limit exceeded",
-                    null);
-
+                // PASSIVE: no payment was attempted, so the tool records nothing. The client
+                // (L402HttpClient) is the single source of truth for payment/failed-payment
+                // recording — the tool must not call RecordFailedPayment (a budget denial is
+                // a clean not-paid refusal, and double-recording would fragment the ledger).
                 return JsonSerializer.Serialize(new
                 {
                     success = false,
@@ -235,6 +230,41 @@ public static class AccessL402ResourceTool
                 catch { /* audit convenience must never break the payment */ }
             }
 
+            // Unfollowed 3xx redirect (AllowAutoRedirect = false): return a clear,
+            // actionable result naming the redirect target instead of a cryptic HTTP
+            // failure. We do NOT follow it here — following would leak the agent's custom
+            // headers to a cross-origin host and, on the L402 path, risk paying a provider
+            // that then drops the L402 header on the host change. If a payment already
+            // settled before the redirect (paid retry), the token is surfaced too.
+            if (!string.IsNullOrEmpty(result.RedirectLocation))
+            {
+                decimal? redirectAmountUsd = null;
+                if (result.PaidAmountSats > 0 && priceService != null)
+                {
+                    try { redirectAmountUsd = Math.Round(await priceService.SatsToUsdAsync(result.PaidAmountSats, cancellationToken), 2); }
+                    catch { /* USD conversion is best-effort */ }
+                }
+
+                return JsonSerializer.Serialize(new
+                {
+                    success = false,
+                    url = result.Url,
+                    statusCode = result.StatusCode,
+                    error = result.ErrorMessage,
+                    redirect_location = result.RedirectLocation,
+                    payment = result.PaidAmountSats > 0
+                        ? new
+                        {
+                            paid = true,
+                            amountSats = result.PaidAmountSats,
+                            amountUsd = redirectAmountUsd,
+                            l402Token = result.L402Token,
+                            protocol = result.Protocol ?? "L402"
+                        }
+                        : null
+                });
+            }
+
             if (result.Success)
             {
                 if (result.PaidAmountSats > 0)
@@ -292,6 +322,7 @@ public static class AccessL402ResourceTool
                     return JsonSerializer.Serialize(new
                     {
                         success = false,
+                        alreadyPaid = true,
                         url = result.Url,
                         statusCode = result.StatusCode,
                         error = result.ErrorMessage,
@@ -302,8 +333,9 @@ public static class AccessL402ResourceTool
                             amountUsd,
                             l402Token = result.L402Token,
                             protocol = result.Protocol ?? "L402",
-                            note = "Payment succeeded but the server returned a non-success status on retry. " +
-                                   "The payment token above is valid and can be used with the correct endpoint."
+                            note = "Payment succeeded but the server returned a non-success status on the authorized " +
+                                   "retry. You have ALREADY PAID — do NOT pay again. The payment token above is valid; " +
+                                   "retry the target with it instead of re-paying."
                         }
                     });
                 }
@@ -400,114 +432,19 @@ public static class AccessL402ResourceTool
     /// <summary>
     /// Validates URL to prevent SSRF attacks.
     /// Blocks access to private IPs, localhost, and internal networks.
+    /// <para/>
+    /// This is the INITIAL-URL check (belt-and-suspenders) and delegates to the
+    /// shared <see cref="SsrfUrlGuard"/> — a cheap, synchronous, never-throwing
+    /// pre-check (scheme + IP-literal classification + blocked-hostname match). It
+    /// deliberately does NOT resolve DNS: the definitive guard is the connect-time
+    /// <see cref="SsrfConnectValidator"/> wired onto the L402 HTTP client in
+    /// Program.cs, which validates the actual IP the socket connects to (closing the
+    /// DNS-rebind window) and re-validates every auto-redirect hop. Removing the old
+    /// blocking <c>Dns.GetHostAddresses</c> here also fixes the double-resolution
+    /// and the unhandled <see cref="ArgumentOutOfRangeException"/> an overlong host
+    /// used to throw. Error messages are generic — they never echo the internal host/IP.
     /// </summary>
-    private static string? ValidateUrl(string url)
-    {
-        // Validate URL format
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
-        {
-            return "Invalid URL format";
-        }
-
-        // Only allow HTTP and HTTPS schemes
-        if (uri.Scheme != "http" && uri.Scheme != "https")
-        {
-            return "Only HTTP and HTTPS URLs are allowed";
-        }
-
-        // Check for localhost variations
-        var host = uri.Host.ToLowerInvariant();
-        if (host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]")
-        {
-            return "Access to localhost is not allowed";
-        }
-
-        // Check for link-local addresses
-        if (host.StartsWith("169.254.") || host == "fe80::")
-        {
-            return "Access to link-local addresses is not allowed";
-        }
-
-        // Check for cloud metadata endpoints
-        if (host == "169.254.169.254" || host == "metadata.google.internal" ||
-            host == "metadata.azure.com" || host.EndsWith(".internal"))
-        {
-            return "Access to cloud metadata endpoints is not allowed";
-        }
-
-        // Try to resolve hostname and check for private IPs
-        try
-        {
-            var addresses = Dns.GetHostAddresses(uri.Host);
-            foreach (var addr in addresses)
-            {
-                if (IsPrivateOrReservedAddress(addr))
-                {
-                    return "Access to private or internal networks is not allowed";
-                }
-            }
-        }
-        catch (SocketException)
-        {
-            // DNS resolution failed - allow the request to proceed
-            // (will fail naturally with a more informative error)
-        }
-
-        return null; // Valid URL
-    }
-
-    /// <summary>
-    /// Checks if an IP address is private, loopback, or reserved.
-    /// </summary>
-    private static bool IsPrivateOrReservedAddress(IPAddress address)
-    {
-        if (address.IsIPv6LinkLocal || address.IsIPv6SiteLocal)
-            return true;
-
-        byte[] bytes = address.GetAddressBytes();
-
-        // IPv4 checks
-        if (bytes.Length == 4)
-        {
-            // 127.x.x.x - Loopback
-            if (bytes[0] == 127)
-                return true;
-
-            // 10.x.x.x - Private
-            if (bytes[0] == 10)
-                return true;
-
-            // 172.16.x.x - 172.31.x.x - Private
-            if (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31)
-                return true;
-
-            // 192.168.x.x - Private
-            if (bytes[0] == 192 && bytes[1] == 168)
-                return true;
-
-            // 169.254.x.x - Link-local
-            if (bytes[0] == 169 && bytes[1] == 254)
-                return true;
-
-            // 0.x.x.x - Reserved
-            if (bytes[0] == 0)
-                return true;
-
-            // 224.x.x.x - 239.x.x.x - Multicast
-            if (bytes[0] >= 224 && bytes[0] <= 239)
-                return true;
-
-            // 240.x.x.x - 255.x.x.x - Reserved
-            if (bytes[0] >= 240)
-                return true;
-        }
-
-        // IPv6 checks (loopback)
-        if (IPAddress.IsLoopback(address))
-            return true;
-
-        return false;
-    }
+    internal static string? ValidateUrl(string url) => SsrfUrlGuard.Validate(url);
 
     /// <summary>
     /// Requests user confirmation for L402 payments based on the approval level.

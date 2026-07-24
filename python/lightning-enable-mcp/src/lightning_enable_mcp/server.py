@@ -1171,8 +1171,14 @@ class LightningEnableServer:
             # Wallet label is fixed for the session, so bake it in at init.
             self.receipt_service = ReceiptService(wallet_label=wallet_label_from(self.wallet))
 
-            # Initialize L402 client
-            self.l402_client = L402Client(wallet=self.wallet)
+            # Initialize L402 client. It is the SINGLE SOURCE OF TRUTH for recording a real
+            # payment (spend + payment history + cooldown), so it needs the budget and
+            # payment-history services; the consuming tools stay passive and record nothing.
+            self.l402_client = L402Client(
+                wallet=self.wallet,
+                budget_service=self.budget_service,
+                payment_history_service=self.payment_history_service,
+            )
 
             logger.info("Services initialized successfully")
 

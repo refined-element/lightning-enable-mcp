@@ -347,4 +347,85 @@ public class L402ToolsTests
     }
 
     #endregion
+
+    #region SSRF ValidateUrl Tests (F-10d — initial-URL guard)
+
+    // The definitive SSRF guard is the connect-time SsrfConnectValidator on the L402
+    // HTTP client (closes the DNS-rebind window + blocks redirect pivots). ValidateUrl
+    // is the belt-and-suspenders initial-URL check. These prove it refuses the direct
+    // private/metadata targets with a GENERIC message that never echoes the target.
+
+    [Theory]
+    [InlineData("http://169.254.169.254/latest/meta-data/")] // cloud metadata (link-local literal)
+    [InlineData("http://127.0.0.1/admin")]                    // loopback literal
+    [InlineData("http://[::1]/admin")]                         // IPv6 loopback literal
+    [InlineData("http://10.0.0.5/internal")]                   // RFC1918 literal
+    [InlineData("http://192.168.1.1/")]                        // RFC1918 literal
+    [InlineData("http://localhost/secret")]                    // localhost hostname
+    [InlineData("http://metadata.google.internal/")]           // metadata hostname
+    [InlineData("http://foo.internal/")]                        // .internal suffix
+    public void ValidateUrl_RejectsPrivateAndMetadataTargets(string url)
+    {
+        var error = AccessL402ResourceTool.ValidateUrl(url);
+        error.Should().NotBeNull();
+        // Generic — must not echo the internal host/IP back to the caller.
+        error!.Should().NotContain("169.254.169.254");
+        error.Should().NotContain("10.0.0.5");
+        error.Should().NotContain("192.168.1.1");
+    }
+
+    [Theory]
+    [InlineData("ftp://example.com/file")]
+    [InlineData("file:///etc/passwd")]
+    [InlineData("gopher://example.com/")]
+    public void ValidateUrl_RejectsNonHttpSchemes(string url)
+    {
+        AccessL402ResourceTool.ValidateUrl(url).Should().NotBeNull();
+    }
+
+    [Theory]
+    [InlineData("https://api.example.com/v1/data")]
+    [InlineData("https://api.lightningenable.com/")]
+    public void ValidateUrl_AllowsPublicHttpsUrls(string url)
+    {
+        AccessL402ResourceTool.ValidateUrl(url).Should().BeNull();
+    }
+
+    // FIX 4: the old ValidateUrl did a synchronous blocking Dns.GetHostAddresses that
+    // only caught SocketException — a >255-char host threw ArgumentOutOfRangeException,
+    // which escaped UNHANDLED out of the tool (leaking an internal error / stack trace,
+    // violating the "never leak stack traces / never return blank error" standard).
+    // The blocking DNS is gone (the ConnectCallback is the definitive IP guard), so
+    // ValidateUrl now never throws and the tool degrades gracefully.
+
+    [Fact]
+    public void ValidateUrl_WithOverlongHost_DoesNotThrow()
+    {
+        var url = "http://" + new string('a', 300) + ".example.com/path";
+
+        var act = () => AccessL402ResourceTool.ValidateUrl(url);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public async Task AccessL402Resource_WithOverlongHost_ReturnsGracefulJson_NotException()
+    {
+        // 300-char label host: must return well-formed JSON, never throw an internal
+        // ArgumentOutOfRangeException out of the tool.
+        var url = "http://" + new string('a', 300) + ".example.com/path";
+
+        // The unset l402 client mock returns null, so the tool's own try/catch produces
+        // a graceful {success:false} — the key point is nothing throws out of the tool.
+        var result = await AccessL402ResourceTool.AccessL402Resource(
+            url: url, l402Client: _l402ClientMock.Object);
+
+        var json = JsonDocument.Parse(result);
+        json.RootElement.GetProperty("success").GetBoolean().Should().BeFalse();
+        // No stack trace / internal type name leaked in the error text.
+        var error = json.RootElement.TryGetProperty("error", out var e) ? e.GetString() : null;
+        (error ?? string.Empty).Should().NotContain("ArgumentOutOfRange");
+    }
+
+    #endregion
 }

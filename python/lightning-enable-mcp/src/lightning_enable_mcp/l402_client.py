@@ -13,10 +13,14 @@ from typing import TYPE_CHECKING
 import httpx
 from bolt11 import decode as decode_bolt11
 
+from ._redirect import resolve_redirect_location
+from ._url_redact import redact_url_for_display
 from .wallet_errors import PaymentProofUnavailableError
 
 if TYPE_CHECKING:
+    from .budget_service import BudgetService
     from .nwc_wallet import NWCWallet
+    from .payment_history_service import PaymentHistoryService
 
 logger = logging.getLogger("lightning-enable-mcp.l402")
 
@@ -25,6 +29,44 @@ class L402Error(Exception):
     """Exception for L402-related errors."""
 
     pass
+
+
+class L402RedirectError(L402Error):
+    """Raised when a fetch hits an unfollowed 3xx redirect.
+
+    Redirects are deliberately NOT followed (httpx ``follow_redirects=False``). Parity
+    with the .NET port, which reverted an ``AllowAutoRedirect=true`` experiment: following
+    a redirect would (1) re-send agent-supplied custom headers (X-Api-Key, Cookie, ...) to
+    a cross-origin target, and (2) on the L402 path, pay a provider that host-redirects
+    before its 402 and then loses its ``Authorization: L402`` header on the host change —
+    pay, receive nothing. Instead the caller surfaces ``location`` as an actionable
+    "call this tool again with that URL" result. ``amount_paid`` is attached when a
+    payment already settled before the redirect (paid retry), so the caller still records
+    the real spend, and ``l402_token`` carries the paid credential so a well-behaved agent
+    retries the redirect target WITH the token instead of paying again.
+
+    KNOWN LIMITATION (same-host paid redirect): a redirect on the paid retry is NOT
+    followed even to the same host — re-issuing the request could trigger a fresh 402 and a
+    second payment, too risky in the money path. L402 providers SHOULD serve the resource
+    directly on the paid retry rather than redirecting; when one redirects after payment we
+    hand the paid token back (``l402_token``) for the agent to reuse against the target.
+    """
+
+    def __init__(self, location: str | None, status_code: int) -> None:
+        self.location = location
+        self.status_code = status_code
+        # Attached by the paid-retry path when a payment already settled before the
+        # redirect. Defaulted so callers can read them unconditionally.
+        self.amount_paid: int | None = None
+        self.l402_token: str | None = None
+        if location:
+            super().__init__(
+                f"Resource redirected to {location}. Call this tool again with that URL."
+            )
+        else:
+            super().__init__(
+                f"Resource returned an HTTP {status_code} redirect with no Location header."
+            )
 
 
 class L402PaymentError(L402Error):
@@ -99,18 +141,59 @@ class MppToken:
 class L402Client:
     """HTTP client with L402 payment support."""
 
-    def __init__(self, wallet: "NWCWallet") -> None:
+    def __init__(
+        self,
+        wallet: "NWCWallet",
+        budget_service: "BudgetService | None" = None,
+        payment_history_service: "PaymentHistoryService | None" = None,
+    ) -> None:
         """
         Initialize L402 client.
 
         Args:
             wallet: NWC wallet for paying invoices
+            budget_service: BudgetService — the client records the spend and arms the
+                payment cooldown here (single source of truth), so the consuming tools stay
+                passive. Optional (None in unit tests that only exercise parsing / redirects).
+            payment_history_service: PaymentHistoryService — the client writes the session
+                audit record here on a settled payment. Optional.
         """
         self.wallet = wallet
+        self._budget_service = budget_service
+        self._payment_history_service = payment_history_service
         self._http_client = httpx.AsyncClient(
             timeout=30.0,
             headers={"Accept-Encoding": "identity"},
+            # Do NOT auto-follow redirects (this is httpx's default; pinned explicitly so a
+            # future default change can't silently re-enable it). A 3xx is surfaced as an
+            # actionable L402RedirectError, never followed — see L402RedirectError for why.
+            follow_redirects=False,
         )
+
+    def _record_spend_and_arm_cooldown(self, amount_sats: int) -> None:
+        """Record the budget spend and arm the payment cooldown for a payment whose funds
+        have left the wallet. This is the funds-safety-critical pair (the session ledger +
+        the cross-payment cooldown) and is written in the client so the tools never do — it
+        fires EXACTLY ONCE per fetch, at the single point money is known to have moved."""
+        if self._budget_service is not None:
+            self._budget_service.record_spend(amount_sats)
+            self._budget_service.record_payment_time()
+
+    def _record_settled_payment(self, amount_sats: int, url: str) -> None:
+        """Record a fully settled (preimage-backed) payment: the spend + cooldown AND the
+        session audit history entry, EXACTLY ONCE. Called only once per fetch, right after
+        ``pay_invoice`` returns a preimage — so the recording is identical regardless of
+        whether the authorized retry then returns 2xx / 3xx-redirect / 4xx / 5xx. This is a
+        settled payment, so history status is always ``success`` — the client NEVER records a
+        failed payment for a settlement whose invoice was paid."""
+        self._record_spend_and_arm_cooldown(amount_sats)
+        if self._payment_history_service is not None:
+            # Redact before storing — the query/userinfo can carry secrets (standard #5).
+            self._payment_history_service.record_payment(
+                url=redact_url_for_display(url),
+                amount_sats=amount_sats,
+                status="success",
+            )
 
     async def close(self) -> None:
         """Close the HTTP client."""
@@ -360,6 +443,13 @@ class L402Client:
             method=method, url=url, headers=headers, content=content
         )
 
+        # 3xx redirect: NOT followed (follow_redirects=False). Surface it as an actionable
+        # error rather than paying/leaking. Checked before the 402/>=400 handling so a
+        # provider that host-redirects BEFORE its 402 is never entered into the pay flow.
+        redirect = resolve_redirect_location(url, response)
+        if redirect is not None:
+            raise L402RedirectError(redirect, response.status_code)
+
         # Check for L402 challenge
         if response.status_code == 402:
             # Use get_list to properly handle multiple WWW-Authenticate headers
@@ -391,11 +481,22 @@ class L402Client:
             except PaymentProofUnavailableError as e:
                 # The wallet has no preimage for us (it never returns them, or the
                 # payment hasn't settled), so L402 cannot be completed — but the
-                # funds have left (or are leaving) the wallet. Surface the settled
-                # amount so the caller records the real spend instead of silently
-                # losing it, same as the paid-but-retry-failed path below.
+                # funds have left (or are leaving) the wallet. SINGLE SOURCE OF TRUTH:
+                # record the real spend + arm the cooldown here (once) so the budget is
+                # never under-counted, instead of relying on the tool. No history entry:
+                # the payment is unprovable / possibly still pending, so it is not audited
+                # as a settled "success" — but the funds-safety ledger is kept accurate.
+                # amount_paid is attached so the tool can surface it (do-not-retry).
                 e.amount_paid = challenge.amount_sats
+                self._record_spend_and_arm_cooldown(challenge.amount_sats)
                 raise
+
+            # SINGLE SOURCE OF TRUTH — the invoice is paid (preimage in hand). Record the
+            # spend + payment history + cooldown here, EXACTLY ONCE, BEFORE the retry, so the
+            # recording is identical whether the retry returns 2xx / 3xx-redirect / 4xx / 5xx.
+            # The consuming tools (access_l402_resource, settle_agent_service) are passive and
+            # MUST NOT record any of this again.
+            self._record_settled_payment(challenge.amount_sats, url)
 
             # Create token
             if isinstance(challenge, MppChallenge):
@@ -403,21 +504,43 @@ class L402Client:
             else:
                 token = L402Token(macaroon=challenge.macaroon, preimage=preimage)
 
+            # Raw credential (macaroon:preimage for L402, preimage for MPP) — parity with the
+            # .NET L402Token field — surfaced on both the redirect and the error retry paths
+            # so the agent can authenticate a retry against the target instead of re-paying.
+            raw_token = (
+                token.preimage
+                if isinstance(token, MppToken)
+                else f"{token.macaroon}:{token.preimage}"
+            )
+
             # Retry with authorization
             auth_headers = {**headers, "Authorization": token.to_header()}
             response = await self._http_client.request(
                 method=method, url=url, headers=auth_headers, content=content
             )
 
+            # A 3xx on the paid retry is likewise not followed. The payment already
+            # settled (and was recorded above, once), so surface the redirect AND the
+            # settled amount + paid token so the agent can re-call the target WITH the token
+            # instead of paying again. Same-host targets are also NOT auto-followed here (see
+            # L402RedirectError) — re-issuing could re-trigger a 402.
+            retry_redirect = resolve_redirect_location(url, response)
+            if retry_redirect is not None:
+                err = L402RedirectError(retry_redirect, response.status_code)
+                err.amount_paid = challenge.amount_sats
+                err.l402_token = raw_token
+                raise err
+
             if response.status_code >= 400:
-                # The invoice was already paid (preimage obtained) but the authorized
-                # retry failed. Surface the settled amount on the error so the caller
-                # can still record this real spend (budget / history / receipt) instead
-                # of silently losing it.
+                # The invoice was already paid (preimage obtained, recorded once above) but
+                # the authorized retry failed. This is NOT a failed payment — surface the
+                # settled amount AND the paid token so the tool can tell the agent it ALREADY
+                # PAID and hand back the credential to reuse, never inviting a second payment.
                 err = L402Error(
                     f"Request failed after payment: {response.status_code} {response.text[:200]}"
                 )
                 err.amount_paid = challenge.amount_sats
+                err.l402_token = raw_token
                 raise err
 
             return response.text, challenge.amount_sats

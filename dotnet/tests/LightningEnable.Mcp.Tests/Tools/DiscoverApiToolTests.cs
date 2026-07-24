@@ -384,4 +384,260 @@ public class DiscoverApiToolTests
     }
 
     #endregion
+
+    #region SSRF guard (F-10e — discover_api manifest fetch is now guarded on .NET)
+
+    // Before this fix the .NET discover_api tool fetched agent-supplied URLs through an
+    // UNGUARDED static HttpClient, leaving SSRF fully open (an agent could pass
+    // url=http://169.254.169.254/... or a private range). The manifest fetch now runs a
+    // cheap synchronous pre-check BEFORE any request and (in Program.cs) routes through a
+    // client carrying the connect-time SsrfConnectValidator. These prove the pre-check
+    // refuses private/metadata targets with a generic, non-echoing error and never reaches
+    // the fetch path (no tried_urls is emitted — that only appears once a fetch is attempted).
+
+    [Theory]
+    [InlineData("http://169.254.169.254/")]              // cloud metadata (link-local literal)
+    [InlineData("http://169.254.169.254/latest/meta-data/")]
+    [InlineData("http://127.0.0.1/l402.json")]           // loopback literal
+    [InlineData("http://[::1]/l402.json")]               // IPv6 loopback literal
+    [InlineData("http://10.0.0.5/")]                      // RFC1918 literal
+    [InlineData("http://192.168.1.1/l402.json")]         // RFC1918 literal
+    [InlineData("http://100.64.0.1/")]                    // RFC6598 CGNAT literal
+    [InlineData("http://localhost/l402.json")]           // localhost hostname
+    [InlineData("http://metadata.google.internal/")]      // metadata hostname
+    [InlineData("http://foo.internal/l402.json")]        // .internal suffix
+    public async Task DiscoverApi_PrivateOrMetadataUrl_RefusedBeforeAnyFetch(string url)
+    {
+        var result = await DiscoverApiTool.DiscoverApi(
+            url: url, budgetAware: false, cancellationToken: CancellationToken.None);
+
+        var json = JsonDocument.Parse(result);
+        json.RootElement.GetProperty("success").GetBoolean().Should().BeFalse();
+        json.RootElement.GetProperty("error").GetString().Should().Contain("not allowed");
+
+        // Refused by the pre-check BEFORE the manifest-fetch path ran → no tried_urls.
+        json.RootElement.TryGetProperty("tried_urls", out _).Should()
+            .BeFalse("a private/metadata target must be refused before any fetch is attempted");
+
+        // Generic message — the internal host/IP is never echoed back to the caller.
+        var error = json.RootElement.GetProperty("error").GetString()!;
+        error.Should().NotContain("169.254.169.254");
+        error.Should().NotContain("10.0.0.5");
+        error.Should().NotContain("192.168.1.1");
+    }
+
+    [Theory]
+    [InlineData("ftp://example.com/manifest.json")]
+    [InlineData("file:///etc/passwd")]
+    [InlineData("gopher://example.com/")]
+    public async Task DiscoverApi_NonHttpUrl_Refused(string url)
+    {
+        var result = await DiscoverApiTool.DiscoverApi(
+            url: url, budgetAware: false, cancellationToken: CancellationToken.None);
+
+        var json = JsonDocument.Parse(result);
+        json.RootElement.GetProperty("success").GetBoolean().Should().BeFalse();
+        json.RootElement.TryGetProperty("tried_urls", out _).Should().BeFalse();
+    }
+
+    #endregion
+
+    #region FIX C — discover_api fallback fetch path has NO unguarded client
+
+    // Before FIX C, when no IHttpClientFactory was injected, the manifest fetch fell back
+    // to a static, UNGUARDED HttpClient (no ConnectCallback) — an unguarded SSRF path that
+    // a DNS-rebind target could ride. The fallback now uses an INLINE client carrying the
+    // SAME connect-time SsrfConnectValidator as the DI-registered client. This proves that
+    // exact fallback client (the one FetchAndFormatManifestAsync builds when the factory is
+    // null) blocks a private/metadata target at connect time. An IP literal makes it
+    // deterministic — the socket rejects before any DNS.
+
+    [Theory]
+    [InlineData("http://10.0.0.5/")]              // RFC1918
+    [InlineData("http://169.254.169.254/")]       // cloud metadata (link-local)
+    [InlineData("http://127.0.0.1/")]             // loopback
+    public async Task FallbackManifestClient_BlocksPrivateTargetAtConnect(string url)
+    {
+        using var client = DiscoverApiTool.CreateGuardedManifestClient();
+
+        var act = async () => await client.GetAsync(url);
+
+        var ex = (await act.Should().ThrowAsync<HttpRequestException>()).Which;
+        var chain = ex.Message + " " + (ex.InnerException?.Message ?? string.Empty);
+        chain.Should().Contain("private/reserved",
+            because: "the fallback manifest client must carry the connect-time SSRF guard, never be unguarded");
+    }
+
+    #endregion
+
+    #region FIX A — discover_api surfaces an unfollowed 3xx as an actionable redirect
+
+    /// <summary>Fake handler returning a canned response and recording every URL fetched.</summary>
+    private sealed class StubHandler : System.Net.Http.HttpMessageHandler
+    {
+        private readonly Func<Uri, HttpResponseMessage> _responder;
+        public List<Uri> Received { get; } = new();
+        public StubHandler(Func<Uri, HttpResponseMessage> responder) => _responder = responder;
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            Received.Add(request.RequestUri!);
+            return Task.FromResult(_responder(request.RequestUri!));
+        }
+    }
+
+    private sealed class StubHttpClientFactory : IHttpClientFactory
+    {
+        private readonly System.Net.Http.HttpMessageHandler _handler;
+        public StubHttpClientFactory(System.Net.Http.HttpMessageHandler handler) => _handler = handler;
+        public HttpClient CreateClient(string name) => new(_handler, disposeHandler: false);
+    }
+
+    [Fact]
+    public async Task DiscoverApi_ManifestUrlRedirects_ReturnsActionableRedirect_NotFollowed()
+    {
+        // The manifest URL returns a 302 to a different host. With AllowAutoRedirect off the
+        // client does not follow — the tool must surface the target as actionable, not chase it.
+        var handler = new StubHandler(_ =>
+        {
+            var r = new HttpResponseMessage(System.Net.HttpStatusCode.Found);
+            r.Headers.Location = new Uri("https://canonical.example.com/.well-known/l402-manifest.json");
+            r.Content = new StringContent("moved");
+            return r;
+        });
+        var factory = new StubHttpClientFactory(handler);
+
+        var result = await DiscoverApiTool.DiscoverApi(
+            url: "https://api.example.com",
+            budgetAware: false,
+            httpClientFactory: factory,
+            cancellationToken: CancellationToken.None);
+
+        var json = JsonDocument.Parse(result);
+        json.RootElement.GetProperty("success").GetBoolean().Should().BeFalse();
+        json.RootElement.GetProperty("redirect_location").GetString()
+            .Should().Be("https://canonical.example.com/.well-known/l402-manifest.json");
+        json.RootElement.GetProperty("error").GetString().Should().Contain("redirected to");
+
+        // Every request went to the ORIGINAL host — the redirect target was never fetched.
+        handler.Received.Should().OnlyContain(u => u.Host == "api.example.com");
+    }
+
+    #endregion
+
+    #region FIX 2 — a redirect on a SYNTHESIZED well-known probe is NOT promoted to actionable
+
+    // A 3xx encountered while probing a synthesized /.well-known/ path is NOT the user's URL.
+    // Promoting it would send the agent chasing a catch-all/login page and suppress the
+    // honest "no manifest here" result. So a well-known-probe redirect is treated as "no
+    // manifest at this path" (tried_urls), while a redirect on the USER's explicit url IS
+    // surfaced as an actionable redirect_location.
+
+    [Fact]
+    public async Task DiscoverApi_WellKnownProbeRedirects_ButUserUrlDoesNot_ReturnsNotFound_NotRedirect()
+    {
+        // The user's URL (fetched last for a non-.json url, at path "/") 404s; every
+        // synthesized /.well-known/ probe 302s. The tool must return the not-found +
+        // tried_urls shape, NOT an actionable redirect chasing the probe's target.
+        var handler = new StubHandler(uri =>
+        {
+            if (uri.AbsolutePath == "/")
+                return new HttpResponseMessage(System.Net.HttpStatusCode.NotFound) { Content = new StringContent("nope") };
+
+            var r = new HttpResponseMessage(System.Net.HttpStatusCode.Found);
+            r.Headers.Location = new Uri("https://login.example.com/sso"); // catch-all/login trap
+            r.Content = new StringContent("moved");
+            return r;
+        });
+        var factory = new StubHttpClientFactory(handler);
+
+        var result = await DiscoverApiTool.DiscoverApi(
+            url: "https://api.example.com",
+            budgetAware: false,
+            httpClientFactory: factory,
+            cancellationToken: CancellationToken.None);
+
+        var json = JsonDocument.Parse(result);
+        json.RootElement.GetProperty("success").GetBoolean().Should().BeFalse();
+        // NOT promoted to an actionable redirect — the probe's Location must not leak here.
+        json.RootElement.TryGetProperty("redirect_location", out _).Should()
+            .BeFalse("a redirect on a synthesized well-known probe must not be surfaced as actionable");
+        json.RootElement.TryGetProperty("tried_urls", out var tried).Should().BeTrue();
+        tried.GetArrayLength().Should().BeGreaterThan(0);
+        json.RootElement.GetProperty("error").GetString().Should().Contain("Could not find");
+    }
+
+    [Fact]
+    public async Task DiscoverApi_UserJsonUrlRedirects_IsStillSurfacedAsActionableRedirect()
+    {
+        // A redirect on the USER's EXPLICIT url (a .json manifest URL, tried first) IS the
+        // meaningful signal and stays surfaced — only the well-known-probe case is suppressed.
+        var handler = new StubHandler(uri =>
+        {
+            if (uri.AbsolutePath == "/manifest.json")
+            {
+                var r = new HttpResponseMessage(System.Net.HttpStatusCode.MovedPermanently);
+                r.Headers.Location = new Uri("https://cdn.example.com/manifest.json");
+                r.Content = new StringContent("moved");
+                return r;
+            }
+            // well-known probes off the .json base 404
+            return new HttpResponseMessage(System.Net.HttpStatusCode.NotFound) { Content = new StringContent("nope") };
+        });
+        var factory = new StubHttpClientFactory(handler);
+
+        var result = await DiscoverApiTool.DiscoverApi(
+            url: "https://api.example.com/manifest.json",
+            budgetAware: false,
+            httpClientFactory: factory,
+            cancellationToken: CancellationToken.None);
+
+        var json = JsonDocument.Parse(result);
+        json.RootElement.GetProperty("success").GetBoolean().Should().BeFalse();
+        json.RootElement.GetProperty("redirect_location").GetString()
+            .Should().Be("https://cdn.example.com/manifest.json");
+        json.RootElement.TryGetProperty("tried_urls", out _).Should()
+            .BeFalse("a redirect on the user's explicit URL is surfaced as actionable, not a not-found");
+    }
+
+    #endregion
+
+    #region FIX 4 — registry-search client does not auto-follow a 3xx
+
+    [Fact]
+    public void RegistrySearchHandler_DoesNotAutoFollowRedirects()
+    {
+        // Locks the config the reviewer flagged: the registry client was a plain
+        // new HttpClient() (AllowAutoRedirect defaults TRUE) that would silently follow a
+        // 302 → internal/metadata host. It must be pinned off (parity with Python).
+        DiscoverApiTool.CreateRegistrySearchHandler().AllowAutoRedirect.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task SearchRegistry_RegistryReturns302_ReturnsCleanRedirectError_DoesNotFollow()
+    {
+        // With auto-follow off, a registry 3xx is surfaced as a clean error and the tool
+        // makes exactly ONE request — it never chases the Location.
+        var handler = new StubHandler(_ =>
+        {
+            var r = new HttpResponseMessage(System.Net.HttpStatusCode.Found);
+            r.Headers.Location = new Uri("http://169.254.169.254/latest/meta-data/");
+            r.Content = new StringContent("moved");
+            return r;
+        });
+        using var stubClient = new HttpClient(handler, disposeHandler: false);
+
+        var result = await DiscoverApiTool.SearchRegistryAsync(
+            query: "weather", category: null, budgetAware: false,
+            budgetService: null, priceService: null, ct: CancellationToken.None,
+            httpClient: stubClient);
+
+        var json = JsonDocument.Parse(result);
+        json.RootElement.GetProperty("success").GetBoolean().Should().BeFalse();
+        json.RootElement.GetProperty("error").GetString().Should().Contain("redirect");
+        // The internal metadata target is never echoed back nor fetched.
+        json.RootElement.GetProperty("error").GetString().Should().NotContain("169.254.169.254");
+        handler.Received.Should().ContainSingle("the tool must not follow the registry's redirect");
+    }
+
+    #endregion
 }

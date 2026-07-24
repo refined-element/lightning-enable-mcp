@@ -1,4 +1,5 @@
 using LightningEnable.Mcp.Services;
+using LightningEnable.Mcp.Tools;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -89,8 +90,59 @@ public class Program
         var configService = new BudgetConfigurationService();
         var config = configService.Configuration;
 
-        // Register HTTP client for L402
-        builder.Services.AddHttpClient<IL402HttpClient, L402HttpClient>();
+        // Register HTTP client for L402.
+        //
+        // SSRF hardening (F-10d/F-10e): the URL is attacker-influenceable and only a
+        // cheap pre-check runs in AccessL402ResourceTool.ValidateUrl. The definitive
+        // guard is the ConnectCallback below.
+        //  - ConnectCallback: validates the ACTUAL connect-time IP and connects to
+        //    exactly that validated set (no re-resolution), closing the DNS-rebind
+        //    TOCTOU window between the initial-URL check and the socket connect.
+        //  - AllowAutoRedirect = false: the SAFE posture, and NOT the same thing as
+        //    "the ConnectCallback makes redirects safe" — it does not, for two reasons
+        //    the callback cannot see:
+        //      (1) HEADER LEAK. .NET's redirect handler only auto-strips the
+        //          Authorization header on a cross-origin redirect; arbitrary custom
+        //          headers the agent supplied via L402HttpClient.CreateRequest
+        //          (X-Api-Key, Cookie, ...) are RE-SENT to the redirect target. A
+        //          302 → attacker host would exfiltrate them. The IP guard fires per
+        //          hop but says nothing about which headers travel.
+        //      (2) L402 MID-PAYMENT HOST CHANGE. HandleL402ChallengeAsync retries the
+        //          ORIGINAL url. A provider that host-redirects BEFORE its 402 would,
+        //          with auto-redirect on, get paid (sats debited via RecordSpend) and
+        //          then the paid retry — following the redirect to a new host — drops
+        //          its Authorization: L402 header on the host change and 402s again:
+        //          the agent pays and receives nothing.
+        //    With redirects unfollowed the initial URL is the ONLY fetch and it is
+        //    fully validated (pre-check + connect-time IP guard); there is no
+        //    cross-origin header leak, no L402 host change mid-payment, and no
+        //    unvalidated redirect-hop. A 3xx is surfaced to the agent as an actionable
+        //    "call again with the redirect target" result (see L402HttpClient), never
+        //    followed.
+        builder.Services.AddHttpClient<IL402HttpClient, L402HttpClient>()
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            {
+                AllowAutoRedirect = false,
+                ConnectCallback = SsrfConnectValidator.ConnectAsync,
+            });
+
+        // Register the guarded HTTP client for discover_api's manifest fetch (F-10e).
+        // The manifest URL is agent-supplied, so this client carries the SAME
+        // connect-time SSRF guard as the L402 client — an agent cannot use discover_api
+        // to reach 169.254.169.254 / a private range. AllowAutoRedirect = false for the
+        // same header-leak / redirect-hop reasons as the L402 client above; a 3xx is
+        // surfaced as an actionable redirect result (see DiscoverApiTool), never followed.
+        builder.Services.AddHttpClient(DiscoverApiTool.ManifestHttpClientName, client =>
+            {
+                client.Timeout = TimeSpan.FromSeconds(15);
+                client.DefaultRequestHeaders.Add("Accept", "application/json");
+                client.DefaultRequestHeaders.Add("User-Agent", "LightningEnable-MCP/1.0");
+            })
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            {
+                AllowAutoRedirect = false,
+                ConnectCallback = SsrfConnectValidator.ConnectAsync,
+            });
 
         // Register wallet service
         // Default priority for L402: LND > NWC > Strike > OpenNode

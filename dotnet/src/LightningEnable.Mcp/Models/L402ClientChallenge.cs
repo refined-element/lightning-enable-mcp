@@ -286,6 +286,22 @@ public record L402FetchResult
     public required string Url { get; init; }
 
     /// <summary>
+    /// When the fetch stopped on an unfollowed 3xx redirect, the resolved (absolute)
+    /// redirect target the agent should call the tool again with. <c>null</c> otherwise.
+    /// Redirects are deliberately NOT auto-followed (see <c>Program.cs</c>): following
+    /// them would leak agent-supplied custom headers to a cross-origin target and, on the
+    /// L402 path, pay a provider that then drops the L402 header on the host change.
+    /// <para/>
+    /// KNOWN LIMITATION — a redirect AFTER a paid retry (<see cref="PaidAmountSats"/> &gt; 0)
+    /// is still not followed, even to the same host, because re-issuing the request could
+    /// trigger a fresh 402 and a second payment. L402 providers SHOULD serve the resource
+    /// directly on the paid retry rather than redirecting; when one redirects after payment,
+    /// <see cref="L402Token"/> is returned so a well-behaved agent retries the target WITH
+    /// the existing token instead of paying again (see the "ALREADY PAID" error message).
+    /// </summary>
+    public string? RedirectLocation { get; init; }
+
+    /// <summary>
     /// Creates a successful result.
     /// </summary>
     public static L402FetchResult Succeeded(string url, string content, int statusCode, string? contentType = null, long paidAmountSats = 0, string? l402Token = null, string? protocol = null) =>
@@ -314,5 +330,23 @@ public record L402FetchResult
             PaidAmountSats = paidAmountSats,
             L402Token = l402Token,
             Protocol = protocol
+        };
+
+    /// <summary>
+    /// Creates a result for an unfollowed 3xx redirect: a graceful, actionable failure
+    /// carrying the redirect target so the caller can re-invoke the tool with it. No
+    /// payment is ever made on this path (the redirect is seen before any 402), and no
+    /// agent-supplied header is sent to the redirect host (we do not follow it).
+    /// </summary>
+    public static L402FetchResult Redirected(string url, int statusCode, string? location) =>
+        new()
+        {
+            Success = false,
+            Url = url,
+            StatusCode = statusCode,
+            RedirectLocation = location,
+            ErrorMessage = location != null
+                ? $"Resource redirected to {location}. Call this tool again with that URL."
+                : $"Resource returned an HTTP {statusCode} redirect with no Location header."
         };
 }

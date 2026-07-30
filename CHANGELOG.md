@@ -3,6 +3,15 @@
 All notable changes to the Lightning Enable MCP server are documented here.
 Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-enable-mcp`).
 
+## [1.20.1]
+
+### Fixed
+
+- **Pin the `mcp` SDK to `<2.0.0`.** The dependency was unbounded (`mcp>=1.0.0`),
+  so the just-released `mcp` 2.0.0 (a breaking major) was pulled on fresh installs
+  and broke the server's `Server` API usage (and the test suite). The code targets
+  and is verified against `mcp` 1.x; migration to 2.x is tracked separately.
+
 ## [1.20.0]
 
 ### Changed

@@ -17,12 +17,10 @@ public static class AgentPublishTool
     /// </summary>
     [McpServerTool(Name = "publish_agent_capability"), Description(
         "Publish an agent capability advertisement to the Nostr network. " +
-        "Makes your agent discoverable by other agents. Creates a kind 38400 event. " +
-        "Optionally creates an L402 proxy for payment settlement. " +
-        "Requires LIGHTNING_ENABLE_API_KEY. " +
-        "NOTE: this uses the agent-to-agent capability backend, which is not yet enabled on the " +
-        "hosted Lightning Enable API (calls there currently return an error). Today, marketplace " +
-        "listings are published via the Lightning Enable dashboard / L402 proxy pipeline.")]
+        "Makes your agent discoverable by other agents as a kind 38400 listing, published via " +
+        "Lightning Enable's L402 proxy pipeline. Provide targetUrl — an L402 proxy is created to " +
+        "back the listing and handle payment. The event is signed by the Lightning Enable platform " +
+        "key. Requires LIGHTNING_ENABLE_API_KEY.")]
     public static async Task<string> PublishAgentCapability(
         [Description("Unique service identifier (used as d-tag)")] string serviceId,
         [Description("Service categories (e.g., ['ai', 'translation'])")] string[] categories,

@@ -613,13 +613,10 @@ class LightningEnableServer:
                     name="publish_agent_capability",
                     description=(
                         "Publish an agent capability advertisement to the Nostr network. "
-                        "Makes your agent discoverable by other agents. Creates a kind 38400 event. "
-                        "Optionally creates an L402 proxy for payment settlement. "
-                        "Requires LIGHTNING_ENABLE_API_KEY. "
-                        "NOTE: this uses the agent-to-agent capability backend, which is not yet "
-                        "enabled on the hosted Lightning Enable API (calls there currently return "
-                        "an error). Today, marketplace listings are published via the Lightning "
-                        "Enable dashboard / L402 proxy pipeline."
+                        "Makes your agent discoverable by other agents as a kind 38400 listing, "
+                        "published via Lightning Enable's L402 proxy pipeline. Provide target_url — "
+                        "an L402 proxy is created to back the listing and handle payment. The event "
+                        "is signed by the Lightning Enable platform key. Requires LIGHTNING_ENABLE_API_KEY."
                     ),
                     inputSchema={
                         "type": "object",
@@ -687,9 +684,7 @@ class LightningEnableServer:
                         "Sends a service request (kind 38401 event) referencing the provider's capability. "
                         "The provider responds with agreement/settlement terms; settle via settle_agent_service. "
                         "If the provider has an L402 endpoint, you can skip this step "
-                        "and use settle_agent_service directly. Requires LIGHTNING_ENABLE_API_KEY. "
-                        "NOTE: the agent-to-agent capability backend is not yet enabled on the "
-                        "hosted Lightning Enable API; calls there currently return an error."
+                        "and use settle_agent_service directly. Requires LIGHTNING_ENABLE_API_KEY."
                     ),
                     inputSchema={
                         "type": "object",
@@ -716,8 +711,12 @@ class LightningEnableServer:
                         "Publish an attestation (review) for an agent after a completed agreement. "
                         "Creates a kind 38403 event that builds the agent's on-protocol reputation. "
                         "Requires LIGHTNING_ENABLE_API_KEY. "
-                        "NOTE: the agent-to-agent capability backend is not yet enabled on the "
-                        "hosted Lightning Enable API; calls there currently return an error."
+                        "NOTE: writing attestations is not yet available on the hosted API and "
+                        "returns an error. The platform holds a single signing key, so a "
+                        "platform-signed review would share one pubkey across all reviewers — "
+                        "worthless for reputation — so this is intentionally disabled until "
+                        "per-agent (client-side) signing exists. Reading reputation "
+                        "(get_agent_reputation) works today."
                     ),
                     inputSchema={
                         "type": "object",
@@ -750,10 +749,9 @@ class LightningEnableServer:
                     name="get_agent_reputation",
                     description=(
                         "Get an agent's reputation score and reviews. "
-                        "Queries kind 38403 attestation events for the given pubkey. "
-                        "Returns average rating and individual reviews. "
-                        "NOTE: the agent-to-agent capability backend is not yet enabled on the "
-                        "hosted Lightning Enable API; calls there currently return an error."
+                        "Queries kind 38403 attestation events for the given pubkey off the relay. "
+                        "Returns the average rating and individual reviews. Ratings are un-weighted "
+                        "on-relay attestations — apply your own proof/Web-of-Trust weighting before trusting them."
                     ),
                     inputSchema={
                         "type": "object",

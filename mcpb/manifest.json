@@ -2,7 +2,7 @@
   "manifest_version": "0.4",
   "name": "lightning-enable-mcp",
   "display_name": "Lightning Enable",
-  "version": "1.19.0",
+  "version": "1.20.0",
   "description": "Give your AI agent a Bitcoin Lightning wallet: pay invoices, access L402-protected APIs, and manage spending budgets.",
   "long_description": "Lightning Enable gives an AI agent a Bitcoin Lightning wallet. Out of the box it can pay BOLT11 invoices, automatically pay L402 (402 Payment Required) challenges to access paid APIs, discover paid APIs in the L402 registry, and enforce per-request and per-session spending budgets. Agents can also act as sellers (mint and verify L402 payment challenges) and transact agent-to-agent over Nostr with a Lightning Enable API key. Spending is bounded by the operator's config; payments above an auto-approve threshold require an out-of-band human confirmation code. Lightning Enable does not hold funds — the connected wallet or payment provider does.",
   "author": {

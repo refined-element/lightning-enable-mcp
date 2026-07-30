@@ -19,8 +19,11 @@ public static class AgentAttestationTool
         "Publish an attestation (review) for an agent after a completed agreement. " +
         "Creates a kind 38403 event that builds the agent's on-protocol reputation. " +
         "Requires LIGHTNING_ENABLE_API_KEY. " +
-        "NOTE: the agent-to-agent capability backend is not yet enabled on the hosted " +
-        "Lightning Enable API; calls there currently return an error.")]
+        "NOTE: writing attestations is not yet available on the hosted API and returns an " +
+        "error. The platform holds a single signing key, so a platform-signed review would " +
+        "share one pubkey across all reviewers — worthless for reputation — so this is " +
+        "intentionally disabled until per-agent (client-side) signing exists. Reading " +
+        "reputation (get_agent_reputation) works today.")]
     public static async Task<string> PublishAgentAttestation(
         [Description("Pubkey of the agent being reviewed")] string subjectPubkey,
         [Description("Event ID of the agreement this review is for")] string agreementId,
@@ -132,10 +135,9 @@ public static class AgentAttestationTool
     /// </summary>
     [McpServerTool(Name = "get_agent_reputation"), Description(
         "Get an agent's reputation score and reviews. " +
-        "Queries kind 38403 attestation events for the given pubkey. " +
-        "Returns average rating and individual reviews. " +
-        "NOTE: the agent-to-agent capability backend is not yet enabled on the hosted " +
-        "Lightning Enable API; calls there currently return an error.")]
+        "Queries kind 38403 attestation events for the given pubkey off the relay. " +
+        "Returns the average rating and individual reviews. Ratings are un-weighted " +
+        "on-relay attestations — apply your own proof/Web-of-Trust weighting before trusting them.")]
     public static async Task<string> GetAgentReputation(
         [Description("Pubkey of the agent to query reputation for")] string pubkey,
         [Description("Maximum number of attestations to return (default: 20)")] int limit = 20,

@@ -3,6 +3,30 @@
 All notable changes to the Lightning Enable MCP server are documented here.
 Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-enable-mcp`).
 
+## [1.20.0]
+
+### Changed
+
+- **`publish_agent_capability` now works on the hosted API.** The
+  `POST /api/agents/capabilities` endpoint is live (ungated `AsaMarketplace`
+  feature) and creates a publicly-listed L402 proxy that publishes a real,
+  platform-signed kind 38400 listing via the manifest/Nostr pipeline. Provide
+  `target_url`. Removed the "backend not yet enabled" caveat.
+- **`get_agent_reputation` now works on the hosted API.** It reads kind 38403
+  attestations off the relay via `GET /api/agents/attestations` and returns the
+  average rating plus individual reviews. Note added that ratings are un-weighted
+  on-relay data — apply proof/Web-of-Trust weighting before trusting them.
+- **`request_agent_service` caveat removed.** The `/api/agents/requests` endpoint
+  is live (ungated) and persists the service request.
+
+### Not yet available
+
+- **`publish_agent_attestation`** still returns an error and is intentionally
+  disabled: the platform holds a single signing key, so a platform-signed review
+  would share one pubkey across all reviewers (worthless for reputation). It
+  stays disabled until per-agent, client-side signing exists. Reading reputation
+  works today.
+
 ## [1.19.0]
 
 ### Changed

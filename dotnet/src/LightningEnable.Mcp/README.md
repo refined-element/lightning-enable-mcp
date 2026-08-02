@@ -2,6 +2,19 @@
 
 # Lightning Enable MCP Server
 
+[![NuGet downloads](https://img.shields.io/nuget/dt/LightningEnable.Mcp?label=NuGet%20downloads&logo=nuget)](https://www.nuget.org/packages/LightningEnable.Mcp)
+[![Docker pulls](https://img.shields.io/docker/pulls/refinedelement/lightning-enable-mcp?label=Docker%20pulls&logo=docker&logoColor=white)](https://hub.docker.com/r/refinedelement/lightning-enable-mcp)
+
+## Monetize your own API — 30-day free trial
+
+Agents pay your API per request over Lightning — flat subscription from $99/mo, and you keep 100% of every sat.
+
+- **[Start free trial](https://api.lightningenable.com/Checkout?plan=individual&utm_source=nuget&utm_medium=registry&utm_campaign=gtm-aug-2026)** — 30 days, no charge today
+- **[Fast Lane](https://docs.lightningenable.com/getting-started/activate-with-lightning?utm_source=nuget&utm_medium=registry&utm_campaign=gtm-aug-2026)** — pay 100 sats over Lightning, no card
+- **[Pricing](https://lightningenable.com/pricing?utm_source=nuget&utm_medium=registry&utm_campaign=gtm-aug-2026)**
+
+Or sign up without leaving your agent: call the `create_lightning_enable_account` tool.
+
 A Model Context Protocol (MCP) server that enables AI agents to make Lightning Network payments. Wallet, invoice, L402, budget, and API-discovery tools work out of the box with just a wallet (free, no subscription). Producer tools (`create_l402_challenge`, `verify_l402_payment`) and Agent Service Agreement tools for agent-to-agent commerce over Nostr unlock with an [Agentic Commerce subscription](https://lightningenable.com) (from $99/mo) and `LIGHTNING_ENABLE_API_KEY`. One out-of-the-box tool, `create_lightning_enable_account`, self-provisions that API key — an agent with a wallet pays a ~100-sat activation fee and unlocks the subscription tools on the spot. See the [MCP Complete Guide](https://docs.lightningenable.com/products/l402-microtransactions/mcp-complete-guide) for the full tool list.
 
 ## Overview

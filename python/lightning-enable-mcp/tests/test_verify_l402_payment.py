@@ -61,6 +61,9 @@ class TestVerifyL402Payment:
         parsed = json.loads(result)
         assert parsed["success"] is False
         assert "LIGHTNING_ENABLE_API_KEY" in parsed["error"]
+        # GTM upsell: 30-day trial link + in-MCP signup tool hint
+        assert "https://api.lightningenable.com/Checkout?plan=individual&utm_source=mcp&utm_medium=tool-hint&utm_campaign=gtm-aug-2026" in parsed["error"]
+        assert "create_lightning_enable_account" in parsed["error"]
 
     @pytest.mark.asyncio
     async def test_valid_payment_verification(self):

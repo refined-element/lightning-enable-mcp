@@ -86,6 +86,9 @@ public class AgentUnpublishToolTests
         var json = JsonDocument.Parse(result).RootElement;
         json.GetProperty("success").GetBoolean().Should().BeFalse();
         json.GetProperty("error").GetString().Should().Contain("API key not configured");
+        // GTM upsell: 30-day trial link + in-MCP signup tool hint
+        json.GetProperty("error").GetString().Should().Contain("https://api.lightningenable.com/Checkout?plan=individual&utm_source=mcp&utm_medium=tool-hint&utm_campaign=gtm-aug-2026");
+        json.GetProperty("error").GetString().Should().Contain("create_lightning_enable_account");
     }
 
     [Fact]

@@ -38,6 +38,9 @@ class TestUnpublishAgentCapability:
         parsed = json.loads(result)
         assert parsed["success"] is False
         assert "API key not configured" in parsed["error"]
+        # GTM upsell: 30-day trial link + in-MCP signup tool hint
+        assert "https://api.lightningenable.com/Checkout?plan=individual&utm_source=mcp&utm_medium=tool-hint&utm_campaign=gtm-aug-2026" in parsed["error"]
+        assert "create_lightning_enable_account" in parsed["error"]
 
     @pytest.mark.asyncio
     async def test_remove_success_calls_client_with_proxy_id(self):

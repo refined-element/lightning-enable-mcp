@@ -124,6 +124,9 @@ public class VerifyL402PaymentToolTests
         var json = JsonDocument.Parse(result);
         json.RootElement.GetProperty("success").GetBoolean().Should().BeFalse();
         json.RootElement.GetProperty("error").GetString().Should().Contain("API key not configured");
+        // GTM upsell: 30-day trial link + in-MCP signup tool hint
+        json.RootElement.GetProperty("error").GetString().Should().Contain("https://api.lightningenable.com/Checkout?plan=individual&utm_source=mcp&utm_medium=tool-hint&utm_campaign=gtm-aug-2026");
+        json.RootElement.GetProperty("error").GetString().Should().Contain("create_lightning_enable_account");
     }
 
     #endregion

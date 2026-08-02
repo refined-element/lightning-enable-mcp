@@ -210,6 +210,25 @@ public class AgentServiceTests
     }
 
     [Fact]
+    public async Task RequestService_NotConfigured_ReturnsErrorWithTrialHint()
+    {
+        // Arrange - no API key. This is the user-visible gate for request_agent_service
+        // (AgentNegotiateTool surfaces this ErrorMessage verbatim).
+        var (service, _) = CreateServiceWithHandler(HttpStatusCode.OK, "{}", apiKey: null);
+
+        // Act
+        var result = await service.RequestServiceAsync(
+            "cap-evt-001", 500, null, CancellationToken.None);
+
+        // Assert
+        result.Success.Should().BeFalse();
+        result.ErrorMessage.Should().Contain("API key not configured");
+        // GTM upsell: 30-day trial link + in-MCP signup tool hint
+        result.ErrorMessage.Should().Contain("https://api.lightningenable.com/Checkout?plan=individual&utm_source=mcp&utm_medium=tool-hint&utm_campaign=gtm-aug-2026");
+        result.ErrorMessage.Should().Contain("create_lightning_enable_account");
+    }
+
+    [Fact]
     public async Task RequestService_ValidRequest_ReturnsSuccess()
     {
         // Arrange

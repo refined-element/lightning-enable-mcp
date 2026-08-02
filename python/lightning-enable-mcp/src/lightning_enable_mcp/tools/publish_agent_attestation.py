@@ -79,7 +79,10 @@ async def publish_agent_attestation(
             return json.dumps({
                 "success": False,
                 "error": "Lightning Enable API key not configured. "
-                         "Set LIGHTNING_ENABLE_API_KEY environment variable or add 'lightningEnableApiKey' to ~/.lightning-enable/config.json.",
+                         "Set LIGHTNING_ENABLE_API_KEY environment variable or add 'lightningEnableApiKey' to ~/.lightning-enable/config.json. "
+                         "Get an API key: 30-day free trial at "
+                         "https://api.lightningenable.com/Checkout?plan=individual&utm_source=mcp&utm_medium=tool-hint&utm_campaign=gtm-aug-2026 "
+                         "— or call the `create_lightning_enable_account` tool to sign up right here.",
             })
 
         result = await api_client.publish_attestation(

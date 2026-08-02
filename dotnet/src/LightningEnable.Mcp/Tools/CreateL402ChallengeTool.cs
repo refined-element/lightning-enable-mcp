@@ -62,7 +62,10 @@ public static class CreateL402ChallengeTool
                 success = false,
                 error = "Lightning Enable API key not configured. " +
                         "Set LIGHTNING_ENABLE_API_KEY environment variable or add 'lightningEnableApiKey' to ~/.lightning-enable/config.json. " +
-                        "Requires an Agentic Commerce subscription at https://lightningenable.com."
+                        "Requires an Agentic Commerce subscription at https://lightningenable.com. " +
+                        "Get an API key: 30-day free trial at " +
+                        "https://api.lightningenable.com/Checkout?plan=individual&utm_source=mcp&utm_medium=tool-hint&utm_campaign=gtm-aug-2026 " +
+                        "— or call the `create_lightning_enable_account` tool to sign up right here."
             });
         }
 

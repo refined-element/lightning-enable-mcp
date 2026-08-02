@@ -5,7 +5,19 @@ Part of [Lightning Enable](https://lightningenable.com) — infrastructure for a
 # Lightning Enable MCP Server
 
 [![Discord](https://img.shields.io/discord/1405389254892195951?label=community&logo=discord&color=5865F2)](https://discord.gg/rX7NxHY8vx)
+[![PyPI downloads](https://img.shields.io/pypi/dm/lightning-enable-mcp?label=PyPI%20downloads&logo=pypi&logoColor=white)](https://pypi.org/project/lightning-enable-mcp/)
+[![NuGet downloads](https://img.shields.io/nuget/dt/LightningEnable.Mcp?label=NuGet%20downloads&logo=nuget)](https://www.nuget.org/packages/LightningEnable.Mcp)
+[![Docker pulls](https://img.shields.io/docker/pulls/refinedelement/lightning-enable-mcp?label=Docker%20pulls&logo=docker&logoColor=white)](https://hub.docker.com/r/refinedelement/lightning-enable-mcp)
 
+## Monetize your own API — 30-day free trial
+
+Agents pay your API per request over Lightning — flat subscription from $99/mo, and you keep 100% of every sat.
+
+- **[Start free trial](https://api.lightningenable.com/Checkout?plan=individual&utm_source=github&utm_medium=readme&utm_campaign=gtm-aug-2026)** — 30 days, no charge today
+- **[Fast Lane](https://docs.lightningenable.com/getting-started/activate-with-lightning?utm_source=github&utm_medium=readme&utm_campaign=gtm-aug-2026)** — pay 100 sats over Lightning, no card
+- **[Pricing](https://lightningenable.com/pricing?utm_source=github&utm_medium=readme&utm_campaign=gtm-aug-2026)**
+
+Or sign up without leaving your agent: call the `create_lightning_enable_account` tool.
 
 An open-source MCP (Model Context Protocol) server that enables AI agents to make Lightning Network payments and participate in agent-to-agent commerce. Wallet, invoice, L402, budget, and API-discovery tools work out of the box with just a wallet. Producer tools (sell access via L402) and Agent Service Agreement (ASA) tools (agent-to-agent discovery, request, settlement, and attestation over Nostr) unlock with an [Agentic Commerce subscription](https://lightningenable.com). See the [full tool list](https://docs.lightningenable.com/products/l402-microtransactions/mcp-complete-guide).
 

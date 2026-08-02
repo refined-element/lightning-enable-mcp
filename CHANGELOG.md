@@ -3,6 +3,19 @@
 All notable changes to the Lightning Enable MCP server are documented here.
 Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-enable-mcp`).
 
+## [1.21.0]
+
+### Added
+
+- **In-product trial hint on gated tools.** Tools that require `LIGHTNING_ENABLE_API_KEY`
+  (`create_l402_challenge`, `verify_l402_payment`, capability publish/unpublish,
+  `request_agent_service`, attestations) now append a one-line signup pointer to their
+  not-configured error: a 30-day free-trial checkout link plus a mention of the in-MCP
+  `create_lightning_enable_account` tool. Identical string in both ports; behavior for
+  configured users is unchanged; free-by-design tools (settle/discovery/reputation) untouched.
+- **README funnel.** Root, PyPI, and NuGet READMEs lead with a "Monetize your own API —
+  30-day free trial" section (UTM-tagged links) and download badges.
+
 ## [1.20.1]
 
 ### Fixed

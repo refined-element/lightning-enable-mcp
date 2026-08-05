@@ -4,6 +4,8 @@ Part of [Lightning Enable](https://lightningenable.com) — infrastructure for a
 
 # Lightning Enable MCP Server
 
+[![MCP Toplist](https://mcptoplist.com/badge/io.github.refined-element%2Flightning-enable-mcp.svg)](https://mcptoplist.com/server/io.github.refined-element%2Flightning-enable-mcp)
+
 [![Discord](https://img.shields.io/discord/1405389254892195951?label=community&logo=discord&color=5865F2)](https://discord.gg/rX7NxHY8vx)
 [![PyPI downloads](https://img.shields.io/pypi/dm/lightning-enable-mcp?label=PyPI%20downloads&logo=pypi&logoColor=white)](https://pypi.org/project/lightning-enable-mcp/)
 [![NuGet downloads](https://img.shields.io/nuget/dt/LightningEnable.Mcp?label=NuGet%20downloads&logo=nuget)](https://www.nuget.org/packages/LightningEnable.Mcp)

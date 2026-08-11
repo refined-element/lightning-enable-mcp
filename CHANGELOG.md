@@ -3,6 +3,14 @@
 All notable changes to the Lightning Enable MCP server are documented here.
 Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-enable-mcp`).
 
+## [1.21.1]
+
+### Fixed
+
+- **Never log preimage bytes.** `StrikePaymentProvider` (an internal `ILightningPaymentProvider`
+  implementation) logged the first 8 characters of a settled payment preimage to stderr; it now
+  logs only that a preimage was received, matching every other provider. No behavior change.
+
 ## [1.21.0]
 
 ### Added

@@ -147,7 +147,7 @@ public class StrikePaymentProvider : ILightningPaymentProvider, IDisposable
 
                 if (!string.IsNullOrEmpty(preimage))
                 {
-                    Console.Error.WriteLine($"[Strike] Preimage received: {preimage[..Math.Min(8, preimage.Length)]}...");
+                    Console.Error.WriteLine("[Strike] Preimage received, L402 fully supported");
                 }
 
                 return ProviderPaymentResult.Succeeded(

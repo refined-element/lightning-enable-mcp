@@ -4,13 +4,13 @@
   "title": "Lightning Enable MCP Server",
   "_description_max_length": "100 chars max — enforced by MCP Registry and CI validation",
   "description": "AI agent Lightning payments: invoices, wallets, L402 access, API discovery, budgets, and commerce.",
-  "version": "1.21.0",
+  "version": "1.21.1",
   "websiteUrl": "https://docs.lightningenable.com/products/l402-microtransactions/mcp-complete-guide",
   "packages": [
     {
       "registryType": "nuget",
       "identifier": "LightningEnable.Mcp",
-      "version": "1.21.0",
+      "version": "1.21.1",
       "transport": {
         "type": "stdio"
       },
@@ -71,7 +71,7 @@
     {
       "registryType": "pypi",
       "identifier": "lightning-enable-mcp",
-      "version": "1.21.0",
+      "version": "1.21.1",
       "transport": {
         "type": "stdio"
       },
@@ -124,7 +124,7 @@
     },
     {
       "registryType": "oci",
-      "identifier": "docker.io/refinedelement/lightning-enable-mcp:1.21.0",
+      "identifier": "docker.io/refinedelement/lightning-enable-mcp:1.21.1",
       "transport": {
         "type": "stdio"
       },

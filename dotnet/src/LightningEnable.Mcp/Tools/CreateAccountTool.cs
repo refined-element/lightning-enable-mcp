@@ -185,6 +185,10 @@ public static class CreateAccountTool
                 }
             }
 
+            // Ambient payment intent: the durable receipt is written at the wallet seam
+            // (ReceiptRecordingWalletService) when the activation fee is paid.
+            using var receiptScope = PaymentReceiptScope.Begin("l402", context: "l402_fastlane_signup");
+
             // Execute the L402 signup flow: POST {email} -> 402 -> pay -> retry POST.
             // Spend + payment history are recorded inside FetchWithL402Async (the client),
             // so the tool does NOT record again (avoids double-counting — same delegation
@@ -224,6 +228,7 @@ public static class CreateAccountTool
                         success = false,
                         error = scrubbedError,
                         statusCode = fetch.StatusCode,
+                        receipt_written = receiptScope.ReceiptWritten ?? false,
                         activation = new
                         {
                             paid = true,
@@ -314,7 +319,8 @@ public static class CreateAccountTool
                 activation = new
                 {
                     paid = fetch.PaidAmountSats > 0,
-                    amountSats = fetch.PaidAmountSats
+                    amountSats = fetch.PaidAmountSats,
+                    receipt_written = fetch.PaidAmountSats > 0 ? (bool?)(receiptScope.ReceiptWritten ?? false) : null
                 },
                 config = new
                 {

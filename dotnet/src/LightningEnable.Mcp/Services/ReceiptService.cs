@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using LightningEnable.Mcp.Models;
 
 namespace LightningEnable.Mcp.Services;
 
@@ -11,11 +12,18 @@ namespace LightningEnable.Mcp.Services;
 /// off the agent's context path, so rapid machine-to-machine / agent-to-agent flows
 /// don't pay a per-payment token cost for it. Never contains secrets (no preimage,
 /// macaroon, or wallet connection string). <c>revokePath</c> is instructions only.
+///
+/// New lines are generic <c>payment_receipt</c> records; pre-generalization
+/// <c>l402_payment_receipt</c> lines stay readable (ReadRecent is schema-agnostic).
 /// </summary>
 public interface IReceiptService
 {
-    void LogPayment(string walletLabel, string endpoint, long amountSats, string policy,
-        long? sessionSpentSats);
+    /// <summary>
+    /// Appends one receipt line. Returns true only when the line was durably
+    /// written — a false return is the caller's honest "receipt_written: false"
+    /// signal. Never throws: a receipt must never break a payment.
+    /// </summary>
+    bool LogPayment(PaymentReceiptEntry entry);
 
     List<JsonNode> ReadRecent(int limit);
 
@@ -77,33 +85,42 @@ public sealed class ReceiptService : IReceiptService
         catch { return null; }
     }
 
-    public void LogPayment(string walletLabel, string endpoint, long amountSats, string policy,
-        long? sessionSpentSats)
+    public bool LogPayment(PaymentReceiptEntry entry)
     {
         try
         {
-            var label = string.IsNullOrWhiteSpace(walletLabel) ? "unknown" : walletLabel;
+            var label = string.IsNullOrWhiteSpace(entry.Wallet) ? "unknown" : entry.Wallet;
             var receipt = new JsonObject
             {
-                ["type"] = "l402_payment_receipt",
+                ["type"] = "payment_receipt",
+                ["kind"] = entry.Kind,
                 // Canonical millisecond-precision UTC "Z" form (parity with the Python side).
                 ["timestamp"] = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
-                ["endpoint"] = endpoint,               // already redacted by the caller
-                ["amountSats"] = amountSats,
                 ["wallet"] = label,
-                ["policy"] = policy,
-                // Post-payment session total (session-remaining is intentionally omitted:
-                // deriving it consistently across runtimes was error-prone — spentSats is
-                // the accurate, unambiguous figure).
-                ["sessionSpentSats"] = sessionSpentSats.HasValue ? JsonValue.Create(sessionSpentSats.Value) : null,
-                ["revokePath"] = RevokePaths.TryGetValue(label, out var rp) ? rp : RevokeDefault,
+                ["amountSats"] = entry.AmountSats,
             };
+            // Optional fields are omitted, not null — keeps every line lean and lets
+            // readers treat presence as meaning.
+            if (!string.IsNullOrEmpty(entry.Status)) receipt["status"] = entry.Status;
+            if (!string.IsNullOrEmpty(entry.PaymentHash)) receipt["paymentHash"] = entry.PaymentHash;
+            if (!string.IsNullOrEmpty(entry.Context)) receipt["context"] = entry.Context;
+            if (!string.IsNullOrEmpty(entry.Policy)) receipt["policy"] = entry.Policy;
+            // Post-payment session total (session-remaining is intentionally omitted:
+            // deriving it consistently across runtimes was error-prone — spentSats is
+            // the accurate, unambiguous figure).
+            if (entry.SessionSpentSats.HasValue) receipt["sessionSpentSats"] = entry.SessionSpentSats.Value;
+            if (entry.FeeSats.HasValue) receipt["feeSats"] = entry.FeeSats.Value;
+            if (!string.IsNullOrEmpty(entry.TxId)) receipt["txId"] = entry.TxId;
+            receipt["revokePath"] = RevokePaths.TryGetValue(label, out var rp) ? rp : RevokeDefault;
             Append(receipt.ToJsonString());
+            return true;
         }
         catch (Exception ex)
         {
             // A receipt is an audit convenience — it must NEVER break a payment.
+            // The false return keeps the failure VISIBLE (receipt_written: false).
             Console.Error.WriteLine($"[Lightning Enable] Failed to write payment receipt: {ex.Message}");
+            return false;
         }
     }
 

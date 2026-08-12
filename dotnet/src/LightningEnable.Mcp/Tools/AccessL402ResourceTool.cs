@@ -44,8 +44,6 @@ public static class AccessL402ResourceTool
         IPriceService? priceService = null,
         IPaymentHistoryService? paymentHistory = null,
         IRateLimiter? rateLimiter = null,
-        IReceiptService? receiptService = null,
-        IWalletService? walletService = null,
         CancellationToken cancellationToken = default)
     {
         // Captured for the durable receipt (success path); set from the budget check below.
@@ -203,6 +201,13 @@ public static class AccessL402ResourceTool
             }
         }
 
+        // Ambient payment intent: the durable receipt is written by the wallet-seam
+        // decorator (ReceiptRecordingWalletService) the moment the invoice is paid —
+        // this scope only enriches it (redacted endpoint + policy) and carries back
+        // the honest receipt_written signal. The tool itself writes nothing, so an
+        // L402 payment produces exactly ONE receipt line.
+        using var receiptScope = PaymentReceiptScope.Begin("l402", context: RedactUrl(url), policy: paymentPolicy);
+
         try
         {
             var result = await l402Client.FetchWithL402Async(
@@ -212,23 +217,6 @@ public static class AccessL402ResourceTool
                 body,
                 maxSats,
                 cancellationToken);
-
-            // Durable, off-context-path spend receipt whenever a payment actually
-            // settled (covers both the 200 path and the paid-but-retry-failed path).
-            // Redacted endpoint, no secrets; best-effort, never breaks the payment.
-            if (receiptService != null && result.PaidAmountSats > 0)
-            {
-                try
-                {
-                    receiptService.LogPayment(
-                        walletService?.ProviderName ?? "unknown",
-                        RedactUrl(url),
-                        result.PaidAmountSats,
-                        paymentPolicy,
-                        budgetService?.GetConfig()?.SessionSpent);
-                }
-                catch { /* audit convenience must never break the payment */ }
-            }
 
             // Unfollowed 3xx redirect (AllowAutoRedirect = false): return a clear,
             // actionable result naming the redirect target instead of a cryptic HTTP
@@ -252,6 +240,7 @@ public static class AccessL402ResourceTool
                     statusCode = result.StatusCode,
                     error = result.ErrorMessage,
                     redirect_location = result.RedirectLocation,
+                    receipt_written = result.PaidAmountSats > 0 ? (bool?)(receiptScope.ReceiptWritten ?? false) : null,
                     payment = result.PaidAmountSats > 0
                         ? new
                         {
@@ -282,6 +271,7 @@ public static class AccessL402ResourceTool
                         statusCode = result.StatusCode,
                         contentType = result.ContentType,
                         content = result.Content,
+                        receipt_written = receiptScope.ReceiptWritten ?? false,
                         payment = new
                         {
                             paid = true,
@@ -326,6 +316,7 @@ public static class AccessL402ResourceTool
                         url = result.Url,
                         statusCode = result.StatusCode,
                         error = result.ErrorMessage,
+                        receipt_written = receiptScope.ReceiptWritten ?? false,
                         payment = new
                         {
                             paid = true,
@@ -370,8 +361,9 @@ public static class AccessL402ResourceTool
     /// </summary>
     // Snake_case policy label matching the Python runtime's ApprovalLevel.value, so
     // receipts.jsonl carries one consistent policy string regardless of which server
-    // (Python or .NET) wrote the line.
-    private static string PolicyString(ApprovalLevel level) => level switch
+    // (Python or .NET) wrote the line. Internal: every payment tool stamps its
+    // PaymentReceiptScope policy with this.
+    internal static string PolicyString(ApprovalLevel level) => level switch
     {
         ApprovalLevel.AutoApprove => "auto_approve",
         ApprovalLevel.LogAndApprove => "log_and_approve",

@@ -159,6 +159,11 @@ public static class SendOnChainTool
             }
         }
 
+        // Ambient payment intent: the durable receipt is written at the wallet seam
+        // (ReceiptRecordingWalletService) when the send succeeds. The destination
+        // address is public chain data, so it is safe as receipt context.
+        using var receiptScope = PaymentReceiptScope.Begin("onchain", context: address);
+
         try
         {
             var result = await walletService.SendOnChainAsync(address, amountSats, cancellationToken);
@@ -183,6 +188,7 @@ public static class SendOnChainTool
             {
                 success = true,
                 provider = walletService.ProviderName,
+                receipt_written = receiptScope.ReceiptWritten ?? false,
                 payment = new
                 {
                     id = result.PaymentId,

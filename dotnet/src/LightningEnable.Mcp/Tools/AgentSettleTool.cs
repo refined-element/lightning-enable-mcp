@@ -114,6 +114,13 @@ public static class AgentSettleTool
                 }
             }
 
+            // Ambient payment intent: the durable receipt is written at the wallet seam
+            // (ReceiptRecordingWalletService) when the L402 invoice is paid; this scope
+            // enriches it with the redacted settlement endpoint and returns the honest
+            // receipt_written signal.
+            using var receiptScope = PaymentReceiptScope.Begin(
+                "l402", context: AccessL402ResourceTool.RedactUrl(l402Endpoint));
+
             // Execute the L402 payment flow
             var result = await l402Client.FetchWithL402Async(
                 l402Endpoint,
@@ -141,6 +148,7 @@ public static class AgentSettleTool
                     agreementId,
                     statusCode = result.StatusCode,
                     redirect_location = result.RedirectLocation,
+                    receipt_written = receiptScope.ReceiptWritten ?? false,
                     payment = new
                     {
                         paid = true,
@@ -164,6 +172,7 @@ public static class AgentSettleTool
                     return JsonSerializer.Serialize(new
                     {
                         success = true,
+                        receipt_written = receiptScope.ReceiptWritten ?? false,
                         settlement = new
                         {
                             paid = true,
@@ -219,6 +228,7 @@ public static class AgentSettleTool
                     l402Endpoint,
                     agreementId,
                     statusCode = result.StatusCode,
+                    receipt_written = receiptScope.ReceiptWritten ?? false,
                     payment = new
                     {
                         paid = true,

@@ -65,6 +65,12 @@ public static class PayInvoiceTool
             });
         }
 
+        // Ambient payment intent: the durable receipts.jsonl line is written by the
+        // wallet-seam decorator (ReceiptRecordingWalletService) when the payment
+        // settles; this scope enriches it (policy) and carries back the honest
+        // receipt_written signal for the tool result.
+        using var receiptScope = PaymentReceiptScope.Begin("invoice");
+
         try
         {
             // Normalize invoice to lowercase
@@ -95,6 +101,7 @@ public static class PayInvoiceTool
             if (budgetService != null)
             {
                 var approvalResult = await budgetService.CheckApprovalLevelAsync(amountSats.Value, cancellationToken);
+                receiptScope.Policy = AccessL402ResourceTool.PolicyString(approvalResult.Level);
 
                 if (approvalResult.Level == ApprovalLevel.Deny)
                 {
@@ -244,6 +251,7 @@ public static class PayInvoiceTool
                     success = false,
                     status = "pending",
                     trackingId = result.TrackingId,
+                    receipt_written = receiptScope.ReceiptWritten ?? false,
                     error = "Payment has not settled yet — it may still succeed or fail.",
                     message = result.ErrorMessage ??
                               "The payment was accepted but has not settled. Do NOT treat it as paid and do " +
@@ -300,6 +308,7 @@ public static class PayInvoiceTool
                     success = true,
                     preimage = (string?)null,
                     trackingId = result.TrackingId,
+                    receipt_written = receiptScope.ReceiptWritten ?? false,
                     message = "Payment successful",
                     warning = result.ErrorMessage ?? "Preimage not available from this wallet. L402 verification will not work.",
                     payment = new
@@ -315,6 +324,7 @@ public static class PayInvoiceTool
             {
                 success = true,
                 preimage = result.PreimageHex,
+                receipt_written = receiptScope.ReceiptWritten ?? false,
                 message = "Payment successful",
                 payment = new
                 {

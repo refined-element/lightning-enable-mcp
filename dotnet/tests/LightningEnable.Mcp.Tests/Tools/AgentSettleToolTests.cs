@@ -124,6 +124,44 @@ public class AgentSettleToolTests
             It.IsAny<PaymentStatus>(), It.IsAny<string?>()), Times.Never);
     }
 
+    // A PENDING (or settled-without-preimage) payment comes back from the client as Failed
+    // with PaidAmountSats > 0 but NO l402Token. Money moved but did not provably settle —
+    // the tool must NOT claim "Payment succeeded ... retry with the l402Token above" (the
+    // token is null), and must surface paid + receipt_written instead of a bare error.
+    [Fact]
+    public async Task SettleAgentService_PendingPayment_NoToken_DoesNotClaimSuccess()
+    {
+        _budgetServiceMock.Setup(b => b.CheckBudget(1000))
+            .Returns(BudgetCheckResult.Allow(8000, 1000));
+
+        _l402ClientMock.Setup(c => c.FetchWithL402Async(
+                TestEndpoint, "GET", null, null, 1000, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(L402FetchResult.Failed(
+                TestEndpoint,
+                "Payment has not settled yet (tracking ID: trk_1) — it may still succeed or fail. " +
+                "Do not retry it; check its status with the provider.",
+                statusCode: 402,
+                paidAmountSats: 100));
+
+        var result = await AgentSettleTool.SettleAgentService(
+            l402Endpoint: TestEndpoint,
+            l402Client: _l402ClientMock.Object,
+            budgetService: _budgetServiceMock.Object,
+            paymentHistoryService: _paymentHistoryMock.Object,
+            cancellationToken: CancellationToken.None);
+
+        var root = JsonDocument.Parse(result).RootElement;
+        root.GetProperty("success").GetBoolean().Should().BeFalse();
+        // No settled-payment claim: alreadyPaid is reserved for token-in-hand results.
+        root.TryGetProperty("alreadyPaid", out _).Should().BeFalse();
+        root.GetProperty("payment").GetProperty("paid").GetBoolean().Should().BeTrue();
+        root.GetProperty("payment").GetProperty("amountSats").GetInt64().Should().Be(100);
+        root.TryGetProperty("receipt_written", out _).Should().BeTrue();
+        var message = root.GetProperty("message").GetString()!;
+        message.Should().Contain("do NOT pay again");
+        message.Should().NotContain("l402Token above", "there is no token to retry with");
+    }
+
     // Genuine pre-payment failure (no invoice paid — PaidAmountSats == 0): the tool returns a
     // clean not-paid error and records NOTHING (the client already recorded the failed
     // payment if an actual attempt failed; a challenge/endpoint error simply returns clean).

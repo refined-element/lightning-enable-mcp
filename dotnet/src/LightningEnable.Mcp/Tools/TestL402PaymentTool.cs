@@ -98,16 +98,22 @@ public static class TestL402PaymentTool
 
         var success = root.TryGetProperty("success", out var s) && s.GetBoolean();
 
+        // Underlying access_l402_resource result reports whether the durable receipt
+        // landed; pass it through on the paid verdicts (a self-test moves real sats).
+        bool? receiptWritten = root.TryGetProperty("receipt_written", out var rw)
+            && rw.ValueKind != JsonValueKind.Null ? rw.GetBoolean() : null;
+
         if (success)
         {
             var paidOk = root.TryGetProperty("payment", out var p)
+                && p.ValueKind == JsonValueKind.Object
                 && p.TryGetProperty("paid", out var pd) && pd.GetBoolean();
             long sats = paidOk && p.TryGetProperty("amountSats", out var amt) ? amt.GetInt64() : 0;
             int status = root.TryGetProperty("statusCode", out var sc) ? sc.GetInt32() : 200;
 
             if (paidOk)
             {
-                return Passed(sats, status, endpoint);
+                return Passed(sats, status, endpoint, receiptWritten);
             }
 
             // 200 without a payment: the test endpoint should always issue a 402,
@@ -146,12 +152,14 @@ public static class TestL402PaymentTool
         // retry returned non-200. For a wallet self-test that IS a pass — the wallet
         // completed an L402 payment, which is exactly what this checks.
         if (root.TryGetProperty("payment", out var fp)
+            && fp.ValueKind == JsonValueKind.Object
             && fp.TryGetProperty("paid", out var fpd) && fpd.GetBoolean())
         {
             long sats = fp.TryGetProperty("amountSats", out var fa) ? fa.GetInt64() : 0;
             return JsonSerializer.Serialize(new
             {
                 success = true,
+                receipt_written = receiptWritten,
                 test = "passed",
                 message = $"✅ Wallet works — paid {sats} sat(s) and the preimage verified. (The test "
                     + "endpoint's post-payment response wasn't a clean 200, but your wallet completed the "
@@ -214,7 +222,7 @@ public static class TestL402PaymentTool
         });
     }
 
-    private static string Passed(long sats, int status, string endpoint) =>
+    private static string Passed(long sats, int status, string endpoint, bool? receiptWritten = null) =>
         JsonSerializer.Serialize(new
         {
             success = true,
@@ -224,6 +232,7 @@ public static class TestL402PaymentTool
             endpoint,
             amountSats = sats,
             statusCode = status,
+            receipt_written = receiptWritten,
             walletWorking = true
         });
 

@@ -58,6 +58,9 @@ public static class CreateAccountTool
         IBudgetConfigurationService? configService = null,
         CancellationToken cancellationToken = default)
     {
+        // Declared outside the try so the catch can report whether a durable receipt
+        // landed when the client throws AFTER the activation fee settled.
+        PaymentReceiptScope? receiptScope = null;
         try
         {
             // Validate email BEFORE minting any invoice.
@@ -97,9 +100,11 @@ public static class CreateAccountTool
             // We gate on maxSats (the ceiling) because the exact fee isn't known until the 402
             // challenge is minted inside FetchWithL402Async; the confirmation is bound to maxSats,
             // this tool, and the signup URL, so a code can't be redirected or reused.
+            string? activationPolicy = null;
             if (budgetService != null)
             {
                 var approval = await budgetService.CheckApprovalLevelAsync(maxSats, cancellationToken);
+                activationPolicy = PaymentPolicy.Label(approval.Level);
 
                 if (approval.Level == ApprovalLevel.Deny)
                 {
@@ -185,6 +190,11 @@ public static class CreateAccountTool
                 }
             }
 
+            // Ambient payment intent: the durable receipt is written at the wallet seam
+            // (ReceiptRecordingWalletService) when the activation fee is paid.
+            receiptScope = PaymentReceiptScope.Begin(
+                "l402", context: "l402_fastlane_signup", policy: activationPolicy);
+
             // Execute the L402 signup flow: POST {email} -> 402 -> pay -> retry POST.
             // Spend + payment history are recorded inside FetchWithL402Async (the client),
             // so the tool does NOT record again (avoids double-counting — same delegation
@@ -224,6 +234,7 @@ public static class CreateAccountTool
                         success = false,
                         error = scrubbedError,
                         statusCode = fetch.StatusCode,
+                        receipt_written = receiptScope.ReceiptWritten ?? false,
                         activation = new
                         {
                             paid = true,
@@ -277,11 +288,14 @@ public static class CreateAccountTool
             }
             catch
             {
+                // The fee was paid (fetch.Success implies the paid retry landed) — the
+                // paid marker + receipt signal must survive even a garbled response body.
                 return JsonSerializer.Serialize(new
                 {
                     success = false,
                     error = "Account activation paid but the server response was not valid JSON.",
-                    amountSats = fetch.PaidAmountSats
+                    receipt_written = fetch.PaidAmountSats > 0 ? (bool?)(receiptScope.ReceiptWritten ?? false) : null,
+                    activation = new { paid = fetch.PaidAmountSats > 0, amountSats = fetch.PaidAmountSats }
                 });
             }
 
@@ -292,7 +306,8 @@ public static class CreateAccountTool
                 {
                     success = false,
                     error = "Account activation completed but no apiKey was returned by the server.",
-                    amountSats = fetch.PaidAmountSats
+                    receipt_written = fetch.PaidAmountSats > 0 ? (bool?)(receiptScope.ReceiptWritten ?? false) : null,
+                    activation = new { paid = fetch.PaidAmountSats > 0, amountSats = fetch.PaidAmountSats }
                 });
             }
 
@@ -304,6 +319,8 @@ public static class CreateAccountTool
             return JsonSerializer.Serialize(new
             {
                 success = true,
+                // Top level for consistency with every other payment tool's result shape.
+                receipt_written = fetch.PaidAmountSats > 0 ? (bool?)(receiptScope.ReceiptWritten ?? false) : null,
                 apiKey,
                 merchantId = GetString(account, "merchantId"),
                 email = GetString(account, "email") ?? email,
@@ -335,11 +352,18 @@ public static class CreateAccountTool
         {
             // Scrub credential-shaped tokens from the exception message before it
             // reaches the model — never let a key/secret leak into an error string.
+            // receipt_written: null = nothing was paid; true/false = the activation fee
+            // moved (the client can throw after settlement) and the receipt did/didn't land.
             return JsonSerializer.Serialize(new
             {
                 success = false,
+                receipt_written = receiptScope?.ReceiptWritten,
                 error = $"Error creating Lightning Enable account: {Scrub(ex.Message)}"
             });
+        }
+        finally
+        {
+            receiptScope?.Dispose();
         }
     }
 

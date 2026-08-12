@@ -148,6 +148,20 @@ public class Program
         // Default priority for L402: LND > NWC > Strike > OpenNode
         // (LND, NWC, and Strike return preimage; OpenNode does not)
         // Override with WALLET_PRIORITY env var or config file wallets.priority
+        //
+        // Every registration wraps the resolved wallet in ReceiptRecordingWalletService —
+        // the single durable-receipt seam. All payment tools funnel through
+        // IWalletService.PayInvoiceAsync/SendOnChainAsync, so every payment (pay_invoice,
+        // L402 flows, on-chain, and any future tool) leaves exactly one receipts.jsonl
+        // line without per-tool receipt code.
+        void AddWallet<TWallet>() where TWallet : class, IWalletService
+        {
+            builder.Services.AddHttpClient<TWallet>();
+            builder.Services.AddTransient<IWalletService>(sp => new ReceiptRecordingWalletService(
+                sp.GetRequiredService<TWallet>(),
+                sp.GetRequiredService<IReceiptService>(),
+                sp.GetRequiredService<IBudgetService>()));
+        }
         var lndRestHost = Environment.GetEnvironmentVariable("LND_REST_HOST");
         var lndMacaroonHex = Environment.GetEnvironmentVariable("LND_MACAROON_HEX");
         var nwcConnection = Environment.GetEnvironmentVariable("NWC_CONNECTION_STRING");
@@ -177,21 +191,21 @@ public class Program
         {
             Console.Error.WriteLine("Using LND wallet backend (priority override)");
             Console.Error.WriteLine("LND always returns preimage - L402 fully supported");
-            builder.Services.AddHttpClient<IWalletService, LndWalletService>();
+            AddWallet<LndWalletService>();
             walletRegistered = true;
         }
         else if (walletPriority == "nwc" && !string.IsNullOrEmpty(nwcConnection))
         {
             Console.Error.WriteLine("Using NWC wallet backend (priority override)");
             Console.Error.WriteLine("NWC returns preimage - L402 fully supported");
-            builder.Services.AddHttpClient<IWalletService, NwcWalletService>();
+            AddWallet<NwcWalletService>();
             walletRegistered = true;
         }
         else if (walletPriority == "strike" && !string.IsNullOrEmpty(strikeApiKey))
         {
             Console.Error.WriteLine("Using Strike wallet backend (priority override)");
             Console.Error.WriteLine("Strike returns preimage - L402 fully supported");
-            builder.Services.AddHttpClient<IWalletService, StrikeWalletService>();
+            AddWallet<StrikeWalletService>();
             walletRegistered = true;
         }
         else if (walletPriority == "opennode" && !string.IsNullOrEmpty(openNodeApiKey))
@@ -199,7 +213,7 @@ public class Program
             var environment = Environment.GetEnvironmentVariable("OPENNODE_ENVIRONMENT") ?? "production";
             Console.Error.WriteLine($"Using OpenNode wallet backend ({environment}) (priority override)");
             Console.Error.WriteLine("WARNING: OpenNode does NOT return preimage - L402 will not work");
-            builder.Services.AddHttpClient<IWalletService, OpenNodeWalletService>();
+            AddWallet<OpenNodeWalletService>();
             walletRegistered = true;
         }
 
@@ -211,26 +225,26 @@ public class Program
             {
                 Console.Error.WriteLine("Using LND wallet backend");
                 Console.Error.WriteLine("LND always returns preimage - L402 fully supported");
-                builder.Services.AddHttpClient<IWalletService, LndWalletService>();
+                AddWallet<LndWalletService>();
             }
             else if (!string.IsNullOrEmpty(nwcConnection))
             {
                 Console.Error.WriteLine("Using NWC wallet backend");
                 Console.Error.WriteLine("NWC returns preimage - L402 fully supported");
-                builder.Services.AddHttpClient<IWalletService, NwcWalletService>();
+                AddWallet<NwcWalletService>();
             }
             else if (!string.IsNullOrEmpty(strikeApiKey))
             {
                 Console.Error.WriteLine("Using Strike wallet backend");
                 Console.Error.WriteLine("Strike returns preimage - L402 fully supported");
-                builder.Services.AddHttpClient<IWalletService, StrikeWalletService>();
+                AddWallet<StrikeWalletService>();
             }
             else if (!string.IsNullOrEmpty(openNodeApiKey))
             {
                 var environment = Environment.GetEnvironmentVariable("OPENNODE_ENVIRONMENT") ?? "production";
                 Console.Error.WriteLine($"Using OpenNode wallet backend ({environment})");
                 Console.Error.WriteLine("WARNING: OpenNode does NOT return preimage - L402 will not work");
-                builder.Services.AddHttpClient<IWalletService, OpenNodeWalletService>();
+                AddWallet<OpenNodeWalletService>();
             }
             else
             {
@@ -249,7 +263,7 @@ public class Program
                 Console.Error.WriteLine("Or add credentials to ~/.lightning-enable/config.json under the \"wallets\" key.");
                 Console.Error.WriteLine("After configuring, run the test_l402_payment tool to confirm the wallet works end to end (~1 sat).");
                 // Register a default that will report "not configured" errors
-                builder.Services.AddHttpClient<IWalletService, NwcWalletService>();
+                AddWallet<NwcWalletService>();
             }
         }
 

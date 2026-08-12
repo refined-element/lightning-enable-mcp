@@ -50,6 +50,11 @@ public static class PayL402ChallengeTool
             });
         }
 
+        // Ambient payment intent for the wallet-seam receipt writer. "manual_payment"
+        // matches what this flow has always recorded in payment history — the challenge
+        // was handed to the tool directly, so no endpoint URL exists to record.
+        using var receiptScope = PaymentReceiptScope.Begin("l402", context: "manual_payment");
+
         try
         {
             // Extract amount from invoice for budget checking
@@ -63,6 +68,7 @@ public static class PayL402ChallengeTool
             if (budgetService != null)
             {
                 var approvalResult = await budgetService.CheckApprovalLevelAsync(budgetCheckAmount, cancellationToken);
+                receiptScope.Policy = PaymentPolicy.Label(approvalResult.Level);
 
                 if (approvalResult.Level == ApprovalLevel.Deny)
                 {
@@ -192,6 +198,7 @@ public static class PayL402ChallengeTool
                 success = true,
                 l402Token = token,
                 protocol = protocolName,
+                receipt_written = receiptScope.ReceiptWritten ?? false,
                 payment = new
                 {
                     amountSats = budgetCheckAmount,
@@ -215,9 +222,14 @@ public static class PayL402ChallengeTool
                 ex.Message,
                 invoice);
 
+            // PayChallengeAsync throws AFTER money moved on the pending and
+            // settled-without-preimage paths — the seam has already written the
+            // receipt there, so surface its outcome: null = nothing was paid,
+            // true/false = money moved and the receipt did/didn't land.
             return JsonSerializer.Serialize(new
             {
                 success = false,
+                receipt_written = receiptScope.ReceiptWritten,
                 error = ex.Message
             });
         }

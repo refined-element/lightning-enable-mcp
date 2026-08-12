@@ -85,7 +85,10 @@ public sealed class ReceiptRecordingWalletService : IWalletService
                     : "pending",
                 Context = scope?.Context,
                 Policy = scope?.Policy,
-                SessionSpentSats = ProjectSessionSpent(sentSats + result.FeeSats),
+                // Project from the REQUESTED amount, not the provider-reported one:
+                // SendOnChainTool records budget spend as requested + fee, and the
+                // projection must match what the budget will actually hold.
+                SessionSpentSats = ProjectSessionSpent(amountSats + result.FeeSats),
                 FeeSats = result.FeeSats,
                 TxId = result.TxId,
             });
@@ -166,6 +169,11 @@ public sealed class ReceiptRecordingWalletService : IWalletService
     /// Projected post-payment session total. The seam writes BEFORE the calling
     /// tool/client records the spend, so "current + this payment" is what the
     /// budget will read immediately after the tool returns.
+    ///
+    /// Known limitation: two payments in flight at once would both project from the
+    /// same base, so the earlier receipt's total can read low. Accepted for the lean
+    /// scope — the budget cooldown paces payments sequentially in practice, and the
+    /// per-receipt amountSats (the primary audit figure) is always exact.
     /// </summary>
     private long? ProjectSessionSpent(long amountSats)
     {

@@ -192,6 +192,26 @@ public class ReceiptRecordingWalletServiceTests
     }
 
     [Fact]
+    public async Task SendOnChain_ProviderAdjustedAmount_ProjectsSessionFromRequestedAmount()
+    {
+        // SendOnChainTool records budget spend as REQUESTED amount + fee, so the
+        // receipt's projected session total must use the same figures even when the
+        // provider reports an adjusted sent amount — otherwise receipts.jsonl and
+        // get_budget_status permanently disagree.
+        var path = TempReceiptsPath();
+        var wallet = WalletMock("Strike");
+        wallet.Setup(w => w.SendOnChainAsync("bc1qtestaddr", 5000, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(OnChainPaymentResult.Succeeded("pay_1", "txid_abc", "COMPLETED", 4990, feeSats: 250));
+        var svc = new ReceiptRecordingWalletService(wallet.Object, new ReceiptService(path), BudgetMock(sessionSpent: 100).Object);
+
+        await svc.SendOnChainAsync("bc1qtestaddr", 5000);
+
+        var r = ReadAll(path).Single();
+        r["amountSats"]!.GetValue<long>().Should().Be(4990, "the receipt records what the provider says was sent");
+        r["sessionSpentSats"]!.GetValue<long>().Should().Be(100 + 5000 + 250, "the projection must match what the budget records");
+    }
+
+    [Fact]
     public async Task SendOnChain_Failed_WritesNoReceipt()
     {
         var path = TempReceiptsPath();
@@ -393,6 +413,40 @@ public class ReceiptRecordingWalletServiceTests
         all[0]["kind"]!.GetValue<string>().Should().Be("l402");
         all[0]["context"]!.GetValue<string>().Should().Contain("api.example.com");
         all[0]["amountSats"]!.GetValue<long>().Should().Be(TestInvoiceSats);
+    }
+
+    [Fact]
+    public async Task AccessL402Resource_PendingPayment_WritesPendingReceipt_AndSurfacesPaid()
+    {
+        // Money moved (committed, not settled): the seam writes a pending receipt and
+        // the tool result must carry receipt_written + a paid marker instead of a bare
+        // error — otherwise the committed sats are invisible in the tool result.
+        var path = TempReceiptsPath();
+        var wallet = WalletMock();
+        wallet.Setup(w => w.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(NwcPaymentResult.Pending("trk_1", "in flight"));
+        var budget = BudgetMock();
+        var decorated = new ReceiptRecordingWalletService(wallet.Object, new ReceiptService(path), budget.Object);
+
+        var client = new L402HttpClient(
+            new HttpClient(new L402ThenOkHandler(TestInvoice)),
+            decorated,
+            budget.Object,
+            new Mock<IPaymentHistoryService>().Object);
+
+        var result = await AccessL402ResourceTool.AccessL402Resource(
+            url: "https://api.example.com/paid/data",
+            l402Client: client,
+            budgetService: budget.Object);
+
+        var json = JsonDocument.Parse(result).RootElement;
+        json.GetProperty("success").GetBoolean().Should().BeFalse();
+        json.GetProperty("receipt_written").GetBoolean().Should().BeTrue();
+        json.GetProperty("payment").GetProperty("paid").GetBoolean().Should().BeTrue();
+        json.GetProperty("payment").GetProperty("amountSats").GetInt64().Should().Be(TestInvoiceSats);
+
+        var r = ReadAll(path).Single();
+        r["status"]!.GetValue<string>().Should().Be("pending");
     }
 
     /// <summary>402 with an L402 challenge until an Authorization header arrives, then 200.</summary>

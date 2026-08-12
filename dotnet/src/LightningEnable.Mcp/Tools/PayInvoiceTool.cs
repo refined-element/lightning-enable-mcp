@@ -101,7 +101,7 @@ public static class PayInvoiceTool
             if (budgetService != null)
             {
                 var approvalResult = await budgetService.CheckApprovalLevelAsync(amountSats.Value, cancellationToken);
-                receiptScope.Policy = AccessL402ResourceTool.PolicyString(approvalResult.Level);
+                receiptScope.Policy = PaymentPolicy.Label(approvalResult.Level);
 
                 if (approvalResult.Level == ApprovalLevel.Deny)
                 {

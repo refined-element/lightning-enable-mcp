@@ -68,7 +68,7 @@ public static class PayL402ChallengeTool
             if (budgetService != null)
             {
                 var approvalResult = await budgetService.CheckApprovalLevelAsync(budgetCheckAmount, cancellationToken);
-                receiptScope.Policy = AccessL402ResourceTool.PolicyString(approvalResult.Level);
+                receiptScope.Policy = PaymentPolicy.Label(approvalResult.Level);
 
                 if (approvalResult.Level == ApprovalLevel.Deny)
                 {

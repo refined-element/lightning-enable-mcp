@@ -36,6 +36,9 @@ public static class AgentSettleTool
         IPaymentHistoryService? paymentHistoryService = null,
         CancellationToken cancellationToken = default)
     {
+        // Declared outside the try so the catch can report whether a durable receipt
+        // landed when the client throws AFTER the invoice settled.
+        PaymentReceiptScope? receiptScope = null;
         try
         {
             // Input validation
@@ -118,7 +121,7 @@ public static class AgentSettleTool
             // (ReceiptRecordingWalletService) when the L402 invoice is paid; this scope
             // enriches it with the redacted settlement endpoint and returns the honest
             // receipt_written signal.
-            using var receiptScope = PaymentReceiptScope.Begin(
+            receiptScope = PaymentReceiptScope.Begin(
                 "l402", context: AccessL402ResourceTool.RedactUrl(l402Endpoint));
 
             // Execute the L402 payment flow
@@ -212,7 +215,7 @@ public static class AgentSettleTool
                     }, new JsonSerializerOptions { WriteIndented = true });
                 }
             }
-            else if (result.PaidAmountSats > 0)
+            else if (result.PaidAmountSats > 0 && !string.IsNullOrEmpty(result.L402Token))
             {
                 // PAID, then the authorized retry returned a non-2xx, non-redirect status
                 // (e.g. HTTP 500). The L402 invoice was ALREADY paid — the client recorded
@@ -242,6 +245,34 @@ public static class AgentSettleTool
                               "pay again. Retry the endpoint with the l402Token above."
                 }, new JsonSerializerOptions { WriteIndented = true });
             }
+            else if (result.PaidAmountSats > 0)
+            {
+                // Money moved but there is NO usable token: the payment is pending (may
+                // still fail) or settled without a preimage. Claiming "Payment succeeded —
+                // retry with the l402Token above" here would hand the agent a null token
+                // and a false success, so report committed-not-proven instead. The seam
+                // has already written the matching (pending) receipt.
+                return JsonSerializer.Serialize(new
+                {
+                    success = false,
+                    l402Endpoint,
+                    agreementId,
+                    statusCode = result.StatusCode,
+                    receipt_written = receiptScope.ReceiptWritten ?? false,
+                    payment = new
+                    {
+                        paid = true,
+                        amountSats = result.PaidAmountSats,
+                        l402Token = (string?)null,
+                        protocol = result.Protocol ?? "L402"
+                    },
+                    error = result.ErrorMessage,
+                    message = $"Sats were committed for this settlement ({result.PaidAmountSats} sats) but no usable " +
+                              "L402 token is available — the payment may still be settling, or it settled without a " +
+                              "preimage. You have ALREADY PAID — do NOT pay again; check the payment status with your " +
+                              "wallet provider first."
+                }, new JsonSerializerOptions { WriteIndented = true });
+            }
             else
             {
                 // Genuine pre-payment failure: no invoice was paid (PaidAmountSats == 0).
@@ -263,13 +294,20 @@ public static class AgentSettleTool
         }
         catch (Exception ex)
         {
+            // The client can throw AFTER the invoice settled. null = nothing was paid;
+            // true/false = money moved and the durable receipt did/didn't land.
             return JsonSerializer.Serialize(new
             {
                 success = false,
+                receipt_written = receiptScope?.ReceiptWritten,
                 error = $"Error settling service: {ex.Message}",
                 l402Endpoint,
                 agreementId
             });
+        }
+        finally
+        {
+            receiptScope?.Dispose();
         }
     }
 }

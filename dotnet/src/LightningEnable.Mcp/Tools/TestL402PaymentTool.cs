@@ -106,6 +106,7 @@ public static class TestL402PaymentTool
         if (success)
         {
             var paidOk = root.TryGetProperty("payment", out var p)
+                && p.ValueKind == JsonValueKind.Object
                 && p.TryGetProperty("paid", out var pd) && pd.GetBoolean();
             long sats = paidOk && p.TryGetProperty("amountSats", out var amt) ? amt.GetInt64() : 0;
             int status = root.TryGetProperty("statusCode", out var sc) ? sc.GetInt32() : 200;
@@ -151,6 +152,7 @@ public static class TestL402PaymentTool
         // retry returned non-200. For a wallet self-test that IS a pass — the wallet
         // completed an L402 payment, which is exactly what this checks.
         if (root.TryGetProperty("payment", out var fp)
+            && fp.ValueKind == JsonValueKind.Object
             && fp.TryGetProperty("paid", out var fpd) && fpd.GetBoolean())
         {
             long sats = fp.TryGetProperty("amountSats", out var fa) ? fa.GetInt64() : 0;

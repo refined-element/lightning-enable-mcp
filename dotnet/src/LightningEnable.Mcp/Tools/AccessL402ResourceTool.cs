@@ -94,7 +94,7 @@ public static class AccessL402ResourceTool
         if (budgetService != null)
         {
             var approvalResult = await budgetService.CheckApprovalLevelAsync(maxSats, cancellationToken);
-            paymentPolicy = PolicyString(approvalResult.Level);
+            paymentPolicy = PaymentPolicy.Label(approvalResult.Level);
 
             if (approvalResult.Level == ApprovalLevel.Deny)
             {
@@ -331,21 +331,33 @@ public static class AccessL402ResourceTool
                     });
                 }
 
+                // Money may still have moved here WITHOUT a usable token (payment
+                // pending, or settled without a preimage) — the alreadyPaid branch
+                // above requires a token. Surface paid + receipt_written so the
+                // committed sats are never invisible in the tool result.
                 return JsonSerializer.Serialize(new
                 {
                     success = false,
                     url = result.Url,
                     statusCode = result.StatusCode,
-                    error = result.ErrorMessage
+                    error = result.ErrorMessage,
+                    receipt_written = result.PaidAmountSats > 0 ? (bool?)(receiptScope.ReceiptWritten ?? false) : null,
+                    payment = result.PaidAmountSats > 0
+                        ? new { paid = true, amountSats = result.PaidAmountSats }
+                        : null
                 });
             }
         }
         catch (Exception ex)
         {
+            // The client can throw AFTER the invoice settled (e.g. a transient error on
+            // the authorized retry). null = nothing was paid; true/false = money moved
+            // and the durable receipt did/didn't land.
             return JsonSerializer.Serialize(new
             {
                 success = false,
                 url,
+                receipt_written = receiptScope.ReceiptWritten,
                 error = ex.Message
             });
         }
@@ -359,20 +371,6 @@ public static class AccessL402ResourceTool
     /// reach console/log history (engineering standard #5). The full URL is still returned
     /// in tool results — the caller already supplied it.
     /// </summary>
-    // Snake_case policy label matching the Python runtime's ApprovalLevel.value, so
-    // receipts.jsonl carries one consistent policy string regardless of which server
-    // (Python or .NET) wrote the line. Internal: every payment tool stamps its
-    // PaymentReceiptScope policy with this.
-    internal static string PolicyString(ApprovalLevel level) => level switch
-    {
-        ApprovalLevel.AutoApprove => "auto_approve",
-        ApprovalLevel.LogAndApprove => "log_and_approve",
-        ApprovalLevel.FormConfirm => "form_confirm",
-        ApprovalLevel.UrlConfirm => "url_confirm",
-        ApprovalLevel.Deny => "deny",
-        _ => level.ToString().ToLowerInvariant(),
-    };
-
     internal static string RedactUrl(string url)
     {
         const int maxLen = 80;

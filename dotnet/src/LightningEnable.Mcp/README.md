@@ -221,7 +221,7 @@ Gets the connected wallet's balance. Supersedes `check_wallet_balance` and `get_
 
 ### get_receipts
 
-Reads the durable, append-only payment receipt log at `~/.lightning-enable/receipts.jsonl`. Every L402 payment appends one receipt (endpoint, amount, wallet, spend policy, session spend, and how to revoke the wallet). Unlike `get_payment_history` (in-memory, this session only), receipts persist across sessions — the audit + "pull the plug" record. Receipts never contain secrets (no preimage, macaroon, or connection string).
+Reads the durable, append-only payment receipt log at `~/.lightning-enable/receipts.jsonl`. **Every payment through any tool** — `pay_invoice`, L402 flows, agent settlements, on-chain sends — appends exactly one `payment_receipt` line (kind `invoice`/`l402`/`onchain`, amount, wallet, status `settled`/`pending`, derived `paymentHash`, optional context + spend policy, session spend, and how to revoke the wallet). Older `l402_payment_receipt` lines (pre-seam schema with an `endpoint` field) remain readable from the same file. Unlike `get_payment_history` (in-memory, this session only), receipts persist across sessions — the audit + "pull the plug" record. Receipts never contain secrets (no preimage, BOLT11 invoice, macaroon, or connection string); `paymentHash` is SHA256 of the preimage, never the preimage itself. Every value-moving tool result also carries `receipt_written: true|false` so a failed receipt write is visible, never silent.
 
 **Parameters:**
 - `limit`: Maximum number of recent receipts to return (1-200). Default: 20

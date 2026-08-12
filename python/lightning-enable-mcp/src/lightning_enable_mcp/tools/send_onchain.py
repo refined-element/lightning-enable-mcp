@@ -76,11 +76,15 @@ async def send_onchain(
             "error": "Wallet not configured. Set STRIKE_API_KEY or LND_REST_HOST+LND_MACAROON_HEX for on-chain payments."
         })
 
-    # Verify it's a supported wallet type
+    # Verify it's a supported wallet type. The wallet may arrive wrapped in the
+    # receipt seam (ReceiptRecordingWallet) — unwrap for the type check only; the
+    # actual send below goes through the WRAPPED wallet so the receipt is written.
+    from ..receipt_seam import POLICY_HUMAN_CONFIRMED, PaymentReceiptScope, unwrap_wallet
     from ..strike_wallet import StrikeWallet
     from ..lnd_wallet import LndWallet
-    if not isinstance(wallet, (StrikeWallet, LndWallet)):
-        provider_name = type(wallet).__name__.replace("Wallet", "")
+    inner_wallet = unwrap_wallet(wallet)
+    if not isinstance(inner_wallet, (StrikeWallet, LndWallet)):
+        provider_name = type(inner_wallet).__name__.replace("Wallet", "")
         return json.dumps({
             "success": False,
             "error": f"{provider_name} does not support on-chain payments. Use Strike or LND wallet.",
@@ -161,7 +165,15 @@ async def send_onchain(
         })
 
     try:
-        result = await wallet.send_onchain(address.strip(), amount_sats)
+        # Ambient payment intent: the durable receipt is written at the wallet seam
+        # (ReceiptRecordingWallet) when the send succeeds. The destination address
+        # is public chain data, so it is safe as receipt context; reaching this
+        # point requires the human confirmation code, so policy is always "confirm".
+        receipt_scope = PaymentReceiptScope(
+            "onchain", context=address, policy=POLICY_HUMAN_CONFIRMED
+        )
+        with receipt_scope:
+            result = await wallet.send_onchain(address.strip(), amount_sats)
 
         if not result.success:
             return json.dumps({
@@ -179,7 +191,7 @@ async def send_onchain(
             except Exception:
                 pass
 
-        provider_name = "LND" if isinstance(wallet, LndWallet) else "Strike"
+        provider_name = "LND" if isinstance(inner_wallet, LndWallet) else "Strike"
 
         if result.state == "COMPLETED":
             message = f"On-chain payment of {amount_sats} sats sent to {address}"
@@ -189,6 +201,7 @@ async def send_onchain(
         return json.dumps({
             "success": True,
             "provider": provider_name,
+            "receipt_written": receipt_scope.receipt_written or False,
             "payment": {
                 "id": result.payment_id,
                 "txId": result.txid,

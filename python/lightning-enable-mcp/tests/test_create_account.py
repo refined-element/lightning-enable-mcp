@@ -279,17 +279,42 @@ class TestCreateAccountPaidButRetryFailed:
 
 class TestCreateAccountReceipts:
     @pytest.mark.asyncio
-    async def test_success_logs_durable_receipt(self, tmp_path):
-        client = _paid_client()
-        budget = _budget_with(ApprovalLevel.AUTO_APPROVE)
-        receipts = MagicMock()
+    async def test_success_writes_durable_receipt_via_wallet_seam(self, tmp_path):
+        # The durable receipt is written at the wallet seam (ReceiptRecordingWallet)
+        # inside the client's payment leg, not by the tool — and the tool surfaces
+        # the honest receipt_written signal at the top level.
+        from types import SimpleNamespace
+        from lightning_enable_mcp.receipt_seam import ReceiptRecordingWallet
+        from lightning_enable_mcp.receipt_service import ReceiptService
 
-        await create_lightning_enable_account(
+        receipts = ReceiptService(wallet_label="unknown", receipts_path=tmp_path / "receipts.jsonl")
+
+        class NWCWallet:  # noqa: N801 - class name drives the wallet label
+            async def pay_invoice(self, bolt11, *a, **k):
+                return "5f78ca4b8e2c11d3a9b0f6e1d2c3b4a5968778695a4b3c2d1e0f9a8b7c6d5e4f"
+
+        seam = ReceiptRecordingWallet(NWCWallet(), receipts, None)
+
+        async def fetch(url, method, headers, body, max_sats):
+            # Simulate the client's payment leg: pays via the seam-wrapped wallet.
+            await seam.pay_invoice("lnbc-placeholder")
+            return (_ACCOUNT_PAYLOAD, 100)
+
+        client = SimpleNamespace(fetch=fetch)
+        budget = _budget_with(ApprovalLevel.AUTO_APPROVE)
+
+        result = json.loads(await create_lightning_enable_account(
             email=TEST_EMAIL, l402_client=client, budget_service=budget,
-            receipt_service=receipts, config_path=str(tmp_path / "config.json"),
-        )
-        receipts.log_payment.assert_called_once()
-        assert receipts.log_payment.call_args.kwargs["amount_sats"] == 100
+            config_path=str(tmp_path / "config.json"),
+        ))
+
+        assert result["success"] is True
+        assert result["receipt_written"] is True
+        recs = receipts.read_recent(10)
+        assert len(recs) == 1
+        assert recs[0]["kind"] == "l402"
+        assert recs[0]["context"] == "l402_fastlane_signup"
+        assert recs[0]["wallet"] == "NWC"
 
 
 class TestConfigClobberProtection:

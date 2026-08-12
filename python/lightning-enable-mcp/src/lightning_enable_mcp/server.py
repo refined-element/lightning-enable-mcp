@@ -34,6 +34,7 @@ from .tools.access_resource import access_l402_resource
 from .tools.create_account import create_lightning_enable_account
 from .tools.test_l402_payment import test_l402_payment
 from .tools.get_receipts import get_receipts
+from .receipt_seam import ReceiptRecordingWallet
 from .receipt_service import ReceiptService, wallet_label_from
 from .tools.check_invoice_status import check_invoice_status
 from .tools.verify_confirmation_code import verify_confirmation_code
@@ -120,6 +121,10 @@ class LightningEnableServer:
         self.server = Server("lightning-enable", version=__version__)
         self.wallet: LndWallet | NWCWallet | OpenNodeWallet | StrikeWallet | None = None
         self.strike_wallet: StrikeWallet | None = None  # For Strike-specific features
+        # The wallet routed through the receipt seam (ReceiptRecordingWallet): every
+        # payment tool pays through THIS so each payment leaves one durable receipt.
+        # Non-payment tools (balance, invoicing, price) keep the raw self.wallet.
+        self.paying_wallet: ReceiptRecordingWallet | None = None
         self.l402_client: L402Client | None = None
         self.budget_service: BudgetService | None = None  # Single source of truth for limits
         self.payment_history_service: PaymentHistoryService | None = None  # Session audit trail
@@ -882,7 +887,6 @@ class LightningEnableServer:
                         l402_client=self.l402_client,
                         budget_service=self.budget_service,
                         payment_history_service=self.payment_history_service,
-                        receipt_service=self.receipt_service,
                     )
 
                 elif name == "get_receipts":
@@ -905,7 +909,7 @@ class LightningEnableServer:
                         macaroon=arguments.get("macaroon"),
                         max_sats=arguments.get("max_sats", 1000),
                         confirmation_nonce=arguments.get("confirmation_nonce"),
-                        wallet=self.wallet,
+                        wallet=self.paying_wallet or self.wallet,
                         budget_service=self.budget_service,
                         payment_history_service=self.payment_history_service,
                     )
@@ -918,7 +922,6 @@ class LightningEnableServer:
                         l402_client=self.l402_client,
                         budget_service=self.budget_service,
                         payment_history_service=self.payment_history_service,
-                        receipt_service=self.receipt_service,
                     )
 
                 elif name in ("get_balance", "check_wallet_balance", "get_all_balances"):
@@ -951,7 +954,7 @@ class LightningEnableServer:
                         invoice=arguments.get("invoice", ""),
                         max_sats=arguments.get("max_sats", 1000),
                         confirmation_nonce=arguments.get("confirmation_nonce"),
-                        wallet=self.wallet,
+                        wallet=self.paying_wallet or self.wallet,
                         budget_service=self.budget_service,
                         payment_history_service=self.payment_history_service,
                     )
@@ -988,6 +991,12 @@ class LightningEnableServer:
                     onchain_wallet = self.strike_wallet
                     if onchain_wallet is None and isinstance(self.wallet, LndWallet):
                         onchain_wallet = self.wallet
+                    # Route through the receipt seam so the (irreversible) send leaves
+                    # a durable receipt. The tool unwraps for its isinstance checks.
+                    if onchain_wallet is not None and self.receipt_service is not None:
+                        onchain_wallet = ReceiptRecordingWallet(
+                            onchain_wallet, self.receipt_service, self.budget_service
+                        )
                     result = await send_onchain(
                         address=arguments.get("address", ""),
                         amount_sats=arguments.get("amount_sats", 0),
@@ -1247,11 +1256,19 @@ class LightningEnableServer:
             # Wallet label is fixed for the session, so bake it in at init.
             self.receipt_service = ReceiptService(wallet_label=wallet_label_from(self.wallet))
 
+            # The receipt seam: every payment tool pays through this decorator, so
+            # each payment (pay_invoice, L402 flows, on-chain, and any future tool)
+            # leaves exactly one receipts.jsonl line with zero per-tool receipt code.
+            self.paying_wallet = ReceiptRecordingWallet(
+                self.wallet, self.receipt_service, self.budget_service
+            )
+
             # Initialize L402 client. It is the SINGLE SOURCE OF TRUTH for recording a real
             # payment (spend + payment history + cooldown), so it needs the budget and
             # payment-history services; the consuming tools stay passive and record nothing.
+            # It pays through the receipt seam so every L402 payment is receipted.
             self.l402_client = L402Client(
-                wallet=self.wallet,
+                wallet=self.paying_wallet,
                 budget_service=self.budget_service,
                 payment_history_service=self.payment_history_service,
             )

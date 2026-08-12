@@ -14,10 +14,10 @@ if TYPE_CHECKING:
     from ..budget_service import BudgetService
     from ..payment_history_service import PaymentHistoryService
     from ..l402_client import L402Client
-    from ..receipt_service import ReceiptService
 
 from ..config import ApprovalLevel
 from ..l402_client import L402RedirectError
+from ..receipt_seam import PaymentReceiptScope
 from .._url_redact import redact_url_for_display as _redact_url_for_display
 from . import sanitize_error
 from ._ssrf_guard import SsrfError, validate_url_allowed
@@ -35,7 +35,6 @@ async def access_l402_resource(
     l402_client: "L402Client | None" = None,
     budget_service: "BudgetService | None" = None,
     payment_history_service: "PaymentHistoryService | None" = None,
-    receipt_service: "ReceiptService | None" = None,
 ) -> str:
     """
     Fetch a URL with automatic L402 payment handling.
@@ -90,6 +89,10 @@ async def access_l402_resource(
     # Captured for the durable receipt (success path). Overwritten with the real
     # approval tier once the budget check runs.
     payment_policy = "auto (no budget check)"
+
+    # Declared outside the try so the except handler can report whether a durable
+    # receipt landed when the client raises AFTER the invoice settled.
+    receipt_scope = None
 
     try:
         # BudgetService is the single source of truth for spending limits + the
@@ -173,19 +176,26 @@ async def access_l402_resource(
             if result.level == ApprovalLevel.LOG_AND_APPROVE:
                 logger.info(f"Log-and-approve L402 request: up to {max_sats} sats (${result.amount_usd:.2f}) for {_redact_url_for_display(url)}")
 
-        # Make request with L402 handling
-        response_text, amount_paid = await l402_client.fetch(
-            url=url,
-            method=method,
-            headers=headers,
-            body=body,
-            max_sats=max_sats,
+        # Ambient payment intent: the durable receipt is written by the wallet-seam
+        # decorator (ReceiptRecordingWallet) the moment the invoice is paid inside
+        # l402_client.fetch — this scope only enriches it (redacted endpoint +
+        # policy) and carries back the honest receipt_written signal. The tool
+        # itself writes nothing, so an L402 payment produces exactly ONE receipt.
+        receipt_scope = PaymentReceiptScope(
+            "l402", context=_redact_url_for_display(url), policy=payment_policy
         )
+        with receipt_scope:
+            response_text, amount_paid = await l402_client.fetch(
+                url=url,
+                method=method,
+                headers=headers,
+                body=body,
+                max_sats=max_sats,
+            )
 
         # PASSIVE: the client (l402_client.fetch) already recorded the spend + payment
         # history + cooldown EXACTLY ONCE. The tool must NOT record any of that again — it
-        # only READS (never writes) the session totals for display and writes the durable
-        # off-context receipt (a separate audit sink, not one of the budget/history ledgers).
+        # only READS (never writes) the session totals for display.
         session_info = None
         if amount_paid is not None:
             if budget_service:
@@ -200,20 +210,6 @@ async def access_l402_resource(
                     "requestCount": status["session"]["requestCount"],
                 }
 
-            # Durable, off-context-path spend receipt (redacted endpoint, no secrets).
-            # Best-effort — a receipt failure must NEVER turn a settled payment into
-            # an error result (which a caller might retry, double-paying).
-            if receipt_service is not None:
-                try:
-                    receipt_service.log_payment(
-                        endpoint=_redact_url_for_display(url),
-                        amount_sats=amount_paid,
-                        policy=payment_policy,
-                        session_spent_sats=(session_info or {}).get("spentSats"),
-                    )
-                except Exception:
-                    logger.warning("Receipt logging failed (payment already settled)")
-
         # Format response
         result = {
             "success": True,
@@ -225,6 +221,7 @@ async def access_l402_resource(
 
         if amount_paid:
             result["message"] = f"Paid {amount_paid} sats for access"
+            result["receipt_written"] = receipt_scope.receipt_written or False
 
         if session_info:
             result["session"] = session_info
@@ -236,33 +233,19 @@ async def access_l402_resource(
 
         # Paid-but-retry-failed (a 3xx redirect OR an error such as HTTP 500): the invoice
         # settled inside l402_client.fetch, which ALREADY recorded the spend + cooldown once
-        # before raising. The tool is PASSIVE — it must NOT record spend/payment/cooldown
-        # again (that would double-count). It only writes the durable off-context receipt
-        # (a separate audit sink) best-effort, and surfaces the settled amount + token.
+        # AND wrote the durable receipt at the wallet seam before raising. The tool is
+        # PASSIVE — it records nothing; it only surfaces the settled amount + token and the
+        # honest receipt signal: None = nothing was paid, True/False = money moved and the
+        # receipt did/didn't land.
         amount_paid = getattr(e, "amount_paid", None)
         l402_token = getattr(e, "l402_token", None)
-        if amount_paid and receipt_service is not None:
-            try:
-                spent = None
-                if budget_service:
-                    try:
-                        spent = budget_service.get_status()["session"]["spentSats"]
-                    except Exception:
-                        spent = None
-                receipt_service.log_payment(
-                    endpoint=_redact_url_for_display(url),
-                    amount_sats=amount_paid,
-                    policy=payment_policy,
-                    session_spent_sats=spent,
-                )
-            except Exception:
-                logger.warning("Receipt logging failed (payment already settled)")
 
         error_result = {
             "success": False,
             "url": url,
             "method": method,
             "error": sanitize_error(str(e)),
+            "receipt_written": receipt_scope.receipt_written if receipt_scope else None,
         }
 
         # Unfollowed 3xx redirect (follow_redirects=False): surface the target as an
@@ -279,6 +262,10 @@ async def access_l402_resource(
         # URL" / not-paid result for a settlement whose invoice was paid.
         if amount_paid:
             error_result["alreadyPaid"] = True
+            # Money moved — the signal must be a definite boolean, never null.
+            error_result["receipt_written"] = (
+                (receipt_scope.receipt_written if receipt_scope else None) or False
+            )
             error_result["payment"] = {
                 "paid": True,
                 "amountSats": amount_paid,

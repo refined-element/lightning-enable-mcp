@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 from ..config import ApprovalLevel
 from ..l402_client import L402RedirectError
-from ..receipt_seam import PaymentReceiptScope
+from ..receipt_seam import PaymentReceiptScope, policy_label
 from .._url_redact import redact_url_for_display as _redact_url_for_display
 from . import sanitize_error
 from ._ssrf_guard import SsrfError, validate_url_allowed
@@ -100,7 +100,7 @@ async def access_l402_resource(
         if budget_service:
             # Check approval level using new multi-tier system
             result = await budget_service.check_approval_level(max_sats)
-            payment_policy = getattr(result.level, "value", str(result.level))
+            payment_policy = policy_label(result.level)
 
             if result.level == ApprovalLevel.DENY:
                 return json.dumps({

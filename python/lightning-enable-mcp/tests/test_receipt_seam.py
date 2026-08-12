@@ -26,6 +26,7 @@ from lightning_enable_mcp.receipt_seam import (
 from lightning_enable_mcp.receipt_service import ReceiptService
 from lightning_enable_mcp.wallet_errors import (
     PaymentPendingError,
+    PaymentProofUnavailableError,
     PreimageUnavailableError,
 )
 
@@ -166,6 +167,21 @@ async def test_settled_without_preimage_writes_settled_receipt_and_reraises(tmp_
     r = _read(tmp_path)[0]
     assert r["status"] == "settled"
     assert r["wallet"] == "OpenNode"
+
+
+@pytest.mark.asyncio
+async def test_base_proof_unavailable_writes_receipt_and_reraises(tmp_path):
+    # wallet_errors documents the BASE class as raisable ("callers that only need
+    # to fail closed can catch this one type") and the L402 client records the
+    # spend for the whole family — so the seam must receipt it too.
+    async def pay(self, bolt11, *a, **k):
+        raise PaymentProofUnavailableError("funds left, no proof", provider="Custom")
+
+    seam = ReceiptRecordingWallet(_make_wallet(pay=pay), _svc(tmp_path), None)
+    with pytest.raises(PaymentProofUnavailableError):
+        await seam.pay_invoice(TEST_INVOICE)
+
+    assert _read(tmp_path)[0]["status"] == "settled"
 
 
 @pytest.mark.asyncio

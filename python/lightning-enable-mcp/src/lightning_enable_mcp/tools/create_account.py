@@ -38,7 +38,7 @@ if TYPE_CHECKING:
     from ..payment_history_service import PaymentHistoryService
     from ..l402_client import L402Client
 
-from ..receipt_seam import PaymentReceiptScope
+from ..receipt_seam import PaymentReceiptScope, policy_label
 
 logger = logging.getLogger("lightning-enable-mcp.tools.create_account")
 
@@ -180,7 +180,7 @@ async def create_lightning_enable_account(
         if budget_service is not None:
             from ..config import ApprovalLevel
             approval = await budget_service.check_approval_level(max_sats)
-            payment_policy = getattr(approval.level, "value", str(approval.level))
+            payment_policy = policy_label(approval.level)
 
             if approval.level == ApprovalLevel.DENY:
                 return json.dumps({
@@ -270,17 +270,11 @@ async def create_lightning_enable_account(
                 max_sats=max_sats,
             )
 
-        # Record spend ONLY after a payment actually settled.
-        if amount_paid is not None and amount_paid > 0:
-            if budget_service is not None:
-                budget_service.record_spend(amount_paid)
-                budget_service.record_payment_time()
-            if payment_history_service is not None:
-                payment_history_service.record_payment(
-                    url="account_activation",
-                    amount_sats=amount_paid,
-                    status="success",
-                )
+        # PASSIVE: the client (l402_client.fetch) already recorded the spend +
+        # payment history + cooldown EXACTLY ONCE inside the payment leg
+        # (_record_settled_payment) — recording again here double-counted every
+        # activation against the session budget and wrote a duplicate history
+        # entry. Same delegation contract as access_l402_resource / settle.
 
         # The fee was paid whenever amount_paid > 0 — the paid marker + receipt
         # signal must survive even a garbled or incomplete response body.
@@ -355,19 +349,9 @@ async def create_lightning_enable_account(
         # Best-effort; never mask the original error. Mirrors access_l402_resource.
         amount_paid = getattr(e, "amount_paid", None)
         if amount_paid:
-            try:
-                if budget_service is not None:
-                    budget_service.record_spend(amount_paid)
-                    budget_service.record_payment_time()
-                if payment_history_service is not None:
-                    payment_history_service.record_payment(
-                        url="account_activation",
-                        amount_sats=amount_paid,
-                        status="paid_signup_retry_failed",
-                    )
-            except Exception:
-                logger.warning("Failed to record paid-but-retry-failed activation spend")
-
+            # PASSIVE: the client recorded the spend (+ cooldown) once before raising
+            # — recording again here would double-count. The tool only surfaces the
+            # settled amount so the human knows money moved and won't re-run.
             # The durable receipt was already written at the wallet seam inside the
             # client's payment leg; surface a definite boolean for the moved money.
             return json.dumps({

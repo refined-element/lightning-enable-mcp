@@ -134,8 +134,11 @@ class TestCreateAccountBudget:
         assert result["success"] is True
         assert result["apiKey"] == "le_live_abc123"
         client.fetch.assert_awaited_once()
-        budget.record_spend.assert_called_once_with(100)
-        budget.record_payment_time.assert_called_once()
+        # PASSIVE: the client (l402_client.fetch) records spend + cooldown exactly
+        # once inside the payment leg; the tool must NOT record again (the old
+        # tool-side record double-counted every activation).
+        budget.record_spend.assert_not_called()
+        budget.record_payment_time.assert_not_called()
 
 
 class TestCreateAccountSignupFlow:
@@ -231,11 +234,11 @@ class TestCreateAccountSignupFlow:
 
 class TestCreateAccountPaidButRetryFailed:
     """Funds-safety: L402Client.fetch settled the invoice but the authorized retry
-    failed (raises L402Error with .amount_paid). The settled spend must be recorded
-    and surfaced so the human knows money left the wallet and won't double-pay."""
+    failed (raises L402Error with .amount_paid). The client already recorded the
+    settled spend once before raising; the tool must surface it — never re-record."""
 
     @pytest.mark.asyncio
-    async def test_records_settled_spend_and_surfaces_amount(self, tmp_path):
+    async def test_surfaces_settled_amount_without_double_recording(self, tmp_path):
         from lightning_enable_mcp.l402_client import L402Error
         err = L402Error("Request failed after payment: 500 Internal Server Error")
         err.amount_paid = 100  # invoice SETTLED even though the retry failed
@@ -255,10 +258,11 @@ class TestCreateAccountPaidButRetryFailed:
         assert result["activation"]["paid"] is True
         assert result["activation"]["amountSats"] == 100
         assert "warning" in result
-        # Spend + history recorded (not silently dropped).
-        budget.record_spend.assert_called_once_with(100)
-        budget.record_payment_time.assert_called_once()
-        assert history.record_payment.call_args.kwargs["status"] == "paid_signup_retry_failed"
+        # PASSIVE: the client recorded the spend once before raising — the tool
+        # must NOT record again (the old tool-side record double-counted).
+        budget.record_spend.assert_not_called()
+        budget.record_payment_time.assert_not_called()
+        history.record_payment.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_plain_error_without_amount_paid_does_not_record_spend(self, tmp_path):

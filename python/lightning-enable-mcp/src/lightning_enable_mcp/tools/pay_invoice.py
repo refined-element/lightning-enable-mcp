@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 from bolt11 import decode as decode_bolt11
 
 from ..config import ApprovalLevel
-from ..receipt_seam import PaymentReceiptScope
+from ..receipt_seam import PaymentReceiptScope, policy_label
 from ..wallet_errors import PaymentPendingError, PreimageUnavailableError
 from ..wallet_messages import WALLET_NOT_CONFIGURED_FOR_PAYMENT
 from . import sanitize_error
@@ -125,7 +125,7 @@ async def pay_invoice(
         if budget_service:
             # Check approval level against the DECODED invoice amount (what will be paid)
             result = await budget_service.check_approval_level(amount_sats)
-            payment_policy = getattr(result.level, "value", str(result.level))
+            payment_policy = policy_label(result.level)
 
             if result.level == ApprovalLevel.DENY:
                 return json.dumps({
@@ -283,6 +283,8 @@ async def pay_invoice(
                 )
             return json.dumps({
                 "success": False,
+                # null: no money provably moved, so nothing was receipted.
+                "receipt_written": receipt_scope.receipt_written,
                 "error": "Payment failed - no preimage returned"
             })
 

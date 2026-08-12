@@ -8,7 +8,7 @@ import json
 import logging
 import sys
 from . import sanitize_error
-from ..receipt_seam import PaymentReceiptScope
+from ..receipt_seam import PaymentReceiptScope, policy_label
 from ..wallet_errors import PaymentPendingError, PaymentProofUnavailableError
 from typing import TYPE_CHECKING, Optional
 
@@ -113,7 +113,7 @@ async def pay_l402_challenge(
         if budget_service:
             from ..config import ApprovalLevel
             approval = await budget_service.check_approval_level(amount_sats)
-            payment_policy = getattr(approval.level, "value", str(approval.level))
+            payment_policy = policy_label(approval.level)
             if approval.level == ApprovalLevel.DENY:
                 return json.dumps({
                     "success": False,
@@ -226,6 +226,8 @@ async def pay_l402_challenge(
                 "success": False,
                 "error": f"{protocol} payment failed — the wallet returned no preimage.",
                 "amount_sats": amount_sats,
+                # null: no money provably moved, so nothing was receipted.
+                "receipt_written": receipt_scope.receipt_written,
             })
 
         # Record payment

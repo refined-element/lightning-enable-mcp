@@ -24,8 +24,17 @@ Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-ena
 
 ### Changed
 
-- `get_receipts` documentation updated for the generalized schema. On-chain receipts
-  carry policy `confirm` (every on-chain send passes the human-confirmation gate).
+- On-chain receipts carry policy `confirm` (every on-chain send passes the
+  human-confirmation gate), and `send_onchain` failure results now warn that a
+  network/timeout failure may hide an executed send — check the provider before
+  retrying an irreversible payment.
+
+### Fixed
+
+- **`create_lightning_enable_account` no longer double-counts the activation fee.**
+  The tool recorded budget spend + payment history on top of the L402 client's own
+  single-source-of-truth recording, so every Fast Lane activation debited the
+  session budget twice and wrote two history entries.
 
 ## [1.21.1]
 

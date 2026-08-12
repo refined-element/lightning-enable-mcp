@@ -1259,8 +1259,12 @@ class LightningEnableServer:
             # The receipt seam: every payment tool pays through this decorator, so
             # each payment (pay_invoice, L402 flows, on-chain, and any future tool)
             # leaves exactly one receipts.jsonl line with zero per-tool receipt code.
-            self.paying_wallet = ReceiptRecordingWallet(
-                self.wallet, self.receipt_service, self.budget_service
+            # Only wrap a REAL wallet — a truthy wrapper around None would defeat the
+            # tools' "wallet not configured" guards in wallet-less mode.
+            self.paying_wallet = (
+                ReceiptRecordingWallet(self.wallet, self.receipt_service, self.budget_service)
+                if self.wallet is not None
+                else None
             )
 
             # Initialize L402 client. It is the SINGLE SOURCE OF TRUTH for recording a real

@@ -164,22 +164,34 @@ async def send_onchain(
             "expiresInSeconds": 120,
         })
 
+    # Ambient payment intent: the durable receipt is written at the wallet seam
+    # (ReceiptRecordingWallet) when the send succeeds. The destination address
+    # is public chain data, so it is safe as receipt context; reaching this
+    # point requires the human confirmation code, so policy is always "confirm".
+    receipt_scope = PaymentReceiptScope(
+        "onchain", context=address, policy=POLICY_HUMAN_CONFIRMED
+    )
     try:
-        # Ambient payment intent: the durable receipt is written at the wallet seam
-        # (ReceiptRecordingWallet) when the send succeeds. The destination address
-        # is public chain data, so it is safe as receipt context; reaching this
-        # point requires the human confirmation code, so policy is always "confirm".
-        receipt_scope = PaymentReceiptScope(
-            "onchain", context=address, policy=POLICY_HUMAN_CONFIRMED
-        )
         with receipt_scope:
             result = await wallet.send_onchain(address.strip(), amount_sats)
 
         if not result.success:
+            # KNOWN LIMITATION: a failed-looking result can hide a send that DID
+            # execute provider-side (e.g. the execute succeeded but its HTTP
+            # response was lost) — the wallet reports failure, so no receipt is
+            # written. Surface the (null) receipt signal and an explicit
+            # check-before-retrying warning rather than a bare failure, since
+            # on-chain sends are irreversible.
             return json.dumps({
                 "success": False,
                 "error": result.error_message,
                 "errorCode": result.error_code,
+                "receipt_written": receipt_scope.receipt_written,
+                "warning": (
+                    "If this failure was a network/timeout error, the send may still have "
+                    "executed at the provider. Check the provider dashboard / get_balance "
+                    "BEFORE retrying — on-chain payments are irreversible."
+                ),
             })
 
         # Record spend if budget service available
@@ -216,5 +228,11 @@ async def send_onchain(
         logger.exception("Error sending on-chain payment")
         return json.dumps({
             "success": False,
-            "error": sanitize_error(str(e))
+            "error": sanitize_error(str(e)),
+            "receipt_written": receipt_scope.receipt_written,
+            "warning": (
+                "If this failure was a network/timeout error, the send may still have "
+                "executed at the provider. Check the provider dashboard / get_balance "
+                "BEFORE retrying — on-chain payments are irreversible."
+            ),
         })

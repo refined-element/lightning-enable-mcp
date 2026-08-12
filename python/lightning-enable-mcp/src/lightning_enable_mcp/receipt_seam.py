@@ -24,12 +24,20 @@ from typing import Optional
 
 from bolt11 import decode as decode_bolt11
 
-from .receipt_service import ReceiptService, wallet_label_from
+from .receipt_service import ReceiptService, unwrap_wallet, wallet_label_from
 from .wallet_errors import (
     PaymentPendingError,
-    PreimageUnavailableError,
+    PaymentProofUnavailableError,
     is_valid_preimage,
 )
+
+__all__ = [
+    "POLICY_HUMAN_CONFIRMED",
+    "PaymentReceiptScope",
+    "ReceiptRecordingWallet",
+    "policy_label",
+    "unwrap_wallet",
+]
 
 logger = logging.getLogger("lightning-enable-mcp.receipt_seam")
 
@@ -41,6 +49,16 @@ POLICY_HUMAN_CONFIRMED = "confirm"
 _current_scope: contextvars.ContextVar["PaymentReceiptScope | None"] = contextvars.ContextVar(
     "payment_receipt_scope", default=None
 )
+
+
+def policy_label(level) -> str:
+    """Snake_case policy label for receipts.jsonl from a budget ApprovalLevel.
+
+    One shared implementation (parity with .NET's PaymentPolicy.Label) so the
+    file carries one consistent policy vocabulary regardless of which tool —
+    or which server port — wrote the line.
+    """
+    return getattr(level, "value", str(level))
 
 
 class PaymentReceiptScope:
@@ -99,11 +117,6 @@ class PaymentReceiptScope:
         return _current_scope.get()
 
 
-def unwrap_wallet(wallet):
-    """The raw wallet behind a ReceiptRecordingWallet (for isinstance checks)."""
-    return getattr(wallet, "_inner", wallet)
-
-
 class ReceiptRecordingWallet:
     """The single receipt seam: wraps the resolved wallet and writes exactly one
     durable receipt per payment that moved (or committed) funds.
@@ -129,7 +142,11 @@ class ReceiptRecordingWallet:
         except PaymentPendingError:
             self._write_invoice_receipt(bolt11, status="pending", preimage=None)
             raise
-        except PreimageUnavailableError:
+        except PaymentProofUnavailableError:
+            # The documented BASE class — covers PreimageUnavailableError AND any
+            # wallet that raises the base directly ("funds left, no proof"). The
+            # L402 client records the spend for this whole family, so the durable
+            # log must cover it too or receipts under-report the budget.
             self._write_invoice_receipt(bolt11, status="settled", preimage=None)
             raise
 

@@ -46,12 +46,19 @@ _REVOKE_PATHS = {
 _REVOKE_DEFAULT = "Revoke this wallet's connection or API key in its own app/dashboard."
 
 
+def unwrap_wallet(wallet):
+    """The raw wallet behind a ReceiptRecordingWallet (for isinstance checks and
+    provider labels). Lives here — the one home for the seam's ``_inner`` contract —
+    and is re-exported by receipt_seam."""
+    return getattr(wallet, "_inner", wallet)
+
+
 def wallet_label_from(wallet) -> str:
     """Map a wallet instance to a short provider label (NWC / Strike / LND / OpenNode)."""
     if wallet is None:
         return "unknown"
     # Look through the receipt seam (ReceiptRecordingWallet) to the real provider.
-    wallet = getattr(wallet, "_inner", wallet)
+    wallet = unwrap_wallet(wallet)
     name = type(wallet).__name__
     return {
         "NWCWallet": "NWC",

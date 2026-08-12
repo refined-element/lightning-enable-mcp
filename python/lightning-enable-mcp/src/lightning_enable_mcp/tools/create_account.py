@@ -37,7 +37,8 @@ if TYPE_CHECKING:
     from ..budget_service import BudgetService
     from ..payment_history_service import PaymentHistoryService
     from ..l402_client import L402Client
-    from ..receipt_service import ReceiptService
+
+from ..receipt_seam import PaymentReceiptScope, policy_label
 
 logger = logging.getLogger("lightning-enable-mcp.tools.create_account")
 
@@ -120,7 +121,6 @@ async def create_lightning_enable_account(
     l402_client: "L402Client | None" = None,
     budget_service: "BudgetService | None" = None,
     payment_history_service: "PaymentHistoryService | None" = None,
-    receipt_service: "ReceiptService | None" = None,
     config_path: "Optional[str]" = None,
 ) -> str:
     """
@@ -135,7 +135,6 @@ async def create_lightning_enable_account(
         l402_client: L402 client instance (wallet-backed) — pays the activation invoice.
         budget_service: BudgetService for multi-tier approval + out-of-band confirmation.
         payment_history_service: PaymentHistoryService for the session audit trail.
-        receipt_service: ReceiptService for the durable, off-context-path spend receipt.
         config_path: Override for the config file path (testing). Defaults to
             ~/.lightning-enable/config.json.
 
@@ -145,6 +144,9 @@ async def create_lightning_enable_account(
     # Captured for the durable receipt; overwritten with the real approval tier
     # once the budget check runs (parity with access_l402_resource).
     payment_policy = "auto (no budget check)"
+    # Declared outside the try so the except handler can report whether a durable
+    # receipt landed when the client raises AFTER the activation fee settled.
+    receipt_scope = None
     try:
         # Validate email BEFORE minting any invoice.
         if not email or not email.strip():
@@ -178,7 +180,7 @@ async def create_lightning_enable_account(
         if budget_service is not None:
             from ..config import ApprovalLevel
             approval = await budget_service.check_approval_level(max_sats)
-            payment_policy = getattr(approval.level, "value", str(approval.level))
+            payment_policy = policy_label(approval.level)
 
             if approval.level == ApprovalLevel.DENY:
                 return json.dumps({
@@ -252,44 +254,32 @@ async def create_lightning_enable_account(
                 )
 
         # Execute the L402 signup flow: POST {email} -> 402 -> pay -> retry POST.
-        body = json.dumps({"email": email})
-        response_text, amount_paid = await l402_client.fetch(
-            url=signup_url,
-            method="POST",
-            headers={"Content-Type": "application/json"},
-            body=body,
-            max_sats=max_sats,
+        # Ambient payment intent: the durable receipt is written at the wallet seam
+        # (ReceiptRecordingWallet) when the activation fee is paid inside
+        # l402_client.fetch; this scope enriches it and returns the honest signal.
+        receipt_scope = PaymentReceiptScope(
+            "l402", context="l402_fastlane_signup", policy=payment_policy
         )
+        body = json.dumps({"email": email})
+        with receipt_scope:
+            response_text, amount_paid = await l402_client.fetch(
+                url=signup_url,
+                method="POST",
+                headers={"Content-Type": "application/json"},
+                body=body,
+                max_sats=max_sats,
+            )
 
-        # Record spend ONLY after a payment actually settled.
-        if amount_paid is not None and amount_paid > 0:
-            if budget_service is not None:
-                budget_service.record_spend(amount_paid)
-                budget_service.record_payment_time()
-            if payment_history_service is not None:
-                payment_history_service.record_payment(
-                    url="account_activation",
-                    amount_sats=amount_paid,
-                    status="success",
-                )
-            # Durable, off-context-path spend receipt (best-effort — a receipt failure
-            # must NEVER turn a settled payment into an error the caller might retry).
-            if receipt_service is not None:
-                try:
-                    spent = None
-                    if budget_service is not None:
-                        try:
-                            spent = budget_service.get_status()["session"]["spentSats"]
-                        except Exception:
-                            spent = None
-                    receipt_service.log_payment(
-                        endpoint="account_activation",
-                        amount_sats=amount_paid,
-                        policy=payment_policy,
-                        session_spent_sats=spent,
-                    )
-                except Exception:
-                    logger.warning("Receipt logging failed (activation payment already settled)")
+        # PASSIVE: the client (l402_client.fetch) already recorded the spend +
+        # payment history + cooldown EXACTLY ONCE inside the payment leg
+        # (_record_settled_payment) — recording again here double-counted every
+        # activation against the session budget and wrote a duplicate history
+        # entry. Same delegation contract as access_l402_resource / settle.
+
+        # The fee was paid whenever amount_paid > 0 — the paid marker + receipt
+        # signal must survive even a garbled or incomplete response body.
+        paid = amount_paid is not None and amount_paid > 0
+        receipt_written = (receipt_scope.receipt_written or False) if paid else None
 
         # Parse the account payload the server returned after payment.
         try:
@@ -298,7 +288,8 @@ async def create_lightning_enable_account(
             return json.dumps({
                 "success": False,
                 "error": "Account activation paid but the server response was not valid JSON.",
-                "amountSats": amount_paid,
+                "receipt_written": receipt_written,
+                "activation": {"paid": paid, "amountSats": amount_paid},
             })
 
         api_key = account.get("apiKey")
@@ -307,7 +298,8 @@ async def create_lightning_enable_account(
                 "success": False,
                 "error": "Account activation completed but no apiKey was returned by the server.",
                 "server": account,
-                "amountSats": amount_paid,
+                "receipt_written": receipt_written,
+                "activation": {"paid": paid, "amountSats": amount_paid},
             })
 
         # Self-bootstrapping payoff: persist the key so the API-key-gated
@@ -316,6 +308,8 @@ async def create_lightning_enable_account(
 
         result = {
             "success": True,
+            # Top level for consistency with every other payment tool's result shape.
+            "receipt_written": receipt_written,
             "apiKey": api_key,
             "merchantId": account.get("merchantId"),
             "email": account.get("email", email),
@@ -324,7 +318,7 @@ async def create_lightning_enable_account(
             "trialEndsAt": account.get("trialEndsAt"),
             "dashboardUrl": account.get("dashboardUrl"),
             "activation": {
-                "paid": amount_paid is not None and amount_paid > 0,
+                "paid": paid,
                 "amountSats": amount_paid,
             },
             "config": {
@@ -355,35 +349,17 @@ async def create_lightning_enable_account(
         # Best-effort; never mask the original error. Mirrors access_l402_resource.
         amount_paid = getattr(e, "amount_paid", None)
         if amount_paid:
-            try:
-                if budget_service is not None:
-                    budget_service.record_spend(amount_paid)
-                    budget_service.record_payment_time()
-                if payment_history_service is not None:
-                    payment_history_service.record_payment(
-                        url="account_activation",
-                        amount_sats=amount_paid,
-                        status="paid_signup_retry_failed",
-                    )
-                if receipt_service is not None:
-                    spent = None
-                    if budget_service is not None:
-                        try:
-                            spent = budget_service.get_status()["session"]["spentSats"]
-                        except Exception:
-                            spent = None
-                    receipt_service.log_payment(
-                        endpoint="account_activation",
-                        amount_sats=amount_paid,
-                        policy=payment_policy,
-                        session_spent_sats=spent,
-                    )
-            except Exception:
-                logger.warning("Failed to record paid-but-retry-failed activation spend")
-
+            # PASSIVE: the client recorded the spend (+ cooldown) once before raising
+            # — recording again here would double-count. The tool only surfaces the
+            # settled amount so the human knows money moved and won't re-run.
+            # The durable receipt was already written at the wallet seam inside the
+            # client's payment leg; surface a definite boolean for the moved money.
             return json.dumps({
                 "success": False,
                 "error": sanitize_error(str(e)),
+                "receipt_written": (
+                    (receipt_scope.receipt_written if receipt_scope else None) or False
+                ),
                 "activation": {"paid": True, "amountSats": amount_paid},
                 "warning": (
                     f"A payment of {amount_paid} sats SETTLED but account activation did not complete. "
@@ -392,4 +368,9 @@ async def create_lightning_enable_account(
                 ),
             }, indent=2)
 
-        return json.dumps({"success": False, "error": sanitize_error(str(e))})
+        # null = nothing was paid; true/false = money moved and the receipt did/didn't land.
+        return json.dumps({
+            "success": False,
+            "receipt_written": receipt_scope.receipt_written if receipt_scope else None,
+            "error": sanitize_error(str(e)),
+        })

@@ -156,6 +156,9 @@ def interpret(raw: str, endpoint: str) -> str:
                 ),
                 "endpoint": endpoint,
                 "amountSats": paid,
+                # A self-test moves real sats — pass through the underlying
+                # access_l402_resource's durable-receipt signal.
+                "receipt_written": data.get("receipt_written"),
                 "walletWorking": True,
             }, indent=2)
         # success without a payment: the test endpoint should always issue a 402, so

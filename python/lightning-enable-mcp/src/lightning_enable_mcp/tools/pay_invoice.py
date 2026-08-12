@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 from bolt11 import decode as decode_bolt11
 
 from ..config import ApprovalLevel
+from ..receipt_seam import PaymentReceiptScope, policy_label
 from ..wallet_errors import PaymentPendingError, PreimageUnavailableError
 from ..wallet_messages import WALLET_NOT_CONFIGURED_FOR_PAYMENT
 from . import sanitize_error
@@ -72,6 +73,11 @@ async def pay_invoice(
             "error": WALLET_NOT_CONFIGURED_FOR_PAYMENT
         })
 
+    # Budget policy label for the durable receipt; set once the budget check runs.
+    payment_policy = None
+    # Declared outside the try so the generic handler can report the receipt signal.
+    receipt_scope = None
+
     try:
         # Normalize invoice to lowercase
         normalized_invoice = invoice.strip().lower()
@@ -119,6 +125,7 @@ async def pay_invoice(
         if budget_service:
             # Check approval level against the DECODED invoice amount (what will be paid)
             result = await budget_service.check_approval_level(amount_sats)
+            payment_policy = policy_label(result.level)
 
             if result.level == ApprovalLevel.DENY:
                 return json.dumps({
@@ -200,8 +207,14 @@ async def pay_invoice(
         # either "success" or "failure" — both would misinform the agent, and one of
         # them (reporting a settled payment as failed) invites a double-spend retry.
         logger.info(f"Paying invoice: {normalized_invoice[:30]}...")
+        # Ambient payment intent: the durable receipts.jsonl line is written by the
+        # wallet-seam decorator (ReceiptRecordingWallet) when the payment settles or
+        # commits; this scope enriches it (policy) and carries back the honest
+        # receipt_written signal for the tool result.
+        receipt_scope = PaymentReceiptScope("invoice", policy=payment_policy)
         try:
-            preimage = await wallet.pay_invoice(normalized_invoice)
+            with receipt_scope:
+                preimage = await wallet.pay_invoice(normalized_invoice)
         except PaymentPendingError as e:
             # In flight, may still fail. Count it against the budget anyway (the
             # funds are committed; not counting them would let an agent retry past
@@ -220,6 +233,7 @@ async def pay_invoice(
                 "success": False,
                 "status": "pending",
                 "trackingId": e.tracking_id,
+                "receipt_written": receipt_scope.receipt_written or False,
                 "error": "Payment has not settled yet — it may still succeed or fail.",
                 "message": (
                     f"{e.provider} accepted the payment but has not settled it. Do NOT treat this "
@@ -245,6 +259,7 @@ async def pay_invoice(
                 "success": True,
                 "preimage": None,
                 "trackingId": e.tracking_id,
+                "receipt_written": receipt_scope.receipt_written or False,
                 "message": "Payment successful",
                 "warning": (
                     f"{e.provider} does not return a preimage for this payment, so there is NO "
@@ -268,6 +283,8 @@ async def pay_invoice(
                 )
             return json.dumps({
                 "success": False,
+                # null: no money provably moved, so nothing was receipted.
+                "receipt_written": receipt_scope.receipt_written,
                 "error": "Payment failed - no preimage returned"
             })
 
@@ -299,6 +316,7 @@ async def pay_invoice(
         response = {
             "success": True,
             "preimage": preimage,
+            "receipt_written": receipt_scope.receipt_written or False,
             "message": "Payment successful",
             "invoice": {
                 "paid": normalized_invoice[:30] + "..." if len(normalized_invoice) > 30 else normalized_invoice
@@ -322,7 +340,10 @@ async def pay_invoice(
                 invoice=invoice,
             )
 
+        # null = nothing was paid; true/false = money moved (the wallet can raise
+        # after settlement) and the durable receipt did/didn't land.
         return json.dumps({
             "success": False,
+            "receipt_written": receipt_scope.receipt_written if receipt_scope else None,
             "error": sanitize_error(str(e))
         })

@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING, Optional
 
 from ..config import ApprovalLevel
 from ..l402_client import L402RedirectError
+from ..receipt_seam import PaymentReceiptScope, policy_label
+from .._url_redact import redact_url_for_display as _redact_url_for_display
 from . import sanitize_error
 
 if TYPE_CHECKING:
@@ -62,6 +64,11 @@ async def settle_agent_service(
     Returns:
         JSON with settlement result or an error message.
     """
+    # Budget policy label for the durable receipt; set once the budget check runs.
+    payment_policy = None
+    # Declared outside the try so the except handler can report whether a durable
+    # receipt landed when the client raises AFTER the invoice settled.
+    receipt_scope = None
     try:
         # Input validation
         if not l402_endpoint or not l402_endpoint.strip():
@@ -100,6 +107,7 @@ async def settle_agent_service(
         # Budget gating BEFORE payment (mirrors access_l402_resource)
         if budget_service is not None:
             result = await budget_service.check_approval_level(max_sats)
+            payment_policy = policy_label(result.level)
 
             if result.level == ApprovalLevel.DENY:
                 return json.dumps({
@@ -181,14 +189,21 @@ async def settle_agent_service(
                     f"(${result.amount_usd:.2f}) for {l402_endpoint[:50]}..."
                 )
 
-        # Execute the L402 payment flow
-        response_text, amount_paid = await l402_client.fetch(
-            url=l402_endpoint,
-            method=method,
-            headers={},
-            body=body,
-            max_sats=max_sats,
+        # Ambient payment intent: the durable receipt is written at the wallet seam
+        # (ReceiptRecordingWallet) when the L402 invoice is paid; this scope enriches
+        # it with the redacted settlement endpoint and returns the honest
+        # receipt_written signal.
+        receipt_scope = PaymentReceiptScope(
+            "l402", context=_redact_url_for_display(l402_endpoint), policy=payment_policy
         )
+        with receipt_scope:
+            response_text, amount_paid = await l402_client.fetch(
+                url=l402_endpoint,
+                method=method,
+                headers={},
+                body=body,
+                max_sats=max_sats,
+            )
 
         # PASSIVE: the client (l402_client.fetch) already recorded the spend + payment
         # history + cooldown EXACTLY ONCE. The tool must NOT record any of that again — it
@@ -210,6 +225,7 @@ async def settle_agent_service(
             )
             payload = {
                 "success": True,
+                "receipt_written": receipt_scope.receipt_written or False,
                 "settlement": {
                     "paid": True,
                     "amountSats": amount_paid,
@@ -265,6 +281,11 @@ async def settle_agent_service(
                 "alreadyPaid": True,
                 "l402Endpoint": l402_endpoint,
                 "agreementId": agreement_id,
+                # Money moved — the seam wrote (or failed to write) the receipt
+                # inside the client's payment leg; surface a definite boolean.
+                "receipt_written": (
+                    (receipt_scope.receipt_written if receipt_scope else None) or False
+                ),
                 "payment": {
                     "paid": True,
                     "amountSats": amount_paid,
@@ -287,6 +308,7 @@ async def settle_agent_service(
 
         return json.dumps({
             "success": False,
+            "receipt_written": receipt_scope.receipt_written if receipt_scope else None,
             "error": f"Error settling service: {sanitize_error(str(e))}",
             "l402Endpoint": l402_endpoint,
             "agreementId": agreement_id,

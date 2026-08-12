@@ -134,8 +134,11 @@ class TestCreateAccountBudget:
         assert result["success"] is True
         assert result["apiKey"] == "le_live_abc123"
         client.fetch.assert_awaited_once()
-        budget.record_spend.assert_called_once_with(100)
-        budget.record_payment_time.assert_called_once()
+        # PASSIVE: the client (l402_client.fetch) records spend + cooldown exactly
+        # once inside the payment leg; the tool must NOT record again (the old
+        # tool-side record double-counted every activation).
+        budget.record_spend.assert_not_called()
+        budget.record_payment_time.assert_not_called()
 
 
 class TestCreateAccountSignupFlow:
@@ -231,11 +234,11 @@ class TestCreateAccountSignupFlow:
 
 class TestCreateAccountPaidButRetryFailed:
     """Funds-safety: L402Client.fetch settled the invoice but the authorized retry
-    failed (raises L402Error with .amount_paid). The settled spend must be recorded
-    and surfaced so the human knows money left the wallet and won't double-pay."""
+    failed (raises L402Error with .amount_paid). The client already recorded the
+    settled spend once before raising; the tool must surface it — never re-record."""
 
     @pytest.mark.asyncio
-    async def test_records_settled_spend_and_surfaces_amount(self, tmp_path):
+    async def test_surfaces_settled_amount_without_double_recording(self, tmp_path):
         from lightning_enable_mcp.l402_client import L402Error
         err = L402Error("Request failed after payment: 500 Internal Server Error")
         err.amount_paid = 100  # invoice SETTLED even though the retry failed
@@ -255,10 +258,11 @@ class TestCreateAccountPaidButRetryFailed:
         assert result["activation"]["paid"] is True
         assert result["activation"]["amountSats"] == 100
         assert "warning" in result
-        # Spend + history recorded (not silently dropped).
-        budget.record_spend.assert_called_once_with(100)
-        budget.record_payment_time.assert_called_once()
-        assert history.record_payment.call_args.kwargs["status"] == "paid_signup_retry_failed"
+        # PASSIVE: the client recorded the spend once before raising — the tool
+        # must NOT record again (the old tool-side record double-counted).
+        budget.record_spend.assert_not_called()
+        budget.record_payment_time.assert_not_called()
+        history.record_payment.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_plain_error_without_amount_paid_does_not_record_spend(self, tmp_path):
@@ -279,17 +283,42 @@ class TestCreateAccountPaidButRetryFailed:
 
 class TestCreateAccountReceipts:
     @pytest.mark.asyncio
-    async def test_success_logs_durable_receipt(self, tmp_path):
-        client = _paid_client()
-        budget = _budget_with(ApprovalLevel.AUTO_APPROVE)
-        receipts = MagicMock()
+    async def test_success_writes_durable_receipt_via_wallet_seam(self, tmp_path):
+        # The durable receipt is written at the wallet seam (ReceiptRecordingWallet)
+        # inside the client's payment leg, not by the tool — and the tool surfaces
+        # the honest receipt_written signal at the top level.
+        from types import SimpleNamespace
+        from lightning_enable_mcp.receipt_seam import ReceiptRecordingWallet
+        from lightning_enable_mcp.receipt_service import ReceiptService
 
-        await create_lightning_enable_account(
+        receipts = ReceiptService(wallet_label="unknown", receipts_path=tmp_path / "receipts.jsonl")
+
+        class NWCWallet:  # noqa: N801 - class name drives the wallet label
+            async def pay_invoice(self, bolt11, *a, **k):
+                return "5f78ca4b8e2c11d3a9b0f6e1d2c3b4a5968778695a4b3c2d1e0f9a8b7c6d5e4f"
+
+        seam = ReceiptRecordingWallet(NWCWallet(), receipts, None)
+
+        async def fetch(url, method, headers, body, max_sats):
+            # Simulate the client's payment leg: pays via the seam-wrapped wallet.
+            await seam.pay_invoice("lnbc-placeholder")
+            return (_ACCOUNT_PAYLOAD, 100)
+
+        client = SimpleNamespace(fetch=fetch)
+        budget = _budget_with(ApprovalLevel.AUTO_APPROVE)
+
+        result = json.loads(await create_lightning_enable_account(
             email=TEST_EMAIL, l402_client=client, budget_service=budget,
-            receipt_service=receipts, config_path=str(tmp_path / "config.json"),
-        )
-        receipts.log_payment.assert_called_once()
-        assert receipts.log_payment.call_args.kwargs["amount_sats"] == 100
+            config_path=str(tmp_path / "config.json"),
+        ))
+
+        assert result["success"] is True
+        assert result["receipt_written"] is True
+        recs = receipts.read_recent(10)
+        assert len(recs) == 1
+        assert recs[0]["kind"] == "l402"
+        assert recs[0]["context"] == "l402_fastlane_signup"
+        assert recs[0]["wallet"] == "NWC"
 
 
 class TestConfigClobberProtection:

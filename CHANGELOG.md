@@ -3,6 +3,39 @@
 All notable changes to the Lightning Enable MCP server are documented here.
 Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-enable-mcp`).
 
+## [1.22.0]
+
+### Added
+
+- **A durable receipt on every payment method (both ports).** Previously only
+  `access_l402_resource` wrote to `~/.lightning-enable/receipts.jsonl` — a payment made
+  via `pay_invoice`, `pay_l402_challenge`, `settle_agent_service`, `send_onchain`, or
+  `create_lightning_enable_account` left no durable record. Payments are now receipted
+  at the wallet seam (a `ReceiptRecordingWallet` decorator on the resolved wallet), so
+  every payment — including any future payment tool — leaves exactly one receipt line.
+- **`receipt_written: true|false` on every value-moving tool result**, so a failed
+  receipt write is visible instead of silent. `null` on results where nothing was paid.
+- **Generalized receipt schema.** New lines are `type: "payment_receipt"` with
+  `kind` (`invoice` | `l402` | `onchain`), `status` (`settled` | `pending` — pending
+  funds are committed and counted by the budget, so they are receipted), a derived
+  `paymentHash` (SHA256 of the preimage — never the preimage, BOLT11, or macaroon),
+  optional `context`/`policy`, and `feeSats`/`txId` for on-chain sends. Old
+  `l402_payment_receipt` lines in the same file remain readable; no migration.
+
+### Changed
+
+- On-chain receipts carry policy `confirm` (every on-chain send passes the
+  human-confirmation gate), and `send_onchain` failure results now warn that a
+  network/timeout failure may hide an executed send — check the provider before
+  retrying an irreversible payment.
+
+### Fixed
+
+- **`create_lightning_enable_account` no longer double-counts the activation fee.**
+  The tool recorded budget spend + payment history on top of the L402 client's own
+  single-source-of-truth recording, so every Fast Lane activation debited the
+  session budget twice and wrote two history entries.
+
 ## [1.21.1]
 
 ### Fixed

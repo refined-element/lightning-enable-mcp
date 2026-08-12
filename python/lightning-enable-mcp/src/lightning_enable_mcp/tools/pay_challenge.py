@@ -8,6 +8,7 @@ import json
 import logging
 import sys
 from . import sanitize_error
+from ..receipt_seam import PaymentReceiptScope, policy_label
 from ..wallet_errors import PaymentPendingError, PaymentProofUnavailableError
 from typing import TYPE_CHECKING, Optional
 
@@ -70,6 +71,11 @@ async def pay_l402_challenge(
             macaroon = None
     is_mpp = macaroon is None
 
+    # Budget policy label for the durable receipt; set once the budget check runs.
+    payment_policy = None
+    # Declared outside the try so the generic handler can report the receipt signal.
+    receipt_scope = None
+
     try:
         # Parse invoice to get amount
         decoded = decode_bolt11(invoice)
@@ -107,6 +113,7 @@ async def pay_l402_challenge(
         if budget_service:
             from ..config import ApprovalLevel
             approval = await budget_service.check_approval_level(amount_sats)
+            payment_policy = policy_label(approval.level)
             if approval.level == ApprovalLevel.DENY:
                 return json.dumps({
                     "success": False,
@@ -168,8 +175,13 @@ async def pay_l402_challenge(
         # Pay the invoice
         protocol = "MPP" if is_mpp else "L402"
         logger.info(f"Paying {protocol} invoice for {amount_sats} sats")
+        # Ambient payment intent for the wallet-seam receipt writer. "manual_payment"
+        # matches what this flow has always recorded in payment history — the
+        # challenge was handed to the tool directly, so no endpoint URL exists.
+        receipt_scope = PaymentReceiptScope("l402", context="manual_payment", policy=payment_policy)
         try:
-            preimage = await wallet.pay_invoice(invoice)
+            with receipt_scope:
+                preimage = await wallet.pay_invoice(invoice)
         except PaymentProofUnavailableError as e:
             # No preimage exists (the wallet never returns them, or the payment
             # hasn't settled), so there is no way to authenticate — but the funds
@@ -190,6 +202,7 @@ async def pay_l402_challenge(
                 "success": False,
                 "status": "pending" if pending else "paid_no_preimage",
                 "trackingId": e.tracking_id,
+                "receipt_written": receipt_scope.receipt_written or False,
                 "error": (
                     f"{protocol} payment has not settled yet — it may still succeed or fail."
                     if pending else
@@ -213,6 +226,8 @@ async def pay_l402_challenge(
                 "success": False,
                 "error": f"{protocol} payment failed — the wallet returned no preimage.",
                 "amount_sats": amount_sats,
+                # null: no money provably moved, so nothing was receipted.
+                "receipt_written": receipt_scope.receipt_written,
             })
 
         # Record payment
@@ -241,6 +256,7 @@ async def pay_l402_challenge(
             "preimage": preimage,
             "amount_sats": amount_sats,
             "protocol": protocol,
+            "receipt_written": receipt_scope.receipt_written or False,
             "usage": {
                 "headerName": "Authorization",
                 "headerValue": authorization_header,
@@ -268,4 +284,10 @@ async def pay_l402_challenge(
 
     except Exception as e:
         logger.exception("Error paying L402/MPP challenge")
-        return json.dumps({"success": False, "error": sanitize_error(str(e))})
+        # null = nothing was paid; true/false = money moved (the wallet can raise
+        # after settlement) and the durable receipt did/didn't land.
+        return json.dumps({
+            "success": False,
+            "receipt_written": receipt_scope.receipt_written if receipt_scope else None,
+            "error": sanitize_error(str(e)),
+        })

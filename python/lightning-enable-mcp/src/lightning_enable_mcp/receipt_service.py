@@ -46,10 +46,19 @@ _REVOKE_PATHS = {
 _REVOKE_DEFAULT = "Revoke this wallet's connection or API key in its own app/dashboard."
 
 
+def unwrap_wallet(wallet):
+    """The raw wallet behind a ReceiptRecordingWallet (for isinstance checks and
+    provider labels). Lives here — the one home for the seam's ``_inner`` contract —
+    and is re-exported by receipt_seam."""
+    return getattr(wallet, "_inner", wallet)
+
+
 def wallet_label_from(wallet) -> str:
     """Map a wallet instance to a short provider label (NWC / Strike / LND / OpenNode)."""
     if wallet is None:
         return "unknown"
+    # Look through the receipt seam (ReceiptRecordingWallet) to the real provider.
+    wallet = unwrap_wallet(wallet)
     name = type(wallet).__name__
     return {
         "NWCWallet": "NWC",
@@ -73,30 +82,54 @@ class ReceiptService:
     def log_payment(
         self,
         *,
-        endpoint: str,
+        kind: str,
         amount_sats: int,
-        policy: str,
+        status: Optional[str] = None,
+        payment_hash: Optional[str] = None,
+        context: Optional[str] = None,
+        policy: Optional[str] = None,
         session_spent_sats: Optional[int] = None,
-        kind: str = "l402_payment_receipt",
-    ) -> None:
-        """Append one payment receipt. Best-effort — never raises into the payment path.
+        fee_sats: Optional[int] = None,
+        tx_id: Optional[str] = None,
+        wallet_label: Optional[str] = None,
+    ) -> bool:
+        """Append one generic ``payment_receipt`` line (kind: invoice | l402 | onchain).
 
-        ``endpoint`` MUST already be redacted by the caller (no query/secrets).
+        Returns True only when the line was durably written — a False return is
+        the caller's honest ``receipt_written: false`` signal. Never raises into
+        the payment path. ``context`` MUST already be redacted by the caller.
+        Pre-generalization ``l402_payment_receipt`` lines remain readable
+        (``read_recent`` is schema-agnostic).
         """
+        label = wallet_label or self._wallet_label or "unknown"
         receipt = {
-            "type": kind,
+            "type": "payment_receipt",
+            "kind": kind,
             "timestamp": _utc_now_iso(),
-            "endpoint": endpoint,
+            "wallet": label,
             "amountSats": amount_sats,
-            "wallet": self._wallet_label,
-            "policy": policy,
-            # Post-payment session total (session_remaining is intentionally omitted:
-            # deriving it consistently across runtimes was error-prone — spentSats is
-            # the accurate, unambiguous figure).
-            "sessionSpentSats": session_spent_sats,
-            "revokePath": _REVOKE_PATHS.get(self._wallet_label, _REVOKE_DEFAULT),
         }
-        self._append(receipt)
+        # Optional fields are omitted, not null — keeps every line lean and lets
+        # readers treat presence as meaning.
+        if status:
+            receipt["status"] = status
+        if payment_hash:
+            receipt["paymentHash"] = payment_hash
+        if context:
+            receipt["context"] = context
+        if policy:
+            receipt["policy"] = policy
+        # Post-payment session total (session_remaining is intentionally omitted:
+        # deriving it consistently across runtimes was error-prone — spentSats is
+        # the accurate, unambiguous figure).
+        if session_spent_sats is not None:
+            receipt["sessionSpentSats"] = session_spent_sats
+        if fee_sats is not None:
+            receipt["feeSats"] = fee_sats
+        if tx_id:
+            receipt["txId"] = tx_id
+        receipt["revokePath"] = _REVOKE_PATHS.get(label, _REVOKE_DEFAULT)
+        return self._append(receipt)
 
     def read_recent(self, limit: int = 20) -> list[dict]:
         """Return the most recent receipts (newest last). Tolerant of a missing/partial file."""
@@ -130,7 +163,7 @@ class ReceiptService:
 
     # ---- internals ----
 
-    def _append(self, receipt: dict) -> None:
+    def _append(self, receipt: dict) -> bool:
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             self._rotate_if_needed()
@@ -139,9 +172,12 @@ class ReceiptService:
                 f.write(json.dumps(receipt) + "\n")
             if is_new:
                 self._restrict_perms()
+            return True
         except Exception as e:
             # A receipt is an audit convenience — it must NEVER break a payment.
+            # The False return keeps the failure VISIBLE (receipt_written: false).
             logger.warning("Failed to write payment receipt: %s", e)
+            return False
 
     def _rotate_if_needed(self) -> None:
         try:

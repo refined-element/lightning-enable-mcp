@@ -5,9 +5,9 @@
 # manifest.json "version" on each release.
 [project]
 name = "lightning-enable-mcp-bundle"
-version = "1.22.0"
+version = "1.23.0"
 description = "MCPB bundle entry for the Lightning Enable MCP server"
 requires-python = ">=3.10"
 dependencies = [
-    "lightning-enable-mcp==1.22.0",
+    "lightning-enable-mcp==1.23.0",
 ]

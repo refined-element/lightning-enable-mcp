@@ -170,23 +170,46 @@ class L402Client:
             follow_redirects=False,
         )
 
-    def _record_spend_and_arm_cooldown(self, amount_sats: int) -> None:
-        """Record the budget spend and arm the payment cooldown for a payment whose funds
-        have left the wallet. This is the funds-safety-critical pair (the session ledger +
-        the cross-payment cooldown) and is written in the client so the tools never do — it
-        fires EXACTLY ONCE per fetch, at the single point money is known to have moved."""
+    async def _reserve(self, amount_sats: int) -> "str | None":
+        """Atomically reserve ``amount_sats`` against the session cap BEFORE the wallet is
+        called — the primitive that closes the check-then-pay race. Returns the reservation
+        id (or None when no budget service is wired). Raises L402BudgetExceededError if the
+        reservation is refused, so a concurrent over-cap payment is denied before it pays."""
+        if self._budget_service is None:
+            return None
+        reservation = await self._budget_service.try_reserve(amount_sats)
+        if not reservation.success:
+            raise L402BudgetExceededError(f"Budget check failed: {reservation.denial_reason}")
+        return reservation.reservation_id
+
+    def _commit_reservation(self, reservation_id: "str | None", amount_sats: int) -> None:
+        """Convert a reservation into settled spend (the session ledger)."""
+        if self._budget_service is not None and reservation_id is not None:
+            self._budget_service.commit_reservation(reservation_id, amount_sats)
+
+    def _release_reservation(self, reservation_id: "str | None") -> None:
+        """Release a reservation without recording spend (proven no funds moved)."""
+        if self._budget_service is not None and reservation_id is not None:
+            self._budget_service.release_reservation(reservation_id)
+
+    def _commit_spend_and_arm_cooldown(self, reservation_id: "str | None", amount_sats: int) -> None:
+        """Commit the reservation as spend AND arm the payment cooldown for a payment whose
+        funds have left the wallet. This is the funds-safety-critical pair (the session
+        ledger + the cross-payment cooldown), written in the client so the tools never do —
+        it fires EXACTLY ONCE per fetch, at the single point money is known to have moved."""
+        self._commit_reservation(reservation_id, amount_sats)
         if self._budget_service is not None:
-            self._budget_service.record_spend(amount_sats)
             self._budget_service.record_payment_time()
 
-    def _record_settled_payment(self, amount_sats: int, url: str) -> None:
-        """Record a fully settled (preimage-backed) payment: the spend + cooldown AND the
-        session audit history entry, EXACTLY ONCE. Called only once per fetch, right after
-        ``pay_invoice`` returns a preimage — so the recording is identical regardless of
-        whether the authorized retry then returns 2xx / 3xx-redirect / 4xx / 5xx. This is a
-        settled payment, so history status is always ``success`` — the client NEVER records a
-        failed payment for a settlement whose invoice was paid."""
-        self._record_spend_and_arm_cooldown(amount_sats)
+    def _record_settled_payment(self, reservation_id: "str | None", amount_sats: int, url: str) -> None:
+        """Record a fully settled (preimage-backed) payment: commit the reservation as spend
+        + arm the cooldown AND write the session audit history entry, EXACTLY ONCE. Called
+        only once per fetch, right after ``pay_invoice`` returns a preimage — so the recording
+        is identical regardless of whether the authorized retry then returns
+        2xx / 3xx-redirect / 4xx / 5xx. This is a settled payment, so history status is always
+        ``success`` — the client NEVER records a failed payment for a settlement whose invoice
+        was paid."""
+        self._commit_spend_and_arm_cooldown(reservation_id, amount_sats)
         if self._payment_history_service is not None:
             # Redact before storing — the query/userinfo can carry secrets (standard #5).
             self._payment_history_service.record_payment(
@@ -473,6 +496,11 @@ class L402Client:
                     f"Invoice amount {challenge.amount_sats} sats exceeds maximum {max_sats} sats"
                 )
 
+            # Atomically reserve against the session cap BEFORE paying — closes the
+            # check-then-pay race so two concurrent fetches can't both pass against the same
+            # balance. Raises L402BudgetExceededError (denied) before any wallet call.
+            reservation_id = await self._reserve(challenge.amount_sats)
+
             # Pay invoice
             protocol = "MPP" if isinstance(challenge, MppChallenge) else "L402"
             logger.info(f"Paying {protocol} invoice for {challenge.amount_sats} sats")
@@ -482,21 +510,26 @@ class L402Client:
                 # The wallet has no preimage for us (it never returns them, or the
                 # payment hasn't settled), so L402 cannot be completed — but the
                 # funds have left (or are leaving) the wallet. SINGLE SOURCE OF TRUTH:
-                # record the real spend + arm the cooldown here (once) so the budget is
-                # never under-counted, instead of relying on the tool. No history entry:
-                # the payment is unprovable / possibly still pending, so it is not audited
-                # as a settled "success" — but the funds-safety ledger is kept accurate.
-                # amount_paid is attached so the tool can surface it (do-not-retry).
+                # commit the reservation as spend + arm the cooldown here (once) so the
+                # budget is never under-counted, instead of relying on the tool. No history
+                # entry: the payment is unprovable / possibly still pending, so it is not
+                # audited as a settled "success" — but the funds-safety ledger is kept
+                # accurate. amount_paid is attached so the tool can surface it (do-not-retry).
                 e.amount_paid = challenge.amount_sats
-                self._record_spend_and_arm_cooldown(challenge.amount_sats)
+                self._commit_spend_and_arm_cooldown(reservation_id, challenge.amount_sats)
+                raise
+            except Exception:
+                # Hard failure — the wallet raised without provably moving funds. Release the
+                # reservation so the attempt doesn't strand budget, then re-raise unchanged.
+                self._release_reservation(reservation_id)
                 raise
 
-            # SINGLE SOURCE OF TRUTH — the invoice is paid (preimage in hand). Record the
-            # spend + payment history + cooldown here, EXACTLY ONCE, BEFORE the retry, so the
-            # recording is identical whether the retry returns 2xx / 3xx-redirect / 4xx / 5xx.
-            # The consuming tools (access_l402_resource, settle_agent_service) are passive and
-            # MUST NOT record any of this again.
-            self._record_settled_payment(challenge.amount_sats, url)
+            # SINGLE SOURCE OF TRUTH — the invoice is paid (preimage in hand). Commit the
+            # reservation as spend + payment history + cooldown here, EXACTLY ONCE, BEFORE the
+            # retry, so the recording is identical whether the retry returns
+            # 2xx / 3xx-redirect / 4xx / 5xx. The consuming tools (access_l402_resource,
+            # settle_agent_service) are passive and MUST NOT record any of this again.
+            self._record_settled_payment(reservation_id, challenge.amount_sats, url)
 
             # Create token
             if isinstance(challenge, MppChallenge):
@@ -586,18 +619,29 @@ class L402Client:
                 f"Invoice amount {amount_sats} sats exceeds maximum {max_sats} sats"
             )
 
+        # Atomically reserve against the session cap BEFORE paying — closes the
+        # check-then-pay race. Raises L402BudgetExceededError (denied) before any wallet call.
+        reservation_id = await self._reserve(amount_sats)
+
         # Pay invoice
         try:
             preimage = await self.wallet.pay_invoice(invoice)
         except PaymentProofUnavailableError as e:
-            # Not a payment failure — the funds left (or are leaving) the wallet,
-            # there is simply no preimage to authenticate with. Rewrapping this as
-            # L402PaymentError("Payment failed") would tell the caller the money is
-            # still theirs. Attach the amount so the spend can still be recorded.
+            # Not a payment failure — the funds left (or are leaving) the wallet, there is
+            # simply no preimage to authenticate with. Rewrapping this as
+            # L402PaymentError("Payment failed") would tell the caller the money is still
+            # theirs. The funds are committed, so commit the reservation; attach the amount so
+            # the spend can also be surfaced to callers, then re-raise the typed error.
             e.amount_paid = amount_sats
+            self._commit_reservation(reservation_id, amount_sats)
             raise
         except Exception as e:
+            # Hard failure — no funds provably moved. Release the reservation, then rewrap.
+            self._release_reservation(reservation_id)
             raise L402PaymentError(f"Payment failed: {e!s}") from e
+
+        # Settled with preimage — commit the reservation as spend.
+        self._commit_reservation(reservation_id, amount_sats)
 
         normalized_macaroon = macaroon.strip() if macaroon is not None else None
         if normalized_macaroon:

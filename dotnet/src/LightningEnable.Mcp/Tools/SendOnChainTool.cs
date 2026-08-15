@@ -167,12 +167,31 @@ public static class SendOnChainTool
         using var receiptScope = PaymentReceiptScope.Begin(
             "onchain", context: address, policy: PaymentPolicy.HumanConfirmed);
 
+        // Reserve principal + a fee headroom BEFORE broadcasting. On-chain fees are added by
+        // the provider ON TOP of the principal, so reserving (and checking) only the principal
+        // — as the approval check above does — would let the final debit (principal + fee)
+        // exceed the session cap. Reserve the maximum, commit the actual debit, and the unused
+        // headroom is released automatically. Headroom = max(1000 sats, 10% of principal).
+        long feeHeadroomSats = Math.Max(1000, amountSats / 10);
+        var reservation = await budgetService.TryReserveAsync(amountSats + feeHeadroomSats, cancellationToken);
+        if (!reservation.Success)
+        {
+            return JsonSerializer.Serialize(new
+            {
+                success = false,
+                error = $"Budget check failed: {reservation.DenialReason}"
+            });
+        }
+        var reservationId = reservation.ReservationId!;
+
         try
         {
             var result = await walletService.SendOnChainAsync(address, amountSats, cancellationToken);
 
             if (!result.Success)
             {
+                // Send failed — no funds moved, release the reservation and its headroom.
+                budgetService.ReleaseReservation(reservationId);
                 return JsonSerializer.Serialize(new
                 {
                     success = false,
@@ -184,8 +203,9 @@ public static class SendOnChainTool
                 });
             }
 
-            // Record spend if budget service available
-            budgetService?.RecordSpend(amountSats + result.FeeSats);
+            // Commit the ACTUAL debit (principal + network fee). Committing less than the
+            // reserved maximum automatically releases the unused fee headroom.
+            budgetService.CommitReservation(reservationId, amountSats + result.FeeSats);
 
             return JsonSerializer.Serialize(new
             {
@@ -207,6 +227,10 @@ public static class SendOnChainTool
         }
         catch (Exception ex)
         {
+            // Release on an unexpected throw. NOTE: an on-chain broadcast that threw AFTER
+            // submission is ambiguous — the durable operation ledger (follow-up PR) is what
+            // resolves that; here we preserve the prior behavior of recording no spend.
+            budgetService.ReleaseReservation(reservationId);
             return JsonSerializer.Serialize(new
             {
                 success = false,

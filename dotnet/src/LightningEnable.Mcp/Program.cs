@@ -157,10 +157,15 @@ public class Program
         void AddWallet<TWallet>() where TWallet : class, IWalletService
         {
             builder.Services.AddHttpClient<TWallet>();
-            builder.Services.AddTransient<IWalletService>(sp => new ReceiptRecordingWalletService(
-                sp.GetRequiredService<TWallet>(),
-                sp.GetRequiredService<IReceiptService>(),
-                sp.GetRequiredService<IBudgetService>()));
+            // Decorator chain (outermost first): IdempotentWalletService guards against a
+            // blind duplicate payment (durable operation ledger) BEFORE the receipt seam and
+            // the real wallet — so a refused duplicate neither pays nor writes a receipt.
+            builder.Services.AddTransient<IWalletService>(sp => new IdempotentWalletService(
+                new ReceiptRecordingWalletService(
+                    sp.GetRequiredService<TWallet>(),
+                    sp.GetRequiredService<IReceiptService>(),
+                    sp.GetRequiredService<IBudgetService>()),
+                sp.GetRequiredService<IOperationLedger>()));
         }
         var lndRestHost = Environment.GetEnvironmentVariable("LND_REST_HOST");
         var lndMacaroonHex = Environment.GetEnvironmentVariable("LND_MACAROON_HEX");
@@ -282,6 +287,9 @@ public class Program
         builder.Services.AddSingleton<IRateLimiter, RateLimiter>();
         // Durable, append-only spend receipts (~/.lightning-enable/receipts.jsonl).
         builder.Services.AddSingleton<IReceiptService, ReceiptService>();
+        // Durable, append-only operation ledger (~/.lightning-enable/operations.jsonl) —
+        // idempotency + restart-safety so a retry never causes a blind duplicate payment.
+        builder.Services.AddSingleton<IOperationLedger, OperationLedger>();
 
         // Configure MCP server with stdio transport.
         //

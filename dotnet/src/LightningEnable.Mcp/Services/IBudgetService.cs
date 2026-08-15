@@ -26,7 +26,40 @@ public interface IBudgetService
     BudgetCheckResult CheckBudget(long amountSats);
 
     /// <summary>
-    /// Records that an amount was spent.
+    /// Atomically reserves <paramref name="amountSats"/> against the effective session cap
+    /// (config + tighten-only runtime caps), evaluating settled spend PLUS all active
+    /// reservations in the same critical section as the insert. This is the funds-safety
+    /// primitive that closes the check-then-pay race: two concurrent payments can never
+    /// both pass against the same pre-payment balance.
+    ///
+    /// Fails closed if the BTC price is unavailable (the caps are USD-derived). On success
+    /// the caller MUST later call exactly one of <see cref="CommitReservation"/> (funds
+    /// moved / may have moved) or <see cref="ReleaseReservation"/> (proven no funds moved).
+    /// The reservation lock is NOT held across the wallet call.
+    /// </summary>
+    /// <param name="amountSats">Maximum debit to reserve, in satoshis (include a fee headroom for on-chain).</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task<SpendReservationResult> TryReserveAsync(long amountSats, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Commits a reservation as settled spend of <paramref name="actualDebitSats"/> (which
+    /// may be less than the reserved maximum, e.g. when the on-chain fee came in under the
+    /// reserved headroom — the unused headroom is released). Idempotent: an unknown or
+    /// already-resolved reservation id is a no-op. Use for settled AND pending/unknown
+    /// outcomes — a payment that may have moved funds must keep consuming budget.
+    /// </summary>
+    void CommitReservation(string reservationId, long actualDebitSats);
+
+    /// <summary>
+    /// Releases a reservation without recording any spend. Use ONLY when the wallet or
+    /// provider proves no funds moved (a hard, pre-submission failure). Idempotent.
+    /// </summary>
+    void ReleaseReservation(string reservationId);
+
+    /// <summary>
+    /// Records that an amount was spent, with no prior reservation. Prefer
+    /// <see cref="TryReserveAsync"/> + <see cref="CommitReservation"/> on any path that
+    /// calls the wallet — this remains only for callers that settle without a reservation.
     /// </summary>
     /// <param name="amountSats">Amount spent in satoshis.</param>
     void RecordSpend(long amountSats);

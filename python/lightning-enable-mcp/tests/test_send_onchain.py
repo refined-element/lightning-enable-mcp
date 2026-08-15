@@ -15,8 +15,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 from lightning_enable_mcp.tools.send_onchain import send_onchain
 from lightning_enable_mcp.strike_wallet import StrikeWallet
-from lightning_enable_mcp.budget_service import PendingConfirmation
+from lightning_enable_mcp.budget_service import PendingConfirmation, SpendReservationResult
 from lightning_enable_mcp.config import ApprovalLevel
+
+# Reservation id every budget mock hands back from try_reserve; commit/release assert on it.
+_RESV_ID = "resv-1"
 
 # A real BIP173 mainnet P2WPKH address (passes validation).
 VALID_ADDR = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4"
@@ -51,6 +54,12 @@ def _approving_budget(code: str = "ABC123"):
     budget.validate_and_consume_confirmation = MagicMock(return_value=pc)
     budget.record_spend = MagicMock()
     budget.record_payment_time = MagicMock()
+    # Atomic spend-reservation API: reserve principal+headroom, commit actual, release on fail.
+    budget.try_reserve = AsyncMock(
+        side_effect=lambda amt: SpendReservationResult.reserved(_RESV_ID, amt)
+    )
+    budget.commit_reservation = MagicMock()
+    budget.release_reservation = MagicMock()
     return budget
 
 

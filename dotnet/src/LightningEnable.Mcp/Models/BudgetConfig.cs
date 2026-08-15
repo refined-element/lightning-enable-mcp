@@ -99,6 +99,40 @@ public record ConfigureBudgetResult
 }
 
 /// <summary>
+/// Result of an atomic spend reservation (<see cref="IBudgetService.TryReserveAsync"/>).
+///
+/// A reservation is the funds-safety primitive that closes the check-then-pay race: the
+/// amount that could become committed is held against the effective session cap BEFORE
+/// the wallet is called, so two concurrent payments can never both pass against the same
+/// pre-payment balance. On success the caller MUST later either
+/// <see cref="IBudgetService.CommitReservation"/> (funds moved) or
+/// <see cref="IBudgetService.ReleaseReservation"/> (proven no funds moved).
+/// </summary>
+public record SpendReservationResult
+{
+    /// <summary>Whether the amount was reserved against the effective session cap.</summary>
+    public bool Success { get; init; }
+
+    /// <summary>
+    /// Opaque reservation id to pass to commit/release. Null when <see cref="Success"/>
+    /// is false.
+    /// </summary>
+    public string? ReservationId { get; init; }
+
+    /// <summary>Amount reserved (sats). This is the maximum debit the caller may commit.</summary>
+    public long ReservedSats { get; init; }
+
+    /// <summary>Reason the reservation was refused (cap would be exceeded).</summary>
+    public string? DenialReason { get; init; }
+
+    public static SpendReservationResult Reserved(string reservationId, long reservedSats) =>
+        new() { Success = true, ReservationId = reservationId, ReservedSats = reservedSats };
+
+    public static SpendReservationResult Denied(string reason) =>
+        new() { Success = false, DenialReason = reason };
+}
+
+/// <summary>
 /// Result of a budget check operation.
 /// </summary>
 public record BudgetCheckResult

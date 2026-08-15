@@ -7,9 +7,23 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from lightning_enable_mcp.tools.pay_challenge import pay_l402_challenge
-from lightning_enable_mcp.budget_service import PendingConfirmation
+from lightning_enable_mcp.budget_service import PendingConfirmation, SpendReservationResult
 from lightning_enable_mcp.config import ApprovalLevel
 from lightning_enable_mcp.wallet_errors import PaymentPendingError, PreimageUnavailableError
+
+# Reservation id every budget mock hands back from try_reserve; commit/release assert on it.
+_RESV_ID = "resv-1"
+
+
+def _grant_reservation(budget):
+    """Wire a MagicMock BudgetService with the reserve/commit/release API: try_reserve grants
+    a reservation (echoing the requested sats), commit/release are plain spies."""
+    budget.try_reserve = AsyncMock(
+        side_effect=lambda amt: SpendReservationResult.reserved(_RESV_ID, amt)
+    )
+    budget.commit_reservation = MagicMock()
+    budget.release_reservation = MagicMock()
+    return budget
 
 
 def _confirming_budget(code: str = "ABC123", sats: int = 10):
@@ -31,7 +45,7 @@ def _confirming_budget(code: str = "ABC123", sats: int = 10):
     budget.validate_and_consume_confirmation = MagicMock(return_value=pc)
     budget.record_spend = MagicMock()
     budget.record_payment_time = MagicMock()
-    return budget
+    return _grant_reservation(budget)
 
 
 class TestPayL402ChallengeOutOfBandConfirmation:
@@ -304,6 +318,7 @@ class TestPayL402ChallengeNoAmountRejection:
         budget.check_approval_level = AsyncMock(return_value=approval)
         budget.record_spend = MagicMock()
         budget.record_payment_time = MagicMock()
+        _grant_reservation(budget)
 
         mock_decoded = MagicMock()
         mock_decoded.amount_msat = 100000
@@ -323,7 +338,8 @@ class TestPayL402ChallengeNoAmountRejection:
 
         assert result["success"] is True
         budget.check_approval_level.assert_awaited_once_with(100)
-        budget.record_spend.assert_called_once_with(100)
+        # Spend is now committed against the reservation (not a direct record_spend).
+        budget.commit_reservation.assert_called_once_with(_RESV_ID, 100)
 
 
 class TestPayL402ChallengeNoPreimage:
@@ -342,6 +358,7 @@ class TestPayL402ChallengeNoPreimage:
         budget.check_approval_level = AsyncMock(return_value=approval)
         budget.record_spend = MagicMock()
         budget.record_payment_time = MagicMock()
+        _grant_reservation(budget)
         history = MagicMock()
 
         mock_decoded = MagicMock()
@@ -363,7 +380,11 @@ class TestPayL402ChallengeNoPreimage:
 
         assert result["success"] is False
         assert "no preimage" in result["error"].lower()
+        # A falsy preimage is a hard failure: no spend committed, and the reservation is
+        # released (not committed) so it doesn't strand budget.
         budget.record_spend.assert_not_called()
+        budget.commit_reservation.assert_not_called()
+        budget.release_reservation.assert_called_once_with(_RESV_ID)
         history.record_payment.assert_not_called()
 
 
@@ -384,7 +405,7 @@ class TestPayL402ChallengeProofUnavailable:
         budget.check_approval_level = AsyncMock(return_value=approval)
         budget.record_spend = MagicMock()
         budget.record_payment_time = MagicMock()
-        return budget
+        return _grant_reservation(budget)
 
     async def _run(self, exc, budget, history):
         mock_wallet = AsyncMock()
@@ -438,7 +459,8 @@ class TestPayL402ChallengeProofUnavailable:
             budget, history,
         )
 
-        budget.record_spend.assert_called_once_with(100)
+        # Money moved (settled, unprovable) — spend is committed against the reservation.
+        budget.commit_reservation.assert_called_once_with(_RESV_ID, 100)
         history.record_payment.assert_called_once()
 
     @pytest.mark.asyncio
@@ -455,4 +477,5 @@ class TestPayL402ChallengeProofUnavailable:
         assert result["success"] is False
         assert result["status"] == "pending"
         assert result["trackingId"] == "w-2"
-        budget.record_spend.assert_called_once_with(100)
+        # In-flight funds are committed against the reservation (not released).
+        budget.commit_reservation.assert_called_once_with(_RESV_ID, 100)

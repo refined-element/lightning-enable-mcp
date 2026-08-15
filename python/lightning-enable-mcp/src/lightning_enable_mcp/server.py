@@ -35,6 +35,8 @@ from .tools.create_account import create_lightning_enable_account
 from .tools.test_l402_payment import test_l402_payment
 from .tools.get_receipts import get_receipts
 from .receipt_seam import ReceiptRecordingWallet
+from .operation_ledger import OperationLedger
+from .idempotent_wallet import IdempotentWallet
 from .receipt_service import ReceiptService, wallet_label_from
 from .tools.check_invoice_status import check_invoice_status
 from .tools.verify_confirmation_code import verify_confirmation_code
@@ -1261,8 +1263,15 @@ class LightningEnableServer:
             # leaves exactly one receipts.jsonl line with zero per-tool receipt code.
             # Only wrap a REAL wallet — a truthy wrapper around None would defeat the
             # tools' "wallet not configured" guards in wallet-less mode.
+            # Decorator chain (outermost first): IdempotentWallet guards against a blind
+            # duplicate payment (durable operation ledger) BEFORE the receipt seam and the
+            # real wallet — so a refused duplicate neither pays nor writes a receipt.
+            self.operation_ledger = OperationLedger()
             self.paying_wallet = (
-                ReceiptRecordingWallet(self.wallet, self.receipt_service, self.budget_service)
+                IdempotentWallet(
+                    ReceiptRecordingWallet(self.wallet, self.receipt_service, self.budget_service),
+                    self.operation_ledger,
+                )
                 if self.wallet is not None
                 else None
             )

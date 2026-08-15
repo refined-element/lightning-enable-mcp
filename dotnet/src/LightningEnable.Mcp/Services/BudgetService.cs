@@ -21,6 +21,13 @@ public class BudgetService : IBudgetService
     private bool _isFirstPayment;
     private readonly Dictionary<string, PendingConfirmation> _pendingConfirmations = new();
 
+    // Active spend reservations (id -> reserved sats). The sum is mirrored in
+    // _reservedSats so the reservation gate is O(1). Guarded by _lock together with
+    // _sessionSpentSats — evaluating (settled + reserved) and inserting a reservation
+    // happen in ONE critical section, which is what makes the cap race-safe.
+    private readonly Dictionary<string, long> _reservations = new();
+    private long _reservedSats;
+
     // Cached sats thresholds (updated when price changes significantly)
     private long _autoApproveSats;
     private long _logAndApproveSats;
@@ -262,6 +269,98 @@ public class BudgetService : IBudgetService
             _sessionSpentSats += amountSats;
             _requestCount++;
             _isFirstPayment = false;
+        }
+    }
+
+    public async Task<SpendReservationResult> TryReserveAsync(
+        long amountSats, CancellationToken cancellationToken = default)
+    {
+        if (amountSats <= 0)
+            return SpendReservationResult.Denied("Reservation amount must be greater than zero.");
+
+        // FAIL CLOSED on a price outage: the effective caps are USD-derived, so without a
+        // BTC price we cannot evaluate the reservation. Same guard as CheckApprovalLevelAsync.
+        try
+        {
+            await _priceService.GetBtcPriceAsync(cancellationToken);
+        }
+        catch (PriceUnavailableException)
+        {
+            return SpendReservationResult.Denied(
+                "BTC price is currently unavailable (all price sources failed), so this payment " +
+                "cannot be checked against your budget and was refused. Please retry shortly.");
+        }
+
+        // Refresh the cached USD->sats caps OUTSIDE the lock (it awaits the price service);
+        // the gate below then runs fully synchronously against those cached sats values, so
+        // the lock is never held across an await.
+        await UpdateThresholdsIfNeededAsync(cancellationToken);
+
+        lock (_lock)
+        {
+            // Effective per-session cap (sats) = most restrictive of the config-file limit
+            // (USD->sats, 0 == "no config limit") and any tighten-only runtime cap.
+            long configSession = _maxPerSessionSats > 0 ? _maxPerSessionSats : long.MaxValue;
+            long effSessionCap = Math.Min(configSession, _runtimeMaxPerSessionSats ?? long.MaxValue);
+
+            long configRequest = _maxPerPaymentSats > 0 ? _maxPerPaymentSats : long.MaxValue;
+            long effRequestCap = Math.Min(configRequest, _runtimeMaxPerRequestSats ?? long.MaxValue);
+
+            if (amountSats > effRequestCap)
+            {
+                return SpendReservationResult.Denied(
+                    $"Payment of {amountSats:N0} sats exceeds the per-payment cap of {effRequestCap:N0} sats.");
+            }
+
+            // The whole point: settled + ALL active reservations + this amount must fit.
+            // Guard against overflow when caps are effectively unlimited (long.MaxValue).
+            long committedPlusReserved = _sessionSpentSats + _reservedSats;
+            if (effSessionCap != long.MaxValue && committedPlusReserved + amountSats > effSessionCap)
+            {
+                long remaining = Math.Max(0, effSessionCap - committedPlusReserved);
+                return SpendReservationResult.Denied(
+                    $"Payment of {amountSats:N0} sats would exceed the session cap of {effSessionCap:N0} sats " +
+                    $"(already spent {_sessionSpentSats:N0}, reserved {_reservedSats:N0} by in-flight payments; " +
+                    $"{remaining:N0} sats available).");
+            }
+
+            var reservationId = Guid.NewGuid().ToString("N");
+            _reservations[reservationId] = amountSats;
+            _reservedSats += amountSats;
+            return SpendReservationResult.Reserved(reservationId, amountSats);
+        }
+    }
+
+    public void CommitReservation(string reservationId, long actualDebitSats)
+    {
+        if (actualDebitSats < 0)
+            throw new ArgumentOutOfRangeException(nameof(actualDebitSats), "Amount cannot be negative");
+        if (string.IsNullOrEmpty(reservationId))
+            return;
+
+        lock (_lock)
+        {
+            // Idempotent: an unknown / already-resolved reservation is a no-op, so a
+            // double-commit (e.g. a retried settlement callback) can't double-count.
+            if (!_reservations.Remove(reservationId, out var reserved))
+                return;
+
+            _reservedSats -= reserved;
+            _sessionSpentSats += actualDebitSats;
+            _requestCount++;
+            _isFirstPayment = false;
+        }
+    }
+
+    public void ReleaseReservation(string reservationId)
+    {
+        if (string.IsNullOrEmpty(reservationId))
+            return;
+
+        lock (_lock)
+        {
+            if (_reservations.Remove(reservationId, out var reserved))
+                _reservedSats -= reserved;
         }
     }
 

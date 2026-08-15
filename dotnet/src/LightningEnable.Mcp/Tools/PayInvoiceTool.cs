@@ -71,6 +71,10 @@ public static class PayInvoiceTool
         // receipt_written signal for the tool result.
         using var receiptScope = PaymentReceiptScope.Begin("invoice");
 
+        // Reservation handle for the atomic spend gate (set once we're about to pay).
+        // Declared out here so the catch below can release it if the wallet call throws.
+        string? reservationId = null;
+
         try
         {
             // Normalize invoice to lowercase
@@ -212,6 +216,35 @@ public static class PayInvoiceTool
                 {
                     Console.Error.WriteLine($"[Lightning Enable] Auto-approved payment: {approvalResult.AmountUsd:C} ({amountSats.Value} sats)");
                 }
+
+                // Atomically reserve the amount against the session cap BEFORE calling the
+                // wallet. This closes the check-then-pay race: a second concurrent payment
+                // sees this reservation and is denied here instead of passing its own check
+                // against the same pre-payment balance. Committed on settle/pending, released
+                // on a proven hard failure.
+                var reservation = await budgetService.TryReserveAsync(amountSats.Value, cancellationToken);
+                if (!reservation.Success)
+                {
+                    paymentHistory?.RecordFailedPayment(
+                        "direct-invoice",
+                        "PAY",
+                        amountSats.Value,
+                        reservation.DenialReason ?? "Budget reservation failed",
+                        normalizedInvoice);
+
+                    return JsonSerializer.Serialize(new
+                    {
+                        success = false,
+                        error = reservation.DenialReason,
+                        budget = new
+                        {
+                            amountSats = amountSats.Value,
+                            amountUsd = approvalResult.AmountUsd,
+                            remainingSessionUsd = approvalResult.RemainingSessionBudgetUsd
+                        }
+                    });
+                }
+                reservationId = reservation.ReservationId;
             }
 
             // Pay the invoice
@@ -224,7 +257,9 @@ public static class PayInvoiceTool
             // them would let an agent retry its way past its own limit.
             if (result.IsPending)
             {
-                budgetService?.RecordSpend(amountSats.Value);
+                // In flight: funds are committed, so commit the reservation (do NOT release
+                // — an accepted payment that may still settle must keep consuming budget).
+                if (reservationId != null) budgetService?.CommitReservation(reservationId, amountSats.Value);
                 budgetService?.RecordPaymentTime();
                 // Record it as PENDING, not as a success. The tool result below says
                 // success:false/status:pending — the audit trail must say the same thing,
@@ -269,6 +304,10 @@ public static class PayInvoiceTool
 
             if (!result.Success)
             {
+                // Hard failure — the wallet proves no funds moved, so release the
+                // reservation and free the budget it was holding.
+                if (reservationId != null) budgetService?.ReleaseReservation(reservationId);
+
                 paymentHistory?.RecordFailedPayment(
                     "direct-invoice",
                     "PAY",
@@ -284,8 +323,8 @@ public static class PayInvoiceTool
                 });
             }
 
-            // Record the payment
-            budgetService?.RecordSpend(amountSats.Value);
+            // Record the payment — the money moved, so commit the reservation as spend.
+            if (reservationId != null) budgetService?.CommitReservation(reservationId, amountSats.Value);
             budgetService?.RecordPaymentTime();
             paymentHistory?.RecordPayment(
                 "direct-invoice",
@@ -336,6 +375,13 @@ public static class PayInvoiceTool
         }
         catch (Exception ex)
         {
+            // Release the reservation so a failed attempt doesn't strand budget. NOTE: an
+            // exception raised AFTER the wallet accepted the payment is ambiguous — funds
+            // may have moved. Releasing here preserves the pre-existing behavior (the old
+            // code recorded no spend on exception); the durable operation ledger (follow-up
+            // PR) is what resolves that ambiguity by marking the operation pending.
+            if (reservationId != null) budgetService?.ReleaseReservation(reservationId);
+
             paymentHistory?.RecordFailedPayment(
                 "direct-invoice",
                 "PAY",

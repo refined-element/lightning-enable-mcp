@@ -75,6 +75,9 @@ async def pay_l402_challenge(
     payment_policy = None
     # Declared outside the try so the generic handler can report the receipt signal.
     receipt_scope = None
+    # Atomic spend-reservation handle. Set once we're about to pay; committed on
+    # settle/pending, released on a proven hard failure or a pre-payment exception.
+    reservation_id = None
 
     try:
         # Parse invoice to get amount
@@ -172,6 +175,18 @@ async def pay_l402_challenge(
                         "expiresInSeconds": 120,
                     })
 
+            # Atomically reserve against the session cap BEFORE paying — closes the
+            # check-then-pay race so two concurrent payments can't both pass against the same
+            # balance. Committed on settle/pending, released on a proven hard failure.
+            reservation = await budget_service.try_reserve(amount_sats)
+            if not reservation.success:
+                return json.dumps({
+                    "success": False,
+                    "error": f"Payment denied by budget policy: {reservation.denial_reason}",
+                    "amount_sats": amount_sats,
+                })
+            reservation_id = reservation.reservation_id
+
         # Pay the invoice
         protocol = "MPP" if is_mpp else "L402"
         logger.info(f"Paying {protocol} invoice for {amount_sats} sats")
@@ -185,10 +200,10 @@ async def pay_l402_challenge(
         except PaymentProofUnavailableError as e:
             # No preimage exists (the wallet never returns them, or the payment
             # hasn't settled), so there is no way to authenticate — but the funds
-            # have left (or are leaving) the wallet. Record the real spend rather
-            # than silently losing it, then report the truth: paid, unusable.
-            if budget_service and amount_sats:
-                budget_service.record_spend(amount_sats)
+            # have left (or are leaving) the wallet. Commit the reservation as spend
+            # rather than silently losing it, then report the truth: paid, unusable.
+            if budget_service and reservation_id:
+                budget_service.commit_reservation(reservation_id, amount_sats)
                 budget_service.record_payment_time()
             if payment_history_service and amount_sats:
                 payment_history_service.record_payment(
@@ -222,6 +237,9 @@ async def pay_l402_challenge(
         # A falsy preimage means the payment did NOT settle. Do not record spend/history
         # or return a success response with an invalid Authorization header.
         if not preimage:
+            # Hard failure — no funds moved, so release the reservation and free its budget.
+            if budget_service and reservation_id:
+                budget_service.release_reservation(reservation_id)
             return json.dumps({
                 "success": False,
                 "error": f"{protocol} payment failed — the wallet returned no preimage.",
@@ -230,9 +248,9 @@ async def pay_l402_challenge(
                 "receipt_written": receipt_scope.receipt_written,
             })
 
-        # Record payment
-        if budget_service and amount_sats:
-            budget_service.record_spend(amount_sats)
+        # Record payment — the money moved, so commit the reservation as spend.
+        if budget_service and reservation_id:
+            budget_service.commit_reservation(reservation_id, amount_sats)
             budget_service.record_payment_time()
 
         # Audit trail (separate from limits). Preimage is NEVER stored.
@@ -284,6 +302,11 @@ async def pay_l402_challenge(
 
     except Exception as e:
         logger.exception("Error paying L402/MPP challenge")
+        # Release the reservation so a failed attempt doesn't strand budget (funds-moved
+        # ambiguity after wallet-accept is resolved later by the durable operation ledger;
+        # here we preserve the prior behavior of recording no spend on exception).
+        if budget_service and reservation_id:
+            budget_service.release_reservation(reservation_id)
         # null = nothing was paid; true/false = money moved (the wallet can raise
         # after settlement) and the durable receipt did/didn't land.
         return json.dumps({

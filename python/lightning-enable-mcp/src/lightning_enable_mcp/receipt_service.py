@@ -47,10 +47,15 @@ _REVOKE_DEFAULT = "Revoke this wallet's connection or API key in its own app/das
 
 
 def unwrap_wallet(wallet):
-    """The raw wallet behind a ReceiptRecordingWallet (for isinstance checks and
-    provider labels). Lives here — the one home for the seam's ``_inner`` contract —
-    and is re-exported by receipt_seam."""
-    return getattr(wallet, "_inner", wallet)
+    """The raw wallet behind any decorator chain (for isinstance checks and provider
+    labels). Lives here — the one home for the seam's ``_inner`` contract — and is
+    re-exported by receipt_seam. Recurses through ``_inner`` so it sees the real wallet
+    through BOTH the idempotency guard and the receipt seam (any decorator depth)."""
+    seen = set()
+    while hasattr(wallet, "_inner") and id(wallet) not in seen:
+        seen.add(id(wallet))
+        wallet = wallet._inner
+    return wallet
 
 
 def wallet_label_from(wallet) -> str:

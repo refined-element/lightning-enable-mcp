@@ -3,9 +3,11 @@ Settle Agent Service Tool (MONEY PATH)
 
 Settles an agent service agreement via L402 payment (CONSUMER/REQUESTER side).
 Pays the L402 endpoint specified in the agreement, completing the service
-transaction. Uses the SAME wallet + budget-gating flow as access_l402_resource
-(BudgetService.check_approval_level / record_spend / record_payment_time) — it
-does NOT use the Lightning Enable API key.
+transaction. Uses the SAME wallet + budget-gating flow as access_l402_resource:
+the tool runs BudgetService.check_approval_level for its confirmation gate, then
+delegates the payment to the L402 client, which atomically reserves against the
+session cap and commits the reservation as spend (arming the cooldown) exactly
+once. It does NOT use the Lightning Enable API key.
 
 For the PROVIDER side (selling a service), use create_l402_challenge to generate
 a Lightning invoice at the agreed price, then verify_l402_payment to confirm

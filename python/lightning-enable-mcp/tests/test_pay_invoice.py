@@ -6,6 +6,7 @@ truth for spending limits + the out-of-band confirmation flow, and the separate
 PaymentHistoryService records the audit trail (never the preimage).
 """
 
+import asyncio
 import json
 import pytest
 from datetime import datetime, timezone, timedelta
@@ -306,6 +307,26 @@ class TestPayInvoice:
         data = json.loads(result)
         assert data["success"] is True
         assert data["preimage"] == "preimage"
+
+    @pytest.mark.asyncio
+    async def test_cancelled_payment_releases_reservation_and_reraises(self):
+        """A cancelled/timed-out payment must RELEASE its budget reservation (not strand it)
+        and re-raise the cancellation untouched. asyncio.CancelledError is a BaseException, so
+        the generic `except Exception` never sees it — without a dedicated handler the
+        reservation leaks and the session budget is over-restricted forever."""
+        _DECODE_SATS["v"] = 1000
+        wallet = AsyncMock()
+        wallet.pay_invoice = AsyncMock(side_effect=asyncio.CancelledError())
+        budget = _approving_budget()
+
+        with pytest.raises(asyncio.CancelledError):
+            await pay_invoice(
+                invoice="lnbc1000n1...", max_sats=1000, wallet=wallet, budget_service=budget,
+            )
+
+        # The reservation must be released, and NOT committed as spend.
+        budget.release_reservation.assert_called_once_with(_RESV_ID)
+        budget.commit_reservation.assert_not_called()
 
 
 def _confirming_budget(code: str = "ABC123", sats: int = 50000):

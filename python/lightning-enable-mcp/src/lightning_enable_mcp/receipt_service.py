@@ -49,12 +49,18 @@ _REVOKE_DEFAULT = "Revoke this wallet's connection or API key in its own app/das
 def unwrap_wallet(wallet):
     """The raw wallet behind any decorator chain (for isinstance checks and provider
     labels). Lives here — the one home for the seam's ``_inner`` contract — and is
-    re-exported by receipt_seam. Recurses through ``_inner`` so it sees the real wallet
-    through BOTH the idempotency guard and the receipt seam (any decorator depth)."""
-    seen = set()
-    while hasattr(wallet, "_inner") and id(wallet) not in seen:
-        seen.add(id(wallet))
-        wallet = wallet._inner
+    re-exported by receipt_seam. Walks ``_inner`` so it sees the real wallet through BOTH
+    the idempotency guard and the receipt seam.
+
+    BOUNDED depth: real decorator chains are only 2-3 deep. The bound is essential because
+    an unbounded walk infinite-loops on an object whose attribute access always yields a new
+    truthy ``_inner`` — notably a MagicMock in tests (``mock._inner._inner...`` is endless and
+    each level is a distinct object, so an id-based cycle guard never trips)."""
+    for _ in range(8):
+        inner = getattr(wallet, "_inner", None)
+        if inner is None or inner is wallet:
+            break
+        wallet = inner
     return wallet
 
 

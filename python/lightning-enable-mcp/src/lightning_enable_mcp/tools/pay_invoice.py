@@ -5,6 +5,7 @@ Pay a Lightning invoice directly and get the preimage as proof of payment.
 Uses the new BudgetService with multi-tier approval logic.
 """
 
+import asyncio
 import json
 import logging
 import sys
@@ -355,6 +356,16 @@ async def pay_invoice(
             response["session"] = session_info
 
         return json.dumps(response, indent=2)
+
+    except asyncio.CancelledError:
+        # CancelledError is a BaseException, so the `except Exception` below never sees it —
+        # a cancelled/timed-out payment would otherwise strand the reservation and
+        # over-restrict the session budget forever. Release it (same guard + call as the
+        # Exception branch), then re-raise so the cancellation propagates untouched. Do NOT
+        # record a failed payment or do the other Exception-branch bookkeeping.
+        if budget_service and reservation_id:
+            budget_service.release_reservation(reservation_id)
+        raise
 
     except Exception as e:
         logger.exception("Error paying invoice")

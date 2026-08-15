@@ -4,6 +4,7 @@ L402 Client
 Handles L402 protocol for HTTP requests with automatic payment.
 """
 
+import asyncio
 import base64
 import logging
 import re
@@ -518,6 +519,13 @@ class L402Client:
                 e.amount_paid = challenge.amount_sats
                 self._commit_spend_and_arm_cooldown(reservation_id, challenge.amount_sats)
                 raise
+            except asyncio.CancelledError:
+                # CancelledError is a BaseException, so the `except Exception` below never
+                # sees it — a cancelled/timed-out payment would otherwise strand the
+                # reservation. Release it (same call as the Exception branch), then re-raise
+                # so the cancellation propagates untouched.
+                self._release_reservation(reservation_id)
+                raise
             except Exception:
                 # Hard failure — the wallet raised without provably moving funds. Release the
                 # reservation so the attempt doesn't strand budget, then re-raise unchanged.
@@ -634,6 +642,13 @@ class L402Client:
             # the spend can also be surfaced to callers, then re-raise the typed error.
             e.amount_paid = amount_sats
             self._commit_reservation(reservation_id, amount_sats)
+            raise
+        except asyncio.CancelledError:
+            # CancelledError is a BaseException, so the `except Exception` below never sees it —
+            # a cancelled/timed-out payment would otherwise strand the reservation. Release it
+            # (same call as the Exception branch), then re-raise the cancellation untouched
+            # (do NOT rewrap it as L402PaymentError).
+            self._release_reservation(reservation_id)
             raise
         except Exception as e:
             # Hard failure — no funds provably moved. Release the reservation, then rewrap.

@@ -4,6 +4,7 @@ Pay L402 Challenge Tool
 Manually pay an L402 invoice and get the authorization token.
 """
 
+import asyncio
 import json
 import logging
 import sys
@@ -299,6 +300,15 @@ async def pay_l402_challenge(
         result["authorization_header"] = authorization_header
 
         return json.dumps(result, indent=2)
+
+    except asyncio.CancelledError:
+        # CancelledError is a BaseException, so the `except Exception` below never sees it —
+        # a cancelled/timed-out payment would otherwise strand the reservation. Release it
+        # (same guard + call as the Exception branch), then re-raise untouched. No other
+        # Exception-branch bookkeeping (no error wrapping / receipt reporting).
+        if budget_service and reservation_id:
+            budget_service.release_reservation(reservation_id)
+        raise
 
     except Exception as e:
         logger.exception("Error paying L402/MPP challenge")

@@ -56,7 +56,21 @@ public sealed class IdempotentWalletService : IWalletService
         // submission still leaves a record that blocks a blind re-pay on restart.
         _ledger.RecordSubmitted(operationId, Bolt11Parser.ExtractAmountSats(bolt11) ?? 0, SafeProviderName());
 
-        var result = await _inner.PayInvoiceAsync(bolt11, cancellationToken);
+        NwcPaymentResult result;
+        try
+        {
+            result = await _inner.PayInvoiceAsync(bolt11, cancellationToken);
+        }
+        catch
+        {
+            // If the wallet call THROWS (e.g. OperationCanceledException on a timeout/cancel),
+            // the operation would otherwise stay Submitted and lock the invoice out of retry
+            // forever. Record it as a no-funds failure so a genuine retry is allowed — the
+            // network's invoice single-use is the double-spend backstop if funds moved
+            // post-submit — then rethrow so the cancellation/exception propagates untouched.
+            _ledger.RecordOutcome(operationId, OperationState.FailedNoFunds, null);
+            throw;
+        }
 
         _ledger.RecordOutcome(operationId, MapState(result), TryDerivePaymentHash(result));
         return result;

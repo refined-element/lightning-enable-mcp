@@ -19,6 +19,7 @@ invoice, preimage, macaroon, and connection string are never persisted. Mirrors 
 ``IdempotentWalletService``.
 """
 
+import asyncio
 import hashlib
 import logging
 from typing import Optional
@@ -71,6 +72,14 @@ class IdempotentWallet:
         except PaymentProofUnavailableError:
             # Settled without a usable proof — money moved; blocks a re-pay.
             self._ledger.record_outcome(operation_id, OperationState.SETTLED, None)
+            raise
+        except asyncio.CancelledError:
+            # CancelledError is a BaseException, so the `except Exception` below never sees it.
+            # A cancelled payment must NOT leave the invoice stuck SUBMITTED (that would lock
+            # it out of retry forever). Record it as a no-funds failure so a genuine retry is
+            # allowed — the network's invoice single-use is the double-spend backstop if funds
+            # moved post-submit — then re-raise so the cancellation propagates untouched.
+            self._ledger.record_outcome(operation_id, OperationState.FAILED_NO_FUNDS, None)
             raise
         except Exception:
             # Any other error is treated as a hard failure (no funds moved) — a genuine

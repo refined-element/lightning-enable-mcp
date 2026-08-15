@@ -4,13 +4,14 @@ submitted twice — even across a process restart or an agent retry. Mirrors the
 IdempotentWalletServiceTests.
 """
 
+import asyncio
 import uuid
 from pathlib import Path
 
 import pytest
 
 from lightning_enable_mcp.idempotent_wallet import DuplicateSubmissionError, IdempotentWallet
-from lightning_enable_mcp.operation_ledger import OperationLedger
+from lightning_enable_mcp.operation_ledger import MONEY_MOVING_STATES, OperationLedger
 from lightning_enable_mcp.wallet_errors import PaymentPendingError
 
 INVOICE = "lnbc1000n1p3duplicatetest"
@@ -95,6 +96,37 @@ async def test_pending_first_attempt_blocks_resubmission(tmp_path):
     with pytest.raises(DuplicateSubmissionError):
         await IdempotentWallet(again, OperationLedger(path)).pay_invoice(INVOICE)
     assert again.pay_count == 0
+
+
+@pytest.mark.asyncio
+async def test_cancelled_first_attempt_allows_retry(tmp_path):
+    # asyncio.CancelledError is a BaseException, so the wallet-seam `except Exception` never
+    # sees it — without an explicit handler the operation stays SUBMITTED and the invoice is
+    # locked out of retry forever. A cancelled/timed-out payment must instead be recorded as a
+    # no-funds failure so a genuine retry is allowed (the network's invoice single-use is the
+    # double-spend backstop if funds moved post-submit). The cancellation must still propagate.
+    path = _temp_path(tmp_path)
+    ledger = OperationLedger(path)
+    cancelling = _CountingWallet(raises=asyncio.CancelledError())
+    with pytest.raises(asyncio.CancelledError):
+        await IdempotentWallet(cancelling, ledger).pay_invoice(INVOICE)
+
+    # The operation must NOT be left in a money-moving state (else the retry below is refused).
+    op_id = _op_id(INVOICE)
+    record = ledger.lookup(op_id)
+    assert record is not None
+    assert record.state not in MONEY_MOVING_STATES
+
+    # A genuine retry of the same invoice must be allowed, not refused as a duplicate.
+    succeeding = _CountingWallet()
+    result = await IdempotentWallet(succeeding, OperationLedger(path)).pay_invoice(INVOICE)
+    assert result == VALID_PREIMAGE
+    assert succeeding.pay_count == 1
+
+
+def _op_id(bolt11: str) -> str:
+    from lightning_enable_mcp.idempotent_wallet import _derive_operation_id
+    return _derive_operation_id(bolt11)
 
 
 @pytest.mark.asyncio

@@ -5,6 +5,7 @@ Send an on-chain Bitcoin payment to a Bitcoin address.
 Supports Strike and LND wallets.
 """
 
+import asyncio
 import json
 import logging
 import sys
@@ -240,6 +241,13 @@ async def send_onchain(
             },
             "message": message,
         }, indent=2)
+
+    except asyncio.CancelledError:
+        # CancelledError is a BaseException, so the `except Exception` below never sees it —
+        # a cancelled/timed-out send would otherwise strand the reservation (principal + fee
+        # headroom). Release it (same call as the Exception branch), then re-raise untouched.
+        budget_service.release_reservation(reservation_id)
+        raise
 
     except Exception as e:
         logger.exception("Error sending on-chain payment")

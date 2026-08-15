@@ -94,6 +94,35 @@ public class IdempotentWalletServiceTests
         again.PayCount.Should().Be(0);
     }
 
+    [Fact]
+    public async Task InnerThrows_RecordsFailedNoFunds_AllowsRetry()
+    {
+        // If the wallet call THROWS (e.g. OperationCanceledException on a timeout/cancel), the
+        // operation must NOT stay Submitted — that would lock the invoice out of retry forever.
+        // It must be recorded as FailedNoFunds so a genuine retry is allowed. The exception must
+        // still propagate untouched.
+        var path = TempPath();
+        var ledger = new OperationLedger(path);
+        var throwing = new ThrowingWallet(new OperationCanceledException());
+
+        Func<Task> act = async () =>
+            await new IdempotentWalletService(throwing, ledger).PayInvoiceAsync(Invoice);
+        await act.Should().ThrowAsync<OperationCanceledException>();
+
+        // The ledger must record the operation as a no-funds failure, not leave it Submitted.
+        var operationId = "ln:" + Convert.ToHexString(
+            System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes(Invoice.Trim().ToLowerInvariant()))).ToLowerInvariant();
+        ledger.Lookup(operationId)!.State.Should().Be(OperationState.FailedNoFunds);
+
+        // And a genuine retry of the same invoice must be allowed (not refused as a duplicate).
+        var succeeding = new CountingWallet(NwcPaymentResult.Succeeded(ValidPreimage));
+        var retry = await new IdempotentWalletService(succeeding, new OperationLedger(path)).PayInvoiceAsync(Invoice);
+
+        retry.Success.Should().BeTrue();
+        succeeding.PayCount.Should().Be(1, "a cancelled/thrown payment must be retryable, not permanently locked");
+    }
+
     /// <summary>A minimal inner wallet that counts pay calls and returns a fixed result.</summary>
     private sealed class CountingWallet : IWalletService
     {
@@ -109,6 +138,27 @@ public class IdempotentWalletServiceTests
             PayCount++;
             return Task.FromResult(_result);
         }
+
+        public Task<NwcBalanceInfo> GetBalanceAsync(CancellationToken cancellationToken = default) => throw new NotImplementedException();
+        public Task<WalletInvoiceResult> CreateInvoiceAsync(long amountSats, string? memo = null, int expirySecs = 3600, CancellationToken cancellationToken = default) => throw new NotImplementedException();
+        public Task<WalletInvoiceStatus> GetInvoiceStatusAsync(string invoiceId, CancellationToken cancellationToken = default) => throw new NotImplementedException();
+        public Task<WalletTickerResult> GetTickerAsync(CancellationToken cancellationToken = default) => throw new NotImplementedException();
+        public NwcConfig? GetConfig() => null;
+        public Task<OnChainPaymentResult> SendOnChainAsync(string address, long amountSats, CancellationToken cancellationToken = default) => throw new NotImplementedException();
+        public Task<CurrencyExchangeResult> ExchangeCurrencyAsync(string sourceCurrency, string targetCurrency, decimal amount, CancellationToken cancellationToken = default) => throw new NotImplementedException();
+        public Task<MultiCurrencyBalance> GetAllBalancesAsync(CancellationToken cancellationToken = default) => throw new NotImplementedException();
+    }
+
+    /// <summary>A minimal inner wallet whose PayInvoiceAsync throws (e.g. a cancellation).</summary>
+    private sealed class ThrowingWallet : IWalletService
+    {
+        private readonly Exception _toThrow;
+        public ThrowingWallet(Exception toThrow) => _toThrow = toThrow;
+
+        public bool IsConfigured => true;
+        public string ProviderName => "Throwing";
+
+        public Task<NwcPaymentResult> PayInvoiceAsync(string bolt11, CancellationToken cancellationToken = default) => throw _toThrow;
 
         public Task<NwcBalanceInfo> GetBalanceAsync(CancellationToken cancellationToken = default) => throw new NotImplementedException();
         public Task<WalletInvoiceResult> CreateInvoiceAsync(long amountSats, string? memo = null, int expirySecs = 3600, CancellationToken cancellationToken = default) => throw new NotImplementedException();

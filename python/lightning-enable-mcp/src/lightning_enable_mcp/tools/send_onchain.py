@@ -5,6 +5,7 @@ Send an on-chain Bitcoin payment to a Bitcoin address.
 Supports Strike and LND wallets.
 """
 
+import asyncio
 import json
 import logging
 import sys
@@ -164,6 +165,20 @@ async def send_onchain(
             "expiresInSeconds": 120,
         })
 
+    # Reserve principal + a fee headroom BEFORE broadcasting. On-chain fees are added by the
+    # provider ON TOP of the principal, so reserving (and checking) only the principal would
+    # let the final debit (principal + fee) exceed the session cap. Reserve the maximum,
+    # commit the actual debit, and the unused headroom is released automatically. Headroom =
+    # max(1000 sats, 10% of principal). This also fixes the fee-undercount.
+    fee_headroom_sats = max(1000, amount_sats // 10)
+    reservation = await budget_service.try_reserve(amount_sats + fee_headroom_sats)
+    if not reservation.success:
+        return json.dumps({
+            "success": False,
+            "error": f"Budget check failed: {reservation.denial_reason}",
+        })
+    reservation_id = reservation.reservation_id
+
     # Ambient payment intent: the durable receipt is written at the wallet seam
     # (ReceiptRecordingWallet) when the send succeeds. The destination address
     # is public chain data, so it is safe as receipt context; reaching this
@@ -176,6 +191,8 @@ async def send_onchain(
             result = await wallet.send_onchain(address.strip(), amount_sats)
 
         if not result.success:
+            # Send failed — no funds moved, so release the reservation and its headroom.
+            budget_service.release_reservation(reservation_id)
             # KNOWN LIMITATION: a failed-looking result can hide a send that DID
             # execute provider-side (e.g. the execute succeeded but its HTTP
             # response was lost) — the wallet reports failure, so no receipt is
@@ -194,11 +211,12 @@ async def send_onchain(
                 ),
             })
 
-        # Record spend if budget service available
+        # Commit the ACTUAL debit (principal + network fee). Committing less than the
+        # reserved maximum automatically releases the unused fee headroom.
         if budget_service:
             try:
                 total_sats = amount_sats + (result.fee_sats or 0)
-                budget_service.record_spend(total_sats)
+                budget_service.commit_reservation(reservation_id, total_sats)
                 budget_service.record_payment_time()
             except Exception:
                 pass
@@ -224,8 +242,19 @@ async def send_onchain(
             "message": message,
         }, indent=2)
 
+    except asyncio.CancelledError:
+        # CancelledError is a BaseException, so the `except Exception` below never sees it —
+        # a cancelled/timed-out send would otherwise strand the reservation (principal + fee
+        # headroom). Release it (same call as the Exception branch), then re-raise untouched.
+        budget_service.release_reservation(reservation_id)
+        raise
+
     except Exception as e:
         logger.exception("Error sending on-chain payment")
+        # Release on an unexpected throw. NOTE: an on-chain broadcast that threw AFTER
+        # submission is ambiguous — funds may have moved; the durable operation ledger
+        # resolves that later. Here we preserve the prior behavior of recording no spend.
+        budget_service.release_reservation(reservation_id)
         return json.dumps({
             "success": False,
             "error": sanitize_error(str(e)),

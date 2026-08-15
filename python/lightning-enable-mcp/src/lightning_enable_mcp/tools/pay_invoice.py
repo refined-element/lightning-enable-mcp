@@ -5,6 +5,7 @@ Pay a Lightning invoice directly and get the preimage as proof of payment.
 Uses the new BudgetService with multi-tier approval logic.
 """
 
+import asyncio
 import json
 import logging
 import sys
@@ -77,6 +78,9 @@ async def pay_invoice(
     payment_policy = None
     # Declared outside the try so the generic handler can report the receipt signal.
     receipt_scope = None
+    # Atomic spend-reservation handle. Set once we're about to pay; committed on
+    # settle/pending, released on a proven hard failure or a pre-payment exception.
+    reservation_id = None
 
     try:
         # Normalize invoice to lowercase
@@ -201,6 +205,25 @@ async def pay_invoice(
             if result.level == ApprovalLevel.LOG_AND_APPROVE:
                 logger.info(f"Log-and-approve payment: {amount_sats} sats (${result.amount_usd:.2f})")
 
+            # Atomically reserve the amount against the session cap BEFORE calling the wallet.
+            # This closes the check-then-pay race: a second concurrent payment sees this
+            # reservation and is denied here instead of passing its own check against the same
+            # pre-payment balance. Committed on settle/pending, released on a proven failure.
+            reservation = await budget_service.try_reserve(amount_sats)
+            if not reservation.success:
+                return json.dumps({
+                    "success": False,
+                    "error": "Payment denied by budget policy",
+                    "denialReason": reservation.denial_reason,
+                    "budget": {
+                        "requestedSats": amount_sats,
+                        "requestedUsd": float(result.amount_usd),
+                        "remainingSessionUsd": float(result.remaining_session_budget_usd),
+                    },
+                    "note": "Edit ~/.lightning-enable/config.json to change limits.",
+                })
+            reservation_id = reservation.reservation_id
+
         # Pay the invoice.
         #
         # Two non-failure outcomes have no preimage and must NOT be flattened into
@@ -218,9 +241,10 @@ async def pay_invoice(
         except PaymentPendingError as e:
             # In flight, may still fail. Count it against the budget anyway (the
             # funds are committed; not counting them would let an agent retry past
-            # its limit), but never claim the payment succeeded.
-            if budget_service:
-                budget_service.record_spend(amount_sats)
+            # its limit), but never claim the payment succeeded. Commit the reservation
+            # (do NOT release — an accepted payment that may still settle keeps consuming budget).
+            if budget_service and reservation_id:
+                budget_service.commit_reservation(reservation_id, amount_sats)
                 budget_service.record_payment_time()
             if payment_history_service:
                 payment_history_service.record_payment(
@@ -243,10 +267,11 @@ async def pay_invoice(
                 "amount": {"sats": amount_sats},
             }, indent=2)
         except PreimageUnavailableError as e:
-            # Settled: the money is GONE, so record the spend. But there is no
-            # preimage, so no L402 proof — say so plainly instead of inventing one.
-            if budget_service:
-                budget_service.record_spend(amount_sats)
+            # Settled: the money is GONE, so record the spend by committing the reservation.
+            # But there is no preimage, so no L402 proof — say so plainly instead of
+            # inventing one.
+            if budget_service and reservation_id:
+                budget_service.commit_reservation(reservation_id, amount_sats)
                 budget_service.record_payment_time()
             if payment_history_service:
                 payment_history_service.record_payment(
@@ -273,6 +298,10 @@ async def pay_invoice(
             }, indent=2)
 
         if not preimage:
+            # Hard failure — the wallet proves no funds moved, so release the reservation
+            # and free the budget it was holding.
+            if budget_service and reservation_id:
+                budget_service.release_reservation(reservation_id)
             # Record failed payment (preimage is never stored in history).
             if payment_history_service:
                 payment_history_service.record_payment(
@@ -288,10 +317,10 @@ async def pay_invoice(
                 "error": "Payment failed - no preimage returned"
             })
 
-        # Record the payment
+        # Record the payment — the money moved, so commit the reservation as spend.
         session_info = None
-        if budget_service:
-            budget_service.record_spend(amount_sats)
+        if budget_service and reservation_id:
+            budget_service.commit_reservation(reservation_id, amount_sats)
             budget_service.record_payment_time()
 
             # Get updated session info
@@ -328,8 +357,25 @@ async def pay_invoice(
 
         return json.dumps(response, indent=2)
 
+    except asyncio.CancelledError:
+        # CancelledError is a BaseException, so the `except Exception` below never sees it —
+        # a cancelled/timed-out payment would otherwise strand the reservation and
+        # over-restrict the session budget forever. Release it (same guard + call as the
+        # Exception branch), then re-raise so the cancellation propagates untouched. Do NOT
+        # record a failed payment or do the other Exception-branch bookkeeping.
+        if budget_service and reservation_id:
+            budget_service.release_reservation(reservation_id)
+        raise
+
     except Exception as e:
         logger.exception("Error paying invoice")
+
+        # Release the reservation so a failed attempt doesn't strand budget. NOTE: an
+        # exception raised AFTER the wallet accepted the payment is ambiguous — funds may
+        # have moved. Releasing preserves the pre-existing behavior (the old code recorded
+        # no spend on exception); the durable operation ledger is what resolves that later.
+        if budget_service and reservation_id:
+            budget_service.release_reservation(reservation_id)
 
         # Record failed payment (preimage is never stored in history).
         if payment_history_service:

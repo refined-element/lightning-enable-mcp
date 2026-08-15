@@ -15,6 +15,7 @@ import asyncio
 import logging
 import secrets
 import threading
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
@@ -58,6 +59,41 @@ class ConfigureBudgetResult:
             effective_per_request_sats=per_request_sats,
             effective_per_session_sats=per_session_sats,
         )
+
+
+def _min_cap(a: Optional[int], b: Optional[int]) -> Optional[int]:
+    """Most-restrictive of two optional sats caps. None means 'no cap' (unlimited), so it
+    is ignored; the result is None only when BOTH inputs are None. Mirrors the .NET
+    ``Math.Min(x, y ?? long.MaxValue)`` with a 0/None sentinel for 'no config limit'."""
+    caps = [c for c in (a, b) if c is not None]
+    return min(caps) if caps else None
+
+
+@dataclass
+class SpendReservationResult:
+    """Result of an atomic spend reservation (:meth:`BudgetService.try_reserve`).
+
+    A reservation is the funds-safety primitive that closes the check-then-pay race: the
+    amount that could become committed is held against the effective session cap BEFORE the
+    wallet is called, so two concurrent payments can never both pass against the same
+    pre-payment balance. On success the caller MUST later either
+    :meth:`BudgetService.commit_reservation` (funds moved) or
+    :meth:`BudgetService.release_reservation` (proven no funds moved). Mirrors the .NET
+    ``SpendReservationResult`` record.
+    """
+
+    success: bool
+    reservation_id: Optional[str] = None
+    reserved_sats: int = 0
+    denial_reason: Optional[str] = None
+
+    @classmethod
+    def reserved(cls, reservation_id: str, reserved_sats: int) -> "SpendReservationResult":
+        return cls(success=True, reservation_id=reservation_id, reserved_sats=reserved_sats)
+
+    @classmethod
+    def denied(cls, reason: str) -> "SpendReservationResult":
+        return cls(success=False, denial_reason=reason)
 
 
 @dataclass
@@ -172,6 +208,14 @@ class BudgetService:
         # .NET BudgetService _runtimeMaxPerRequestSats / _runtimeMaxPerSessionSats.
         self._runtime_max_per_request_sats: Optional[int] = None
         self._runtime_max_per_session_sats: Optional[int] = None
+
+        # Active spend reservations (id -> reserved sats). The sum is mirrored in
+        # _reserved_sats so the reservation gate is O(1). Evaluating (settled + reserved)
+        # and inserting a reservation happen in ONE critical section under _lock, which is
+        # what makes the session cap race-safe. Mirrors the .NET BudgetService
+        # _reservations / _reservedSats.
+        self._reservations: dict[str, int] = {}
+        self._reserved_sats: int = 0
 
         # Lock for thread safety
         self._lock = asyncio.Lock()
@@ -378,6 +422,132 @@ class BudgetService:
             budget_service.record_payment_time()  # Start cooldown
         """
         self._last_payment_time = datetime.now(timezone.utc)
+
+    # =========================================================================
+    # Atomic spend reservations (mirrors the .NET TryReserveAsync / CommitReservation /
+    # ReleaseReservation). This is what closes the check-then-pay-then-record race:
+    # the amount is reserved against the effective session cap BEFORE the wallet is
+    # called, so a second concurrent payment is denied instead of passing its own check
+    # against the same pre-payment balance.
+    # =========================================================================
+
+    async def try_reserve(self, amount_sats: int) -> SpendReservationResult:
+        """Atomically reserve ``amount_sats`` against the effective session cap BEFORE the
+        wallet is called. Mirrors the .NET ``TryReserveAsync``.
+
+        Fails CLOSED if the BTC price is unavailable (the caps are USD-derived). Refreshes
+        the cached USD->sats caps OUTSIDE the lock (it awaits the price service), then under
+        ONE ``async with self._lock`` evaluates the effective caps against
+        (settled + all reservations + this amount) and inserts the reservation — so a second
+        concurrent payment sees this reservation and is denied instead of passing its own
+        check against the same balance. The lock covers BOTH the evaluation and the insert
+        and is NEVER held across a wallet call.
+        """
+        if amount_sats <= 0:
+            return SpendReservationResult.denied("Reservation amount must be greater than zero.")
+
+        # FAIL CLOSED on a price outage: the effective caps are USD-derived, so without a
+        # BTC price the reservation cannot be evaluated. Same guard as check_approval_level.
+        try:
+            await self._price_service.get_btc_price()
+        except PriceUnavailableError:
+            return SpendReservationResult.denied(
+                "BTC price is currently unavailable (all price sources failed), so this "
+                "payment cannot be checked against your budget and was refused. Please retry shortly."
+            )
+
+        # Refresh the cached USD->sats caps OUTSIDE the lock (it awaits); the gate below then
+        # runs fully synchronously against those cached sats values, so the lock is never
+        # held across an await.
+        await self._update_thresholds_if_needed()
+
+        async with self._lock:
+            # Effective per-session cap (sats) = most restrictive of the config-file limit
+            # (USD->sats; 0 => "no config limit" => unlimited) and any tighten-only runtime cap.
+            config_session = self._max_per_session_sats if self._max_per_session_sats > 0 else None
+            eff_session_cap = _min_cap(config_session, self._runtime_max_per_session_sats)
+
+            config_request = self._max_per_payment_sats if self._max_per_payment_sats > 0 else None
+            eff_request_cap = _min_cap(config_request, self._runtime_max_per_request_sats)
+
+            if eff_request_cap is not None and amount_sats > eff_request_cap:
+                return SpendReservationResult.denied(
+                    f"Payment of {amount_sats:,} sats exceeds the per-payment cap of "
+                    f"{eff_request_cap:,} sats."
+                )
+
+            # The whole point: settled + ALL active reservations + this amount must fit.
+            committed_plus_reserved = self._session_spent_sats + self._reserved_sats
+            if (
+                eff_session_cap is not None
+                and committed_plus_reserved + amount_sats > eff_session_cap
+            ):
+                remaining = max(0, eff_session_cap - committed_plus_reserved)
+                return SpendReservationResult.denied(
+                    f"Payment of {amount_sats:,} sats would exceed the session cap of "
+                    f"{eff_session_cap:,} sats (already spent {self._session_spent_sats:,}, "
+                    f"reserved {self._reserved_sats:,} by in-flight payments; "
+                    f"{remaining:,} sats available)."
+                )
+
+            reservation_id = uuid.uuid4().hex
+            self._reservations[reservation_id] = amount_sats
+            self._reserved_sats += amount_sats
+            return SpendReservationResult.reserved(reservation_id, amount_sats)
+
+    def commit_reservation(self, reservation_id: str, actual_debit_sats: int) -> None:
+        """Convert a reservation into settled spend. Mirrors the .NET ``CommitReservation``.
+
+        Pops the reservation (idempotent no-op if absent — so a retried / double commit can
+        never double-count), returns its held amount to the pool, then records
+        ``actual_debit_sats`` as spend exactly as the old ``record_spend`` did (sats + USD +
+        count + first-payment-cleared). Committing LESS than the reserved amount (e.g. an
+        on-chain principal+fee that came in under the principal+headroom reserve) automatically
+        frees the unused headroom. Use for SETTLED and PENDING outcomes (funds committed).
+
+        Sync with no ``await`` => atomic under the single asyncio event loop, same as the
+        record_spend it replaces.
+        """
+        if actual_debit_sats < 0:
+            raise ValueError("Amount cannot be negative")
+        if not reservation_id:
+            return
+
+        reserved = self._reservations.pop(reservation_id, None)
+        if reserved is None:
+            # Unknown / already-resolved reservation — idempotent no-op.
+            return
+        self._reserved_sats -= reserved
+
+        # Record the ACTUAL debit as settled spend, mirroring record_spend's USD tracking so
+        # get_status / get_remaining_session_sats stay accurate. Uses the last-known cached
+        # price; if none has been fetched yet (0) USD tracking starts later — never a fake number.
+        btc_price = self._price_service.get_cached_btc_price()
+        btc = Decimal(actual_debit_sats) / Decimal("100000000")
+        amount_usd = round(btc * btc_price, 2) if btc_price > 0 else Decimal("0")
+
+        self._session_spent_sats += actual_debit_sats
+        self._session_spent_usd += amount_usd
+        self._request_count += 1
+        self._is_first_payment = False
+
+        logger.info(
+            f"Committed reservation: {actual_debit_sats} sats (${amount_usd:.2f}). "
+            f"Session total: {self._session_spent_sats} sats (${self._session_spent_usd:.2f})"
+        )
+
+    def release_reservation(self, reservation_id: str) -> None:
+        """Release a reservation WITHOUT recording spend. Mirrors the .NET ``ReleaseReservation``.
+
+        Use ONLY when no funds provably moved: a hard payment failure, or an exception raised
+        before the wallet was ever called. Pops the reservation (idempotent no-op if absent)
+        and returns its held amount to the available budget.
+        """
+        if not reservation_id:
+            return
+        reserved = self._reservations.pop(reservation_id, None)
+        if reserved is not None:
+            self._reserved_sats -= reserved
 
     async def configure_budget(
         self, per_request_sats: int, per_session_sats: int

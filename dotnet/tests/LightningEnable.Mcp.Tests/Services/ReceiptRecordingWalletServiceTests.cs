@@ -44,6 +44,8 @@ public class ReceiptRecordingWalletServiceTests
         budget.Setup(b => b.GetConfig()).Returns(new BudgetConfig { SessionSpent = sessionSpent });
         budget.Setup(b => b.CheckBudget(It.IsAny<long>()))
             .Returns(new BudgetCheckResult { Allowed = true });
+        budget.Setup(b => b.TryReserveAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((long amt, CancellationToken _) => SpendReservationResult.Reserved("res", amt));
         budget.Setup(b => b.CheckApprovalLevelAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ApprovalCheckResult
             {

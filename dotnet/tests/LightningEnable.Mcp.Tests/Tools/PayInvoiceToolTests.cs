@@ -27,6 +27,13 @@ public class PayInvoiceToolTests
         // Default price service setup (100k USD/BTC = 1 sat = $0.001)
         _priceServiceMock.Setup(p => p.SatsToUsdAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync((long sats, CancellationToken _) => sats / 100000m);
+
+        // Default: the atomic spend reservation succeeds. The tool now reserves before
+        // paying and commits/releases after; tests that expect a payment to proceed need
+        // the reservation to be granted. Denial-path tests short-circuit at the approval
+        // check before reaching here, so this blanket setup is safe for them too.
+        _budgetServiceMock.Setup(b => b.TryReserveAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((long amt, CancellationToken _) => SpendReservationResult.Reserved("test-reservation", amt));
     }
 
     #region Input Validation Tests
@@ -447,8 +454,9 @@ public class PayInvoiceToolTests
             walletService: _walletServiceMock.Object,
             budgetService: _budgetServiceMock.Object);
 
-        // Assert - Verify spend was recorded (amount extracted from invoice)
-        _budgetServiceMock.Verify(b => b.RecordSpend(It.IsAny<long>()), Times.Once);
+        // Assert - the reservation is committed as spend (amount extracted from invoice)
+        _budgetServiceMock.Verify(b => b.CommitReservation("test-reservation", It.IsAny<long>()), Times.Once);
+        _budgetServiceMock.Verify(b => b.RecordSpend(It.IsAny<long>()), Times.Never);
     }
 
     #endregion
@@ -638,7 +646,7 @@ public class PayInvoiceToolTests
             budgetService: _budgetServiceMock.Object,
             priceService: _priceServiceMock.Object);
 
-        _budgetServiceMock.Verify(b => b.RecordSpend(100), Times.Once);
+        _budgetServiceMock.Verify(b => b.CommitReservation("test-reservation", 100), Times.Once);
     }
 
     [Fact]

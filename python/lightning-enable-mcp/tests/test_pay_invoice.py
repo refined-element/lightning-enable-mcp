@@ -6,6 +6,7 @@ truth for spending limits + the out-of-band confirmation flow, and the separate
 PaymentHistoryService records the audit trail (never the preimage).
 """
 
+import asyncio
 import json
 import pytest
 from datetime import datetime, timezone, timedelta
@@ -13,10 +14,27 @@ from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from lightning_enable_mcp.tools.pay_invoice import pay_invoice
-from lightning_enable_mcp.budget_service import PendingConfirmation
+from lightning_enable_mcp.budget_service import PendingConfirmation, SpendReservationResult
 from lightning_enable_mcp.payment_history_service import PaymentHistoryService
 from lightning_enable_mcp.config import ApprovalLevel
 from lightning_enable_mcp.wallet_errors import PaymentPendingError, PreimageUnavailableError
+
+
+# Reservation id every budget mock hands back from try_reserve; tests assert commit/release
+# were called with it. The reserve mirrors the amount so reserved_sats stays meaningful.
+_RESV_ID = "resv-1"
+
+
+def _grant_reservation(budget):
+    """Wire a MagicMock BudgetService with the reserve/commit/release API (mirrors how the
+    .NET budget mocks were updated): try_reserve grants a reservation, commit/release are
+    plain spies."""
+    budget.try_reserve = AsyncMock(
+        side_effect=lambda amt: SpendReservationResult.reserved(_RESV_ID, amt)
+    )
+    budget.commit_reservation = MagicMock()
+    budget.release_reservation = MagicMock()
+    return budget
 
 
 # pay_invoice now decodes the BOLT11 amount and budgets against IT (not max_sats).
@@ -59,7 +77,7 @@ def _approving_budget():
     budget.get_status = MagicMock(return_value={
         "session": {"spentSats": 500, "spentUsd": 0.5, "remainingUsd": 99.5, "requestCount": 1}
     })
-    return budget
+    return _grant_reservation(budget)
 
 
 def _denying_budget(reason="exceeds limit"):
@@ -290,6 +308,26 @@ class TestPayInvoice:
         assert data["success"] is True
         assert data["preimage"] == "preimage"
 
+    @pytest.mark.asyncio
+    async def test_cancelled_payment_releases_reservation_and_reraises(self):
+        """A cancelled/timed-out payment must RELEASE its budget reservation (not strand it)
+        and re-raise the cancellation untouched. asyncio.CancelledError is a BaseException, so
+        the generic `except Exception` never sees it — without a dedicated handler the
+        reservation leaks and the session budget is over-restricted forever."""
+        _DECODE_SATS["v"] = 1000
+        wallet = AsyncMock()
+        wallet.pay_invoice = AsyncMock(side_effect=asyncio.CancelledError())
+        budget = _approving_budget()
+
+        with pytest.raises(asyncio.CancelledError):
+            await pay_invoice(
+                invoice="lnbc1000n1...", max_sats=1000, wallet=wallet, budget_service=budget,
+            )
+
+        # The reservation must be released, and NOT committed as spend.
+        budget.release_reservation.assert_called_once_with(_RESV_ID)
+        budget.commit_reservation.assert_not_called()
+
 
 def _confirming_budget(code: str = "ABC123", sats: int = 50000):
     """A BudgetService mock whose check returns requires_confirmation=True."""
@@ -314,7 +352,7 @@ def _confirming_budget(code: str = "ABC123", sats: int = 50000):
     budget.get_status = MagicMock(return_value={
         "session": {"spentSats": sats, "spentUsd": 50.0, "remainingUsd": 50.0, "requestCount": 1}
     })
-    return budget
+    return _grant_reservation(budget)
 
 
 class TestPayInvoiceOutOfBandConfirmation:
@@ -423,7 +461,8 @@ class TestPayInvoiceAmountDecoding:
         data = json.loads(result)
         assert data["success"] is True
         budget.check_approval_level.assert_awaited_once_with(50000)
-        budget.record_spend.assert_called_once_with(50000)
+        # Spend is now committed against the reservation (not a direct record_spend).
+        budget.commit_reservation.assert_called_once_with(_RESV_ID, 50000)
 
 
 class TestPayInvoiceWithoutPreimage:
@@ -464,7 +503,7 @@ class TestPayInvoiceWithoutPreimage:
 
         await pay_invoice(invoice="lnbc1000n1...", max_sats=1000, wallet=wallet, budget_service=budget)
 
-        budget.record_spend.assert_called_once_with(1000)
+        budget.commit_reservation.assert_called_once_with(_RESV_ID, 1000)
 
     @pytest.mark.asyncio
     async def test_pending_payment_is_recorded_as_pending_in_history(self):
@@ -515,7 +554,7 @@ class TestPayInvoiceWithoutPreimage:
 
         await pay_invoice(invoice="lnbc1000n1...", max_sats=1000, wallet=wallet, budget_service=budget)
 
-        budget.record_spend.assert_called_once_with(1000)
+        budget.commit_reservation.assert_called_once_with(_RESV_ID, 1000)
 
     @pytest.mark.asyncio
     async def test_no_response_field_ever_carries_a_tracking_id_as_preimage(self):

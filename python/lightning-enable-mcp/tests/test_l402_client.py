@@ -16,10 +16,25 @@ from lightning_enable_mcp.l402_client import (
     MppToken,
 )
 from lightning_enable_mcp._redirect import resolve_redirect_location
+from lightning_enable_mcp.budget_service import SpendReservationResult
 from lightning_enable_mcp.wallet_errors import (
     PaymentPendingError,
     PreimageUnavailableError,
 )
+
+# Reservation id every budget mock hands back from try_reserve; commit/release assert on it.
+_RESV_ID = "resv-1"
+
+
+def _grant_reservation(budget):
+    """Wire a MagicMock BudgetService with the reserve/commit/release API used by the client:
+    try_reserve grants a reservation (echoing the requested sats), commit/release are spies."""
+    budget.try_reserve = AsyncMock(
+        side_effect=lambda amt: SpendReservationResult.reserved(_RESV_ID, amt)
+    )
+    budget.commit_reservation = MagicMock()
+    budget.release_reservation = MagicMock()
+    return budget
 
 
 class TestL402Challenge:
@@ -497,7 +512,7 @@ class TestClientCentralizedRecording:
             headers=[("WWW-Authenticate", 'L402 macaroon="YWJjZGVm", invoice="lnbc100n1pjtest"')],
             request=req,
         )
-        budget = MagicMock()
+        budget = _grant_reservation(MagicMock())
         history = MagicMock()
         mock_wallet = AsyncMock()
         mock_wallet.pay_invoice = AsyncMock(return_value="preimage456")
@@ -508,7 +523,8 @@ class TestClientCentralizedRecording:
         return client, budget, history, mock_wallet
 
     def _assert_recorded_once(self, budget, history):
-        budget.record_spend.assert_called_once_with(10)  # 10_000 msat -> 10 sats
+        # Spend is committed against the reservation (10_000 msat -> 10 sats), exactly once.
+        budget.commit_reservation.assert_called_once_with(_RESV_ID, 10)
         budget.record_payment_time.assert_called_once()
         history.record_payment.assert_called_once()
         # A settled payment is always recorded status="success" (never failed).
@@ -591,7 +607,7 @@ class TestClientCentralizedRecording:
             headers=[("WWW-Authenticate", 'L402 macaroon="YWJjZGVm", invoice="lnbc100n1pjtest"')],
             request=req,
         )
-        budget = MagicMock()
+        budget = _grant_reservation(MagicMock())
         history = MagicMock()
         mock_wallet = AsyncMock()
         mock_wallet.pay_invoice = AsyncMock(side_effect=PreimageUnavailableError(
@@ -607,7 +623,8 @@ class TestClientCentralizedRecording:
                 await client.fetch("https://api.provider.com/premium", max_sats=1000)
 
         assert exc.value.amount_paid == 10
-        budget.record_spend.assert_called_once_with(10)
+        # Money moved (settled, unprovable) — spend is committed against the reservation.
+        budget.commit_reservation.assert_called_once_with(_RESV_ID, 10)
         budget.record_payment_time.assert_called_once()
         history.record_payment.assert_not_called()
 

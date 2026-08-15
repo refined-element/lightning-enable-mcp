@@ -114,27 +114,39 @@ public class L402HttpClient : IL402HttpClient
             throw new InvalidOperationException("Invoice has no amount specified. For security, only invoices with explicit amounts are supported.");
         }
 
-        // Check budget
-        var budgetCheck = _budgetService.CheckBudget(amountSats.Value);
-        if (!budgetCheck.Allowed)
-        {
-            throw new InvalidOperationException($"Budget check failed: {budgetCheck.DenialReason}");
-        }
-
         if (amountSats.Value > maxSats)
         {
             throw new InvalidOperationException($"Invoice amount {amountSats.Value} sats exceeds maximum {maxSats} sats");
         }
 
-        // Pay invoice
-        var paymentResult = await _walletService.PayInvoiceAsync(invoice, cancellationToken);
+        // Atomically reserve against the session cap BEFORE paying — closes the
+        // check-then-pay race. Committed on settle/pending, released on a proven failure.
+        var reservation = await _budgetService.TryReserveAsync(amountSats.Value, cancellationToken);
+        if (!reservation.Success)
+        {
+            throw new InvalidOperationException($"Budget check failed: {reservation.DenialReason}");
+        }
+        var reservationId = reservation.ReservationId!;
+
+        // Pay invoice. If the wallet call throws, no funds provably moved here — release.
+        NwcPaymentResult paymentResult;
+        try
+        {
+            paymentResult = await _walletService.PayInvoiceAsync(invoice, cancellationToken);
+        }
+        catch
+        {
+            _budgetService.ReleaseReservation(reservationId);
+            throw;
+        }
 
         // IN FLIGHT: not settled, may still fail — so no preimage exists to authenticate
         // with. The funds are committed, so record the spend rather than losing it, but
         // do not call this a failure (the caller must not retry and pay twice).
         if (paymentResult.IsPending)
         {
-            _budgetService.RecordSpend(amountSats.Value);
+            // Funds committed but not settled — commit the reservation (do NOT release).
+            _budgetService.CommitReservation(reservationId, amountSats.Value);
             var pendingTracking = !string.IsNullOrEmpty(paymentResult.TrackingId)
                 ? $" (tracking ID: {paymentResult.TrackingId})"
                 : "";
@@ -145,6 +157,8 @@ public class L402HttpClient : IL402HttpClient
 
         if (!paymentResult.Success)
         {
+            // Hard failure — the wallet proves no funds moved, so release the reservation.
+            _budgetService.ReleaseReservation(reservationId);
             throw new InvalidOperationException($"Payment failed: {paymentResult.ErrorMessage}");
         }
 
@@ -152,9 +166,9 @@ public class L402HttpClient : IL402HttpClient
         if (!paymentResult.HasPreimage)
         {
             // The payment SETTLED — the money left the wallet — there is simply no proof
-            // of it. Record the real spend before bailing out, or the budget silently
+            // of it. Commit the reservation before bailing out, or the budget silently
             // under-counts a payment that actually happened.
-            _budgetService.RecordSpend(amountSats.Value);
+            _budgetService.CommitReservation(reservationId, amountSats.Value);
 
             var trackingInfo = !string.IsNullOrEmpty(paymentResult.TrackingId)
                 ? $" (tracking ID: {paymentResult.TrackingId})"
@@ -165,8 +179,8 @@ public class L402HttpClient : IL402HttpClient
                 $"{protocol} requires a preimage for verification. Use NWC or LND wallet for L402/MPP support.");
         }
 
-        // Record payment
-        _budgetService.RecordSpend(amountSats.Value);
+        // Settled with preimage — commit the reservation as spend.
+        _budgetService.CommitReservation(reservationId, amountSats.Value);
 
         if (isMpp)
         {
@@ -228,27 +242,41 @@ public class L402HttpClient : IL402HttpClient
             return L402FetchResult.Failed(url, "Payment invoice has no amount specified. For security, only invoices with explicit amounts are supported.", 402);
         }
 
-        // Check budget
-        var budgetCheck = _budgetService.CheckBudget(amountSats.Value);
-        if (!budgetCheck.Allowed)
-        {
-            return L402FetchResult.Failed(url, $"Budget check failed: {budgetCheck.DenialReason}", 402);
-        }
-
         if (amountSats.Value > maxSats)
         {
             return L402FetchResult.Failed(url, $"Invoice amount {amountSats.Value} sats exceeds maximum {maxSats} sats", 402);
         }
 
-        // Pay invoice via wallet
-        var paymentResult = await _walletService.PayInvoiceAsync(parsed.Invoice!, cancellationToken);
+        // Atomically reserve the amount against the session cap BEFORE paying — this closes
+        // the check-then-pay race so two concurrent L402 fetches can't both pass against the
+        // same balance. Committed on settle/pending, released on a proven hard failure.
+        var reservation = await _budgetService.TryReserveAsync(amountSats.Value, cancellationToken);
+        if (!reservation.Success)
+        {
+            return L402FetchResult.Failed(url, $"Budget check failed: {reservation.DenialReason}", 402);
+        }
+        var reservationId = reservation.ReservationId!;
+
+        // Pay invoice via wallet. If the wallet call itself throws, no funds provably moved
+        // on this path — release the reservation and rethrow.
+        NwcPaymentResult paymentResult;
+        try
+        {
+            paymentResult = await _walletService.PayInvoiceAsync(parsed.Invoice!, cancellationToken);
+        }
+        catch
+        {
+            _budgetService.ReleaseReservation(reservationId);
+            throw;
+        }
 
         // IN FLIGHT: not settled, may still fail — no preimage exists to authenticate
         // with. The funds are committed, so record the spend rather than losing it, but
         // do not call this a failure (the caller must not retry and pay twice).
         if (paymentResult.IsPending)
         {
-            _budgetService.RecordSpend(amountSats.Value);
+            // Funds committed but not settled — commit the reservation (do NOT release).
+            _budgetService.CommitReservation(reservationId, amountSats.Value);
             var pendingTracking = !string.IsNullOrEmpty(paymentResult.TrackingId)
                 ? $" (tracking ID: {paymentResult.TrackingId})"
                 : "";
@@ -267,6 +295,8 @@ public class L402HttpClient : IL402HttpClient
 
         if (!paymentResult.Success)
         {
+            // Hard failure — the wallet proves no funds moved, so release the reservation.
+            _budgetService.ReleaseReservation(reservationId);
             _historyService.RecordFailedPayment(url, method, amountSats.Value, paymentResult.ErrorMessage ?? "Unknown error", parsed.Invoice!);
             return L402FetchResult.Failed(url, $"Payment failed: {paymentResult.ErrorMessage}", 402);
         }
@@ -275,9 +305,9 @@ public class L402HttpClient : IL402HttpClient
         if (!paymentResult.HasPreimage)
         {
             // The payment SETTLED — the money left the wallet — there is simply no proof
-            // of it. Record the real spend before bailing out, or the budget silently
+            // of it. Commit the reservation before bailing out, or the budget silently
             // under-counts a payment that actually happened.
-            _budgetService.RecordSpend(amountSats.Value);
+            _budgetService.CommitReservation(reservationId, amountSats.Value);
 
             var trackingInfo = !string.IsNullOrEmpty(paymentResult.TrackingId)
                 ? $" (tracking ID: {paymentResult.TrackingId})"
@@ -300,7 +330,9 @@ public class L402HttpClient : IL402HttpClient
         // passive: they MUST NOT record spend / payment / payment-time / failed-payment
         // themselves. RecordPaymentTime arms the cross-payment cooldown on EVERY real
         // payment — success, redirect, or post-payment error — matching the Python port.
-        _budgetService.RecordSpend(amountSats.Value);
+        // Settled with preimage — commit the reservation as spend, exactly once, before
+        // the authorized retry (which may 2xx / 3xx / 4xx / 5xx — the money already moved).
+        _budgetService.CommitReservation(reservationId, amountSats.Value);
         _budgetService.RecordPaymentTime();
 
         string authToken;

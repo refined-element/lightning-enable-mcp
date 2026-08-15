@@ -60,6 +60,8 @@ public class L402HttpClientRedirectTests
         wallet.SetupGet(w => w.IsConfigured).Returns(true);
         wallet.SetupGet(w => w.ProviderName).Returns("NWC");
         var budget = new Mock<IBudgetService>();
+        budget.Setup(b => b.TryReserveAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((long amt, CancellationToken _) => SpendReservationResult.Reserved("res", amt));
         var history = new Mock<IPaymentHistoryService>();
         var client = new L402HttpClient(http, wallet.Object, budget.Object, history.Object);
         return (client, handler, wallet, budget);
@@ -108,8 +110,8 @@ public class L402HttpClientRedirectTests
 
         // The money path was never touched.
         wallet.Verify(w => w.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
-        budget.Verify(b => b.RecordSpend(It.IsAny<long>()), Times.Never);
-        budget.Verify(b => b.CheckBudget(It.IsAny<long>()), Times.Never);
+        budget.Verify(b => b.TryReserveAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()), Times.Never);
+        budget.Verify(b => b.CommitReservation(It.IsAny<string>(), It.IsAny<long>()), Times.Never);
 
         // And only the initial request was made — the redirect target was never fetched.
         handler.Received.Should().ContainSingle();
@@ -193,6 +195,8 @@ public class L402HttpClientRedirectTests
         var budget = new Mock<IBudgetService>();
         budget.Setup(b => b.CheckBudget(It.IsAny<long>()))
             .Returns(BudgetCheckResult.Allow(100000, 1000));
+        budget.Setup(b => b.TryReserveAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((long amt, CancellationToken _) => SpendReservationResult.Reserved("res", amt));
         var history = new Mock<IPaymentHistoryService>();
 
         var client = new L402HttpClient(new HttpClient(handler), wallet.Object, budget.Object, history.Object);
@@ -210,7 +214,7 @@ public class L402HttpClientRedirectTests
 
         // Recorded EXACTLY ONCE — a settled payment, never a failed one. The cooldown is
         // armed exactly once too (parity with Python's settle-redirect path — FIX b).
-        budget.Verify(b => b.RecordSpend(10), Times.Once);
+        budget.Verify(b => b.CommitReservation(It.IsAny<string>(), 10), Times.Once);
         budget.Verify(b => b.RecordPaymentTime(), Times.Once);
         history.Verify(h => h.RecordPayment(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
@@ -253,6 +257,8 @@ public class L402HttpClientRedirectTests
             });
         var budget = new Mock<IBudgetService>();
         budget.Setup(b => b.CheckBudget(It.IsAny<long>())).Returns(BudgetCheckResult.Allow(100000, 1000));
+        budget.Setup(b => b.TryReserveAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((long amt, CancellationToken _) => SpendReservationResult.Reserved("res", amt));
         var history = new Mock<IPaymentHistoryService>();
         var client = new L402HttpClient(new HttpClient(handler), wallet.Object, budget.Object, history.Object);
         return (client, budget, history);
@@ -260,7 +266,7 @@ public class L402HttpClientRedirectTests
 
     private static void VerifyRecordedExactlyOnce(Mock<IBudgetService> budget, Mock<IPaymentHistoryService> history)
     {
-        budget.Verify(b => b.RecordSpend(10), Times.Once);
+        budget.Verify(b => b.CommitReservation(It.IsAny<string>(), 10), Times.Once);
         budget.Verify(b => b.RecordPaymentTime(), Times.Once);
         history.Verify(h => h.RecordPayment(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
@@ -327,6 +333,8 @@ public class L402HttpClientRedirectTests
             .ReturnsAsync(new NwcPaymentResult { Success = false, ErrorMessage = "insufficient balance" });
         var budget = new Mock<IBudgetService>();
         budget.Setup(b => b.CheckBudget(It.IsAny<long>())).Returns(BudgetCheckResult.Allow(100000, 1000));
+        budget.Setup(b => b.TryReserveAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((long amt, CancellationToken _) => SpendReservationResult.Reserved("res", amt));
         var history = new Mock<IPaymentHistoryService>();
         var client = new L402HttpClient(new HttpClient(handler), wallet.Object, budget.Object, history.Object);
 
@@ -338,7 +346,8 @@ public class L402HttpClientRedirectTests
         history.Verify(h => h.RecordFailedPayment(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),
             It.IsAny<string>(), It.IsAny<string?>()), Times.Once);
-        budget.Verify(b => b.RecordSpend(It.IsAny<long>()), Times.Never);
+        budget.Verify(b => b.CommitReservation(It.IsAny<string>(), It.IsAny<long>()), Times.Never);
+        budget.Verify(b => b.ReleaseReservation(It.IsAny<string>()), Times.Once);
         budget.Verify(b => b.RecordPaymentTime(), Times.Never);
         history.Verify(h => h.RecordPayment(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(),

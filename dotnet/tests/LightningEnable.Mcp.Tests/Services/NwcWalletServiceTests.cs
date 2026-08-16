@@ -1229,4 +1229,181 @@ public class NwcWalletServiceTests
 
     #endregion
 
+    #region Multi-relay failover (parse retains all + end-to-end connect-site failover)
+
+    // Neutral fixture values — no "secret-..."-shaped literals (gitleaks generic-api-key).
+    private const string FailoverWalletPubkeyHex =
+        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    private const string FailoverClientSecretHex =
+        "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+
+    // Returns a loopback ws:// URL on a just-released ephemeral port. Nothing is listening there,
+    // so a ClientWebSocket connect gets "connection refused" fast — models an unreachable relay.
+    private static string FreeLoopbackWsUrl()
+    {
+        var l = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        l.Start();
+        var port = ((System.Net.IPEndPoint)l.LocalEndpoint).Port;
+        l.Stop();
+        return $"ws://127.0.0.1:{port}/";
+    }
+
+    [Fact]
+    public void NwcConfig_Parse_MultipleRelayParams_RetainsAllRelaysInOrderForFailover()
+    {
+        // getalby.com-style NWC strings advertise TWO relays FOR redundancy. The 1.23.2 fix
+        // selected only the first; full failover parity keeps ALL valid relays, in order, so the
+        // connect sites can fail over from the primary to the next. RelayUrl stays the primary
+        // (first) for backward compatibility.
+        const string twoRelayUri =
+            "nostr+walletconnect://" + FailoverWalletPubkeyHex +
+            "?relay=wss://relay.getalby.com&relay=wss://relay2.getalby.com" +
+            "&secret=" + FailoverClientSecretHex;
+
+        var config = LightningEnable.Mcp.Models.NwcConfig.Parse(twoRelayUri);
+
+        config.Relays.Should().Equal(
+            new[] { "wss://relay.getalby.com", "wss://relay2.getalby.com" },
+            "both advertised relays must be retained in order for failover");
+        config.RelayUrl.Should().Be("wss://relay.getalby.com", "the first relay is the primary");
+        var construct = () => new Uri(config.RelayUrl);
+        construct.Should().NotThrow<UriFormatException>("each retained relay must be a single, well-formed URI");
+    }
+
+    [Fact]
+    public void NwcConfig_Parse_SingleRelay_RelaysContainsExactlyThatRelay()
+    {
+        // Single-relay behaviour is byte-for-byte unchanged: RelayUrl == the relay, and Relays is
+        // the one-element list wrapping it. Guards against the failover change altering the
+        // overwhelmingly-common single-relay case.
+        const string oneRelayUri =
+            "nostr+walletconnect://" + FailoverWalletPubkeyHex +
+            "?relay=wss://relay.example.com&secret=" + FailoverClientSecretHex;
+
+        var config = LightningEnable.Mcp.Models.NwcConfig.Parse(oneRelayUri);
+
+        config.RelayUrl.Should().Be("wss://relay.example.com");
+        config.Relays.Should().Equal(new[] { "wss://relay.example.com" });
+    }
+
+    [Fact]
+    public void NwcConfig_Parse_RelayWithoutScheme_ThrowsArgumentException()
+    {
+        // A relay value with no scheme ("relay.getalby.com") is not an absolute ws/wss URI. It
+        // must be rejected up front — matching the pubkey/secret validation contract — rather than
+        // slipping through parse and only failing late at ConnectAsync.
+        const string uri =
+            "nostr+walletconnect://" + FailoverWalletPubkeyHex +
+            "?relay=relay.getalby.com&secret=" + FailoverClientSecretHex;
+
+        var act = () => LightningEnable.Mcp.Models.NwcConfig.Parse(uri);
+
+        act.Should().Throw<ArgumentException>().WithMessage("*relay*");
+    }
+
+    [Fact]
+    public void NwcConfig_Parse_CommaJoinedSingleRelayValue_ThrowsArgumentException()
+    {
+        // A single relay param whose value is itself a comma-joined pair ("wss://a,wss://b") is
+        // exactly the invalid URI the original comma-join bug produced. It is not a single
+        // well-formed relay and must fail here, not late at connect time.
+        const string uri =
+            "nostr+walletconnect://" + FailoverWalletPubkeyHex +
+            "?relay=wss://relay.getalby.com,wss://relay2.getalby.com&secret=" + FailoverClientSecretHex;
+
+        var act = () => LightningEnable.Mcp.Models.NwcConfig.Parse(uri);
+
+        act.Should().Throw<ArgumentException>().WithMessage("*relay*");
+    }
+
+    [Fact]
+    public async Task PayInvoiceAsync_AgainstMockRelay_WorkingFirstRelay_ReturnsPreimage()
+    {
+        // End-to-end pay against an in-process mock relay reachable on the FIRST (only) relay.
+        // The client encrypts a pay_invoice request, the mock decrypts it and replies with a
+        // signed, encrypted kind-23195 event carrying the preimage; PayInvoiceAsync must surface it.
+        var (walletPriv, walletPub) = GenerateKeyPair();
+        var walletPubHex = Convert.ToHexString(walletPub).ToLowerInvariant();
+        const string preimage = "11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff";
+
+        await using var relay = new MockNwcRelay(walletPriv, walletPubHex, preimage);
+        await relay.StartAsync();
+
+        var connStr =
+            "nostr+walletconnect://" + walletPubHex +
+            "?relay=" + relay.Url + "&secret=" + FailoverClientSecretHex;
+
+        var prevConn = Environment.GetEnvironmentVariable("NWC_CONNECTION_STRING");
+        var prevEnc = Environment.GetEnvironmentVariable("NWC_ENCRYPTION");
+        try
+        {
+            Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", connStr);
+            // Pin nip04 so the pay is deterministic and skips the INFO-event round-trip.
+            Environment.SetEnvironmentVariable("NWC_ENCRYPTION", "nip04");
+
+            using var http = new HttpClient();
+            var svc = new LightningEnable.Mcp.Services.NwcWalletService(http);
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+            var result = await svc.PayInvoiceAsync("lnbc100n1p3xyztest", cts.Token);
+
+            result.Success.Should().BeTrue($"the mock relay settles the payment; error: {result.ErrorMessage}");
+            result.HasPreimage.Should().BeTrue();
+            result.PreimageHex.Should().Be(preimage);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", prevConn);
+            Environment.SetEnvironmentVariable("NWC_ENCRYPTION", prevEnc);
+        }
+    }
+
+    [Fact]
+    public async Task PayInvoiceAsync_FirstRelayUnreachable_FailsOverToSecondRelay_AndPays()
+    {
+        // Relay failover: the FIRST advertised relay is a dead loopback port (connection refused);
+        // the SECOND is the working mock. With encryption "auto" (default), BOTH connect sites run
+        // — the INFO-event auto-detect fetch AND the pay request — and each must skip the dead
+        // relay and succeed via the second. Proves multi-relay redundancy, not just first-relay use.
+        var (walletPriv, walletPub) = GenerateKeyPair();
+        var walletPubHex = Convert.ToHexString(walletPub).ToLowerInvariant();
+        const string preimage = "ccddeeff00112233445566778899aabbccddeeff00112233445566778899aabb";
+
+        await using var relay = new MockNwcRelay(walletPriv, walletPubHex, preimage);
+        await relay.StartAsync();
+
+        var deadRelayUrl = FreeLoopbackWsUrl(); // nothing is listening → connect refused fast
+
+        var connStr =
+            "nostr+walletconnect://" + walletPubHex +
+            "?relay=" + deadRelayUrl + "&relay=" + relay.Url + "&secret=" + FailoverClientSecretHex;
+
+        var prevConn = Environment.GetEnvironmentVariable("NWC_CONNECTION_STRING");
+        var prevEnc = Environment.GetEnvironmentVariable("NWC_ENCRYPTION");
+        try
+        {
+            Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", connStr);
+            // Force "auto" so the INFO-event fetch connect site runs too (and also fails over).
+            Environment.SetEnvironmentVariable("NWC_ENCRYPTION", "auto");
+
+            using var http = new HttpClient();
+            var svc = new LightningEnable.Mcp.Services.NwcWalletService(http);
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+            var result = await svc.PayInvoiceAsync("lnbc100n1p3xyztest", cts.Token);
+
+            result.Success.Should().BeTrue(
+                $"a connect failure on the first relay must fail over to the second (working) relay; error: {result.ErrorMessage}");
+            result.HasPreimage.Should().BeTrue();
+            result.PreimageHex.Should().Be(preimage);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", prevConn);
+            Environment.SetEnvironmentVariable("NWC_ENCRYPTION", prevEnc);
+        }
+    }
+
+    #endregion
+
 }

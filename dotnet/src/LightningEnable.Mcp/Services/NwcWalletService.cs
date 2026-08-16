@@ -516,6 +516,50 @@ public class NwcWalletService : IWalletService, IDisposable
     internal const string FailKindUnknown = "unknown";
 
     /// <summary>
+    /// Opens a <see cref="ClientWebSocket"/> to the first reachable advertised relay, trying each
+    /// relay in <paramref name="relays"/> order. A connect failure (relay unreachable / socket
+    /// error) disposes the half-open socket and fails over to the next relay; the last failure is
+    /// rethrown only once EVERY relay is exhausted — so the single-relay case keeps its original
+    /// throw-on-failure behaviour (the caller maps it to a structured connect failure / NIP-04
+    /// fallback), and the multi-relay case (getalby.com-style redundancy) survives a dead primary.
+    /// Caller cancellation propagates immediately rather than being treated as a relay failure.
+    /// The caller owns disposing the returned socket.
+    /// </summary>
+    private static async Task<ClientWebSocket> ConnectToFirstReachableRelayAsync(
+        IReadOnlyList<string> relays, CancellationToken ct)
+    {
+        Exception? lastError = null;
+        foreach (var relay in relays)
+        {
+            ct.ThrowIfCancellationRequested();
+            var ws = new ClientWebSocket();
+            try
+            {
+                Console.Error.WriteLine($"[NWC] Connecting to: {relay}");
+                await ws.ConnectAsync(new Uri(relay), ct).ConfigureAwait(false);
+                Console.Error.WriteLine($"[NWC] Connected, state: {ws.State}");
+                return ws;
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                // Caller cancelled — propagate immediately; don't fail over.
+                ws.Dispose();
+                throw;
+            }
+            catch (Exception ex)
+            {
+                // Unreachable relay — dispose the half-open socket and fail over to the next.
+                Console.Error.WriteLine($"[NWC] Relay {relay} unreachable ({ex.GetType().Name}: {ex.Message}); trying next");
+                ws.Dispose();
+                lastError = ex;
+            }
+        }
+
+        // Every advertised relay refused the connection.
+        throw lastError ?? new InvalidOperationException("NWC connection string missing relay URL");
+    }
+
+    /// <summary>
     /// Picks the strongest encryption scheme advertised in <paramref name="encryptionTagValue"/>,
     /// which is the value of the NIP-47 INFO event's <c>encryption</c> tag (a space-separated
     /// list of supported schemes per the spec, e.g. <c>"nip04 nip44_v2"</c>).
@@ -588,14 +632,15 @@ public class NwcWalletService : IWalletService, IDisposable
         // assert this stays at 1 instead of relying on wall-clock thresholds.
         System.Threading.Interlocked.Increment(ref InfoEventFetchCount);
 
-        using var ws = new ClientWebSocket();
+        ClientWebSocket? ws = null;
         try
         {
             using var timeout = new CancellationTokenSource(AutoResolveTimeout);
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeout.Token);
 
-            var relayUri = new Uri(_config.RelayUrl);
-            await ws.ConnectAsync(relayUri, linked.Token).ConfigureAwait(false);
+            // Connect to the first reachable relay, failing over across the advertised list. A dead
+            // primary relay must not defeat the auto-detect probe when a working relay is listed.
+            ws = await ConnectToFirstReachableRelayAsync(_config.Relays, linked.Token).ConfigureAwait(false);
 
             // Subscribe to the wallet's INFO event. NIP-47 says the wallet service
             // SHOULD publish kind 13194 — relays usually have it stored, so this
@@ -705,10 +750,17 @@ public class NwcWalletService : IWalletService, IDisposable
         }
         finally
         {
-            if (ws.State == WebSocketState.Open)
+            // ws is owned here (created via the connect helper, not a `using`) — dispose it
+            // explicitly after a best-effort graceful close. Null when every relay was unreachable
+            // (the helper threw before returning a socket).
+            if (ws != null)
             {
-                try { await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Done", CancellationToken.None).ConfigureAwait(false); }
-                catch { /* best-effort close */ }
+                if (ws.State == WebSocketState.Open)
+                {
+                    try { await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Done", CancellationToken.None).ConfigureAwait(false); }
+                    catch { /* best-effort close */ }
+                }
+                ws.Dispose();
             }
         }
     }
@@ -722,26 +774,20 @@ public class NwcWalletService : IWalletService, IDisposable
         var expectedResultType = request["method"]?.GetValue<string>();
         Console.Error.WriteLine($"[NWC] Sending request, method: {expectedResultType}, encryption: {_config.Encryption}");
 
-        using var ws = new ClientWebSocket();
-        Uri relayUri;
-
-        // Connect first; report a specific failure kind if the WS handshake itself fails.
-        // Separating connect from send/receive lets the caller distinguish "couldn't reach
-        // the relay" from "relay accepted us but the wallet never replied" — the latter
-        // is the most common silent-encryption-mismatch symptom.
-        // Uri construction is included in the try because a malformed RelayUrl would
-        // throw UriFormatException; that has to flow through the structured outcome
-        // rather than escape as an unhandled exception to the caller.
+        // Connect first, failing over across ALL advertised relays; report a specific failure
+        // kind only if every relay's WS handshake fails. Separating connect from send/receive lets
+        // the caller distinguish "couldn't reach any relay" from "a relay accepted us but the
+        // wallet never replied" — the latter is the most common silent-encryption-mismatch symptom.
+        // Relays are pre-validated in NwcConfig.Parse (absolute ws/wss), so new Uri(relay) inside
+        // the connect helper can't throw UriFormatException here; any residual failure classifies
+        // as connect_failed via the generic catch below rather than escaping unhandled.
+        // NOTE: not a `using` — the connect helper owns the returned socket, so we dispose it
+        // explicitly on every exit below (the encryption-resolution cancel path AND the final
+        // finally), preserving the original `using var ws` disposal coverage byte-for-byte.
+        ClientWebSocket ws;
         try
         {
-            relayUri = new Uri(_config.RelayUrl);
-            Console.Error.WriteLine($"[NWC] Connecting to: {relayUri}");
-            await ws.ConnectAsync(relayUri, cancellationToken);
-            Console.Error.WriteLine($"[NWC] Connected, state: {ws.State}");
-        }
-        catch (UriFormatException ex)
-        {
-            return NwcSendOutcome.Fail(FailKindConnect, $"Configured NWC relay URL '{_config.RelayUrl}' is not a valid URI: {ex.Message}");
+            ws = await ConnectToFirstReachableRelayAsync(_config.Relays, cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -751,7 +797,9 @@ public class NwcWalletService : IWalletService, IDisposable
         }
         catch (Exception ex)
         {
-            return NwcSendOutcome.Fail(FailKindConnect, $"WebSocket connection to {_config.RelayUrl} failed: {ex.Message}");
+            // Every advertised relay refused the connection; ex is the last relay's error.
+            return NwcSendOutcome.Fail(FailKindConnect,
+                $"WebSocket connection failed for all NWC relays [{string.Join(", ", _config.Relays)}]: {ex.Message}");
         }
 
         // Resolve the effective encryption scheme up front so both the send path and
@@ -768,6 +816,9 @@ public class NwcWalletService : IWalletService, IDisposable
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            // Dispose the connected socket before this early return — it sits before the big
+            // send/receive try/finally, so the final finally won't run for this path.
+            ws.Dispose();
             return NwcSendOutcome.Fail(FailKindCancelled, "Cancelled while resolving wallet's NIP-47 capabilities");
         }
 
@@ -1021,10 +1072,14 @@ public class NwcWalletService : IWalletService, IDisposable
         }
         finally
         {
+            // Best-effort graceful close, then dispose. The socket is helper-owned (no `using`),
+            // so this finally is the sole disposal site for every path that reached the big
+            // send/receive block — restoring the original `using var ws` disposal guarantee.
             if (ws.State == WebSocketState.Open)
             {
                 await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Done", CancellationToken.None);
             }
+            ws.Dispose();
         }
     }
 

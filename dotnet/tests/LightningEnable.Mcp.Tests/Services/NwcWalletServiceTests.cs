@@ -496,6 +496,34 @@ public class NwcWalletServiceTests
     }
 
     [Fact]
+    public void NwcConfig_Parse_MultipleRelayParams_UsesFirstRelayNotCommaJoined()
+    {
+        // Regression: a getalby.com NWC connection string advertises TWO relay= params.
+        // The old HttpUtility.ParseQueryString(uri.Query)["relay"] indexer COMMA-JOINS
+        // duplicate keys into "wss://relay.getalby.com,wss://relay2.getalby.com", so the
+        // downstream new Uri(RelayUrl) throws UriFormatException and EVERY payment via such
+        // a wallet fails before a socket opens. Parse must take the FIRST relay and yield a
+        // single valid ws/wss URL. (Same defect confirmed + fixed in sibling lib L402Requests.)
+        const string twoRelayUri =
+            "nostr+walletconnect://0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" +
+            "?relay=wss://relay.getalby.com&relay=wss://relay2.getalby.com" +
+            "&secret=fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+
+        var config = LightningEnable.Mcp.Models.NwcConfig.Parse(twoRelayUri);
+
+        config.RelayUrl.Should().Be(
+            "wss://relay.getalby.com",
+            "the first relay must be used, never a comma-joined list of every relay");
+        config.RelayUrl.Should().NotContain(
+            ",",
+            "a comma-joined relay list malforms the URI and breaks new Uri()");
+
+        // The socket path does exactly this — a valid single relay must not throw.
+        var construct = () => new Uri(config.RelayUrl);
+        construct.Should().NotThrow<UriFormatException>();
+    }
+
+    [Fact]
     public void NwcEncryption_IsValid_AcceptsKnownSchemesOnly()
     {
         LightningEnable.Mcp.Models.NwcEncryption.IsValid("nip04").Should().BeTrue();

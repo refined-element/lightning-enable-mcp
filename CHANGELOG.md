@@ -3,6 +3,17 @@
 All notable changes to the Lightning Enable MCP server are documented here.
 Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-enable-mcp`).
 
+## [1.23.2]
+
+### Fixed
+
+- **Multi-relay NWC connection strings (Alby Hub etc.).** A `nostr+walletconnect://`
+  string advertising more than one `relay=` param was mishandled: `HttpUtility.ParseQueryString`'s
+  indexer comma-joins duplicate keys, producing an invalid `wss://a,wss://b` URI that threw
+  when the wallet connected — so `pay_invoice` (and every L402 payment routed through an NWC
+  wallet) failed. The .NET port now selects the first valid advertised relay. (The Python/JS
+  ports were unaffected.)
+
 ## [1.23.1]
 
 ### Security

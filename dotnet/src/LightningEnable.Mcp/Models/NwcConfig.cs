@@ -119,7 +119,14 @@ public record NwcConfig
         // Parse query parameters
         var query = System.Web.HttpUtility.ParseQueryString(uri.Query);
 
-        var relay = query["relay"];
+        // An NWC connection string can legitimately carry MULTIPLE relay= params — e.g.
+        // getalby.com advertises two: ?relay=wss://relay.getalby.com&relay=wss://relay2.getalby.com.
+        // HttpUtility.ParseQueryString's indexer (query["relay"]) COMMA-JOINS duplicate keys
+        // into "wss://relay.getalby.com,wss://relay2.getalby.com", which then throws
+        // UriFormatException at new Uri(RelayUrl) downstream and breaks EVERY payment via such
+        // a wallet before a socket is opened. Read the separate values via GetValues and take
+        // the FIRST non-empty relay. (Same defect confirmed + fixed in sibling lib L402Requests.)
+        var relay = query.GetValues("relay")?.FirstOrDefault(r => !string.IsNullOrWhiteSpace(r));
         if (string.IsNullOrEmpty(relay))
             throw new ArgumentException("Missing 'relay' parameter in NWC URI", nameof(connectionString));
 

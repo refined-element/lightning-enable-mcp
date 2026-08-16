@@ -150,6 +150,19 @@ class TestConnectTimeGate:
         assert spy.connect_calls == []
 
     @pytest.mark.asyncio
+    async def test_fail_closed_when_resolver_raises(self):
+        # A getaddrinfo/DNS error at connect time must fail CLOSED — the error
+        # propagates and NO socket is opened to an unvalidated address.
+        async def raising_resolver(host):
+            raise OSError("getaddrinfo failed")
+
+        spy = _SpyBackend(stream=object())
+        backend = SsrfSafeAsyncBackend(inner=spy, resolver=raising_resolver)
+        with pytest.raises((OSError, SsrfError)):
+            await backend.connect_tcp("dns-error.example", 443)
+        assert spy.connect_calls == []
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "literal",
         ["127.0.0.1", "::1", "169.254.169.254", "192.168.1.1", "10.0.0.5", "0.0.0.0"],

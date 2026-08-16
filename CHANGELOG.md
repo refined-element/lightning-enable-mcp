@@ -3,6 +3,30 @@
 All notable changes to the Lightning Enable MCP server are documented here.
 Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-enable-mcp`).
 
+## [1.23.1]
+
+### Security
+
+- **Connect-time SSRF pinning on the Python HTTP path (MCP-03).** Outbound requests in
+  `l402_client` and `discover_api` now go through an SSRF-safe `httpcore` backend that
+  re-validates every resolved IP at connect time and pins the connection to the
+  validated address. This closes a DNS-rebinding (TOCTOU) window where a hostname could
+  pass an up-front validation check and then resolve to a private/reserved address at
+  connect. TLS/SNI is preserved (`verify=True`), and the resolver fails closed if it
+  raises. (The .NET port was already connection-pinned via `SocketsHttpHandler`.)
+
+## [1.23.0]
+
+### Added
+
+- **Atomic spend reservations across the payment path (both ports).** The
+  check-then-pay-then-record spending-cap flow is replaced with a
+  reserve → pay → commit/release lifecycle, so concurrent payments can no longer race
+  past the per-request / per-session caps (a TOCTOU that let two in-flight payments each
+  pass the check before either recorded). Backed by a durable operation ledger
+  (`operations.jsonl`) with idempotency keys so a retried or interrupted payment settles
+  at most once.
+
 ## [1.22.0]
 
 ### Added

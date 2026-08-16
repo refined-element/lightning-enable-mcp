@@ -41,6 +41,9 @@ classifiers = [
 dependencies = [
     "mcp>=1.0.0,<2.0.0",
     "httpx>=0.25.0",
+    # httpcore is used DIRECTLY by ssrf_transport.py (a custom SSRF-safe network backend
+    # + connection pool). Pin it so the private-backend seam we depend on can't drift.
+    "httpcore>=1.0,<2",
     "aiohttp>=3.13.4",
     "pydantic>=2.0.0",
     "bolt11>=2.0.0",

@@ -14,6 +14,7 @@ import logging
 import math
 import os
 from .._redirect import resolve_redirect_location
+from ..ssrf_transport import build_ssrf_safe_async_transport
 from . import sanitize_error
 from ._ssrf_guard import SsrfError, validate_url_allowed
 from typing import TYPE_CHECKING, Any
@@ -361,11 +362,12 @@ async def _search_registry(
 
     # follow_redirects=False (httpx default, pinned explicitly): the registry URL is
     # operator-controlled, but keep the same no-follow posture as the manifest client so a
-    # misconfigured registry redirect can't silently pivot the fetch.
+    # misconfigured registry redirect can't silently pivot the fetch. transport pins the
+    # connection to a connect-time-validated IP (MCP-03), matching the manifest client.
     async with httpx.AsyncClient(timeout=15.0, follow_redirects=False, headers={
         "Accept": "application/json",
         "User-Agent": "LightningEnable-MCP/1.0",
-    }) as client:
+    }, transport=build_ssrf_safe_async_transport()) as client:
         response = await client.get(request_url)
 
         # follow_redirects=False, so a registry 3xx is a first-class response — surface it
@@ -487,10 +489,14 @@ async def _fetch_and_format_manifest(
             "error": str(e),
         })
 
+    # transport = connect-time SSRF pin (MCP-03): the manifest URL (and its /.well-known/
+    # variants) is agent-supplied, so pin every socket to a connect-time-validated IP —
+    # the authoritative gate behind the validate_url_allowed pre-check above. TLS/SNI
+    # preserved; follow_redirects stays False.
     async with httpx.AsyncClient(timeout=15.0, follow_redirects=False, headers={
         "Accept": "application/json",
         "User-Agent": "LightningEnable-MCP/1.0",
-    }) as client:
+    }, transport=build_ssrf_safe_async_transport()) as client:
         manifest_json, manifest_url, redirect_location = await _fetch_manifest(client, url)
 
     if manifest_json is None:

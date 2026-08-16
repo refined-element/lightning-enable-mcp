@@ -16,6 +16,7 @@ from bolt11 import decode as decode_bolt11
 
 from ._redirect import resolve_redirect_location
 from ._url_redact import redact_url_for_display
+from .ssrf_transport import build_ssrf_safe_async_transport
 from .wallet_errors import PaymentProofUnavailableError
 
 if TYPE_CHECKING:
@@ -169,6 +170,11 @@ class L402Client:
             # future default change can't silently re-enable it). A 3xx is surfaced as an
             # actionable L402RedirectError, never followed — see L402RedirectError for why.
             follow_redirects=False,
+            # Connect-time SSRF pin (MCP-03): the fetched URL is agent-supplied. The cheap
+            # validate_url_allowed pre-check is resolve-then-validate; this transport is the
+            # authoritative gate — it validates the ACTUAL connect-time IP and pins the
+            # socket to it, closing the DNS-rebind TOCTOU window. TLS/SNI preserved.
+            transport=build_ssrf_safe_async_transport(),
         )
 
     async def _reserve(self, amount_sats: int) -> "str | None":

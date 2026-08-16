@@ -3,6 +3,17 @@
 All notable changes to the Lightning Enable MCP server are documented here.
 Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-enable-mcp`).
 
+## [1.23.3]
+
+### Fixed
+
+- **NWC multi-relay failover (parity with `L402Requests` 0.8.1).** 1.23.2 fixed the comma-joined-relay
+  crash by selecting the first valid relay; this completes it: the client now retains ALL advertised relays,
+  validates each `ws://`/`wss://` URI up front, and **fails over** across them at connect — a dead first
+  relay disposes its half-open socket and the next relay is tried, surfacing an error only once every relay
+  is exhausted. Wired into both connect sites (the pay/send path and the NIP-47 INFO-event fetch). Single-relay
+  behavior is byte-for-byte unchanged. (`.NET` port only; Python/JS were unaffected.)
+
 ## [1.23.2]
 
 ### Fixed

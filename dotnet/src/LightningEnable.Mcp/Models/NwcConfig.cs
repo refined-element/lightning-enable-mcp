@@ -60,8 +60,31 @@ public record NwcConfig
 
     /// <summary>
     /// The relay URL to connect to for NWC communication.
+    ///
+    /// This is the PRIMARY (first) advertised relay and is kept for backward
+    /// compatibility — it is what non-NWC wallet services (LND, OpenNode) populate
+    /// as their single connection target. For NWC connection strings, prefer
+    /// <see cref="Relays"/>, which retains ALL advertised relays for failover.
     /// </summary>
     public required string RelayUrl { get; init; }
+
+    /// <summary>
+    /// ALL advertised relays, in connection-string order. A getalby.com-style NWC
+    /// string lists two for redundancy (<c>?relay=wss://relay.getalby.com&amp;relay=wss://relay2.getalby.com</c>);
+    /// the connect sites in <see cref="Services.NwcWalletService"/> try each in order and fail
+    /// over on a connect failure. Populated by <see cref="Parse"/> with every relay that passes
+    /// <see cref="IsValidRelayUri"/>.
+    ///
+    /// When not set explicitly (e.g. the LND/OpenNode placeholder configs, which only carry a
+    /// single <see cref="RelayUrl"/>), this falls back to a one-element list wrapping
+    /// <see cref="RelayUrl"/> — so callers can always iterate <see cref="Relays"/> uniformly.
+    /// </summary>
+    public IReadOnlyList<string> Relays
+    {
+        get => _relays is { Count: > 0 } ? _relays : new[] { RelayUrl };
+        init => _relays = value;
+    }
+    private readonly IReadOnlyList<string>? _relays;
 
     /// <summary>
     /// The secret key (hex) for signing NWC requests.
@@ -120,15 +143,30 @@ public record NwcConfig
         var query = System.Web.HttpUtility.ParseQueryString(uri.Query);
 
         // An NWC connection string can legitimately carry MULTIPLE relay= params — e.g.
-        // getalby.com advertises two: ?relay=wss://relay.getalby.com&relay=wss://relay2.getalby.com.
-        // HttpUtility.ParseQueryString's indexer (query["relay"]) COMMA-JOINS duplicate keys
-        // into "wss://relay.getalby.com,wss://relay2.getalby.com", which then throws
-        // UriFormatException at new Uri(RelayUrl) downstream and breaks EVERY payment via such
-        // a wallet before a socket is opened. Read the separate values via GetValues and take
-        // the FIRST non-empty relay. (Same defect confirmed + fixed in sibling lib L402Requests.)
-        var relay = query.GetValues("relay")?.FirstOrDefault(r => !string.IsNullOrWhiteSpace(r));
-        if (string.IsNullOrEmpty(relay))
+        // getalby.com advertises two: ?relay=wss://relay.getalby.com&relay=wss://relay2.getalby.com
+        // FOR redundancy. HttpUtility.ParseQueryString's indexer (query["relay"]) COMMA-JOINS
+        // duplicate keys into "wss://relay.getalby.com,wss://relay2.getalby.com", which then throws
+        // UriFormatException at new Uri(RelayUrl) downstream and breaks EVERY payment via such a
+        // wallet before a socket is opened. Read the separate values via GetValues and keep the
+        // FULL list (in order) so the connect sites in NwcWalletService can fail over from one
+        // relay to the next when the first is unreachable. (Same defect + failover parity in the
+        // sibling lib L402Requests.)
+        var advertisedRelays = query.GetValues("relay")
+            ?.Where(r => !string.IsNullOrWhiteSpace(r))
+            .Select(r => r.Trim())
+            .ToArray();
+        if (advertisedRelays is null || advertisedRelays.Length == 0)
             throw new ArgumentException("Missing 'relay' parameter in NWC URI", nameof(connectionString));
+
+        // Up-front relay-URI validation, consistent with the pubkey/secret checks: at least one
+        // advertised relay must be a well-formed absolute ws:// or wss:// URI. A relay with no
+        // scheme, the wrong scheme, or a comma-joined value ("wss://a,wss://b") is rejected here at
+        // parse time rather than failing late at ConnectAsync. Only the valid relays are kept, in
+        // order — the first is the primary (RelayUrl), the rest are failover targets.
+        var validRelays = advertisedRelays.Where(IsValidRelayUri).ToArray();
+        if (validRelays.Length == 0)
+            throw new ArgumentException(
+                "NWC connection string relay URL is not a valid ws:// or wss:// URI", nameof(connectionString));
 
         var secret = query["secret"];
         if (string.IsNullOrEmpty(secret) || secret.Length != 64)
@@ -137,11 +175,23 @@ public record NwcConfig
         return new NwcConfig
         {
             WalletPubkey = walletPubkey,
-            RelayUrl = relay,
+            RelayUrl = validRelays[0],
+            Relays = validRelays,
             Secret = secret,
             Lud16 = query["lud16"]
         };
     }
+
+    /// <summary>
+    /// True when <paramref name="relay"/> is a well-formed absolute <c>ws://</c> or <c>wss://</c>
+    /// URI with a host. Rejects a missing/wrong scheme and a comma-joined value ("wss://a,wss://b")
+    /// — a real relay URL never contains a comma, and Uri parsing would otherwise mis-accept it.
+    /// </summary>
+    private static bool IsValidRelayUri(string relay) =>
+        !relay.Contains(',')
+        && Uri.TryCreate(relay, UriKind.Absolute, out var uri)
+        && (uri.Scheme == Uri.UriSchemeWs || uri.Scheme == Uri.UriSchemeWss)
+        && !string.IsNullOrEmpty(uri.Host);
 
     /// <summary>
     /// Attempts to parse an NWC connection string, returning null on failure.

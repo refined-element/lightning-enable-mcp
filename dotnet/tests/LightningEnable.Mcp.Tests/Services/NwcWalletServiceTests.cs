@@ -1404,6 +1404,139 @@ public class NwcWalletServiceTests
         }
     }
 
+    [Fact]
+    public async Task PayInvoiceAsync_FirstRelayHangsHandshake_FailsOverWithinPerRelayBudget_AndPays()
+    {
+        // Finding 1 (hung-primary failover): the FIRST advertised relay ACCEPTS the TCP connection
+        // but NEVER completes the WebSocket upgrade handshake — a black-holed relay (the most common
+        // real outage: host up-but-wedged / SYN-black-holed). Without a per-relay connect timeout,
+        // ClientWebSocket.ConnectAsync blocks on that handshake until the CALLER token fires, and
+        // the connect helper's "caller cancelled" branch then RETHROWS as cancellation instead of
+        // failing over — so the pay is CANCELLED and never reaches the working second relay.
+        //
+        // With a bounded per-relay connect budget, the hung primary is abandoned quickly and the pay
+        // fails over to the working mock and settles. RED (pre-fix): this HANGS until the caller
+        // token fires, then returns a cancelled failure → Success == false. GREEN (post-fix): fails
+        // over within the (test-shortened) per-relay budget and returns the preimage.
+        var (walletPriv, walletPub) = GenerateKeyPair();
+        var walletPubHex = Convert.ToHexString(walletPub).ToLowerInvariant();
+        const string preimage = "0011223344556677889900aabbccddeeff0011223344556677889900aabbccdd";
+
+        await using var relay = new MockNwcRelay(walletPriv, walletPubHex, preimage);
+        await relay.StartAsync();
+
+        await using var hung = new HungHandshakeRelay(); // accepts TCP, never upgrades → connect hangs
+        hung.Start();
+
+        var connStr =
+            "nostr+walletconnect://" + walletPubHex +
+            "?relay=" + hung.Url + "&relay=" + relay.Url + "&secret=" + FailoverClientSecretHex;
+
+        var prevConn = Environment.GetEnvironmentVariable("NWC_CONNECTION_STRING");
+        var prevEnc = Environment.GetEnvironmentVariable("NWC_ENCRYPTION");
+        var prevBudget = LightningEnable.Mcp.Services.NwcWalletService.SendPerRelayConnectBudget;
+        try
+        {
+            Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", connStr);
+            // Pin nip04 so ONLY the pay-path connect site runs (no INFO round-trip), isolating the
+            // send path's per-relay connect timeout as the thing under test.
+            Environment.SetEnvironmentVariable("NWC_ENCRYPTION", "nip04");
+            // Shorten the per-relay budget so the test is fast; the mechanism (fail over on a hung
+            // relay within the budget rather than blocking to caller-cancel) is what's under test.
+            LightningEnable.Mcp.Services.NwcWalletService.SendPerRelayConnectBudget = TimeSpan.FromSeconds(2);
+
+            using var http = new HttpClient();
+            var svc = new LightningEnable.Mcp.Services.NwcWalletService(http);
+
+            // Caller timeout is generous but bounded — LARGER than the per-relay budget (so the
+            // budget, not the caller token, abandons the hung primary on the GREEN path) yet finite
+            // so the pre-fix code's indefinite handshake block terminates (as a cancel) rather than
+            // hanging the whole suite.
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var result = await svc.PayInvoiceAsync("lnbc100n1p3xyztest", cts.Token);
+            sw.Stop();
+
+            result.Success.Should().BeTrue(
+                "a hung/black-holed primary relay must fail over to the working second relay via the " +
+                $"per-relay connect timeout, not block until the caller token cancels; error: {result.ErrorMessage}");
+            result.HasPreimage.Should().BeTrue();
+            result.PreimageHex.Should().Be(preimage);
+
+            // Failover must occur on the per-relay budget (~2s), NOT by exhausting the 10s caller
+            // token. Generous CI headroom over 2s, but well below the caller timeout so this
+            // asserts the budget fired rather than a caller-cancel-then-somehow-succeed.
+            sw.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(7),
+                "failover must happen within the bounded per-relay connect budget, well under the caller timeout");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("NWC_CONNECTION_STRING", prevConn);
+            Environment.SetEnvironmentVariable("NWC_ENCRYPTION", prevEnc);
+            LightningEnable.Mcp.Services.NwcWalletService.SendPerRelayConnectBudget = prevBudget;
+        }
+    }
+
+    /// <summary>
+    /// A loopback listener that ACCEPTS the TCP connection but never completes the WebSocket upgrade
+    /// handshake — it holds each accepted socket open and sends nothing back. Models a hung /
+    /// black-holed relay (the TCP connect succeeds, but the 101 upgrade response never arrives), so
+    /// a client <see cref="System.Net.WebSockets.ClientWebSocket.ConnectAsync"/> blocks on the
+    /// handshake read — NOT a fast connection-refused RST like <see cref="FreeLoopbackWsUrl"/>.
+    /// This is precisely the outage a per-relay connect timeout must defeat.
+    /// </summary>
+    private sealed class HungHandshakeRelay : IAsyncDisposable
+    {
+        private readonly System.Net.Sockets.TcpListener _listener;
+        private readonly CancellationTokenSource _cts = new();
+        private readonly List<System.Net.Sockets.TcpClient> _accepted = new();
+        private Task? _loop;
+
+        public string Url { get; }
+
+        public HungHandshakeRelay()
+        {
+            _listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+            _listener.Start();
+            var port = ((System.Net.IPEndPoint)_listener.LocalEndpoint).Port;
+            Url = $"ws://127.0.0.1:{port}/";
+        }
+
+        public void Start() => _loop = Task.Run(AcceptLoopAsync);
+
+        private async Task AcceptLoopAsync()
+        {
+            try
+            {
+                while (!_cts.IsCancellationRequested)
+                {
+                    var client = await _listener.AcceptTcpClientAsync(_cts.Token);
+                    // Hold the connection open; never read the HTTP upgrade request, never send the
+                    // 101 response. The client's ConnectAsync blocks awaiting the handshake reply.
+                    lock (_accepted) _accepted.Add(client);
+                }
+            }
+            catch
+            {
+                // Listener stopped / token cancelled during shutdown — expected.
+            }
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            _cts.Cancel();
+            try { _listener.Stop(); } catch { }
+            lock (_accepted)
+            {
+                foreach (var c in _accepted) { try { c.Close(); } catch { } }
+                _accepted.Clear();
+            }
+            if (_loop != null) { try { await _loop; } catch { } }
+            _cts.Dispose();
+        }
+    }
+
     #endregion
 
 }

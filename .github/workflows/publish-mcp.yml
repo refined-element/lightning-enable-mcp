@@ -34,7 +34,7 @@ on:
         type: boolean
 
 env:
-  DOTNET_VERSION: '9.0.x'
+  DOTNET_VERSION: '10.0.x'
   PYTHON_VERSION: '3.11'
 
 jobs:

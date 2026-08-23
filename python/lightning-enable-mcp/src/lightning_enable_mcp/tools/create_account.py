@@ -262,7 +262,7 @@ async def create_lightning_enable_account(
         )
         body = json.dumps({"email": email})
         with receipt_scope:
-            response_text, amount_paid = await l402_client.fetch(
+            response_text, amount_paid, _payment_receipt = await l402_client.fetch(
                 url=signup_url,
                 method="POST",
                 headers={"Content-Type": "application/json"},

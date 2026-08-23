@@ -58,7 +58,7 @@ def _budget_with(level, **kwargs):
 
 def _paid_client(paid_sats: int = 100, body: str = _ACCOUNT_PAYLOAD):
     client = AsyncMock()
-    client.fetch = AsyncMock(return_value=(body, paid_sats))
+    client.fetch = AsyncMock(return_value=(body, paid_sats, None))
     return client
 
 
@@ -302,7 +302,7 @@ class TestCreateAccountReceipts:
         async def fetch(url, method, headers, body, max_sats):
             # Simulate the client's payment leg: pays via the seam-wrapped wallet.
             await seam.pay_invoice("lnbc-placeholder")
-            return (_ACCOUNT_PAYLOAD, 100)
+            return (_ACCOUNT_PAYLOAD, 100, None)
 
         client = SimpleNamespace(fetch=fetch)
         budget = _budget_with(ApprovalLevel.AUTO_APPROVE)

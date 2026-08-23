@@ -24,7 +24,7 @@ class TestL402SelfTest:
     @pytest.mark.asyncio
     async def test_passes_hits_endpoint_and_forwards_hard_cap(self):
         client = AsyncMock()
-        client.fetch = AsyncMock(return_value=("pong", 1))  # (response_text, amount_paid)
+        client.fetch = AsyncMock(return_value=("pong", 1, None))  # (response_text, amount_paid, payment_receipt)
 
         result = await run_self_test(l402_client=client)
         data = json.loads(result)

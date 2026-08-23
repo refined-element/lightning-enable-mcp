@@ -19,12 +19,13 @@ public static class PayL402ChallengeTool
     /// <summary>
     /// Manually pays an L402 or MPP invoice and returns the authorization token.
     /// </summary>
-    [McpServerTool(Name = "pay_l402_challenge"), Description("Manually pay an L402 or MPP Lightning invoice to get the authentication token. Omit macaroon for MPP mode.")]
+    [McpServerTool(Name = "pay_l402_challenge"), Description("Manually pay an L402 or MPP Lightning invoice to get the authentication token. Omit macaroon for MPP mode. For a modern (draft-00) Payment challenge, pass the raw WWW-Authenticate value as challengeHeader to get a single-use Payment credential.")]
     public static async Task<string> PayL402Challenge(
-        [Description("BOLT11 Lightning invoice string from the L402 challenge")] string invoice,
+        [Description("BOLT11 Lightning invoice string from the L402 challenge. Optional when challengeHeader is provided (the invoice inside the challenge is used).")] string? invoice = null,
         [Description("Base64-encoded macaroon from the L402 challenge. Optional for MPP (Machine Payments Protocol) where only invoice + preimage are needed.")] string? macaroon = null,
         [Description("Maximum satoshis allowed to pay. Defaults to 1000")] int maxSats = 1000,
         [Description("Confirmation code relayed by the human operator from the server console (stderr). Required when a previous call returned requiresConfirmation=true.")] string? confirmationNonce = null,
+        [Description("Raw WWW-Authenticate value of a 'Payment' scheme challenge. When it carries a draft-00 request parameter, the invoice inside is paid and a single-use 'Authorization: Payment <credential>' value is returned.")] string? challengeHeader = null,
         McpServer? server = null,
         IL402HttpClient? l402Client = null,
         IBudgetService? budgetService = null,
@@ -32,21 +33,67 @@ public static class PayL402ChallengeTool
         IPaymentHistoryService? paymentHistory = null,
         CancellationToken cancellationToken = default)
     {
-        if (string.IsNullOrWhiteSpace(invoice))
-        {
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = "Invoice is required"
-            });
-        }
-
         if (l402Client == null)
         {
             return JsonSerializer.Serialize(new
             {
                 success = false,
                 error = "L402 HTTP client not available"
+            });
+        }
+
+        // Modern draft-00 / Payment-scheme challenge handed in raw: parse it, take the
+        // invoice from inside it, and (for modern) return a single-use Payment credential.
+        MppClientChallenge? paymentChallenge = null;
+        if (!string.IsNullOrWhiteSpace(challengeHeader))
+        {
+            paymentChallenge = MppClientChallenge.Parse(challengeHeader);
+            if (paymentChallenge == null)
+            {
+                return JsonSerializer.Serialize(new
+                {
+                    success = false,
+                    error = "Could not parse challengeHeader as a Payment challenge. Expected the WWW-Authenticate value of a 'Payment' scheme challenge (method=\"lightning\")."
+                });
+            }
+
+            if (!string.IsNullOrWhiteSpace(macaroon))
+            {
+                return JsonSerializer.Serialize(new
+                {
+                    success = false,
+                    error = "challengeHeader is for Payment-scheme (MPP) challenges — a macaroon does not apply. For L402, pass invoice + macaroon instead."
+                });
+            }
+
+            if (!string.IsNullOrWhiteSpace(invoice) &&
+                !string.Equals(invoice.Trim(), paymentChallenge.Invoice, StringComparison.OrdinalIgnoreCase))
+            {
+                return JsonSerializer.Serialize(new
+                {
+                    success = false,
+                    error = "The invoice argument does not match the invoice inside challengeHeader — refusing to pay. Omit invoice or pass the one from the challenge."
+                });
+            }
+
+            if (paymentChallenge.IsModern && paymentChallenge.IsExpired())
+            {
+                return JsonSerializer.Serialize(new
+                {
+                    success = false,
+                    error = $"Payment challenge expired at {paymentChallenge.Expires} — refusing to pay. Request a fresh challenge from the endpoint."
+                });
+            }
+
+            invoice = paymentChallenge.Invoice;
+        }
+
+        if (string.IsNullOrWhiteSpace(invoice))
+        {
+            return JsonSerializer.Serialize(new
+            {
+                success = false,
+                error = "Invoice is required (pass invoice, or challengeHeader for a Payment-scheme challenge)"
             });
         }
 
@@ -60,6 +107,18 @@ public static class PayL402ChallengeTool
             // Extract amount from invoice for budget checking
             var normalizedInvoice = invoice.Trim().ToLowerInvariant();
             var amountSats = Bolt11Parser.ExtractAmountSats(normalizedInvoice);
+
+            // Modern draft-00 sanity check: the declared amount must agree with the invoice.
+            if (paymentChallenge?.IsModern == true &&
+                long.TryParse(paymentChallenge.Amount, out var declaredSats) &&
+                amountSats.HasValue && declaredSats != amountSats.Value)
+            {
+                return JsonSerializer.Serialize(new
+                {
+                    success = false,
+                    error = $"Payment challenge declares {declaredSats} sats but the invoice is for {amountSats.Value} sats — refusing to pay an inconsistent challenge."
+                });
+            }
 
             // Use extracted amount or fall back to maxSats for budget check
             var budgetCheckAmount = amountSats ?? (long)maxSats;
@@ -188,6 +247,34 @@ public static class PayL402ChallengeTool
             var amountUsd = priceService != null
                 ? await priceService.SatsToUsdAsync(budgetCheckAmount, cancellationToken)
                 : 0m;
+
+            if (paymentChallenge?.IsModern == true)
+            {
+                // Modern draft-00: build the single-use Payment credential (byte-exact
+                // challenge echo + lowercase preimage). Never cache or replay it.
+                var credential = paymentChallenge.BuildModernCredential(token);
+
+                return JsonSerializer.Serialize(new
+                {
+                    success = true,
+                    l402Token = credential,
+                    protocol = protocolName,
+                    singleUse = true,
+                    receipt_written = receiptScope.ReceiptWritten ?? false,
+                    payment = new
+                    {
+                        amountSats = budgetCheckAmount,
+                        amountUsd = Math.Round(amountUsd, 2)
+                    },
+                    usage = new
+                    {
+                        headerName = "Authorization",
+                        headerValue = $"Payment {credential}",
+                        protocol = protocolName,
+                        description = "Single-use Payment credential — use it once on the retry to the same endpoint, then request a fresh challenge for any further calls"
+                    }
+                });
+            }
 
             var headerValue = isMpp
                 ? $"Payment method=\"lightning\", preimage=\"{token}\""

@@ -3,7 +3,25 @@
 All notable changes to the Lightning Enable MCP server are documented here.
 Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-enable-mcp`).
 
-## [1.23.3]
+## [1.24.0]
+
+### Added
+
+- **MPP draft-00 client support (draft-httpauth-payment-00 + draft-lightning-charge-00), both ports.**
+  Modern `Payment` challenges — `id`/`realm`/`method`/`intent`/`request`/`expires` plus optional
+  `digest`/`description`/`opaque`, with the invoice inside the base64url `request` param — are now
+  parsed (superset headers carrying legacy `invoice=`/`amount=`/`currency=` params included), and
+  answered on the retry with the modern single-use `Authorization: Payment <base64url(JSON)>`
+  credential: a byte-exact echo of every received challenge param plus the lowercase-hex preimage.
+  Within the `Payment` scheme the modern profile is preferred over the legacy profile; the existing
+  L402-vs-Payment preference is unchanged, and legacy `Payment` + L402/LSAT behavior is untouched.
+  Client-side safety checks run before any payment: expired challenges are refused, `intent` must be
+  `charge`, `currency` (when present) must be `sat`, and the declared amount must agree with the
+  invoice. The `Payment-Receipt` response header is parsed tolerantly and surfaced in
+  `access_l402_resource` results (`paymentReceipt` — payment hash only, never the preimage), and
+  `pay_l402_challenge` accepts the raw challenge via a new optional `challengeHeader` (.NET) /
+  `challenge_header` (Python) argument, returning the single-use credential. Modern credentials are
+  never cached or replayed.
 
 ### Fixed
 

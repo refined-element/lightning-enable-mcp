@@ -215,14 +215,16 @@ class LightningEnableServer:
                     description=(
                         "Manually pay an L402 or MPP invoice and receive the authorization token. "
                         "Use this if you need to handle the L402/MPP flow yourself. "
-                        "Omit macaroon for MPP (Machine Payments Protocol) mode."
+                        "Omit macaroon for MPP (Machine Payments Protocol) mode. For a modern "
+                        "(draft-00) Payment challenge, pass the raw WWW-Authenticate value as "
+                        "challenge_header to get a single-use Payment credential."
                     ),
                     inputSchema={
                         "type": "object",
                         "properties": {
                             "invoice": {
                                 "type": "string",
-                                "description": "BOLT11 Lightning invoice string",
+                                "description": "BOLT11 Lightning invoice string. Optional when challenge_header is provided (the invoice inside the challenge is used).",
                             },
                             "macaroon": {
                                 "type": ["string", "null"],
@@ -237,8 +239,12 @@ class LightningEnableServer:
                                 "type": "string",
                                 "description": "Confirmation code the human operator read from the server console, for payments above the auto-approve threshold. The code is NEVER in a tool result — ask the human for it. Omit on the first call to request one.",
                             },
+                            "challenge_header": {
+                                "type": "string",
+                                "description": "Raw WWW-Authenticate value of a 'Payment' scheme challenge. When it carries a draft-00 request parameter, the invoice inside is paid and a single-use 'Authorization: Payment <credential>' value is returned.",
+                            },
                         },
-                        "required": ["invoice"],
+                        "required": [],
                     },
                 ),
                 Tool(
@@ -907,10 +913,11 @@ class LightningEnableServer:
 
                 elif name == "pay_l402_challenge":
                     result = await pay_l402_challenge(
-                        invoice=arguments["invoice"],
+                        invoice=arguments.get("invoice", ""),
                         macaroon=arguments.get("macaroon"),
                         max_sats=arguments.get("max_sats", 1000),
                         confirmation_nonce=arguments.get("confirmation_nonce"),
+                        challenge_header=arguments.get("challenge_header"),
                         wallet=self.paying_wallet or self.wallet,
                         budget_service=self.budget_service,
                         payment_history_service=self.payment_history_service,

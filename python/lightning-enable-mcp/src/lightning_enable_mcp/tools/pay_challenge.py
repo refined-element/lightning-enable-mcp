@@ -9,6 +9,7 @@ import json
 import logging
 import sys
 from . import sanitize_error
+from ..l402_client import L402Error, parse_payment_challenge
 from ..receipt_seam import PaymentReceiptScope, policy_label
 from ..wallet_errors import PaymentPendingError, PaymentProofUnavailableError
 from typing import TYPE_CHECKING, Optional
@@ -28,6 +29,7 @@ async def pay_l402_challenge(
     macaroon: str | None = None,
     max_sats: int = 1000,
     confirmation_nonce: "Optional[str]" = None,
+    challenge_header: "Optional[str]" = None,
     wallet: "NWCWallet | None" = None,
     budget_service: "BudgetService | None" = None,
     payment_history_service: "PaymentHistoryService | None" = None,
@@ -40,13 +42,16 @@ async def pay_l402_challenge(
 
     When macaroon is provided, uses L402 protocol.
     When macaroon is omitted, uses MPP (Machine Payments Protocol) — preimage only.
+    When challenge_header carries a modern (draft-00) Payment challenge, the invoice
+    inside it is paid and a single-use Payment credential is returned.
 
     Args:
-        invoice: BOLT11 Lightning invoice string
+        invoice: BOLT11 Lightning invoice string (optional when challenge_header is given)
         macaroon: Base64-encoded macaroon from the L402 challenge (optional; omit for MPP mode)
         max_sats: Maximum satoshis allowed for this payment
         confirmation_nonce: The code the human read from the server console (for payments above
             the auto-approve threshold). Omit on the first call to request one.
+        challenge_header: Raw WWW-Authenticate value of a Payment-scheme challenge
         wallet: NWC wallet instance
         budget_service: BudgetService for multi-tier approval + out-of-band confirmation
         payment_history_service: PaymentHistoryService for the session audit trail
@@ -59,17 +64,58 @@ async def pay_l402_challenge(
             {"success": False, "error": "Wallet not initialized. Check NWC connection."}
         )
 
-    if not invoice:
-        return json.dumps({"success": False, "error": "Invoice is required"})
-
-    # Normalize invoice: strip whitespace/newlines that could cause decode or payment failures
-    invoice = invoice.strip()
-
     # Normalize macaroon: strip whitespace and treat empty/whitespace-only as None
     if macaroon is not None:
         macaroon = macaroon.strip()
         if not macaroon:
             macaroon = None
+
+    # Payment-scheme challenge handed in raw: parse it, take the invoice from inside
+    # it, and (for modern draft-00) return a single-use Payment credential.
+    payment_challenge = None
+    if challenge_header and challenge_header.strip():
+        try:
+            payment_challenge = parse_payment_challenge(challenge_header)
+        except L402Error as e:
+            return json.dumps({
+                "success": False,
+                "error": f"Could not parse challenge_header as a Payment challenge: {e}",
+            })
+        if macaroon is not None:
+            return json.dumps({
+                "success": False,
+                "error": (
+                    "challenge_header is for Payment-scheme (MPP) challenges — a macaroon "
+                    "does not apply. For L402, pass invoice + macaroon instead."
+                ),
+            })
+        if invoice and invoice.strip() and invoice.strip().lower() != payment_challenge.invoice.lower():
+            return json.dumps({
+                "success": False,
+                "error": (
+                    "The invoice argument does not match the invoice inside challenge_header "
+                    "— refusing to pay. Omit invoice or pass the one from the challenge."
+                ),
+            })
+        if payment_challenge.is_modern and payment_challenge.is_expired():
+            return json.dumps({
+                "success": False,
+                "error": (
+                    f"Payment challenge expired at {payment_challenge.expires} — refusing to "
+                    "pay. Request a fresh challenge from the endpoint."
+                ),
+            })
+        invoice = payment_challenge.invoice
+
+    if not invoice:
+        return json.dumps({
+            "success": False,
+            "error": "Invoice is required (pass invoice, or challenge_header for a Payment-scheme challenge)",
+        })
+
+    # Normalize invoice: strip whitespace/newlines that could cause decode or payment failures
+    invoice = invoice.strip()
+
     is_mpp = macaroon is None
 
     # Budget policy label for the durable receipt; set once the budget check runs.
@@ -110,6 +156,22 @@ async def pay_l402_challenge(
                     "amount_sats": amount_sats,
                 }
             )
+
+        # Modern draft-00 sanity check: the declared amount must agree with the invoice.
+        if (
+            payment_challenge is not None
+            and payment_challenge.is_modern
+            and payment_challenge.amount is not None
+            and payment_challenge.amount.isdigit()
+            and int(payment_challenge.amount) != amount_sats
+        ):
+            return json.dumps({
+                "success": False,
+                "error": (
+                    f"Payment challenge declares {int(payment_challenge.amount)} sats but the "
+                    f"invoice is for {amount_sats} sats — refusing to pay an inconsistent challenge."
+                ),
+            })
 
         # Budget approval + OUT-OF-BAND confirmation (BudgetService path). Above the
         # auto-approve threshold the code is printed to the server console (stderr) only —
@@ -264,7 +326,13 @@ async def pay_l402_challenge(
             )
 
         # Construct authorization header based on protocol
-        if is_mpp:
+        modern = payment_challenge is not None and payment_challenge.is_modern
+        if modern:
+            # Modern draft-00: single-use credential (byte-exact challenge echo +
+            # lowercase preimage). Never cache or replay it.
+            credential = payment_challenge.build_modern_credential(preimage)
+            authorization_header = f"Payment {credential}"
+        elif is_mpp:
             authorization_header = f'Payment method="lightning", preimage="{preimage}"'
         else:
             l402_token = f"{macaroon}:{preimage}"
@@ -280,7 +348,12 @@ async def pay_l402_challenge(
                 "headerName": "Authorization",
                 "headerValue": authorization_header,
                 "protocol": protocol,
-                "description": "Include this header in subsequent requests to the same endpoint",
+                "description": (
+                    "Single-use Payment credential — use it once on the retry to the same "
+                    "endpoint, then request a fresh challenge for any further calls"
+                    if modern else
+                    "Include this header in subsequent requests to the same endpoint"
+                ),
             },
             "message": (
                 f"Payment successful ({protocol}). Use the authorization header value "
@@ -289,7 +362,11 @@ async def pay_l402_challenge(
         }
 
         # Include token and authorization_header for backward compatibility across protocols
-        if is_mpp:
+        if modern:
+            # For modern draft-00, the token is the single-use credential.
+            result["token"] = credential
+            result["singleUse"] = True
+        elif is_mpp:
             # For MPP, the token is just the preimage
             result["token"] = preimage
         else:

@@ -459,7 +459,7 @@ class TestFetchRedirectPosture:
         self.client._http_client.request = AsyncMock(return_value=response)
 
         # 304 < 400 and != 402, so fetch returns the (empty) body, no redirect raised.
-        text, amount = await self.client.fetch("https://api.example.com/data")
+        text, amount, _receipt = await self.client.fetch("https://api.example.com/data")
         assert amount is None
 
     @pytest.mark.asyncio
@@ -537,7 +537,7 @@ class TestClientCentralizedRecording:
         client, budget, history, _ = self._build([ok])
 
         with patch.object(client, "_get_invoice_amount_msat", return_value=10_000):
-            text, amount = await client.fetch("https://api.provider.com/premium", max_sats=1000)
+            text, amount, _receipt = await client.fetch("https://api.provider.com/premium", max_sats=1000)
 
         assert amount == 10
         assert '"ok":true' in text

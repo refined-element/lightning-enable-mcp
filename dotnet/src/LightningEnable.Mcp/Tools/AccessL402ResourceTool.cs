@@ -279,6 +279,16 @@ public static class AccessL402ResourceTool
                             amountUsd = Math.Round(amountUsd, 2),
                             l402Token = result.L402Token,
                             protocol = result.Protocol ?? "L402"
+                        },
+                        // Draft-00 Payment-Receipt from the server, when present (payment
+                        // hash only — never the preimage). Null for legacy/L402 endpoints.
+                        paymentReceipt = result.PaymentReceipt == null ? null : (object)new
+                        {
+                            challengeId = result.PaymentReceipt.ChallengeId,
+                            method = result.PaymentReceipt.Method,
+                            reference = result.PaymentReceipt.Reference,
+                            status = result.PaymentReceipt.Status,
+                            timestamp = result.PaymentReceipt.Timestamp
                         }
                     });
                 }

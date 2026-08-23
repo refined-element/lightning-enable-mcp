@@ -233,6 +233,13 @@ public class L402HttpClient : IL402HttpClient
             return L402FetchResult.Failed(url, "402 Payment Required but NWC wallet not configured. Set NWC_CONNECTION_STRING environment variable.", 402);
         }
 
+        // Modern draft-00 sanity check: an expired challenge must never be paid.
+        if (parsed.IsMpp && parsed.Mpp!.IsModern && parsed.Mpp.IsExpired())
+        {
+            return L402FetchResult.Failed(url,
+                $"Payment challenge expired at {parsed.Mpp.Expires} — refusing to pay. Request a fresh challenge from the endpoint.", 402);
+        }
+
         // Extract amount from invoice
         var amountSats = ExtractAmountFromBolt11(parsed.Invoice!);
 
@@ -245,6 +252,16 @@ public class L402HttpClient : IL402HttpClient
         if (amountSats.Value > maxSats)
         {
             return L402FetchResult.Failed(url, $"Invoice amount {amountSats.Value} sats exceeds maximum {maxSats} sats", 402);
+        }
+
+        // Modern draft-00 sanity check: the declared amount must agree with the invoice.
+        // A mismatch means the challenge is inconsistent — refuse before any payment.
+        if (parsed.IsMpp && parsed.Mpp!.IsModern &&
+            long.TryParse(parsed.Mpp.Amount, out var declaredSats) &&
+            declaredSats != amountSats.Value)
+        {
+            return L402FetchResult.Failed(url,
+                $"Payment challenge declares {declaredSats} sats but the invoice is for {amountSats.Value} sats — refusing to pay an inconsistent challenge.", 402);
         }
 
         // Atomically reserve the amount against the session cap BEFORE paying — this closes
@@ -338,9 +355,16 @@ public class L402HttpClient : IL402HttpClient
         string authToken;
         string protocol;
 
-        if (parsed.IsMpp)
+        if (parsed.IsMpp && parsed.Mpp!.IsModern)
         {
-            // MPP: preimage-only authentication
+            // Modern draft-00: single-use credential echoing the challenge byte-exact.
+            // Never cache or replay it — each fetch mints a fresh one.
+            authToken = parsed.Mpp.BuildModernCredential(paymentResult.PreimageHex);
+            protocol = "MPP";
+        }
+        else if (parsed.IsMpp)
+        {
+            // Legacy MPP: preimage-only authentication
             authToken = paymentResult.PreimageHex;
             protocol = "MPP";
         }
@@ -358,7 +382,9 @@ public class L402HttpClient : IL402HttpClient
             // Ensure we do not send multiple Authorization headers: remove any existing one first.
             retryRequest.Headers.Remove("Authorization");
             retryRequest.Headers.TryAddWithoutValidation("Authorization",
-                $"Payment method=\"lightning\", preimage=\"{paymentResult.PreimageHex}\"");
+                parsed.Mpp!.IsModern
+                    ? $"Payment {authToken}"
+                    : $"Payment method=\"lightning\", preimage=\"{paymentResult.PreimageHex}\"");
         }
         else
         {
@@ -366,6 +392,15 @@ public class L402HttpClient : IL402HttpClient
         }
 
         var retryResponse = await _httpClient.SendAsync(retryRequest, cancellationToken);
+
+        // Payment-Receipt (draft-00): parsed tolerantly — a missing or malformed receipt
+        // must never fail the successful payment. Safe to surface: it carries only the
+        // payment hash, never the preimage.
+        MppPaymentReceipt? paymentReceipt = null;
+        if (retryResponse.Headers.TryGetValues("Payment-Receipt", out var receiptValues))
+        {
+            paymentReceipt = MppPaymentReceipt.Parse(receiptValues.FirstOrDefault());
+        }
 
         // Record the settled payment in session history EXACTLY ONCE, here, regardless of
         // the retry outcome (2xx / 3xx-redirect / 4xx / 5xx). The invoice was paid, so this
@@ -421,7 +456,7 @@ public class L402HttpClient : IL402HttpClient
 
         if (retryResponse.IsSuccessStatusCode)
         {
-            return L402FetchResult.Succeeded(url, content, (int)retryResponse.StatusCode, contentType, amountSats.Value, authToken, protocol);
+            return L402FetchResult.Succeeded(url, content, (int)retryResponse.StatusCode, contentType, amountSats.Value, authToken, protocol, paymentReceipt);
         }
 
         return L402FetchResult.Failed(url, $"Request failed after payment: HTTP {(int)retryResponse.StatusCode}: {content}", (int)retryResponse.StatusCode, amountSats.Value, authToken, protocol);

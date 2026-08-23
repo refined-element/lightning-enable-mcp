@@ -364,7 +364,7 @@ async def test_access_resource_writes_exactly_one_receipt(tmp_path):
     async def fetch(url, method, headers, body, max_sats):
         # Simulate the client's payment leg: pays via the (decorated) wallet.
         await seam.pay_invoice(TEST_INVOICE)
-        return ("paid content", TEST_SATS)
+        return ("paid content", TEST_SATS, None)
 
     client = SimpleNamespace(fetch=fetch)
 

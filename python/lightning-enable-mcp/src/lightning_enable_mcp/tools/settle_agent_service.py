@@ -199,7 +199,7 @@ async def settle_agent_service(
             "l402", context=_redact_url_for_display(l402_endpoint), policy=payment_policy
         )
         with receipt_scope:
-            response_text, amount_paid = await l402_client.fetch(
+            response_text, amount_paid, _payment_receipt = await l402_client.fetch(
                 url=l402_endpoint,
                 method=method,
                 headers={},

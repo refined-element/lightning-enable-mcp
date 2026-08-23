@@ -164,7 +164,7 @@ class TestSettleAgentServiceBudget:
     @pytest.mark.asyncio
     async def test_human_relayed_nonce_proceeds_and_is_passive_on_recording(self):
         client = AsyncMock()
-        client.fetch.return_value = ("service result body", 500)
+        client.fetch.return_value = ("service result body", 500, None)
         budget = _budget_with(ApprovalLevel.FORM_CONFIRM)
 
         result = await settle_agent_service(
@@ -190,7 +190,7 @@ class TestSettleAgentServicePayment:
     @pytest.mark.asyncio
     async def test_auto_approve_paid_is_passive_on_recording(self):
         client = AsyncMock()
-        client.fetch.return_value = ("paid body", 200)
+        client.fetch.return_value = ("paid body", 200, None)
         budget = _budget_with(ApprovalLevel.AUTO_APPROVE)
 
         result = await settle_agent_service(
@@ -210,7 +210,7 @@ class TestSettleAgentServicePayment:
     @pytest.mark.asyncio
     async def test_no_payment_required_does_not_record_spend(self):
         client = AsyncMock()
-        client.fetch.return_value = ("free body", None)
+        client.fetch.return_value = ("free body", None, None)
         budget = _budget_with(ApprovalLevel.AUTO_APPROVE)
 
         result = await settle_agent_service(

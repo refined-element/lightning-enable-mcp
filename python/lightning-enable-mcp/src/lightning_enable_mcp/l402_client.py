@@ -6,9 +6,11 @@ Handles L402 protocol for HTTP requests with automatic payment.
 
 import asyncio
 import base64
+import json
 import logging
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 import httpx
@@ -102,12 +104,32 @@ class L402Challenge:
 @dataclass
 class MppChallenge:
     """Parsed MPP (Machine Payments Protocol) challenge from WWW-Authenticate header.
-    Per IETF draft-ryan-httpauth-payment. No macaroon — just invoice + preimage."""
+
+    Two profiles share the "Payment" scheme:
+    - Legacy: invoice/amount/currency as top-level auth params (existing behavior).
+    - Modern draft-00 (draft-httpauth-payment-00 + draft-lightning-charge-00): a
+      base64url ``request`` param carrying JCS JSON with the invoice inside, answered
+      with a single-use ``Authorization: Payment <base64url(JSON)>`` credential.
+    Modern challenges set ``is_modern`` and preserve every received param byte-exact
+    for the credential echo (``request_encoded`` is never decoded/re-encoded).
+    """
 
     invoice: str
     amount: str | None = None
     realm: str | None = None
     amount_msat: int | None = None
+    # Modern draft-00 fields (None for the legacy profile).
+    is_modern: bool = False
+    id: str | None = None
+    method: str | None = None
+    intent: str | None = None
+    request_encoded: str | None = None
+    expires: str | None = None
+    digest: str | None = None
+    description: str | None = None
+    opaque: str | None = None
+    payment_hash: str | None = None
+    network: str | None = None
 
     @property
     def amount_sats(self) -> int | None:
@@ -115,6 +137,62 @@ class MppChallenge:
         if self.amount_msat is not None:
             return -(-self.amount_msat // 1000)  # ceil division
         return None
+
+    def is_expired(self, now: "datetime | None" = None) -> bool:
+        """True when the challenge's expires timestamp is already past — an expired
+        challenge must never be paid. No expires means the challenge does not expire;
+        an unparseable expires fails closed (treated as expired): this is the money path."""
+        if not self.expires:
+            return False
+        try:
+            value = self.expires.strip()
+            if value.endswith(("Z", "z")):
+                value = value[:-1] + "+00:00"
+            expires_at = datetime.fromisoformat(value)
+        except ValueError:
+            return True
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        current = now or datetime.now(timezone.utc)
+        return current >= expires_at
+
+    def build_modern_credential(self, preimage: str) -> str:
+        """Build the modern draft-00 credential: base64url (no padding) of
+        ``{"challenge": {...byte-exact echo...}, "payload": {"preimage": "<64 lowercase hex>"}}``.
+
+        Every spec-defined challenge param received is echoed byte-exact — the encoded
+        request string is NEVER decoded/re-encoded — while legacy superset extras
+        (invoice/amount/currency) are unknown params and are never echoed. Credentials
+        are SINGLE-USE server-side: never cache or replay the returned value."""
+        if not self.is_modern or self.request_encoded is None:
+            raise L402Error("Modern credentials can only be built for draft-00 Payment challenges.")
+
+        challenge: dict[str, str] = {}
+        if self.id is not None:
+            challenge["id"] = self.id
+        if self.realm is not None:
+            challenge["realm"] = self.realm
+        if self.method is not None:
+            challenge["method"] = self.method
+        if self.intent is not None:
+            challenge["intent"] = self.intent
+        challenge["request"] = self.request_encoded
+        if self.expires is not None:
+            challenge["expires"] = self.expires
+        if self.digest is not None:
+            challenge["digest"] = self.digest
+        if self.opaque is not None:
+            challenge["opaque"] = self.opaque
+        if self.description is not None:
+            challenge["description"] = self.description
+
+        credential = {
+            "challenge": challenge,
+            # Wallets sometimes return uppercase hex; the spec requires lowercase.
+            "payload": {"preimage": preimage.strip().lower()},
+        }
+        payload = json.dumps(credential, separators=(",", ":")).encode("utf-8")
+        return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
 
 
 @dataclass
@@ -138,6 +216,177 @@ class MppToken:
     def to_header(self) -> str:
         """Format as Authorization header value."""
         return f'Payment method="lightning", preimage="{self.preimage}"'
+
+
+@dataclass
+class MppModernToken:
+    """Modern draft-00 authorization token: a single-use base64url credential that
+    echoes the challenge byte-exact with the preimage in the payload. Never cache or
+    replay it — the server accepts each credential exactly once."""
+
+    credential: str
+
+    def to_header(self) -> str:
+        """Format as Authorization header value."""
+        return f"Payment {self.credential}"
+
+
+def _b64url_decode(value: str) -> bytes:
+    """Decode base64url input, tolerating both padded and unpadded forms.
+    Raises ValueError (binascii.Error) on invalid input."""
+    normalized = value.strip().replace("-", "+").replace("_", "/")
+    padded = normalized + "=" * ((4 - len(normalized) % 4) % 4)
+    return base64.b64decode(padded, validate=True)
+
+
+def parse_payment_receipt(header_value: str | None) -> dict | None:
+    """Parse a Payment-Receipt response header (draft-00) tolerantly.
+
+    Returns a dict with challengeId/method/reference/status/timestamp (missing fields
+    are None), or None when the header is absent or malformed — a bad receipt must
+    never fail a successful payment. The receipt carries only the payment hash
+    (reference), never the preimage, so it is safe to store and surface."""
+    if header_value is None or not header_value.strip():
+        return None
+    try:
+        payload = json.loads(_b64url_decode(header_value).decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    fields = ("challengeId", "method", "reference", "status", "timestamp")
+    return {
+        name: payload.get(name) if isinstance(payload.get(name), str) else None
+        for name in fields
+    }
+
+
+def _extract_auth_param(params_str: str, name: str) -> str | None:
+    """Extract a quoted auth-param value, tolerating OWS around '=' (RFC 9110).
+
+    The param name must start the string or follow a comma/whitespace delimiter — a
+    quoted VALUE that happens to end with e.g. ``id=`` (``description="client-id="``)
+    must never be mistaken for the ``id`` param, or the byte-exact credential echo
+    would be corrupted and rejected AFTER the invoice was paid."""
+    match = re.search(rf'(?<![^,\s]){name}\s*=\s*"([^"]*)"', params_str, re.IGNORECASE)
+    return match.group(1) if match else None
+
+
+def parse_payment_challenge(www_authenticate: str) -> MppChallenge:
+    """Parse a Payment-scheme WWW-Authenticate value (legacy or modern draft-00)
+    without an L402Client instance. Used by tools handed the raw challenge value.
+
+    Raises:
+        L402Error: If the value is not a valid Payment challenge
+    """
+    return _parse_mpp_challenge_value(www_authenticate, _invoice_amount_msat)
+
+
+def _invoice_amount_msat(bolt11: str) -> int | None:
+    """Extract the amount in millisatoshis from a BOLT11 invoice (None if unspecified)."""
+    try:
+        decoded = decode_bolt11(bolt11)
+        if hasattr(decoded, "amount_msat") and decoded.amount_msat:
+            return decoded.amount_msat
+        return None
+    except Exception as e:
+        logger.warning(f"Failed to decode invoice: {e}")
+        return None
+
+
+def _parse_mpp_challenge_value(www_authenticate: str, get_amount_msat) -> MppChallenge:
+    """Shared Payment-challenge parser (see L402Client.parse_mpp_challenge for the
+    format). ``get_amount_msat`` resolves an invoice's amount, so the instance method
+    can keep routing through ``self._get_invoice_amount_msat`` (patchable in tests)."""
+    www_authenticate = www_authenticate.strip()
+    parts = www_authenticate.split(None, 1)
+    if not parts or parts[0].lower() != "payment":
+        raise L402Error(f"Invalid MPP challenge: {www_authenticate[:50]}")
+
+    params_str = parts[1] if len(parts) > 1 else ""
+
+    method = _extract_auth_param(params_str, "method")
+    if method is None or method.lower() != "lightning":
+        raise L402Error("MPP challenge method must be 'lightning'")
+
+    # Modern draft-00 detection: a non-empty request param.
+    request_encoded = _extract_auth_param(params_str, "request")
+    if request_encoded:
+        try:
+            return _parse_modern_mpp_challenge(params_str, method, request_encoded, get_amount_msat)
+        except L402Error:
+            # Malformed modern part: fall back to the legacy profile ONLY when the same
+            # header also carries a legacy invoice= param (intentional superset
+            # fallback). Otherwise the challenge is invalid — never silently legacy.
+            if not _extract_auth_param(params_str, "invoice"):
+                raise
+
+    invoice = _extract_auth_param(params_str, "invoice")
+    if not invoice:
+        raise L402Error("Missing invoice in MPP challenge")
+
+    amount = _extract_auth_param(params_str, "amount")
+    realm = _extract_auth_param(params_str, "realm")
+
+    amount_msat = get_amount_msat(invoice)
+
+    return MppChallenge(invoice=invoice, amount=amount, realm=realm, amount_msat=amount_msat)
+
+
+def _parse_modern_mpp_challenge(
+    params_str: str, method: str, request_encoded: str, get_amount_msat
+) -> MppChallenge:
+    """Parse the modern draft-00 profile. Raises L402Error when the challenge is
+    malformed (bad base64url, bad JSON, missing invoice) or fails a client-side
+    sanity check (intent != charge, currency != sat). Error messages never include
+    the challenge contents."""
+    # intent="charge" is the only intent this client can pay — anything else
+    # (or a missing intent) must not be treated as a payable challenge.
+    intent = _extract_auth_param(params_str, "intent")
+    if intent is None or intent.lower() != "charge":
+        raise L402Error("Modern Payment challenge intent must be 'charge'")
+
+    try:
+        request_obj = json.loads(_b64url_decode(request_encoded).decode("utf-8"))
+    except (ValueError, UnicodeDecodeError) as e:
+        raise L402Error(
+            "Malformed modern Payment challenge: request param is not valid base64url JSON"
+        ) from e
+
+    if not isinstance(request_obj, dict):
+        raise L402Error("Malformed modern Payment challenge: request must be a JSON object")
+
+    method_details = request_obj.get("methodDetails")
+    invoice = method_details.get("invoice") if isinstance(method_details, dict) else None
+    if not invoice or not isinstance(invoice, str):
+        raise L402Error("Malformed modern Payment challenge: missing invoice in request")
+
+    # currency, when present, must be sat (draft-lightning-charge-00).
+    currency = request_obj.get("currency")
+    if currency is not None and str(currency).lower() != "sat":
+        raise L402Error("Modern Payment challenge currency must be 'sat'")
+
+    amount = request_obj.get("amount")
+    payment_hash = method_details.get("paymentHash") if isinstance(method_details, dict) else None
+    network = method_details.get("network") if isinstance(method_details, dict) else None
+
+    return MppChallenge(
+        invoice=invoice,
+        amount=str(amount) if amount is not None else None,
+        realm=_extract_auth_param(params_str, "realm"),
+        amount_msat=get_amount_msat(invoice),
+        is_modern=True,
+        id=_extract_auth_param(params_str, "id"),
+        method=method,
+        intent=intent,
+        request_encoded=request_encoded,
+        expires=_extract_auth_param(params_str, "expires"),
+        digest=_extract_auth_param(params_str, "digest"),
+        description=_extract_auth_param(params_str, "description"),
+        opaque=_extract_auth_param(params_str, "opaque"),
+        payment_hash=payment_hash if isinstance(payment_hash, str) else None,
+        network=network if isinstance(network, str) else None,
+    )
 
 
 class L402Client:
@@ -275,8 +524,14 @@ class L402Client:
         """
         Parse WWW-Authenticate header for MPP (Payment) challenge.
 
-        The header format is:
+        Legacy format:
         Payment realm="<realm>", method="lightning", invoice="<bolt11>", amount="<amount>", currency="sat"
+
+        Modern draft-00 format:
+        Payment id="...", realm="...", method="lightning", intent="charge", request="<b64url>", expires="..."
+
+        A malformed modern challenge only falls back to legacy when the same header
+        also carries a legacy invoice= param (intentional superset fallback).
 
         Args:
             www_authenticate: WWW-Authenticate header value
@@ -287,31 +542,7 @@ class L402Client:
         Raises:
             L402Error: If header cannot be parsed
         """
-        www_authenticate = www_authenticate.strip()
-        parts = www_authenticate.split(None, 1)
-        if not parts or parts[0].lower() != "payment":
-            raise L402Error(f"Invalid MPP challenge: {www_authenticate[:50]}")
-
-        params_str = parts[1] if len(parts) > 1 else ""
-
-        method_match = re.search(r'method\s*=\s*"([^"]+)"', params_str, re.IGNORECASE)
-        if not method_match or method_match.group(1).lower() != "lightning":
-            raise L402Error("MPP challenge method must be 'lightning'")
-
-        invoice_match = re.search(r'invoice\s*=\s*"([^"]+)"', params_str, re.IGNORECASE)
-        if not invoice_match:
-            raise L402Error("Missing invoice in MPP challenge")
-        invoice = invoice_match.group(1)
-
-        amount_match = re.search(r'amount\s*=\s*"([^"]+)"', params_str, re.IGNORECASE)
-        amount = amount_match.group(1) if amount_match else None
-
-        realm_match = re.search(r'realm\s*=\s*"([^"]+)"', params_str, re.IGNORECASE)
-        realm = realm_match.group(1) if realm_match else None
-
-        amount_msat = self._get_invoice_amount_msat(invoice)
-
-        return MppChallenge(invoice=invoice, amount=amount, realm=realm, amount_msat=amount_msat)
+        return _parse_mpp_challenge_value(www_authenticate, self._get_invoice_amount_msat)
 
     def parse_best_challenge(self, www_authenticate: str) -> L402Challenge | MppChallenge:
         """
@@ -408,10 +639,13 @@ class L402Client:
                 return l402_challenge
             except L402Error:
                 pass
-            # Try MPP
+            # Try MPP — within the Payment scheme the modern draft-00 profile is
+            # preferred over the legacy profile (the L402-vs-Payment order above
+            # is unchanged).
             try:
-                if mpp_challenge is None:
-                    mpp_challenge = self.parse_mpp_challenge(value)
+                candidate = self.parse_mpp_challenge(value)
+                if mpp_challenge is None or (candidate.is_modern and not mpp_challenge.is_modern):
+                    mpp_challenge = candidate
             except L402Error:
                 pass
 
@@ -431,14 +665,7 @@ class L402Client:
         Returns:
             Amount in millisatoshis, or None if not specified
         """
-        try:
-            decoded = decode_bolt11(bolt11)
-            if hasattr(decoded, "amount_msat") and decoded.amount_msat:
-                return decoded.amount_msat
-            return None
-        except Exception as e:
-            logger.warning(f"Failed to decode invoice: {e}")
-            return None
+        return _invoice_amount_msat(bolt11)
 
     async def fetch(
         self,
@@ -447,7 +674,7 @@ class L402Client:
         headers: dict[str, str] | None = None,
         body: str | None = None,
         max_sats: int = 1000,
-    ) -> tuple[str, int | None]:
+    ) -> tuple[str, int | None, dict | None]:
         """
         Fetch a URL with automatic L402 payment handling.
 
@@ -459,7 +686,8 @@ class L402Client:
             max_sats: Maximum satoshis to pay
 
         Returns:
-            Tuple of (response text, amount paid in sats or None)
+            Tuple of (response text, amount paid in sats or None, Payment-Receipt dict
+            or None — the draft-00 receipt from the paid retry, parsed tolerantly)
 
         Raises:
             L402Error: If L402 flow fails
@@ -491,6 +719,13 @@ class L402Client:
             # Parse each header value separately, preferring L402 over MPP
             challenge = self._select_best_challenge(www_auth_values)
 
+            # Modern draft-00 sanity check: an expired challenge must never be paid.
+            if isinstance(challenge, MppChallenge) and challenge.is_modern and challenge.is_expired():
+                raise L402Error(
+                    f"Payment challenge expired at {challenge.expires} — refusing to pay. "
+                    "Request a fresh challenge from the endpoint."
+                )
+
             # Reject no-amount invoices (security: could bypass budget checks)
             if challenge.amount_sats is None or challenge.amount_sats <= 0:
                 raise L402Error(
@@ -501,6 +736,21 @@ class L402Client:
             if challenge.amount_sats > max_sats:
                 raise L402BudgetExceededError(
                     f"Invoice amount {challenge.amount_sats} sats exceeds maximum {max_sats} sats"
+                )
+
+            # Modern draft-00 sanity check: the declared amount must agree with the
+            # invoice. A mismatch means the challenge is inconsistent — refuse before
+            # any payment.
+            if (
+                isinstance(challenge, MppChallenge)
+                and challenge.is_modern
+                and challenge.amount is not None
+                and challenge.amount.isdigit()
+                and int(challenge.amount) != challenge.amount_sats
+            ):
+                raise L402Error(
+                    f"Payment challenge declares {int(challenge.amount)} sats but the invoice is for "
+                    f"{challenge.amount_sats} sats — refusing to pay an inconsistent challenge."
                 )
 
             # Atomically reserve against the session cap BEFORE paying — closes the
@@ -546,19 +796,27 @@ class L402Client:
             self._record_settled_payment(reservation_id, challenge.amount_sats, url)
 
             # Create token
-            if isinstance(challenge, MppChallenge):
+            if isinstance(challenge, MppChallenge) and challenge.is_modern:
+                # Modern draft-00: single-use credential echoing the challenge
+                # byte-exact. Never cached or replayed — each fetch mints a fresh one.
+                token: "L402Token | MppToken | MppModernToken" = MppModernToken(
+                    credential=challenge.build_modern_credential(preimage)
+                )
+            elif isinstance(challenge, MppChallenge):
                 token = MppToken(preimage=preimage)
             else:
                 token = L402Token(macaroon=challenge.macaroon, preimage=preimage)
 
-            # Raw credential (macaroon:preimage for L402, preimage for MPP) — parity with the
-            # .NET L402Token field — surfaced on both the redirect and the error retry paths
-            # so the agent can authenticate a retry against the target instead of re-paying.
-            raw_token = (
-                token.preimage
-                if isinstance(token, MppToken)
-                else f"{token.macaroon}:{token.preimage}"
-            )
+            # Raw credential (macaroon:preimage for L402, preimage for legacy MPP, the
+            # single-use credential for modern MPP) — parity with the .NET L402Token
+            # field — surfaced on both the redirect and the error retry paths so the
+            # agent can authenticate a retry against the target instead of re-paying.
+            if isinstance(token, MppModernToken):
+                raw_token = token.credential
+            elif isinstance(token, MppToken):
+                raw_token = token.preimage
+            else:
+                raw_token = f"{token.macaroon}:{token.preimage}"
 
             # Retry with authorization
             auth_headers = {**headers, "Authorization": token.to_header()}
@@ -590,13 +848,18 @@ class L402Client:
                 err.l402_token = raw_token
                 raise err
 
-            return response.text, challenge.amount_sats
+            # Payment-Receipt (draft-00): parsed tolerantly — a missing or malformed
+            # receipt must never fail the successful payment. Safe to surface: it
+            # carries only the payment hash, never the preimage.
+            payment_receipt = parse_payment_receipt(response.headers.get("Payment-Receipt"))
+
+            return response.text, challenge.amount_sats, payment_receipt
 
         # Handle other error responses
         if response.status_code >= 400:
             raise L402Error(f"Request failed: {response.status_code} {response.text[:200]}")
 
-        return response.text, None
+        return response.text, None, None
 
     async def pay_challenge(
         self,

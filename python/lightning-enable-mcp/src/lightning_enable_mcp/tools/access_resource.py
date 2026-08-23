@@ -185,7 +185,7 @@ async def access_l402_resource(
             "l402", context=_redact_url_for_display(url), policy=payment_policy
         )
         with receipt_scope:
-            response_text, amount_paid = await l402_client.fetch(
+            response_text, amount_paid, payment_receipt = await l402_client.fetch(
                 url=url,
                 method=method,
                 headers=headers,
@@ -222,6 +222,10 @@ async def access_l402_resource(
         if amount_paid:
             result["message"] = f"Paid {amount_paid} sats for access"
             result["receipt_written"] = receipt_scope.receipt_written or False
+
+        # Draft-00 Payment-Receipt from the server, when present (payment hash only —
+        # never the preimage). None for legacy/L402 endpoints.
+        result["paymentReceipt"] = payment_receipt
 
         if session_info:
             result["session"] = session_info

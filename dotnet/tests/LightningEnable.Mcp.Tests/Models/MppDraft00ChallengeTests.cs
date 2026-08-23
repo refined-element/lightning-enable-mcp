@@ -179,6 +179,22 @@ public class MppDraft00ChallengeTests
     }
 
     [Fact]
+    public void Parse_ParamValueEndingInAnotherParamName_DoesNotPoisonExtraction()
+    {
+        // A quoted value that ENDS with "id=" (e.g. a free-text description) must not be
+        // mistaken for the id param: a poisoned id would corrupt the byte-exact credential
+        // echo and get the credential rejected AFTER the invoice was paid.
+        var encoded = B64UrlNoPad(RequestJson());
+        var header = $"Payment description=\"client-id=\", id=\"chal-1\", realm=\"api.example.com\", " +
+                     $"method=\"lightning\", intent=\"charge\", request=\"{encoded}\", expires=\"{FutureExpiry}\"";
+        var result = MppClientChallenge.Parse(header);
+
+        result.Should().NotBeNull();
+        result!.Id.Should().Be("chal-1");
+        result.Description.Should().Be("client-id=");
+    }
+
+    [Fact]
     public void Parse_LegacyChallenge_Unchanged()
     {
         var header = $"Payment realm=\"api.example.com\", method=\"lightning\", invoice=\"{FixtureInvoice}\", amount=\"100\", currency=\"sat\"";

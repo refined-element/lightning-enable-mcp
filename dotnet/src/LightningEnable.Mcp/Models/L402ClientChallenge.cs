@@ -402,7 +402,11 @@ internal static class AuthParamParser
     {
         // Build a regex that matches key with optional whitespace around = and quoted value
         // This handles: key="value", key ="value", key= "value", key = "value"
-        var pattern = $@"(?i){Regex.Escape(key)}\s*=\s*""([^""]*)""";
+        // The key must start the string or follow a comma/whitespace delimiter — a quoted
+        // VALUE that happens to end with e.g. id= (description="client-id=") must never be
+        // mistaken for the id param, or the byte-exact draft-00 credential echo would be
+        // corrupted and rejected AFTER the invoice was paid.
+        var pattern = $@"(?i)(?<![^,\s]){Regex.Escape(key)}\s*=\s*""([^""]*)""";
         var match = Regex.Match(input, pattern);
         return match.Success ? match.Groups[1].Value : null;
     }

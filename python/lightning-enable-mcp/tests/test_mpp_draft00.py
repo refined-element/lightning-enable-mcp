@@ -183,6 +183,20 @@ class TestModernChallengeParsing:
         result = self.client.parse_mpp_challenge(modern_header(b64url_nopad(payload)))
         assert result.is_modern is True
 
+    def test_param_value_ending_in_another_param_name_does_not_poison_extraction(self):
+        # A quoted value that ENDS with 'id=' (e.g. a free-text description) must not be
+        # mistaken for the id param: a poisoned id would corrupt the byte-exact credential
+        # echo and get the credential rejected AFTER the invoice was paid.
+        encoded = b64url_nopad(request_json())
+        header = (
+            f'Payment description="client-id=", id="chal-1", realm="api.example.com", '
+            f'method="lightning", intent="charge", request="{encoded}", expires="{FUTURE_EXPIRY}"'
+        )
+        result = self.client.parse_mpp_challenge(header)
+
+        assert result.id == "chal-1"
+        assert result.description == "client-id="
+
     def test_parse_legacy_unchanged(self):
         header = (
             f'Payment realm="api.example.com", method="lightning", '

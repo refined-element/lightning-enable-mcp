@@ -262,8 +262,13 @@ def parse_payment_receipt(header_value: str | None) -> dict | None:
 
 
 def _extract_auth_param(params_str: str, name: str) -> str | None:
-    """Extract a quoted auth-param value, tolerating OWS around '=' (RFC 9110)."""
-    match = re.search(rf'(?<![A-Za-z0-9_]){name}\s*=\s*"([^"]*)"', params_str, re.IGNORECASE)
+    """Extract a quoted auth-param value, tolerating OWS around '=' (RFC 9110).
+
+    The param name must start the string or follow a comma/whitespace delimiter — a
+    quoted VALUE that happens to end with e.g. ``id=`` (``description="client-id="``)
+    must never be mistaken for the ``id`` param, or the byte-exact credential echo
+    would be corrupted and rejected AFTER the invoice was paid."""
+    match = re.search(rf'(?<![^,\s]){name}\s*=\s*"([^"]*)"', params_str, re.IGNORECASE)
     return match.group(1) if match else None
 
 

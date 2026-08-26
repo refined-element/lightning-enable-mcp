@@ -3,9 +3,9 @@
   "name": "io.github.refined-element/lightning-enable-mcp",
   "title": "Lightning Enable MCP Server",
   "_description_max_length": "100 chars max — enforced by MCP Registry and CI validation",
-  "description": "AI agent Lightning payments: invoices, wallets, L402 access, API discovery, budgets, and commerce.",
+  "description": "AI agent Lightning payments: L402, invoices, wallets, API discovery, budgets, self-serve signup.",
   "version": "1.24.0",
-  "websiteUrl": "https://docs.lightningenable.com/products/l402-microtransactions/mcp-complete-guide",
+  "websiteUrl": "https://docs.lightningenable.com/products/agentic-commerce/mcp-complete-guide",
   "packages": [
     {
       "registryType": "nuget",
@@ -55,7 +55,7 @@
         },
         {
           "name": "LIGHTNING_ENABLE_API_KEY",
-          "description": "Lightning Enable API key for agent registration and ASA publishing (Agentic Commerce subscription)",
+          "description": "Lightning Enable API key (unlocks producer + ASA tools). Optional: no key? The create_lightning_enable_account tool self-provisions one for ~100 sats over Lightning — no card, no subscription required.",
           "isRequired": false,
           "isSecret": true
         },
@@ -109,7 +109,7 @@
         },
         {
           "name": "LIGHTNING_ENABLE_API_KEY",
-          "description": "Lightning Enable API key for agent registration and ASA publishing (Agentic Commerce subscription)",
+          "description": "Lightning Enable API key (unlocks producer + ASA tools). Optional: no key? The create_lightning_enable_account tool self-provisions one for ~100 sats over Lightning — no card, no subscription required.",
           "isRequired": false,
           "isSecret": true
         },
@@ -162,7 +162,7 @@
         },
         {
           "name": "LIGHTNING_ENABLE_API_KEY",
-          "description": "Lightning Enable API key for agent registration and ASA publishing (Agentic Commerce subscription)",
+          "description": "Lightning Enable API key (unlocks producer + ASA tools). Optional: no key? The create_lightning_enable_account tool self-provisions one for ~100 sats over Lightning — no card, no subscription required.",
           "isRequired": false,
           "isSecret": true
         },

@@ -32,9 +32,21 @@ logger = logging.getLogger("lightning-enable-mcp.tools.discover_api")
 
 WELL_KNOWN_PATHS = [
     "/.well-known/l402-manifest.json",
+    "/.well-known/l402.json",
     "/l402-manifest.json",
     "/l402.json",
 ]
+
+
+def _looks_like_manifest(doc: object) -> bool:
+    """A manifest must describe a service or its endpoints.
+
+    A bare "l402" key is NOT enough: /.well-known/l402 signposts carry an
+    "l402" object of discovery URLs, and accepting one here returned an empty
+    "manifest" success (no service, endpoints: []) instead of probing the
+    remaining paths.
+    """
+    return isinstance(doc, dict) and ("endpoints" in doc or "service" in doc)
 
 
 # The entire Bitcoin supply, in sats. A single call cannot cost more than every
@@ -148,7 +160,7 @@ async def _try_fetch(client: "httpx.AsyncClient", url: str) -> tuple[str | None,
         doc = json.loads(content)
 
         # Quick validation: must have expected structure
-        if any(key in doc for key in ("endpoints", "l402", "service")):
+        if _looks_like_manifest(doc):
             return content, None
 
         return None, None

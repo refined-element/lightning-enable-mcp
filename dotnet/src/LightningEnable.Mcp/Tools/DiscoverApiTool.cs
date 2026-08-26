@@ -26,6 +26,7 @@ public static class DiscoverApiTool
     private static readonly string[] WellKnownPaths =
     {
         "/.well-known/l402-manifest.json",
+        "/.well-known/l402.json",
         "/l402-manifest.json",
         "/l402.json"
     };
@@ -563,9 +564,7 @@ public static class DiscoverApiTool
 
             // Quick validation: must be JSON with expected structure
             using var doc = JsonDocument.Parse(content);
-            if (doc.RootElement.TryGetProperty("endpoints", out _) ||
-                doc.RootElement.TryGetProperty("l402", out _) ||
-                doc.RootElement.TryGetProperty("service", out _))
+            if (LooksLikeManifest(doc.RootElement))
             {
                 return (content, null);
             }
@@ -577,6 +576,14 @@ public static class DiscoverApiTool
             return (null, null);
         }
     }
+
+    // A manifest must describe a service or its endpoints. A bare "l402" key is
+    // NOT enough: /.well-known/l402 signposts carry an "l402" object of discovery
+    // URLs, and accepting one here returned an empty "manifest" success (no
+    // service, endpoints: []) instead of probing the remaining paths.
+    internal static bool LooksLikeManifest(JsonElement root) =>
+        root.ValueKind == JsonValueKind.Object &&
+        (root.TryGetProperty("endpoints", out _) || root.TryGetProperty("service", out _));
 
     private static List<string> GetTriedUrls(string url)
     {

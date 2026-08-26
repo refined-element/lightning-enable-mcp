@@ -677,3 +677,61 @@ class TestRegistryPriceIsUntrusted:
         parsed = await self._search(10, _fake_budget_service(remaining_sats=None))
         assert parsed["budget"]["remaining_sats"] is None
         assert parsed["results"][0]["affordable_calls"] == "unknown"
+
+
+class TestManifestShapeAndProbePaths:
+    """Probe-path alignment + signpost rejection (agent-discoverability audit F3).
+
+    LE-style /.well-known/l402 signposts are JSON with a top-level "l402" key
+    holding discovery URLs — not a manifest. The old shape check accepted any
+    JSON containing "l402", so a signpost host produced an empty "manifest"
+    success instead of probing on.
+    """
+
+    def test_tried_urls_include_well_known_l402_json(self):
+        urls = _get_tried_urls("https://api.example.com")
+        assert any(u.endswith("/.well-known/l402.json") for u in urls)
+
+    @pytest.mark.asyncio
+    async def test_try_fetch_rejects_signpost_shaped_json(self):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = json.dumps(
+            {
+                "payment": "lightning-l402",
+                "message": "This service speaks L402.",
+                "l402": {
+                    "manifestRegistry": "https://api.example.com/api/manifests/registry",
+                    "signup": {"l402FastLane": "https://api.example.com/api/signup/l402"},
+                },
+            }
+        )
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_response)
+
+        content, redirect = await discover_api_module._try_fetch(
+            mock_client, "https://api.example.com/.well-known/l402.json"
+        )
+        assert content is None
+        assert redirect is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "doc",
+        [
+            {"endpoints": [], "l402": {"default_price_sats": 10}},
+            {"service": {"name": "Example", "base_url": "https://api.example.com"}},
+        ],
+    )
+    async def test_try_fetch_accepts_manifest_shaped_json(self, doc):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.text = json.dumps(doc)
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_response)
+
+        content, redirect = await discover_api_module._try_fetch(
+            mock_client, "https://api.example.com/.well-known/l402-manifest.json"
+        )
+        assert content is not None
+        assert redirect is None

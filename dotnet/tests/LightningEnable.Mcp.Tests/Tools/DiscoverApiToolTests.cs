@@ -137,6 +137,36 @@ public class DiscoverApiToolTests
     }
 
     [Fact]
+    public async Task DiscoverApi_ProbesWellKnownL402JsonSpelling()
+    {
+        // Probe-path alignment (agent-discoverability audit F3): hosts that serve
+        // their manifest at /.well-known/l402.json must be discoverable.
+        var result = await DiscoverApiTool.DiscoverApi(
+            url: "https://this-domain-does-not-exist-12345.example.com",
+            budgetAware: false, cancellationToken: CancellationToken.None);
+
+        var json = JsonDocument.Parse(result);
+        var tried = JsonDocument.Parse(result).RootElement.GetProperty("tried_urls")
+            .EnumerateArray().Select(e => e.GetString()).ToList();
+        tried.Should().Contain(u => u!.EndsWith("/.well-known/l402.json"));
+    }
+
+    [Theory]
+    [InlineData("""{"endpoints":[],"l402":{"default_price_sats":10}}""", true)]
+    [InlineData("""{"service":{"name":"Example","base_url":"https://api.example.com"}}""", true)]
+    // An LE-style signpost has a top-level "l402" object of discovery URLs but
+    // neither "endpoints" nor "service" — it is a pointer, not a manifest. The
+    // old check accepted any JSON containing "l402", so a signpost host produced
+    // an empty "manifest" success instead of probing on.
+    [InlineData("""{"payment":"lightning-l402","message":"This service speaks L402.","l402":{"manifestRegistry":"https://api.example.com/api/manifests/registry"}}""", false)]
+    [InlineData("""{"unrelated":true}""", false)]
+    public void LooksLikeManifest_RequiresServiceOrEndpoints(string jsonBody, bool expected)
+    {
+        using var doc = JsonDocument.Parse(jsonBody);
+        DiscoverApiTool.LooksLikeManifest(doc.RootElement).Should().Be(expected);
+    }
+
+    [Fact]
     public async Task DiscoverApi_NoBudgetService_SkipsBudgetAnnotations()
     {
         // Without budget service, result should not have budget field

@@ -11,7 +11,7 @@ Part of [Lightning Enable](https://lightningenable.com) — infrastructure for a
 
 ## Monetize your own API — 30-day free trial
 
-Agents pay your API per request over Lightning — flat subscription from $99/mo, and you keep 100% of every sat.
+Agents pay your API per request over Lightning — flat subscription at $49/mo, and you keep 100% of every sat.
 
 - **[Start free trial](https://api.lightningenable.com/Checkout?plan=individual&utm_source=github&utm_medium=readme&utm_campaign=gtm-aug-2026)** — 30 days, no charge today
 - **[Fast Lane](https://docs.lightningenable.com/getting-started/activate-with-lightning?utm_source=github&utm_medium=readme&utm_campaign=gtm-aug-2026)** — pay 100 sats over Lightning, no card

@@ -7,7 +7,7 @@
 
 ## Monetize your own API — 30-day free trial
 
-Agents pay your API per request over Lightning — flat subscription from $99/mo, and you keep 100% of every sat.
+Agents pay your API per request over Lightning — flat subscription at $49/mo, and you keep 100% of every sat.
 
 - **[Start free trial](https://api.lightningenable.com/Checkout?plan=individual&utm_source=pypi&utm_medium=registry&utm_campaign=gtm-aug-2026)** — 30 days, no charge today
 - **[Fast Lane](https://docs.lightningenable.com/getting-started/activate-with-lightning?utm_source=pypi&utm_medium=registry&utm_campaign=gtm-aug-2026)** — pay 100 sats over Lightning, no card
@@ -15,7 +15,7 @@ Agents pay your API per request over Lightning — flat subscription from $99/mo
 
 Or sign up without leaving your agent: call the `create_lightning_enable_account` tool.
 
-An MCP (Model Context Protocol) server that enables AI agents to make Lightning Network payments. Wallet, invoice, L402, budget, and API-discovery tools work **out of the box** with just a wallet (free, no subscription). Producer tools (`create_l402_challenge`, `verify_l402_payment`) and Agent Service Agreement (ASA) tools for agent-to-agent commerce over Nostr **unlock with an [Agentic Commerce subscription](https://lightningenable.com)** (from $99/mo) and `LIGHTNING_ENABLE_API_KEY`. One of the out-of-the-box tools, `create_lightning_enable_account`, even *self-provisions* that API key: an agent with a wallet can pay a ~100-sat activation fee and unlock the subscription tools on the spot. See the [MCP Complete Guide](https://docs.lightningenable.com/products/l402-microtransactions/mcp-complete-guide) for the full tool list.
+An MCP (Model Context Protocol) server that enables AI agents to make Lightning Network payments. Wallet, invoice, L402, budget, and API-discovery tools work **out of the box** with just a wallet (free, no subscription). Producer tools (`create_l402_challenge`, `verify_l402_payment`) and Agent Service Agreement (ASA) tools for agent-to-agent commerce over Nostr **unlock with an [Agentic Commerce subscription](https://lightningenable.com)** ($49/mo) and `LIGHTNING_ENABLE_API_KEY`. One of the out-of-the-box tools, `create_lightning_enable_account`, even *self-provisions* that API key: an agent with a wallet can pay a ~100-sat activation fee and unlock the subscription tools on the spot. See the [MCP Complete Guide](https://docs.lightningenable.com/products/l402-microtransactions/mcp-complete-guide) for the full tool list.
 
 ## Overview
 
@@ -280,7 +280,7 @@ View current budget configuration and session spending (read-only).
 
 Create an L402 payment challenge to charge another agent or user for accessing a resource. Returns a Lightning invoice and macaroon that the payer must pay before you grant access.
 
-**Requires:** `LIGHTNING_ENABLE_API_KEY` with an Agentic Commerce subscription (from $99/mo).
+**Requires:** `LIGHTNING_ENABLE_API_KEY` with an Agentic Commerce subscription ($49/mo).
 
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
@@ -294,7 +294,7 @@ Create an L402 payment challenge to charge another agent or user for accessing a
 
 Verify an L402 token (macaroon + preimage) to confirm payment was made. Use this after receiving an L402 token from a payer to validate they paid before granting access.
 
-**Requires:** `LIGHTNING_ENABLE_API_KEY` with an Agentic Commerce subscription (from $99/mo).
+**Requires:** `LIGHTNING_ENABLE_API_KEY` with an Agentic Commerce subscription ($49/mo).
 
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|

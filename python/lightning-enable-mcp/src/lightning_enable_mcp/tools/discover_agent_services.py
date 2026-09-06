@@ -10,6 +10,8 @@ import json
 import logging
 from typing import TYPE_CHECKING
 
+from mcp.types import Tool
+
 from . import sanitize_error
 
 if TYPE_CHECKING:
@@ -148,3 +150,37 @@ async def discover_agent_services(
             "success": False,
             "error": f"Error discovering agent services: {sanitize_error(str(e))}",
         })
+
+
+# MCP tool schema (lives beside its handler; registered in tools/registry.py).
+DISCOVER_AGENT_SERVICES_TOOL = Tool(
+    name="discover_agent_services",
+    description=(
+        "Discover agent services on the Nostr network. Search by category, hashtag, or keyword. "
+        "Returns capabilities published as kind 38400 events. "
+        "Use this to find agents that offer services you can pay for via L402."
+    ),
+    inputSchema={
+        "type": "object",
+        "properties": {
+            "category": {
+                "type": "string",
+                "description": "Filter by service category (e.g., 'ai', 'data', 'translation')",
+            },
+            "hashtags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Filter by hashtags",
+            },
+            "query": {
+                "type": "string",
+                "description": "Search query",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Maximum results to return",
+                "default": 20,
+            },
+        },
+    },
+)

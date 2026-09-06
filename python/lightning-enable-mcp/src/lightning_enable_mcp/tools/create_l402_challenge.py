@@ -8,8 +8,11 @@ Requires LIGHTNING_ENABLE_API_KEY with an Agentic Commerce subscription.
 
 import json
 import logging
-from . import sanitize_error
 from typing import TYPE_CHECKING
+
+from mcp.types import Tool
+
+from . import sanitize_error
 
 if TYPE_CHECKING:
     from ..lightning_enable_api import LightningEnableApiClient
@@ -105,3 +108,33 @@ async def create_l402_challenge(
             "success": False,
             "error": sanitize_error(str(e))
         })
+
+
+# MCP tool schema (lives beside its handler; registered in tools/registry.py).
+CREATE_L402_CHALLENGE_TOOL = Tool(
+    name="create_l402_challenge",
+    description=(
+        "Create an L402 payment challenge to charge another agent or user for accessing a resource. "
+        "Returns a Lightning invoice and macaroon. The payer must pay the invoice and present "
+        "the L402 token (macaroon:preimage) back to you for verification. "
+        "Requires LIGHTNING_ENABLE_API_KEY with an Agentic Commerce subscription."
+    ),
+    inputSchema={
+        "type": "object",
+        "properties": {
+            "resource": {
+                "type": "string",
+                "description": "Resource identifier - URL, service name, or description of what you're charging for",
+            },
+            "price_sats": {
+                "type": "integer",
+                "description": "Price in satoshis to charge",
+            },
+            "description": {
+                "type": "string",
+                "description": "Description shown on the Lightning invoice",
+            },
+        },
+        "required": ["resource", "price_sats"],
+    },
+)

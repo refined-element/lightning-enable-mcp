@@ -13,9 +13,12 @@ BudgetManager has been removed.
 
 import json
 import logging
-from . import sanitize_error
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
+
+from mcp.types import Tool
+
+from . import sanitize_error
 
 if TYPE_CHECKING:
     from ..budget_service import BudgetService
@@ -147,3 +150,46 @@ async def get_payment_history(
     except Exception as e:
         logger.exception("Error getting payment history")
         return json.dumps({"success": False, "error": sanitize_error(str(e))})
+
+
+# MCP tool schema (lives beside its handler; registered in tools/registry.py).
+GET_PAYMENT_HISTORY_TOOL = Tool(
+    name="get_payment_history",
+    description="List recent L402 payments made during this session.",
+    inputSchema={
+        "type": "object",
+        "properties": {
+            "limit": {
+                "type": "integer",
+                "description": "Maximum number of payments to return",
+                "default": 10,
+            },
+            "since": {
+                "type": "string",
+                "description": "ISO timestamp to filter payments from",
+            },
+        },
+    },
+)
+
+
+# MCP tool schema (lives beside its handler; registered in tools/registry.py).
+CONFIGURE_BUDGET_TOOL = Tool(
+    name="configure_budget",
+    description="Set spending limits for the session.",
+    inputSchema={
+        "type": "object",
+        "properties": {
+            "per_request": {
+                "type": "integer",
+                "description": "Maximum satoshis per individual request",
+                "default": 1000,
+            },
+            "per_session": {
+                "type": "integer",
+                "description": "Maximum total satoshis for the entire session",
+                "default": 10000,
+            },
+        },
+    },
+)

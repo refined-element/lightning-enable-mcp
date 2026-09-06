@@ -7,9 +7,12 @@ Currently only available with Strike wallet.
 
 import json
 import logging
-from . import sanitize_error
 from decimal import Decimal
 from typing import TYPE_CHECKING
+
+from mcp.types import Tool
+
+from . import sanitize_error
 
 if TYPE_CHECKING:
     from ..strike_wallet import StrikeWallet
@@ -120,3 +123,31 @@ async def exchange_currency(
             "success": False,
             "error": sanitize_error(str(e))
         })
+
+
+# MCP tool schema (lives beside its handler; registered in tools/registry.py).
+EXCHANGE_CURRENCY_TOOL = Tool(
+    name="exchange_currency",
+    description=(
+        "Exchange currency within your wallet (USD to BTC or BTC to USD). "
+        "Currently only available with Strike wallet."
+    ),
+    inputSchema={
+        "type": "object",
+        "properties": {
+            "source_currency": {
+                "type": "string",
+                "description": "Currency to convert from: USD or BTC",
+            },
+            "target_currency": {
+                "type": "string",
+                "description": "Currency to convert to: BTC or USD",
+            },
+            "amount": {
+                "type": "number",
+                "description": "Amount in source currency (e.g., 100 for $100 or 0.001 for 0.001 BTC)",
+            },
+        },
+        "required": ["source_currency", "target_currency", "amount"],
+    },
+)

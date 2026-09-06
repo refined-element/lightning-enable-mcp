@@ -22,9 +22,12 @@ tool returned is dropped.
 
 import json
 import logging
-from . import sanitize_error
-from ..wallet_messages import WALLET_NOT_CONFIGURED_FOR_RECEIVING
 from typing import TYPE_CHECKING, Union
+
+from mcp.types import Tool
+
+from ..wallet_messages import WALLET_NOT_CONFIGURED_FOR_RECEIVING
+from . import sanitize_error
 
 if TYPE_CHECKING:
     from ..budget_service import BudgetService
@@ -265,3 +268,18 @@ async def get_balance(
     await _attach_session(response, budget_service)
 
     return json.dumps(response, indent=2)
+
+
+# MCP tool schema (lives beside its handler; registered in tools/registry.py).
+GET_BALANCE_TOOL = Tool(
+    name="get_balance",
+    description=(
+        "Get the connected wallet's balance. Returns the sats balance plus, where "
+        "available, all currency balances (USD, BTC, ... — most useful with Strike) "
+        "and wallet info. Supersedes check_wallet_balance and get_all_balances."
+    ),
+    inputSchema={
+        "type": "object",
+        "properties": {},
+    },
+)

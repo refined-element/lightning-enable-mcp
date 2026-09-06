@@ -13,11 +13,12 @@ from typing import TYPE_CHECKING, Optional, Union
 
 if TYPE_CHECKING:
     from ..budget_service import BudgetService
-    from ..payment_history_service import PaymentHistoryService
     from ..nwc_wallet import NWCWallet
     from ..opennode_wallet import OpenNodeWallet
+    from ..payment_history_service import PaymentHistoryService
 
 from bolt11 import decode as decode_bolt11
+from mcp.types import Tool
 
 from ..config import ApprovalLevel
 from ..receipt_seam import PaymentReceiptScope, policy_label
@@ -393,3 +394,32 @@ async def pay_invoice(
             "receipt_written": receipt_scope.receipt_written if receipt_scope else None,
             "error": sanitize_error(str(e))
         })
+
+
+# MCP tool schema (lives beside its handler; registered in tools/registry.py).
+PAY_INVOICE_TOOL = Tool(
+    name="pay_invoice",
+    description=(
+        "Pay a Lightning invoice directly and get the preimage as proof of payment. "
+        "Use this to pay any BOLT11 Lightning invoice without L402 protocol overhead."
+    ),
+    inputSchema={
+        "type": "object",
+        "properties": {
+            "invoice": {
+                "type": "string",
+                "description": "BOLT11 Lightning invoice string to pay",
+            },
+            "max_sats": {
+                "type": "integer",
+                "description": "Maximum satoshis allowed to pay. Defaults to 1000",
+                "default": 1000,
+            },
+            "confirmation_nonce": {
+                "type": "string",
+                "description": "Confirmation code the human operator read from the server console, for payments above the auto-approve threshold. The code is NEVER in a tool result — ask the human for it. Omit on the first call to request one.",
+            },
+        },
+        "required": ["invoice"],
+    },
+)

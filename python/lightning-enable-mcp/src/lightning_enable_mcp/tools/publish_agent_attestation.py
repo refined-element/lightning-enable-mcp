@@ -10,6 +10,8 @@ import json
 import logging
 from typing import TYPE_CHECKING
 
+from mcp.types import Tool
+
 from . import sanitize_error
 
 if TYPE_CHECKING:
@@ -116,3 +118,46 @@ async def publish_agent_attestation(
             "success": False,
             "error": f"Error publishing attestation: {sanitize_error(str(e))}",
         })
+
+
+# MCP tool schema (lives beside its handler; registered in tools/registry.py).
+PUBLISH_AGENT_ATTESTATION_TOOL = Tool(
+    name="publish_agent_attestation",
+    description=(
+        "Publish an attestation (review) for an agent after a completed agreement. "
+        "Creates a kind 38403 event that builds the agent's on-protocol reputation. "
+        "Requires LIGHTNING_ENABLE_API_KEY. "
+        "NOTE: writing attestations is not yet available on the hosted API and "
+        "returns an error. The platform holds a single signing key, so a "
+        "platform-signed review would share one pubkey across all reviewers — "
+        "worthless for reputation — so this is intentionally disabled until "
+        "per-agent (client-side) signing exists. Reading reputation "
+        "(get_agent_reputation) works today."
+    ),
+    inputSchema={
+        "type": "object",
+        "properties": {
+            "subject_pubkey": {
+                "type": "string",
+                "description": "Pubkey of the agent being reviewed",
+            },
+            "agreement_id": {
+                "type": "string",
+                "description": "Event ID of the agreement this review is for",
+            },
+            "rating": {
+                "type": "integer",
+                "description": "Rating from 1-5",
+            },
+            "content": {
+                "type": "string",
+                "description": "Free-text review content",
+            },
+            "proof": {
+                "type": "string",
+                "description": "Optional: hash of L402 payment preimage as proof of real transaction",
+            },
+        },
+        "required": ["subject_pubkey", "agreement_id", "rating", "content"],
+    },
+)

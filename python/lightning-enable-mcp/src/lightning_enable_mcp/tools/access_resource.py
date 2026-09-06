@@ -12,13 +12,15 @@ from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from ..budget_service import BudgetService
-    from ..payment_history_service import PaymentHistoryService
     from ..l402_client import L402Client
+    from ..payment_history_service import PaymentHistoryService
 
+from mcp.types import Tool
+
+from .._url_redact import redact_url_for_display as _redact_url_for_display
 from ..config import ApprovalLevel
 from ..l402_client import L402RedirectError
 from ..receipt_seam import PaymentReceiptScope, policy_label
-from .._url_redact import redact_url_for_display as _redact_url_for_display
 from . import sanitize_error
 from ._ssrf_guard import SsrfError, validate_url_allowed
 
@@ -288,3 +290,48 @@ async def access_l402_resource(
                 )
 
         return json.dumps(error_result, indent=2)
+
+
+# MCP tool schema (lives beside its handler; registered in tools/registry.py).
+ACCESS_L402_RESOURCE_TOOL = Tool(
+    name="access_l402_resource",
+    description=(
+        "Fetch a URL with automatic L402 payment handling. "
+        "If the server returns a 402 Payment Required response, "
+        "the invoice will be automatically paid and the request retried."
+    ),
+    inputSchema={
+        "type": "object",
+        "properties": {
+            "url": {
+                "type": "string",
+                "description": "The URL to fetch",
+            },
+            "method": {
+                "type": "string",
+                "description": "HTTP method (GET, POST, PUT, DELETE)",
+                "default": "GET",
+                "enum": ["GET", "POST", "PUT", "DELETE"],
+            },
+            "headers": {
+                "type": "object",
+                "description": "Optional additional request headers",
+                "additionalProperties": {"type": "string"},
+            },
+            "body": {
+                "type": "string",
+                "description": "Optional request body for POST/PUT requests",
+            },
+            "max_sats": {
+                "type": "integer",
+                "description": "Maximum satoshis to pay for this request",
+                "default": 1000,
+            },
+            "confirmation_nonce": {
+                "type": "string",
+                "description": "Confirmation code the human operator read from the server console, for payments above the auto-approve threshold. The code is NEVER in a tool result — ask the human for it. Omit on the first call to request one.",
+            },
+        },
+        "required": ["url"],
+    },
+)

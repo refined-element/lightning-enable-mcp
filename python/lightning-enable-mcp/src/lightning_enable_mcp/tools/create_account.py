@@ -35,8 +35,10 @@ from . import sanitize_error
 
 if TYPE_CHECKING:
     from ..budget_service import BudgetService
-    from ..payment_history_service import PaymentHistoryService
     from ..l402_client import L402Client
+    from ..payment_history_service import PaymentHistoryService
+
+from mcp.types import Tool
 
 from ..receipt_seam import PaymentReceiptScope, policy_label
 
@@ -374,3 +376,36 @@ async def create_lightning_enable_account(
             "receipt_written": receipt_scope.receipt_written if receipt_scope else None,
             "error": sanitize_error(str(e)),
         })
+
+
+# MCP tool schema (lives beside its handler; registered in tools/registry.py).
+CREATE_LIGHTNING_ENABLE_ACCOUNT_TOOL = Tool(
+    name="create_lightning_enable_account",
+    description=(
+        "Self-bootstrapping signup: activate a Lightning Enable account with a tiny "
+        "Lightning payment (~100 sats) and get back a merchant API key. Requires NO "
+        "Lightning Enable API key (it CREATES one) — only a connected wallet. On success "
+        "the API key is saved to ~/.lightning-enable/config.json so the producer/ASA tools "
+        "unlock. Above-threshold fees require an out-of-band confirmation code (as with "
+        "pay_l402_challenge)."
+    ),
+    inputSchema={
+        "type": "object",
+        "properties": {
+            "email": {
+                "type": "string",
+                "description": "Email address to register the Lightning Enable account under.",
+            },
+            "max_sats": {
+                "type": "integer",
+                "description": "Maximum satoshis to pay for activation. The fee is ~100 sats.",
+                "default": 1000,
+            },
+            "confirmation_nonce": {
+                "type": "string",
+                "description": "Confirmation code the human operator read from the server console, for an above-threshold activation fee. The code is NEVER in a tool result — ask the human for it. Omit on the first call to request one.",
+            },
+        },
+        "required": ["email"],
+    },
+)

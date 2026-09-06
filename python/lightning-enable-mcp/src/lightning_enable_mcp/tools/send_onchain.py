@@ -9,8 +9,11 @@ import asyncio
 import json
 import logging
 import sys
-from . import sanitize_error
 from typing import TYPE_CHECKING, Optional, Union
+
+from mcp.types import Tool
+
+from . import sanitize_error
 
 if TYPE_CHECKING:
     from ..budget_service import BudgetService
@@ -80,9 +83,9 @@ async def send_onchain(
     # Verify it's a supported wallet type. The wallet may arrive wrapped in the
     # receipt seam (ReceiptRecordingWallet) — unwrap for the type check only; the
     # actual send below goes through the WRAPPED wallet so the receipt is written.
+    from ..lnd_wallet import LndWallet
     from ..receipt_seam import POLICY_HUMAN_CONFIRMED, PaymentReceiptScope, unwrap_wallet
     from ..strike_wallet import StrikeWallet
-    from ..lnd_wallet import LndWallet
     inner_wallet = unwrap_wallet(wallet)
     if not isinstance(inner_wallet, (StrikeWallet, LndWallet)):
         provider_name = type(inner_wallet).__name__.replace("Wallet", "")
@@ -265,3 +268,36 @@ async def send_onchain(
                 "BEFORE retrying — on-chain payments are irreversible."
             ),
         })
+
+
+# MCP tool schema (lives beside its handler; registered in tools/registry.py).
+SEND_ONCHAIN_TOOL = Tool(
+    name="send_onchain",
+    description=(
+        "Send an on-chain Bitcoin payment to a Bitcoin address. "
+        "Currently only available with Strike wallet."
+    ),
+    inputSchema={
+        "type": "object",
+        "properties": {
+            "address": {
+                "type": "string",
+                "description": "Bitcoin address to send to (e.g., bc1q...)",
+            },
+            "amount_sats": {
+                "type": "integer",
+                "description": "Amount to send in satoshis",
+            },
+            "confirmation_nonce": {
+                "type": "string",
+                "description": (
+                    "Confirmation code the human operator read from the server console. "
+                    "On-chain sends always require it: the first call prints a code to the "
+                    "console (never in the result) and returns requiresConfirmation; ask the "
+                    "human and call again with confirmation_nonce set to it."
+                ),
+            },
+        },
+        "required": ["address", "amount_sats"],
+    },
+)

@@ -6,9 +6,12 @@ Check the payment status of a previously created Lightning invoice.
 
 import json
 import logging
-from . import sanitize_error
-from ..wallet_messages import WALLET_NOT_CONFIGURED_FOR_RECEIVING
 from typing import TYPE_CHECKING, Union
+
+from mcp.types import Tool
+
+from ..wallet_messages import WALLET_NOT_CONFIGURED_FOR_RECEIVING
+from . import sanitize_error
 
 if TYPE_CHECKING:
     from ..lnd_wallet import LndWallet
@@ -122,3 +125,23 @@ async def check_invoice_status(
             "success": False,
             "error": sanitize_error(str(e))
         })
+
+
+# MCP tool schema (lives beside its handler; registered in tools/registry.py).
+CHECK_INVOICE_STATUS_TOOL = Tool(
+    name="check_invoice_status",
+    description=(
+        "Check if a Lightning invoice has been paid. "
+        "Use the invoice ID from create_invoice."
+    ),
+    inputSchema={
+        "type": "object",
+        "properties": {
+            "invoice_id": {
+                "type": "string",
+                "description": "The invoice ID returned from create_invoice",
+            },
+        },
+        "required": ["invoice_id"],
+    },
+)

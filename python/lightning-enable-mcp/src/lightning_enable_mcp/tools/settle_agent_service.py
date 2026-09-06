@@ -17,13 +17,15 @@ payment before delivering the service.
 import json
 import logging
 import sys
-from urllib.parse import urlparse
 from typing import TYPE_CHECKING, Optional
+from urllib.parse import urlparse
 
+from mcp.types import Tool
+
+from .._url_redact import redact_url_for_display as _redact_url_for_display
 from ..config import ApprovalLevel
 from ..l402_client import L402RedirectError
 from ..receipt_seam import PaymentReceiptScope, policy_label
-from .._url_redact import redact_url_for_display as _redact_url_for_display
 from . import sanitize_error
 
 if TYPE_CHECKING:
@@ -315,3 +317,50 @@ async def settle_agent_service(
             "l402Endpoint": l402_endpoint,
             "agreementId": agreement_id,
         })
+
+
+# MCP tool schema (lives beside its handler; registered in tools/registry.py).
+SETTLE_AGENT_SERVICE_TOOL = Tool(
+    name="settle_agent_service",
+    description=(
+        "Settle an agent service agreement via L402 payment (CONSUMER/REQUESTER side). "
+        "Pays the L402 endpoint specified in the agreement, completing the service transaction. "
+        "Uses the same L402 auto-pay flow as access_l402_resource. "
+        "The L402 endpoint URL comes from discover_agent_services or request_agent_service results. "
+        "NOTE: If you are the PROVIDER (selling a service), use create_l402_challenge to generate "
+        "a Lightning invoice at the agreed price, then verify_l402_payment to confirm payment "
+        "before delivering the service."
+    ),
+    inputSchema={
+        "type": "object",
+        "properties": {
+            "l402_endpoint": {
+                "type": "string",
+                "description": "L402 endpoint URL from the service agreement",
+            },
+            "method": {
+                "type": "string",
+                "description": "HTTP method (GET, POST, PUT, DELETE). Defaults to GET",
+                "default": "GET",
+            },
+            "body": {
+                "type": "string",
+                "description": "Optional request body for POST requests (e.g., service parameters as JSON)",
+            },
+            "agreement_id": {
+                "type": "string",
+                "description": "Agreement event ID for tracking",
+            },
+            "max_sats": {
+                "type": "integer",
+                "description": "Maximum satoshis to pay",
+                "default": 1000,
+            },
+            "confirmation_nonce": {
+                "type": "string",
+                "description": "Confirmation code the human operator read from the server console, for settlements above the auto-approve threshold. The code is NEVER in a tool result — ask the human for it. Omit on the first call to request one.",
+            },
+        },
+        "required": ["l402_endpoint"],
+    },
+)

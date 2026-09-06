@@ -9,8 +9,11 @@ re-calls the original payment tool with confirmation_nonce set to the code.
 
 import json
 import logging
-from . import sanitize_error
 from typing import TYPE_CHECKING
+
+from mcp.types import Tool
+
+from . import sanitize_error
 
 if TYPE_CHECKING:
     from ..budget_service import BudgetService
@@ -94,3 +97,25 @@ async def verify_confirmation_code(
             "success": False,
             "error": sanitize_error(str(e))
         })
+
+
+# MCP tool schema (lives beside its handler; registered in tools/registry.py).
+VERIFY_CONFIRMATION_CODE_TOOL = Tool(
+    name="verify_confirmation_code",
+    description=(
+        "Verify whether a payment confirmation code (relayed by the human from the "
+        "server console) is still valid and what it authorizes. VERIFICATION ONLY — "
+        "never executes a payment. To pay, call the original payment tool again with "
+        "confirmation_nonce."
+    ),
+    inputSchema={
+        "type": "object",
+        "properties": {
+            "nonce": {
+                "type": "string",
+                "description": "The 6-character confirmation code from the payment request",
+            },
+        },
+        "required": ["nonce"],
+    },
+)

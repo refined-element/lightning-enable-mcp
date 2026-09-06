@@ -13,12 +13,15 @@ import json
 import logging
 import math
 import os
+from typing import TYPE_CHECKING, Any
+from urllib.parse import quote as url_quote
+
+from mcp.types import Tool
+
 from .._redirect import resolve_redirect_location
 from ..ssrf_transport import build_ssrf_safe_async_transport
 from . import sanitize_error
 from ._ssrf_guard import SsrfError, validate_url_allowed
-from typing import TYPE_CHECKING, Any
-from urllib.parse import quote as url_quote
 
 if TYPE_CHECKING:
     from ..budget_service import BudgetService
@@ -603,3 +606,36 @@ async def _fetch_and_format_manifest(
         "budget": budget_info,
         "endpoint_count": len(endpoints),
     }, indent=2)
+
+
+# MCP tool schema (lives beside its handler; registered in tools/registry.py).
+DISCOVER_API_TOOL = Tool(
+    name="discover_api",
+    description=(
+        "Discover L402-enabled APIs. Use 'query' to search the registry for available APIs by keyword, "
+        "or use 'url' to fetch a specific API's manifest with full endpoint details and pricing. "
+        "Use 'category' to browse by category. With budget_aware=true, shows how many calls you can afford."
+    ),
+    inputSchema={
+        "type": "object",
+        "properties": {
+            "url": {
+                "type": "string",
+                "description": "Base URL of the L402-enabled API, or direct URL to the manifest JSON file. If omitted, searches the registry instead.",
+            },
+            "query": {
+                "type": "string",
+                "description": "Search the L402 API registry by keyword (e.g., 'weather', 'ai', 'geocoding').",
+            },
+            "category": {
+                "type": "string",
+                "description": "Filter registry results by category (e.g., 'ai', 'data', 'finance').",
+            },
+            "budget_aware": {
+                "type": "boolean",
+                "description": "If true, annotate endpoints with affordable call counts based on remaining budget. Default: true.",
+                "default": True,
+            },
+        },
+    },
+)

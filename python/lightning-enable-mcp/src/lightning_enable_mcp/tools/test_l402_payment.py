@@ -22,8 +22,10 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..budget_service import BudgetService
-    from ..payment_history_service import PaymentHistoryService
     from ..l402_client import L402Client
+    from ..payment_history_service import PaymentHistoryService
+
+from mcp.types import Tool
 
 from .access_resource import access_l402_resource
 
@@ -267,3 +269,28 @@ async def test_l402_payment(
     )
 
     return interpret(raw, endpoint)
+
+
+# MCP tool schema (lives beside its handler; registered in tools/registry.py).
+TEST_L402_PAYMENT_TOOL = Tool(
+    name="test_l402_payment",
+    description=(
+        "Self-test the Lightning wallet by paying the public 1-sat L402 test "
+        "endpoint end to end. Proves the wallet is connected, returns a preimage, "
+        "and can complete an L402 payment. Costs about 1 satoshi. Use this to "
+        "verify setup or answer 'is my wallet actually working?'. If your budget "
+        "config requires confirmation for this amount, the verdict is "
+        "'needs_confirmation' and the server prints a code to its console — re-run "
+        "with confirmation_nonce set to that code."
+    ),
+    inputSchema={
+        "type": "object",
+        "properties": {
+            "confirmation_nonce": {
+                "type": "string",
+                "description": "Confirmation code the human read from the server console, if a prior call returned test='needs_confirmation'. Omit on the first call.",
+            },
+        },
+        "required": [],
+    },
+)

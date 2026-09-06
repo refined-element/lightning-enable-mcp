@@ -14,6 +14,8 @@ import json
 import logging
 from typing import TYPE_CHECKING
 
+from mcp.types import Tool
+
 from ..config import ApprovalLevel
 from . import sanitize_error
 
@@ -144,3 +146,33 @@ async def request_agent_service(
             "success": False,
             "error": f"Error requesting service: {sanitize_error(str(e))}",
         })
+
+
+# MCP tool schema (lives beside its handler; registered in tools/registry.py).
+REQUEST_AGENT_SERVICE_TOOL = Tool(
+    name="request_agent_service",
+    description=(
+        "Sends a service request (kind 38401 event) referencing the provider's capability. "
+        "The provider responds with agreement/settlement terms; settle via settle_agent_service. "
+        "If the provider has an L402 endpoint, you can skip this step "
+        "and use settle_agent_service directly. Requires LIGHTNING_ENABLE_API_KEY."
+    ),
+    inputSchema={
+        "type": "object",
+        "properties": {
+            "capability_event_id": {
+                "type": "string",
+                "description": "Event ID of the capability to request",
+            },
+            "budget_sats": {
+                "type": "integer",
+                "description": "Maximum budget in satoshis",
+            },
+            "parameters": {
+                "type": "string",
+                "description": "Additional parameters as a JSON string",
+            },
+        },
+        "required": ["capability_event_id", "budget_sats"],
+    },
+)

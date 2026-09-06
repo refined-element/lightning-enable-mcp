@@ -7,8 +7,11 @@ Uses the new multi-tier approval system with USD-based limits.
 
 import json
 import logging
-from . import sanitize_error
 from typing import TYPE_CHECKING
+
+from mcp.types import Tool
+
+from . import sanitize_error
 
 if TYPE_CHECKING:
     from ..budget_service import BudgetService
@@ -54,7 +57,7 @@ async def get_budget_status(
     # and the response surfaces the error rather than guessing.
     price_error: str | None = None
     try:
-        from ..price_service import get_price_service, PriceUnavailableError
+        from ..price_service import PriceUnavailableError, get_price_service
         try:
             await get_price_service().get_btc_price()
         except PriceUnavailableError as ex:
@@ -82,3 +85,17 @@ async def get_budget_status(
             "success": False,
             "error": sanitize_error(str(e))
         })
+
+
+# MCP tool schema (lives beside its handler; registered in tools/registry.py).
+GET_BUDGET_STATUS_TOOL = Tool(
+    name="get_budget_status",
+    description=(
+        "View current budget status and spending limits (read-only). "
+        "Edit ~/.lightning-enable/config.json to change limits."
+    ),
+    inputSchema={
+        "type": "object",
+        "properties": {},
+    },
+)

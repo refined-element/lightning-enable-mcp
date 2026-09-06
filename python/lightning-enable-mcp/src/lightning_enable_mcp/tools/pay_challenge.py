@@ -8,18 +8,20 @@ import asyncio
 import json
 import logging
 import sys
-from . import sanitize_error
-from ..l402_client import L402Error, parse_payment_challenge
-from ..receipt_seam import PaymentReceiptScope, policy_label
-from ..wallet_errors import PaymentPendingError, PaymentProofUnavailableError
 from typing import TYPE_CHECKING, Optional
 
 from bolt11 import decode as decode_bolt11
+from mcp.types import Tool
+
+from ..l402_client import L402Error, parse_payment_challenge
+from ..receipt_seam import PaymentReceiptScope, policy_label
+from ..wallet_errors import PaymentPendingError, PaymentProofUnavailableError
+from . import sanitize_error
 
 if TYPE_CHECKING:
     from ..budget_service import BudgetService
-    from ..payment_history_service import PaymentHistoryService
     from ..nwc_wallet import NWCWallet
+    from ..payment_history_service import PaymentHistoryService
 
 logger = logging.getLogger("lightning-enable-mcp.tools.pay")
 
@@ -401,3 +403,43 @@ async def pay_l402_challenge(
             "receipt_written": receipt_scope.receipt_written if receipt_scope else None,
             "error": sanitize_error(str(e)),
         })
+
+
+# MCP tool schema (lives beside its handler; registered in tools/registry.py).
+PAY_L402_CHALLENGE_TOOL = Tool(
+    name="pay_l402_challenge",
+    description=(
+        "Manually pay an L402 or MPP invoice and receive the authorization token. "
+        "Use this if you need to handle the L402/MPP flow yourself. "
+        "Omit macaroon for MPP (Machine Payments Protocol) mode. For a modern "
+        "(draft-00) Payment challenge, pass the raw WWW-Authenticate value as "
+        "challenge_header to get a single-use Payment credential."
+    ),
+    inputSchema={
+        "type": "object",
+        "properties": {
+            "invoice": {
+                "type": "string",
+                "description": "BOLT11 Lightning invoice string. Optional when challenge_header is provided (the invoice inside the challenge is used).",
+            },
+            "macaroon": {
+                "type": ["string", "null"],
+                "description": "Base64-encoded macaroon from the L402 challenge. Omit for MPP mode (preimage-only authentication).",
+            },
+            "max_sats": {
+                "type": "integer",
+                "description": "Maximum satoshis allowed for this payment",
+                "default": 1000,
+            },
+            "confirmation_nonce": {
+                "type": "string",
+                "description": "Confirmation code the human operator read from the server console, for payments above the auto-approve threshold. The code is NEVER in a tool result — ask the human for it. Omit on the first call to request one.",
+            },
+            "challenge_header": {
+                "type": "string",
+                "description": "Raw WWW-Authenticate value of a 'Payment' scheme challenge. When it carries a draft-00 request parameter, the invoice inside is paid and a single-use 'Authorization: Payment <credential>' value is returned.",
+            },
+        },
+        "required": [],
+    },
+)

@@ -9,6 +9,8 @@ import json
 import logging
 from typing import TYPE_CHECKING
 
+from mcp.types import Tool
+
 from . import sanitize_error
 
 if TYPE_CHECKING:
@@ -127,3 +129,52 @@ async def publish_agent_capability(
             "success": False,
             "error": f"Error publishing capability: {sanitize_error(str(e))}",
         })
+
+
+# MCP tool schema (lives beside its handler; registered in tools/registry.py).
+PUBLISH_AGENT_CAPABILITY_TOOL = Tool(
+    name="publish_agent_capability",
+    description=(
+        "Publish an agent capability advertisement to the Nostr network. "
+        "Makes your agent discoverable by other agents as a kind 38400 listing, "
+        "published via Lightning Enable's L402 proxy pipeline. Provide target_url — "
+        "an L402 proxy is created to back the listing and handle payment. The event "
+        "is signed by the Lightning Enable platform key. Requires LIGHTNING_ENABLE_API_KEY."
+    ),
+    inputSchema={
+        "type": "object",
+        "properties": {
+            "service_id": {
+                "type": "string",
+                "description": "Unique service identifier (used as d-tag)",
+            },
+            "categories": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Service categories (e.g., ['ai', 'translation'])",
+            },
+            "content": {
+                "type": "string",
+                "description": "Description of the service",
+            },
+            "price_sats": {
+                "type": "integer",
+                "description": "Price per request in satoshis",
+            },
+            "l402_endpoint": {
+                "type": "string",
+                "description": "L402 endpoint URL for payment settlement",
+            },
+            "target_url": {
+                "type": "string",
+                "description": "Target API URL (if auto-creating an L402 proxy via Lightning Enable)",
+            },
+            "hashtags": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Hashtags for discoverability",
+            },
+        },
+        "required": ["service_id", "categories", "content", "price_sats"],
+    },
+)

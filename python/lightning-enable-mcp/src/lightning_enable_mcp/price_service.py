@@ -178,10 +178,6 @@ class PriceService:
             return Decimal("0")
         return self._snapshot.btc_usd
 
-    def get_cache_source(self) -> str | None:
-        """The source of the cached price, or None if no fetch has succeeded."""
-        return self._snapshot.source if self._snapshot else None
-
     def is_cache_valid(self) -> bool:
         """Whether the cached value is within CACHE_DURATION."""
         if self._snapshot is None:

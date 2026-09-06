@@ -764,10 +764,6 @@ class BudgetService:
             self._pending_confirmations.pop(nonce, None)
             return pc
 
-    def clean_expired_confirmations(self) -> None:
-        """Purge expired pending confirmations."""
-        self._clean_expired_confirmations()
-
     def _clean_expired_confirmations(self) -> None:
         # Re-entrant: create_pending_confirmation calls this while holding the lock.
         with self._confirmation_lock:
@@ -847,38 +843,6 @@ class BudgetService:
             },
             "note": "Configuration is READ-ONLY. Edit ~/.lightning-enable/config.json to change limits.",
         }
-
-    def reset_session(self) -> None:
-        """
-        Resets the session spending to zero.
-
-        This is useful for:
-        - Starting a new conversation/task
-        - After the user acknowledges they want to continue spending
-        - Testing
-
-        After reset:
-        - session_spent_sats = 0
-        - session_spent_usd = 0
-        - request_count = 0
-        - is_first_payment = True
-        """
-        self._session_spent_sats = 0
-        self._session_spent_usd = Decimal("0")
-        self._request_count = 0
-        self._session_started = datetime.now(timezone.utc)
-        self._is_first_payment = True
-        logger.info("Session reset")
-
-    def is_cooldown_elapsed(self) -> bool:
-        """
-        Public check if cooldown period has elapsed since last payment.
-
-        Returns:
-            True if enough time has passed since the last payment,
-            or if no payment has been made yet.
-        """
-        return self._is_cooldown_elapsed()
 
     def _is_cooldown_elapsed(self) -> bool:
         """

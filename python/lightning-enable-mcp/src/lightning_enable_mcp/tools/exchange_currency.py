@@ -9,7 +9,7 @@ import json
 import logging
 from . import sanitize_error
 from decimal import Decimal
-from typing import TYPE_CHECKING, Union
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..strike_wallet import StrikeWallet

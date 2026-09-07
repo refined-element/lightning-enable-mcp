@@ -4,8 +4,8 @@ Every advertised tool's JSON schema is loaded into the agent's context at the st
 of each session, so a wide surface costs tokens on every single turn. A profile
 trims what is *advertised*; it never removes capability:
 
-* ``lite``     — the five tools an agent needs to spend money and stay inside its
-                 budget. Smallest context footprint.
+* ``lite``     — the few tools an agent needs to get a wallet, spend money and stay
+                 inside its budget. Smallest context footprint.
 * ``standard`` — the default. The consolidated verb set (:data:`STANDARD_TOOL_NAMES`).
 * ``full``     — the consolidated set plus every pre-consolidation tool name, for
                  prompts and scripts written against the old surface.
@@ -38,6 +38,7 @@ VALID_PROFILES = (LITE, STANDARD, FULL)
 
 #: The consolidated verb set — what ``standard`` advertises, in list_tools order.
 STANDARD_TOOL_NAMES: tuple[str, ...] = (
+    "setup_wallet",
     "access_l402_resource",
     "pay_invoice",
     "pay_l402_challenge",
@@ -55,8 +56,11 @@ STANDARD_TOOL_NAMES: tuple[str, ...] = (
     "agent_services",
 )
 
-#: The minimal spend-and-stay-in-budget surface.
+#: The minimal surface: get a wallet, spend, stay inside the budget. ``setup_wallet``
+#: is here because none of the rest works without a wallet, and an agent on the
+#: smallest surface has no other way to find that out or fix it.
 LITE_TOOL_NAMES: tuple[str, ...] = (
+    "setup_wallet",
     "access_l402_resource",
     "pay_invoice",
     "get_balance",

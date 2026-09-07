@@ -29,6 +29,13 @@ from mcp.types import ToolAnnotations
 #: the ``full`` profile re-advertises.
 TOOL_ANNOTATIONS: dict[str, ToolAnnotations] = {
     # ── Consolidated surface ────────────────────────────────────────────────
+    "setup_wallet": ToolAnnotations(
+        title="Set up wallet",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
     "access_l402_resource": ToolAnnotations(
         title="Fetch paid resource", readOnlyHint=False, destructiveHint=True
     ),

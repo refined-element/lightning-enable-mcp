@@ -111,17 +111,18 @@ class TestProfileResolution:
 class TestProfileContents:
     def test_standard_is_the_consolidated_set(self):
         assert [t.name for t in STANDARD_TOOLS] == list(profiles.STANDARD_TOOL_NAMES)
-        assert len(STANDARD_TOOLS) == 15
+        assert len(STANDARD_TOOLS) == 16
 
-    def test_lite_is_the_five_spend_and_stay_in_budget_tools(self):
+    def test_lite_is_only_wallet_setup_spend_and_budget(self):
         assert {t.name for t in LITE_TOOLS} == {
+            "setup_wallet",
             "pay_invoice",
             "access_l402_resource",
             "get_balance",
             "budget",
             "receipts",
         }
-        assert len(LITE_TOOLS) == 5
+        assert len(LITE_TOOLS) == 6
 
     def test_lite_is_a_subset_of_standard(self):
         assert {t.name for t in LITE_TOOLS} <= {t.name for t in STANDARD_TOOLS}
@@ -132,7 +133,7 @@ class TestProfileContents:
         assert set(names) - {t.name for t in STANDARD_TOOLS} == set(
             profiles.LEGACY_TOOL_NAMES
         )
-        assert len(names) == 31
+        assert len(names) == 32
 
     def test_legacy_names_are_all_dispatchable_aliases(self):
         """`full` may only re-advertise names the dispatcher actually accepts."""
@@ -157,7 +158,7 @@ class TestProfileSelection:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "value,expected_count",
-        [("lite", 5), ("standard", 15), ("full", 31)],
+        [("lite", 6), ("standard", 16), ("full", 32)],
     )
     async def test_env_var_selects_profile(self, monkeypatch, value, expected_count):
         monkeypatch.setenv(profiles.PROFILE_ENV_VAR, value)

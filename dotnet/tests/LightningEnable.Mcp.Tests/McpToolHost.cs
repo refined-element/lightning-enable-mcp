@@ -128,6 +128,7 @@ internal sealed class McpToolHost : IAsyncDisposable
         services.AddSingleton<IAgentService>(_ => null!);
         services.AddSingleton<IRateLimiter>(_ => null!);
         services.AddSingleton<IOperationLedger>(_ => null!);
+        services.AddSingleton<IWalletOnboardingService>(_ => null!);
         services.AddHttpClient();
     }
 

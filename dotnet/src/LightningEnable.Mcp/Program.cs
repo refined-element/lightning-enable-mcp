@@ -83,6 +83,10 @@ public class Program
         // Register budget configuration FIRST (needed by wallet services for config file fallback)
         builder.Services.AddSingleton<IBudgetConfigurationService, BudgetConfigurationService>();
 
+        // Wallet onboarding (setup_wallet): reports what is configured, probes a pasted NWC
+        // connection string against the live wallet, and persists it.
+        builder.Services.AddSingleton<IWalletOnboardingService, WalletOnboardingService>();
+
         // Load config to check for wallet settings
         var configService = new BudgetConfigurationService();
         var config = configService.Configuration;

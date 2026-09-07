@@ -143,7 +143,7 @@ Config file locations:
 
 ## Tools
 
-**Canonical inventory: 15 tools — 13 free (out of the box, just a wallet) + 2 that require `LIGHTNING_ENABLE_API_KEY`** (an [Agentic Commerce subscription](https://lightningenable.com)). This table is the single source of truth every advertised count derives from — it is pinned to the code by the tool-inventory guard tests in both ports (drift fails CI).
+**Canonical inventory: 16 tools — 14 free (out of the box, just a wallet) + 2 that require `LIGHTNING_ENABLE_API_KEY`** (an [Agentic Commerce subscription](https://lightningenable.com)). This table is the single source of truth every advertised count derives from — it is pinned to the code by the tool-inventory guard tests in both ports (drift fails CI).
 
 Five of these are *action* tools: pass `action` (or `source` for `receipts`) to pick the operation. They replace 16 single-purpose tools whose schemas used to be loaded into the agent's context on every session — see [Tool profiles and old tool names](#tool-profiles-and-old-tool-names). **Every old name still works.**
 
@@ -151,6 +151,7 @@ Five of these are *action* tools: pass `action` (or `source` for `receipts`) to 
 
 | Tool | Access | What it does |
 |------|--------|--------------|
+| `setup_wallet` | Free | Report the configured wallet, or connect one by pasting an NWC connection string |
 | `pay_invoice` | Free | Pay a BOLT11 Lightning invoice directly, get the preimage |
 | `pay_l402_challenge` | Free | Pay an L402 challenge (invoice + macaroon), get the token |
 | `access_l402_resource` | Free | Fetch a URL, auto-paying any L402 challenge |
@@ -177,9 +178,9 @@ Every advertised tool's JSON schema is loaded into the agent's context at the st
 
 | Profile | Tools | Use it when |
 |---------|-------|-------------|
-| `lite` | 5 — `pay_invoice`, `access_l402_resource`, `get_balance`, `budget`, `receipts` | The agent only needs to spend and stay inside its budget |
-| `standard` *(default)* | 15 — the table above | Everything, at about 40% less schema than the old surface |
-| `full` | 31 — `standard` plus every pre-consolidation name | You have prompts or scripts written against the old tool names |
+| `lite` | 6 — `setup_wallet`, `pay_invoice`, `access_l402_resource`, `get_balance`, `budget`, `receipts` | The agent only needs to get a wallet, spend, and stay inside its budget |
+| `standard` *(default)* | 16 — the table above | Everything, at about 40% less schema than the old surface |
+| `full` | 32 — `standard` plus every pre-consolidation name | You have prompts or scripts written against the old tool names |
 
 ```json
 {

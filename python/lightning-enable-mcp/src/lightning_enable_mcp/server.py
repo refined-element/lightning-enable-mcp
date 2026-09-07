@@ -60,6 +60,7 @@ from .tools.registry import tools_for_profile
 from .tools.request_agent_service import request_agent_service
 from .tools.send_onchain import send_onchain
 from .tools.settle_agent_service import settle_agent_service
+from .tools.setup_wallet import setup_wallet
 from .tools.test_l402_payment import test_l402_payment
 from .tools.unpublish_agent_capability import unpublish_agent_capability
 from .tools.verify_confirmation_code import verify_confirmation_code
@@ -249,12 +250,18 @@ class LightningEnableServer:
                             "LND_REST_HOST+LND_MACAROON_HEX. "
                             "(OPENNODE_API_KEY is receiving/invoicing only — it cannot pay "
                             "L402 challenges.) "
-                            "Then run test_l402_payment to confirm the wallet works end to end.",
+                            "Call setup_wallet for the guided path, then run "
+                            "test_l402_payment to confirm the wallet works end to end.",
                         )
                     ]
 
                 # Route to appropriate handler
-                if name == "access_l402_resource":
+                if name == "setup_wallet":
+                    result = await setup_wallet(
+                        nwc_connection_string=arguments.get("nwc_connection_string"),
+                    )
+
+                elif name == "access_l402_resource":
                     result = await access_l402_resource(
                         url=arguments["url"],
                         method=arguments.get("method", "GET"),
@@ -524,8 +531,11 @@ class LightningEnableServer:
     #  - get_balance is a READ-ONLY balance tool that returns its own
     #    receiving-oriented no-wallet message, so it is exempt from the payment guard.
     #  - l402_producer (create/verify) goes to the Lightning Enable API, not a wallet.
+    #  - setup_wallet is how an agent GETS a wallet — gating it behind one would be a
+    #    deadlock, and it is the tool the guard message below points at.
     _WALLET_FREE_TOOLS = frozenset(
         {
+            "setup_wallet",
             "discover_api",
             "verify_confirmation_code",
             "test_l402_payment",
@@ -598,7 +608,8 @@ class LightningEnableServer:
                 "No wallet configured. Set one L402-capable wallet: STRIKE_API_KEY, "
                 "NWC_CONNECTION_STRING, or LND_REST_HOST+LND_MACAROON_HEX. "
                 "(OPENNODE_API_KEY is receiving/invoicing only — it cannot pay L402 "
-                "challenges.) Then run test_l402_payment to confirm the wallet works."
+                "challenges.) Call setup_wallet for the guided path, then run "
+                "test_l402_payment to confirm the wallet works."
             )
             return
 

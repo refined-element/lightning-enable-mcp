@@ -3,7 +3,7 @@ namespace LightningEnable.Mcp.Tools;
 /// <summary>How much of the tool surface the server advertises in <c>list_tools</c>.</summary>
 public enum ToolProfile
 {
-    /// <summary>The five tools an agent needs to spend money and stay inside its budget.</summary>
+    /// <summary>The tools an agent needs to get a wallet, spend, and stay inside its budget.</summary>
     Lite,
 
     /// <summary>The default: the consolidated verb set.</summary>
@@ -43,6 +43,7 @@ public static class ToolProfiles
     /// <summary>The consolidated verb set — what <see cref="ToolProfile.Standard"/> advertises.</summary>
     public static readonly IReadOnlyList<string> StandardToolNames = new[]
     {
+        "setup_wallet",
         "access_l402_resource",
         "pay_invoice",
         "pay_l402_challenge",
@@ -60,9 +61,14 @@ public static class ToolProfiles
         "agent_services",
     };
 
-    /// <summary>The minimal spend-and-stay-in-budget surface.</summary>
+    /// <summary>
+    /// The minimal spend-and-stay-in-budget surface. <c>setup_wallet</c> is here because
+    /// none of the rest works without a wallet, and an agent on the smallest surface has no
+    /// other way to find that out or fix it.
+    /// </summary>
     public static readonly IReadOnlyList<string> LiteToolNames = new[]
     {
+        "setup_wallet",
         "access_l402_resource",
         "pay_invoice",
         "get_balance",

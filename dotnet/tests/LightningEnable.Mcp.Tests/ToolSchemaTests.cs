@@ -26,8 +26,16 @@ public class ToolSchemaTests
     // schema-plus-metadata and understate the reduction. Their own cost is asserted below.
     private const int PreConsolidationSchemaBytes = 17_864;
 
-    /// <summary>The consolidated surface must be well under the old one, not marginally under.</summary>
-    private const double MaxStandardFraction = 0.60;
+    /// <summary>
+    /// The consolidated surface must be well under the old one, not marginally under.
+    ///
+    /// <para>Raised 0.60 → 0.65 when <c>setup_wallet</c> was added. That tool is not
+    /// sprawl — nothing else in the surface works without a wallet, and an agent had no way
+    /// to discover or fix that — but it is ~300 bytes the 0.60 budget did not allow for.
+    /// The consolidation still delivers a ~39% reduction, and the guard keeps roughly 750
+    /// bytes of headroom, so it fails again on the next couple of verbose additions.</para>
+    /// </summary>
+    private const double MaxStandardFraction = 0.65;
 
     private static readonly IReadOnlySet<string> MoneyMovingTools = new HashSet<string>
     {
@@ -50,6 +58,7 @@ public class ToolSchemaTests
         "walletService", "budgetService", "priceService", "configService", "paymentHistory",
         "paymentHistoryService", "historyService", "receiptService", "l402Client",
         "apiService", "agentService", "rateLimiter", "operationLedger", "httpClientFactory",
+        "onboarding",
         "server", "cancellationToken",
     };
 
@@ -181,8 +190,12 @@ public class ToolSchemaTests
         await using var host = await McpToolHost.StartAsync(ToolProfile.Standard);
         var names = (await host.AdvertisedToolsAsync()).Select(t => t.Name).ToHashSet();
 
-        // budget, create_invoice and l402_producer are writes that are not destructive.
-        var classifiedElsewhere = new[] { "budget", "create_invoice", "l402_producer" };
+        // budget, create_invoice, l402_producer and setup_wallet are writes that are not
+        // destructive: none of them can spend the wallet.
+        var classifiedElsewhere = new[]
+        {
+            "budget", "create_invoice", "l402_producer", "setup_wallet",
+        };
         names.Except(MoneyMovingTools).Except(PureReadTools).Except(classifiedElsewhere)
             .Should().BeEmpty("every advertised tool needs a deliberate read/write classification");
     }

@@ -22,13 +22,15 @@ from lightning_enable_mcp.nwc_wallet import NWCWallet
 # out-of-the-box (free, just a wallet) + 2 that need LIGHTNING_ENABLE_API_KEY.
 # The 2026-09 tool-surface consolidation folded 16 single-purpose tools into five
 # action-style verbs (budget, receipts, wallet_ops, l402_producer, agent_services),
-# taking the advertised surface from 26 tools to 15 — see tools/profiles.py.
+# taking the advertised surface from 26 tools to 15; ``setup_wallet`` then added the
+# wallet onboarding step every other tool depends on — see tools/profiles.py.
 #
 # Every pre-consolidation name still dispatches as an accepted-but-unadvertised
 # forwarding alias (TestDeprecatedAliases in test_tool_profiles.py), and the
 # ``full`` profile re-advertises them. Neither belongs in this inventory: this is
 # the DEFAULT advertised surface.
 FREE_TOOLS = {
+    "setup_wallet",
     "access_l402_resource",
     "pay_invoice",
     "pay_l402_challenge",
@@ -93,10 +95,10 @@ class TestLightningEnableServer:
         # Deprecated aliases (every pre-consolidation name) still dispatch but must
         # NOT appear here.
         assert tool_names == ALL_TOOLS
-        assert len(tool_names) == 15
+        assert len(tool_names) == 16
         # Free/paid split is the source of truth every doc count derives from.
         assert FREE_TOOLS.isdisjoint(API_KEY_TOOLS)
-        assert len(FREE_TOOLS) == 13, "13 out-of-the-box tools"
+        assert len(FREE_TOOLS) == 14, "14 out-of-the-box tools"
         assert len(API_KEY_TOOLS) == 2, "2 API-key-gated verbs (l402_producer, agent_services)"
         assert tool_names >= FREE_TOOLS
         assert tool_names >= API_KEY_TOOLS

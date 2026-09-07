@@ -28,7 +28,7 @@ internal static class WalletMessages
     /// it cannot produce the preimage L402 requires.
     /// </summary>
     public const string NotConfiguredForPayment =
-        "Wallet not configured. Set one L402-capable wallet — STRIKE_API_KEY, NWC_CONNECTION_STRING, or LND_REST_HOST+LND_MACAROON_HEX. (OPENNODE_API_KEY is receiving/invoicing only — it cannot pay L402 challenges.) Then run test_l402_payment to confirm the wallet works.";
+        "Wallet not configured. Set one L402-capable wallet — STRIKE_API_KEY, NWC_CONNECTION_STRING, or LND_REST_HOST+LND_MACAROON_HEX. (OPENNODE_API_KEY is receiving/invoicing only — it cannot pay L402 challenges.) Call setup_wallet for the guided path, then run test_l402_payment to confirm the wallet works.";
 
     /// <summary>
     /// Returned by the RECEIVING / INVOICING / INFO tools (create_invoice,
@@ -39,5 +39,5 @@ internal static class WalletMessages
     /// makes no L402/payment claim.
     /// </summary>
     public const string NotConfiguredForReceiving =
-        "Wallet not configured. Set any wallet — STRIKE_API_KEY, OPENNODE_API_KEY, NWC_CONNECTION_STRING, or LND_REST_HOST+LND_MACAROON_HEX — to create/check invoices and read balances. (OPENNODE_API_KEY works for these; for paying L402 challenges you need STRIKE_API_KEY, NWC_CONNECTION_STRING, or LND instead.)";
+        "Wallet not configured. Set any wallet — STRIKE_API_KEY, OPENNODE_API_KEY, NWC_CONNECTION_STRING, or LND_REST_HOST+LND_MACAROON_HEX — to create/check invoices and read balances. (OPENNODE_API_KEY works for these; for paying L402 challenges you need STRIKE_API_KEY, NWC_CONNECTION_STRING, or LND instead.) Call setup_wallet for the guided path.";
 }

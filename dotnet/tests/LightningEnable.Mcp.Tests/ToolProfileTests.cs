@@ -61,7 +61,7 @@ public class ToolProfileResolutionTests
     public void FullIsStandardPlusEveryLegacyName()
     {
         var full = ToolProfiles.AdvertisedNames(ToolProfile.Full);
-        full.Should().HaveCount(31);
+        full.Should().HaveCount(32);
         full.Should().Contain(ToolProfiles.StandardToolNames);
         full.Should().Contain(ToolProfiles.LegacyToolNames);
     }
@@ -93,9 +93,9 @@ public class ToolProfileResolutionTests
 public class ToolProfileListingTests
 {
     [Theory]
-    [InlineData(ToolProfile.Lite, 5)]
-    [InlineData(ToolProfile.Standard, 15)]
-    [InlineData(ToolProfile.Full, 31)]
+    [InlineData(ToolProfile.Lite, 6)]
+    [InlineData(ToolProfile.Standard, 16)]
+    [InlineData(ToolProfile.Full, 32)]
     public async Task ProfileSelectsTheAdvertisedToolCount(ToolProfile profile, int expected)
     {
         await using var host = await McpToolHost.StartAsync(profile);
@@ -112,11 +112,12 @@ public class ToolProfileListingTests
     }
 
     [Fact]
-    public async Task LiteAdvertisesTheFiveSpendAndStayInBudgetTools()
+    public async Task LiteAdvertisesOnlyWalletSetupSpendAndBudget()
     {
         await using var host = await McpToolHost.StartAsync(ToolProfile.Lite);
         (await host.AdvertisedNamesAsync()).Should().BeEquivalentTo(
-            "access_l402_resource", "pay_invoice", "get_balance", "budget", "receipts");
+            "setup_wallet", "access_l402_resource", "pay_invoice", "get_balance", "budget",
+            "receipts");
     }
 
     [Fact]

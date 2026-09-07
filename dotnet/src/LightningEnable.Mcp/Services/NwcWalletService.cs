@@ -90,20 +90,19 @@ public class NwcWalletService : IWalletService, IDisposable
     internal int InfoEventFetchCount;
 
     public NwcWalletService(HttpClient httpClient, IBudgetConfigurationService? budgetConfigService = null)
+        : this(httpClient, ResolveConnectionString(budgetConfigService))
+    {
+    }
+
+    /// <summary>
+    /// Builds a service bound to an EXPLICIT connection string rather than the one the
+    /// environment/config selects. Used by wallet onboarding (<c>setup_wallet</c>) to probe a
+    /// connection string a human just pasted, before anything is written to disk.
+    /// </summary>
+    internal NwcWalletService(HttpClient httpClient, string? connectionString)
     {
         _httpClient = httpClient;
 
-        // Try environment variable first, then config file
-        var connectionString = Environment.GetEnvironmentVariable("NWC_CONNECTION_STRING");
-        if (string.IsNullOrEmpty(connectionString) || connectionString.StartsWith("${"))
-        {
-            // Env var not set or not expanded - try config file
-            connectionString = budgetConfigService?.Configuration?.Wallets?.NwcConnectionString;
-            if (!string.IsNullOrEmpty(connectionString))
-            {
-                Console.Error.WriteLine("[NWC] Using connection string from config file");
-            }
-        }
         _config = NwcConfig.TryParse(connectionString);
 
         if (_config != null)
@@ -140,6 +139,25 @@ public class NwcWalletService : IWalletService, IDisposable
                 _myPubkeyHex = Convert.ToHexString(_publicKey.ToBytes()).ToLowerInvariant();
             }
         }
+    }
+
+    /// <summary>
+    /// The connection string the environment/config selects: <c>NWC_CONNECTION_STRING</c>
+    /// first, then <c>wallets.nwcConnectionString</c> in the config file.
+    /// </summary>
+    private static string? ResolveConnectionString(IBudgetConfigurationService? budgetConfigService)
+    {
+        var connectionString = Environment.GetEnvironmentVariable("NWC_CONNECTION_STRING");
+        if (string.IsNullOrEmpty(connectionString) || connectionString.StartsWith("${"))
+        {
+            // Env var not set or not expanded - try config file
+            connectionString = budgetConfigService?.Configuration?.Wallets?.NwcConnectionString;
+            if (!string.IsNullOrEmpty(connectionString))
+            {
+                Console.Error.WriteLine("[NWC] Using connection string from config file");
+            }
+        }
+        return connectionString;
     }
 
     public bool IsConfigured => _config != null && _privateKey != null;
@@ -346,6 +364,47 @@ public class NwcWalletService : IWalletService, IDisposable
         var balanceMsat = result?["balance"]?.GetValue<long>() ?? 0;
 
         return new NwcBalanceInfo { BalanceMsat = balanceMsat };
+    }
+
+    /// <summary>
+    /// NIP-47 <c>get_info</c>: what the wallet says about itself — most usefully the
+    /// <c>methods</c> it supports. Used by wallet onboarding to prove a pasted connection
+    /// string reaches a live wallet, and to tell the operator whether that wallet can pay
+    /// (<c>pay_invoice</c>) rather than only receive.
+    ///
+    /// Returns the raw NIP-47 <c>result</c> object. Throws with the underlying failure
+    /// reason — never with the connection string — when the request cannot be completed.
+    /// </summary>
+    internal async Task<JsonObject> GetInfoAsync(CancellationToken cancellationToken = default)
+    {
+        if (_config == null || _privateKey == null)
+        {
+            throw new InvalidOperationException("NWC connection string not configured");
+        }
+
+        var request = new JsonObject
+        {
+            ["method"] = "get_info",
+            ["params"] = new JsonObject()
+        };
+
+        var outcome = await SendNwcRequestAsync(request, cancellationToken);
+
+        if (!outcome.Success)
+        {
+            throw new InvalidOperationException(outcome.FormatFailure() ?? "Unknown NWC failure");
+        }
+
+        var response = outcome.Response!;
+
+        var error = response["error"]?.AsObject();
+        if (error != null)
+        {
+            var message = error["message"]?.GetValue<string>() ?? "Unknown error";
+            throw new InvalidOperationException($"Get info failed: {message}");
+        }
+
+        return response["result"]?.AsObject() ?? new JsonObject();
     }
 
     /// <summary>

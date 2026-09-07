@@ -55,17 +55,33 @@ uvx lightning-enable-mcp
 docker pull refinedelement/lightning-enable-mcp:latest
 ```
 
-### 2. Configure one L402-capable wallet
+### 2. First run — `setup_wallet`
 
-L402 — the whole point of this server — needs a wallet that returns the payment **preimage**. Set exactly one of these (as an env var, e.g. in the [Claude Desktop config](#claude-desktop-config) below):
+Nothing else works without a wallet, so start there. Ask your agent:
 
-- **Strike** (easiest to start) — `STRIKE_API_KEY`, from https://dashboard.strike.me
-- **NWC** (self-custody, Nostr) — `NWC_CONNECTION_STRING`, from CoinOS / CLINK / Alby Hub
+```
+Run setup_wallet
+```
+
+With no arguments it reports which wallet is configured and where the credential came from — the provider and the source, never the credential itself. If there is no wallet, it hands back the setup steps.
+
+**The shortest path is NWC.** In your wallet app (Alby Hub, CoinOS, or any NIP-47 wallet) create a Nostr Wallet Connect connection, copy the `nostr+walletconnect://` string, and give it to the agent:
+
+```
+Run setup_wallet with this connection string: nostr+walletconnect://...
+```
+
+`setup_wallet` validates the string, connects to the wallet to prove it answers, then writes it to `~/.lightning-enable/config.json` with the file's permissions restricted to your user. It reports the wallet's declared methods and balance. Restart the server afterwards so it picks up the new wallet.
+
+**Or set an environment variable** (in the [Claude Desktop config](#claude-desktop-config) below, say). L402 — the whole point of this server — needs a wallet that returns the payment **preimage**:
+
+- **Strike** — `STRIKE_API_KEY`, from https://dashboard.strike.me
+- **NWC** — `NWC_CONNECTION_STRING`, from CoinOS / CLINK / Alby Hub
 - **LND** (your own node — always returns a preimage) — `LND_REST_HOST` + `LND_MACAROON_HEX`
 
 > ⚠️ **OpenNode** (`OPENNODE_API_KEY`) works for **invoicing / direct payments only — it never returns a preimage, so it cannot pay L402 challenges.** Don't make it your only wallet if you want L402 (the core use case).
 
-If several are set, priority is: **LND > NWC > Strike > OpenNode**. See [Supported Wallets](#supported-wallets) for the full compatibility matrix.
+If several are set, priority is: **LND > NWC > Strike > OpenNode**, and **environment variables win over the config file** — `setup_wallet` refuses to write a connection string that an env var would override, and tells you which variable to unset. See [Supported Wallets](#supported-wallets) for the full compatibility matrix.
 
 ### 3. Prove the whole loop works — `test_l402_payment`
 
@@ -240,9 +256,48 @@ were approved for.
 | **NWC (Alby Hub)** | Connection string | Yes |
 | **OpenNode** | API key | No (no preimage) |
 
+## Spending limits
+
+Limits live in `~/.lightning-enable/config.json` and are read-only at runtime — an agent can tighten its own caps but never raise them. You can set them in **USD**, in **satoshis**, or both.
+
+```json
+{
+  "limits": {
+    "maxPerPayment": 500.00,
+    "maxPerSession": 100.00,
+    "maxPerPaymentSats": 5000,
+    "maxPerSessionSats": 50000,
+    "autoApproveSats": 100
+  }
+}
+```
+
+| Key | Env var | Meaning |
+|-----|---------|---------|
+| `maxPerPayment` | — | Max USD per payment |
+| `maxPerSession` | — | Max USD per session |
+| `maxPerPaymentSats` | `LIGHTNING_ENABLE_MAX_PER_PAYMENT_SATS` | Max satoshis per payment |
+| `maxPerSessionSats` | `LIGHTNING_ENABLE_MAX_PER_SESSION_SATS` | Max satoshis per session |
+| `autoApproveSats` | `LIGHTNING_ENABLE_AUTO_APPROVE_SATS` | Satoshis a payment may spend **without confirmation** while the BTC price is unavailable |
+
+**Why set the sats ones.** A USD limit has to be converted at the current BTC price, so when every price source is down the payment cannot be checked and is refused — correct, but it stops the agent. A satoshi limit needs no conversion, so a sats-budgeted agent keeps working through a price outage. Set **both** `maxPer…Sats` keys to close every gap.
+
+When both denominations are set, the **stricter** cap wins on every check. `budget(action="status")` reports which one is binding (`bindingDenomination`), the effective cap in sats, whether a price was available, and whether outage mode is active.
+
+### What happens during a price outage
+
+The satoshi **ceilings** still bound the spend. But a ceiling says *"never more than this"* — it does not say *"this much is fine unattended"*, and the USD tier ladder that normally says the second thing cannot be evaluated without a price. So approval fails closed:
+
+- **`autoApproveSats` set** — payments at or below it are auto-approved; anything above takes the normal confirmation flow (the agent asks the human for the code printed to the server console).
+- **`autoApproveSats` not set** — every payment needs confirmation until a price source recovers.
+
+`autoApproveSats` is a tier, not a ceiling: it can never widen `maxPerPaymentSats` or `maxPerSessionSats`, which are checked first. It is ignored entirely while a price is available — then the USD tiers decide as usual.
+
+> The auto-pay paths (L402 auto-payment, `send_onchain`, `agent_services action=settle`) refuse anything that needs confirmation rather than prompting. During an outage that means they only proceed under `autoApproveSats`.
+
 ## Tools
 
-**Canonical inventory: 15 tools — 13 free (out of the box, just a wallet) + 2 that require `LIGHTNING_ENABLE_API_KEY`** (an [Agentic Commerce subscription](https://lightningenable.com)). This table is the single source of truth every advertised count derives from — it is pinned to the code by the tool-inventory guard tests in both ports (drift fails CI).
+**Canonical inventory: 16 tools — 14 free (out of the box, just a wallet) + 2 that require `LIGHTNING_ENABLE_API_KEY`** (an [Agentic Commerce subscription](https://lightningenable.com)). This table is the single source of truth every advertised count derives from — it is pinned to the code by the tool-inventory guard tests in both ports (drift fails CI).
 
 Five of these are *action* tools: pass `action` (or `source` for `receipts`) to pick the operation. They replace 16 single-purpose tools whose schemas used to be loaded into the agent's context on every session — see [Tool profiles and old tool names](#tool-profiles-and-old-tool-names). **Every old name still works.**
 
@@ -250,6 +305,7 @@ Five of these are *action* tools: pass `action` (or `source` for `receipts`) to 
 
 | Tool | Access | What it does |
 |------|--------|--------------|
+| `setup_wallet` | Free | Report the configured wallet, or connect one by pasting an NWC connection string |
 | `pay_invoice` | Free | Pay a BOLT11 Lightning invoice directly, get the preimage |
 | `pay_l402_challenge` | Free | Pay an L402 challenge (invoice + macaroon), get the token |
 | `access_l402_resource` | Free | Fetch a URL, auto-paying any L402 challenge |
@@ -270,15 +326,26 @@ Five of these are *action* tools: pass `action` (or `source` for `receipts`) to 
 
 Every tool carries MCP annotations: a human-readable title and an explicit `readOnlyHint`, plus `destructiveHint` on anything that can spend the wallet. Action tools are annotated for their **widest** action, so `budget` is not read-only (because `tighten` writes) and `wallet_ops` is destructive (because `send_onchain` is).
 
+## Resources
+
+The durable receipt log is also exposed as MCP **resources**, so a client can attach or display it without the model spending a turn on a tool call:
+
+| URI | Contents |
+|-----|----------|
+| `lightning-enable://receipts` | The most recent 200 receipts as JSONL (`application/x-ndjson`), oldest first |
+| `lightning-enable://receipts/{paymentHash}` | Every receipt recorded for one payment hash |
+
+Both read through the same path as the `receipts` tool, which redacts credential-shaped fields at the read boundary — **a preimage never leaves the process**. The payment hash is the safe reference; the preimage is the proof of payment and is not a receipt field. Resources are unaffected by the tool profile: they cost no schema bytes in the model's context.
+
 ## Tool profiles and old tool names
 
 Every advertised tool's JSON schema is loaded into the agent's context at the start of each session, so the tool surface is a token cost on every turn. Pick how much of it to advertise with `LIGHTNING_ENABLE_TOOL_PROFILE`:
 
 | Profile | Tools | Use it when |
 |---------|-------|-------------|
-| `lite` | 5 — `pay_invoice`, `access_l402_resource`, `get_balance`, `budget`, `receipts` | The agent only needs to spend and stay inside its budget |
-| `standard` *(default)* | 15 — the table above | Everything, at about 40% less schema than the old surface |
-| `full` | 31 — `standard` plus every pre-consolidation name | You have prompts or scripts written against the old tool names |
+| `lite` | 6 — `setup_wallet`, `pay_invoice`, `access_l402_resource`, `get_balance`, `budget`, `receipts` | The agent only needs to get a wallet, spend, and stay inside its budget |
+| `standard` *(default)* | 16 — the table above | Everything, at about 40% less schema than the old surface |
+| `full` | 32 — `standard` plus every pre-consolidation name | You have prompts or scripts written against the old tool names |
 
 ```json
 {

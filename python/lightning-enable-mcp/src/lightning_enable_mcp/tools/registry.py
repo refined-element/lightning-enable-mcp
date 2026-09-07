@@ -40,6 +40,7 @@ from .publish_agent_capability import PUBLISH_AGENT_CAPABILITY_TOOL
 from .request_agent_service import REQUEST_AGENT_SERVICE_TOOL
 from .send_onchain import SEND_ONCHAIN_TOOL
 from .settle_agent_service import SETTLE_AGENT_SERVICE_TOOL
+from .setup_wallet import SETUP_WALLET_TOOL
 from .test_l402_payment import TEST_L402_PAYMENT_TOOL
 from .unpublish_agent_capability import UNPUBLISH_AGENT_CAPABILITY_TOOL
 from .verify_confirmation_code import VERIFY_CONFIRMATION_CODE_TOOL
@@ -47,6 +48,7 @@ from .verify_l402_payment import VERIFY_L402_PAYMENT_TOOL
 
 #: The consolidated verb set — advertised by the default ``standard`` profile.
 STANDARD_TOOLS: list[Tool] = [
+    SETUP_WALLET_TOOL,
     ACCESS_L402_RESOURCE_TOOL,
     PAY_INVOICE_TOOL,
     PAY_L402_CHALLENGE_TOOL,

@@ -75,6 +75,44 @@ public class BudgetConfig
 }
 
 /// <summary>
+/// The spending caps that actually bind right now, in satoshis, and which configured
+/// limit produced each — so "why was this refused?" is answerable from
+/// <c>budget action=status</c> alone rather than by re-deriving the USD conversion by hand.
+/// </summary>
+/// <param name="PerPaymentSats">Effective per-payment cap, or null when nothing caps it.</param>
+/// <param name="PerPaymentSource">Which configured limit produced <paramref name="PerPaymentSats"/>.</param>
+/// <param name="PerSessionSats">Effective per-session cap, or null when nothing caps it.</param>
+/// <param name="PerSessionSource">Which configured limit produced <paramref name="PerSessionSats"/>.</param>
+/// <param name="BindingDenomination">
+/// <c>usd</c>, <c>sats</c>, <c>runtime</c> or <c>none</c> — the denomination of the tighter
+/// of the two caps.
+/// </param>
+/// <param name="PriceAvailable">
+/// Whether a BTC price was available, i.e. whether the USD limits could be evaluated at all.
+/// </param>
+/// <param name="AutoApproveSats">
+/// <c>limits.autoApproveSats</c> — what may be spent without a human while the USD tier
+/// ladder cannot be evaluated. Null means nothing may. Reported whether or not it is
+/// currently in force.
+/// </param>
+/// <param name="OutageModeActive">
+/// Whether the sats-only path is actually in force right now: no price AND sats limits able
+/// to carry the check. Without sats limits an outage refuses payments outright, which is the
+/// pre-existing fail-closed path rather than a mode.
+/// </param>
+/// <param name="Note">One sentence for the operator about what is and is not in force.</param>
+public sealed record EffectiveBudgetCaps(
+    long? PerPaymentSats,
+    string PerPaymentSource,
+    long? PerSessionSats,
+    string PerSessionSource,
+    string BindingDenomination,
+    bool PriceAvailable,
+    long? AutoApproveSats,
+    bool OutageModeActive,
+    string Note);
+
+/// <summary>
 /// Result of a configure_budget (tighten-only) operation.
 /// </summary>
 public record ConfigureBudgetResult

@@ -78,7 +78,10 @@ async def settle_agent_service(
         if not l402_endpoint or not l402_endpoint.strip():
             return json.dumps({
                 "success": False,
-                "error": "L402 endpoint URL is required. Get it from discover_agent_services or request_agent_service results.",
+                "error": (
+                    "L402 endpoint URL is required. Get it from an agent_services "
+                    "action=discover or action=request result."
+                ),
             })
 
         parsed = urlparse(l402_endpoint)
@@ -346,9 +349,11 @@ SETTLE_AGENT_SERVICE_TOOL = Tool(
         "Settle an agent service agreement via L402 payment (CONSUMER/REQUESTER side). "
         "Pays the L402 endpoint specified in the agreement, completing the service transaction. "
         "Uses the same L402 auto-pay flow as access_l402_resource. "
-        "The L402 endpoint URL comes from discover_agent_services or request_agent_service results. "
-        "NOTE: If you are the PROVIDER (selling a service), use create_l402_challenge to generate "
-        "a Lightning invoice at the agreed price, then verify_l402_payment to confirm payment "
+        "The L402 endpoint URL comes from an agent_services action=discover or "
+        "action=request result. "
+        "NOTE: If you are the PROVIDER (selling a service), use l402_producer action=create to "
+        "generate a Lightning invoice at the agreed price, then l402_producer action=verify "
+        "to confirm payment "
         "before delivering the service."
     ),
     inputSchema={

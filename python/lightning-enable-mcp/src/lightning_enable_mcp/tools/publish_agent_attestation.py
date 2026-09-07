@@ -107,7 +107,10 @@ async def publish_agent_attestation(
             "proof": "included" if proof else "none",
             "message": f"Attestation published successfully as kind 38403 event. Rating: {rating}/5.",
             "nextSteps": {
-                "viewReputation": f'Use get_agent_reputation(pubkey="{subject_pubkey}") to see the agent\'s full reputation.',
+                "viewReputation": (
+                    f'Use agent_services(action="reputation", pubkey="{subject_pubkey}") '
+                    "to see the agent's full reputation."
+                ),
                 "discover": "Other agents will see this attestation when evaluating the reviewed agent.",
             },
         }, indent=2)
@@ -132,7 +135,7 @@ PUBLISH_AGENT_ATTESTATION_TOOL = Tool(
         "platform-signed review would share one pubkey across all reviewers — "
         "worthless for reputation — so this is intentionally disabled until "
         "per-agent (client-side) signing exists. Reading reputation "
-        "(get_agent_reputation) works today."
+        "(agent_services action=reputation) works today."
     ),
     inputSchema={
         "type": "object",

@@ -14,11 +14,15 @@ from types import MappingProxyType
 from typing import Any, NamedTuple
 
 from mcp.server import Server
+from mcp.server.lowlevel.helper_types import ReadResourceContents
 from mcp.server.stdio import stdio_server
 from mcp.types import (
+    Resource,
+    ResourceTemplate,
     TextContent,
     Tool,
 )
+from pydantic import AnyUrl
 
 from . import __version__
 from .budget_service import BudgetService, get_budget_service
@@ -61,6 +65,7 @@ from .tools.registry import tools_for_profile
 from .tools.request_agent_service import request_agent_service
 from .tools.send_onchain import send_onchain
 from .tools.settle_agent_service import settle_agent_service
+from .tools.setup_wallet import setup_wallet
 from .tools.test_l402_payment import test_l402_payment
 from .tools.unpublish_agent_capability import unpublish_agent_capability
 from .tools.verify_confirmation_code import verify_confirmation_code
@@ -182,6 +187,30 @@ def _unknown_action(tool: str, key: str, value: Any) -> str:
     )
 
 
+#: The whole-log resource URI.
+RECEIPTS_RESOURCE_URI = "lightning-enable://receipts"
+
+#: The per-payment-hash resource template.
+RECEIPT_BY_HASH_URI_TEMPLATE = "lightning-enable://receipts/{paymentHash}"
+
+#: How many receipts the log resource carries. Matches the ``receipts`` tool's clamp.
+RECEIPTS_RESOURCE_MAX_ROWS = 200
+
+#: How far back a single-hash lookup searches. Deeper than the log resource because looking
+#: up one known payment is a different question from "what happened lately".
+RECEIPT_LOOKUP_WINDOW = 2_000
+
+#: JSONL: newline-delimited JSON, one receipt per line.
+JSON_LINES_MIME_TYPE = "application/x-ndjson"
+
+
+def _to_json_lines(receipts: list[dict]) -> str:
+    """Render receipts as JSONL — compact, one per line. It is only JSONL if none wrap."""
+    return "".join(
+        json.dumps(receipt, separators=(",", ":")) + "\n" for receipt in receipts
+    )
+
+
 def _action_of(tool: str, arguments: Mapping[str, Any]) -> str | None:
     """Return the validated action for a consolidated tool, or None if invalid."""
     key, allowed = ACTION_TOOLS[tool]
@@ -217,12 +246,67 @@ class LightningEnableServer:
         self._setup_handlers()
 
     def _setup_handlers(self) -> None:
-        """Register MCP tool handlers."""
+        """Register MCP tool and resource handlers."""
 
         @self.server.list_tools()
         async def list_tools() -> list[Tool]:
             """Return the tools advertised under the active profile."""
             return tools_for_profile(self.tool_profile)
+
+        # ── Resources ───────────────────────────────────────────────────────
+        #
+        # A tool call is the agent deciding to look; a resource is something a client can
+        # attach, watch, or show a human without the model spending a turn on it. The
+        # durable spend log is exactly that kind of artifact — which is why it lives off
+        # the agent's hot path in the first place — so it is worth both shapes.
+        #
+        # Resources are NOT affected by the tool profile: they cost no schema bytes in the
+        # model's context, so there is nothing to trim. Keep in lockstep with the .NET port
+        # (Resources/ReceiptResources.cs).
+
+        @self.server.list_resources()
+        async def list_resources() -> list[Resource]:
+            return [
+                Resource(
+                    uri=AnyUrl(RECEIPTS_RESOURCE_URI),
+                    name="receipts",
+                    title="Payment receipts",
+                    mimeType=JSON_LINES_MIME_TYPE,
+                    description=(
+                        "The durable, append-only payment receipt log "
+                        "(~/.lightning-enable/receipts.jsonl) — the most recent "
+                        f"{RECEIPTS_RESOURCE_MAX_ROWS} receipts as JSONL, oldest first. "
+                        "Never contains preimages."
+                    ),
+                )
+            ]
+
+        @self.server.list_resource_templates()
+        async def list_resource_templates() -> list[ResourceTemplate]:
+            return [
+                ResourceTemplate(
+                    uriTemplate=RECEIPT_BY_HASH_URI_TEMPLATE,
+                    name="receipt",
+                    title="Payment receipt by payment hash",
+                    mimeType=JSON_LINES_MIME_TYPE,
+                    description=(
+                        "Every durable receipt recorded for one payment hash, as JSONL. "
+                        "Never contains preimages — the payment hash is the safe reference, "
+                        "the preimage is the proof of payment and is not a receipt field."
+                    ),
+                )
+            ]
+
+        @self.server.read_resource()
+        async def read_resource(uri: AnyUrl) -> list[ReadResourceContents]:
+            # A list of ReadResourceContents, not a bare str: the str overload is
+            # deprecated in the SDK and cannot carry the JSONL media type.
+            return [
+                ReadResourceContents(
+                    content=self._read_receipts_resource(str(uri)),
+                    mime_type=JSON_LINES_MIME_TYPE,
+                )
+            ]
 
         @self.server.call_tool()
         async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
@@ -250,12 +334,18 @@ class LightningEnableServer:
                             "LND_REST_HOST+LND_MACAROON_HEX. "
                             "(OPENNODE_API_KEY is receiving/invoicing only — it cannot pay "
                             "L402 challenges.) "
-                            "Then run test_l402_payment to confirm the wallet works end to end.",
+                            "Call setup_wallet for the guided path, then run "
+                            "test_l402_payment to confirm the wallet works end to end.",
                         )
                     ]
 
                 # Route to appropriate handler
-                if name == "access_l402_resource":
+                if name == "setup_wallet":
+                    result = await setup_wallet(
+                        nwc_connection_string=arguments.get("nwc_connection_string"),
+                    )
+
+                elif name == "access_l402_resource":
                     result = await access_l402_resource(
                         url=arguments["url"],
                         method=arguments.get("method", "GET"),
@@ -525,8 +615,11 @@ class LightningEnableServer:
     #  - get_balance is a READ-ONLY balance tool that returns its own
     #    receiving-oriented no-wallet message, so it is exempt from the payment guard.
     #  - l402_producer (create/verify) goes to the Lightning Enable API, not a wallet.
+    #  - setup_wallet is how an agent GETS a wallet — gating it behind one would be a
+    #    deadlock, and it is the tool the guard message below points at.
     _WALLET_FREE_TOOLS = frozenset(
         {
+            "setup_wallet",
             "discover_api",
             "verify_confirmation_code",
             "test_l402_payment",
@@ -534,6 +627,52 @@ class LightningEnableServer:
             "l402_producer",
         }
     )
+
+    def _read_receipts_resource(self, uri: str) -> str:
+        """Serve ``lightning-enable://receipts`` and ``.../{paymentHash}`` as JSONL.
+
+        Both go through ``ReceiptService.read_recent``, which redacts at the read boundary,
+        so a preimage cannot leave here even if one somehow reached the file.
+        """
+        normalized = uri.rstrip("/")
+
+        if self.receipt_service is None:
+            raise ValueError(
+                "Receipt logging is not available (no wallet/session initialized), so the "
+                "durable receipt log cannot be read."
+            )
+
+        if normalized == RECEIPTS_RESOURCE_URI:
+            return _to_json_lines(
+                self.receipt_service.read_recent(RECEIPTS_RESOURCE_MAX_ROWS)
+            )
+
+        prefix = RECEIPTS_RESOURCE_URI + "/"
+        if normalized.startswith(prefix):
+            payment_hash = normalized[len(prefix):].strip()
+            if not payment_hash:
+                raise ValueError(
+                    "A payment hash is required. Read "
+                    f"{RECEIPTS_RESOURCE_URI} to see recent receipts and their payment hashes."
+                )
+
+            matches = [
+                receipt
+                for receipt in self.receipt_service.read_recent(RECEIPT_LOOKUP_WINDOW)
+                if str(receipt.get("paymentHash", "")).lower() == payment_hash.lower()
+            ]
+            if not matches:
+                raise ValueError(
+                    f"No receipt found for payment hash '{payment_hash}' in the most recent "
+                    f"{RECEIPT_LOOKUP_WINDOW:,} entries of the durable log. Read "
+                    f"{RECEIPTS_RESOURCE_URI} to see what is there."
+                )
+            return _to_json_lines(matches)
+
+        raise ValueError(
+            f"Unknown resource '{uri}'. This server serves {RECEIPTS_RESOURCE_URI} and "
+            f"{RECEIPT_BY_HASH_URI_TEMPLATE}."
+        )
 
     def _requires_wallet(self, name: str, arguments: Mapping[str, Any]) -> bool:
         """Whether a call needs a configured wallet before it can run.
@@ -599,7 +738,8 @@ class LightningEnableServer:
                 "No wallet configured. Set one L402-capable wallet: STRIKE_API_KEY, "
                 "NWC_CONNECTION_STRING, or LND_REST_HOST+LND_MACAROON_HEX. "
                 "(OPENNODE_API_KEY is receiving/invoicing only — it cannot pay L402 "
-                "challenges.) Then run test_l402_payment to confirm the wallet works."
+                "challenges.) Call setup_wallet for the guided path, then run "
+                "test_l402_payment to confirm the wallet works."
             )
             return
 

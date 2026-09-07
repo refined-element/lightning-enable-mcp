@@ -83,6 +83,18 @@ public interface IBudgetService
     BudgetConfig GetConfig();
 
     /// <summary>
+    /// The spending caps in force right now, in satoshis, and which configured limit
+    /// produced each — the USD limit converted, the sats limit, or the tighten-only
+    /// runtime cap, whichever is strictest.
+    /// </summary>
+    /// <param name="usdAvailable">
+    /// Whether a BTC price could be fetched just now, i.e. whether the USD limits are
+    /// evaluable. <c>budget action=status</c> refreshes the price itself, so it passes what
+    /// it found; omit to report the state the last budget gate observed.
+    /// </param>
+    EffectiveBudgetCaps GetEffectiveCaps(bool? usdAvailable = null);
+
+    /// <summary>
     /// Gets the user's budget configuration from config file.
     /// This is READ-ONLY and cannot be modified at runtime.
     /// </summary>

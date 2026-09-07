@@ -57,6 +57,7 @@ from .publish_agent_capability import publish_agent_capability
 from .request_agent_service import request_agent_service
 from .send_onchain import send_onchain
 from .settle_agent_service import settle_agent_service
+from .setup_wallet import setup_wallet
 from .unpublish_agent_capability import unpublish_agent_capability
 from .verify_confirmation_code import verify_confirmation_code
 from .verify_l402_payment import verify_l402_payment
@@ -75,6 +76,7 @@ __all__ = [
     "pay_l402_challenge",
     "pay_invoice",
     "send_onchain",
+    "setup_wallet",
     "verify_l402_payment",
     "configure_budget",
     "get_payment_history",

@@ -42,6 +42,15 @@ public class BudgetConfigurationService : IBudgetConfigurationService
         PropertyNameCaseInsensitive = true
     };
 
+    /// <summary>Env var that sets <c>limits.maxPerPaymentSats</c>, overriding the file.</summary>
+    public const string MaxPerPaymentSatsEnvVar = "LIGHTNING_ENABLE_MAX_PER_PAYMENT_SATS";
+
+    /// <summary>Env var that sets <c>limits.maxPerSessionSats</c>, overriding the file.</summary>
+    public const string MaxPerSessionSatsEnvVar = "LIGHTNING_ENABLE_MAX_PER_SESSION_SATS";
+
+    /// <summary>Env var that sets <c>limits.autoApproveSats</c>, overriding the file.</summary>
+    public const string AutoApproveSatsEnvVar = "LIGHTNING_ENABLE_AUTO_APPROVE_SATS";
+
     private readonly string _configDirectory;
     private readonly string _configFilePath;
     private UserBudgetConfiguration _configuration;
@@ -53,6 +62,15 @@ public class BudgetConfigurationService : IBudgetConfigurationService
         var homeDir = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         _configDirectory = Path.Combine(homeDir, ".lightning-enable");
         _configFilePath = Path.Combine(_configDirectory, "config.json");
+
+        _configuration = LoadConfiguration();
+    }
+
+    // Test-only: an explicit config path, so a test never reads or writes the real home dir.
+    internal BudgetConfigurationService(string configFilePath)
+    {
+        _configFilePath = configFilePath;
+        _configDirectory = Path.GetDirectoryName(configFilePath) ?? string.Empty;
 
         _configuration = LoadConfiguration();
     }
@@ -78,6 +96,7 @@ public class BudgetConfigurationService : IBudgetConfigurationService
 
                 if (config != null)
                 {
+                    ApplySatsLimitEnvOverrides(config);
                     ValidateConfiguration(config);
                     LogConfigLoaded(config);
                     return config;
@@ -95,7 +114,62 @@ public class BudgetConfigurationService : IBudgetConfigurationService
             Console.Error.WriteLine("[Lightning Enable] Using default configuration.");
         }
 
-        return CreateDefaultConfiguration();
+        var fallback = CreateDefaultConfiguration();
+        ApplySatsLimitEnvOverrides(fallback);
+        return fallback;
+    }
+
+    /// <summary>
+    /// Lets the sats-limit env vars override the config file. Same precedence as the
+    /// wallet credentials: environment beats file.
+    ///
+    /// An unusable value (non-numeric, zero, negative) is IGNORED with a warning rather
+    /// than clearing the limit — a typo must never widen an operator's budget.
+    /// </summary>
+    private static void ApplySatsLimitEnvOverrides(UserBudgetConfiguration config)
+    {
+        var perPayment = ReadPositiveLongEnv(MaxPerPaymentSatsEnvVar);
+        if (perPayment.HasValue)
+        {
+            config.Limits.MaxPerPaymentSats = perPayment.Value;
+        }
+
+        var perSession = ReadPositiveLongEnv(MaxPerSessionSatsEnvVar);
+        if (perSession.HasValue)
+        {
+            config.Limits.MaxPerSessionSats = perSession.Value;
+        }
+
+        var autoApprove = ReadPositiveLongEnv(AutoApproveSatsEnvVar);
+        if (autoApprove.HasValue)
+        {
+            config.Limits.AutoApproveSats = autoApprove.Value;
+        }
+    }
+
+    private static long? ReadPositiveLongEnv(string name)
+    {
+        var raw = Environment.GetEnvironmentVariable(name);
+        if (string.IsNullOrWhiteSpace(raw) || raw.StartsWith("${", StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        if (!long.TryParse(raw.Trim(), out var parsed))
+        {
+            Console.Error.WriteLine(
+                $"[Lightning Enable] Warning: ignoring non-numeric {name}='{raw}'.");
+            return null;
+        }
+
+        if (parsed <= 0)
+        {
+            Console.Error.WriteLine(
+                $"[Lightning Enable] Warning: ignoring non-positive {name}='{raw}'.");
+            return null;
+        }
+
+        return parsed;
     }
 
     private void CreateDefaultConfigFile()

@@ -83,6 +83,10 @@ public class Program
         // Register budget configuration FIRST (needed by wallet services for config file fallback)
         builder.Services.AddSingleton<IBudgetConfigurationService, BudgetConfigurationService>();
 
+        // Wallet onboarding (setup_wallet): reports what is configured, probes a pasted NWC
+        // connection string against the live wallet, and persists it.
+        builder.Services.AddSingleton<IWalletOnboardingService, WalletOnboardingService>();
+
         // Load config to check for wallet settings
         var configService = new BudgetConfigurationService();
         var config = configService.Configuration;
@@ -339,6 +343,11 @@ public class Program
             .AddMcpServer()
             .WithStdioServerTransport()
             .WithToolsFromAssembly()
+            // The durable receipt log, also exposed as lightning-enable://receipts and
+            // lightning-enable://receipts/{paymentHash} — see Resources/ReceiptResources.
+            // Resources are not affected by the tool profile: they cost no schema bytes in
+            // the model's context, so there is nothing to trim.
+            .WithResourcesFromAssembly()
             .WithToolSurface(toolProfile);
 
         var host = builder.Build();

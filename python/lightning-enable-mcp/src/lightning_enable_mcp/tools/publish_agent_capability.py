@@ -113,7 +113,10 @@ async def publish_agent_capability(
             "l402Endpoint": endpoint,
             "message": f"Agent capability '{service_id}' published successfully as kind 38400 event.",
             "nextSteps": {
-                "discovery": f'Other agents can find this via: discover_agent_services(category="{categories[0]}")',
+                "discovery": (
+                    'Other agents can find this via: agent_services(action="discover", '
+                    f'category="{categories[0]}")'
+                ),
                 "settlement": (
                     f"Payments will be settled via L402 at: {endpoint}"
                     if endpoint

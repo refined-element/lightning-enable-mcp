@@ -23,7 +23,7 @@ public static class AgentAttestationTool
         "error. The platform holds a single signing key, so a platform-signed review would " +
         "share one pubkey across all reviewers — worthless for reputation — so this is " +
         "intentionally disabled until per-agent (client-side) signing exists. Reading " +
-        "reputation (get_agent_reputation) works today.")]
+        "reputation (agent_services action=reputation) works today.")]
     public static async Task<string> PublishAgentAttestation(
         [Description("Pubkey of the agent being reviewed")] string subjectPubkey,
         [Description("Event ID of the agreement this review is for")] string agreementId,
@@ -118,7 +118,8 @@ public static class AgentAttestationTool
                 message = $"Attestation published successfully as kind 38403 event. Rating: {rating}/5.",
                 nextSteps = new
                 {
-                    viewReputation = $"Use get_agent_reputation(pubkey=\"{subjectPubkey}\") to see the agent's full reputation.",
+                    viewReputation = $"Use agent_services(action=\"reputation\", pubkey=\"{subjectPubkey}\") "
+                        + "to see the agent's full reputation.",
                     discover = "Other agents will see this attestation when evaluating the reviewed agent."
                 }
             }, new JsonSerializerOptions { WriteIndented = true });

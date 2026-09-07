@@ -41,9 +41,9 @@ public static class AgentDiscoveryTool
                     error = "Please provide at least one search filter: 'category', 'hashtags', or 'query'.",
                     examples = new[]
                     {
-                        new { description = "Find AI services", call = "discover_agent_services(category=\"ai\")" },
-                        new { description = "Search for translation", call = "discover_agent_services(query=\"translation\")" },
-                        new { description = "Browse by hashtag", call = "discover_agent_services(hashtags=[\"weather\", \"forecast\"])" }
+                        new { description = "Find AI services", call = "agent_services(action=\"discover\", category=\"ai\")" },
+                        new { description = "Search for translation", call = "agent_services(action=\"discover\", query=\"translation\")" },
+                        new { description = "Browse by hashtag", call = "agent_services(action=\"discover\", hashtags=[\"weather\", \"forecast\"])" }
                     }
                 }, new JsonSerializerOptions { WriteIndented = true });
             }
@@ -120,8 +120,8 @@ public static class AgentDiscoveryTool
                 total = result.Total,
                 budget = budgetInfo,
                 hint = formattedCapabilities.Count > 0
-                    ? "Use request_agent_service(capabilityEventId=\"<event_id>\") to request a service, " +
-                      "or settle_agent_service(l402Endpoint=\"<url>\") to pay and access it directly via L402."
+                    ? "Use agent_services(action=\"request\", capabilityEventId=\"<event_id>\") to request a service, " +
+                      "or agent_services(action=\"settle\", l402Endpoint=\"<url>\") to pay and access it directly via L402."
                     : "No agent services found. Try different keywords or categories."
             }, new JsonSerializerOptions { WriteIndented = true });
         }

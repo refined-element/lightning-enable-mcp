@@ -115,6 +115,9 @@ public record NwcConfig
     /// </summary>
     public string Encryption { get; init; } = NwcEncryption.Default;
 
+    /// <summary>The wallet pubkey and the client secret are both 32 bytes of hex.</summary>
+    private const int HexKeyLength = 64;
+
     /// <summary>
     /// Parses an NWC connection string into configuration.
     /// Format: nostr+walletconnect://{pubkey}?relay={relay}&secret={secret}&lud16={optional}
@@ -124,23 +127,43 @@ public record NwcConfig
         if (string.IsNullOrWhiteSpace(connectionString))
             throw new ArgumentException("NWC connection string is required", nameof(connectionString));
 
-        // Handle both URI schemes
-        var normalized = connectionString
-            .Replace("nostr+walletconnect://", "nwc://")
-            .Replace("nostr+walletconnect:", "nwc:");
+        // Split scheme / authority / query BY HAND instead of going through Uri.
+        //
+        // The authority here is a 64-character hex pubkey, which is NOT a hostname. Uri
+        // applies host rules to it: an all-digit pubkey (a legal x-only key — rare, but a
+        // wallet can mint one) is read as a malformed IPv4 literal and rejected outright, so
+        // a merchant with such a wallet could never connect. Uri.Host is also lossy in the
+        // other direction — it accepts any 64-character host-shaped value, so a non-hex
+        // "pubkey" sailed through the old length-only check and only failed later at
+        // Convert.FromHexString. The value is a fixed-shape opaque identifier: treat it as
+        // one and validate it directly. Mirrors the Lightning Enable API's
+        // NwcConnectionConfig.Parse.
+        var trimmed = connectionString.Trim();
 
-        if (!normalized.StartsWith("nwc://", StringComparison.OrdinalIgnoreCase))
-            throw new ArgumentException("Invalid NWC URI scheme. Expected nostr+walletconnect:// or nwc://", nameof(connectionString));
+        var schemeEnd = trimmed.IndexOf("://", StringComparison.Ordinal);
+        var scheme = schemeEnd < 0 ? string.Empty : trimmed[..schemeEnd];
 
-        var uri = new Uri(normalized);
+        if (!scheme.Equals("nostr+walletconnect", StringComparison.OrdinalIgnoreCase)
+            && !scheme.Equals("nwc", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ArgumentException(
+                "Invalid NWC URI scheme. Expected nostr+walletconnect:// or nwc://", nameof(connectionString));
+        }
 
-        // The host is the wallet pubkey
-        var walletPubkey = uri.Host;
-        if (string.IsNullOrEmpty(walletPubkey) || walletPubkey.Length != 64)
-            throw new ArgumentException("Invalid wallet pubkey in NWC URI", nameof(connectionString));
+        var remainder = trimmed[(schemeEnd + 3)..];
+        var queryStart = remainder.IndexOf('?');
+        var walletPubkey = queryStart < 0 ? remainder : remainder[..queryStart];
+        var queryString = queryStart < 0 ? string.Empty : remainder[(queryStart + 1)..];
+
+        if (!IsHexKey(walletPubkey))
+        {
+            throw new ArgumentException(
+                $"Invalid wallet pubkey in NWC URI: expected {HexKeyLength} hex characters",
+                nameof(connectionString));
+        }
 
         // Parse query parameters
-        var query = System.Web.HttpUtility.ParseQueryString(uri.Query);
+        var query = System.Web.HttpUtility.ParseQueryString(queryString);
 
         // An NWC connection string can legitimately carry MULTIPLE relay= params — e.g.
         // getalby.com advertises two: ?relay=wss://relay.getalby.com&relay=wss://relay2.getalby.com
@@ -169,18 +192,27 @@ public record NwcConfig
                 "NWC connection string relay URL is not a valid ws:// or wss:// URI", nameof(connectionString));
 
         var secret = query["secret"];
-        if (string.IsNullOrEmpty(secret) || secret.Length != 64)
-            throw new ArgumentException("Invalid or missing 'secret' parameter in NWC URI", nameof(connectionString));
+        if (!IsHexKey(secret))
+            throw new ArgumentException(
+                $"Invalid or missing 'secret' parameter in NWC URI: expected {HexKeyLength} hex characters",
+                nameof(connectionString));
 
         return new NwcConfig
         {
-            WalletPubkey = walletPubkey,
+            // Lowercased once here: every downstream use (event tags, relay filters, the
+            // ECDH peer key) compares pubkeys as lowercase hex.
+            WalletPubkey = walletPubkey.ToLowerInvariant(),
             RelayUrl = validRelays[0],
             Relays = validRelays,
-            Secret = secret,
+            Secret = secret!,
             Lud16 = query["lud16"]
         };
     }
+
+    /// <summary>True when <paramref name="value"/> is exactly 64 hex characters.</summary>
+    private static bool IsHexKey(string? value) =>
+        value is { Length: HexKeyLength }
+        && value.All(c => (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'));
 
     /// <summary>
     /// True when <paramref name="relay"/> is a well-formed absolute <c>ws://</c> or <c>wss://</c>

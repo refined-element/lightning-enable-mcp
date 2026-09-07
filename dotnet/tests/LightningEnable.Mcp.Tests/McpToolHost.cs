@@ -47,11 +47,17 @@ internal sealed class McpToolHost : IAsyncDisposable
     /// <summary>The surface the server was built with.</summary>
     public ToolSurface Surface { get; }
 
-    /// <summary>Starts a server for <paramref name="profile"/> and connects a client to it.</summary>
-    public static async Task<McpToolHost> StartAsync(ToolProfile profile)
+    /// <summary>
+    /// Starts a server for <paramref name="profile"/> and connects a client to it.
+    /// <paramref name="overrideServices"/> runs after the null registrations, so a test that
+    /// needs a REAL service (a receipt log on a temp path, say) can substitute just that one.
+    /// </summary>
+    public static async Task<McpToolHost> StartAsync(
+        ToolProfile profile, Action<IServiceCollection>? overrideServices = null)
     {
         var services = new ServiceCollection();
         RegisterApplicationServices(services);
+        overrideServices?.Invoke(services);
 
         var surface = services
             .AddMcpServer(options => options.ServerInfo = new Implementation
@@ -60,6 +66,7 @@ internal sealed class McpToolHost : IAsyncDisposable
                 Version = "0.0.0",
             })
             .WithToolsFromAssembly(typeof(PayInvoiceTool).Assembly)
+            .WithResourcesFromAssembly(typeof(PayInvoiceTool).Assembly)
             .WithToolSurface(profile);
 
         var provider = services.BuildServiceProvider();

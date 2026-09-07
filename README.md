@@ -200,6 +200,17 @@ Five of these are *action* tools: pass `action` (or `source` for `receipts`) to 
 
 Every tool carries MCP annotations: a human-readable title and an explicit `readOnlyHint`, plus `destructiveHint` on anything that can spend the wallet. Action tools are annotated for their **widest** action, so `budget` is not read-only (because `tighten` writes) and `wallet_ops` is destructive (because `send_onchain` is).
 
+## Resources
+
+The durable receipt log is also exposed as MCP **resources**, so a client can attach or display it without the model spending a turn on a tool call:
+
+| URI | Contents |
+|-----|----------|
+| `lightning-enable://receipts` | The most recent 200 receipts as JSONL (`application/x-ndjson`), oldest first |
+| `lightning-enable://receipts/{paymentHash}` | Every receipt recorded for one payment hash |
+
+Both read through the same path as the `receipts` tool, which redacts credential-shaped fields at the read boundary — **a preimage never leaves the process**. The payment hash is the safe reference; the preimage is the proof of payment and is not a receipt field. Resources are unaffected by the tool profile: they cost no schema bytes in the model's context.
+
 ## Tool profiles and old tool names
 
 Every advertised tool's JSON schema is loaded into the agent's context at the start of each session, so the tool surface is a token cost on every turn. Pick how much of it to advertise with `LIGHTNING_ENABLE_TOOL_PROFILE`:

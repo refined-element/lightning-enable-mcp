@@ -315,6 +315,11 @@ public class Program
             .AddMcpServer()
             .WithStdioServerTransport()
             .WithToolsFromAssembly()
+            // The durable receipt log, also exposed as lightning-enable://receipts and
+            // lightning-enable://receipts/{paymentHash} — see Resources/ReceiptResources.
+            // Resources are not affected by the tool profile: they cost no schema bytes in
+            // the model's context, so there is nothing to trim.
+            .WithResourcesFromAssembly()
             .WithToolSurface(toolProfile);
 
         var host = builder.Build();

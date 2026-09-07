@@ -17,9 +17,9 @@ public static class AgentNegotiateTool
     /// </summary>
     [McpServerTool(Name = "request_agent_service", Title = "Request agent service (deprecated)", ReadOnly = false, Destructive = false), Description(
         "Sends a service request (kind 38401 event) referencing the provider's capability. " +
-        "The provider responds with agreement/settlement terms; settle via settle_agent_service. " +
+        "The provider responds with agreement/settlement terms; settle via agent_services action=settle. " +
         "If the provider has an L402 endpoint, you can skip this step " +
-        "and use settle_agent_service directly. Requires LIGHTNING_ENABLE_API_KEY.")]
+        "and use agent_services action=settle directly. Requires LIGHTNING_ENABLE_API_KEY.")]
     public static async Task<string> RequestAgentService(
         [Description("Event ID of the capability to request")] string capabilityEventId,
         [Description("Maximum budget in satoshis")] int budgetSats,
@@ -36,7 +36,7 @@ public static class AgentNegotiateTool
                 return JsonSerializer.Serialize(new
                 {
                     success = false,
-                    error = "Capability event ID is required. Use discover_agent_services to find available capabilities."
+                    error = "Capability event ID is required. Use agent_services action=discover to find available capabilities."
                 });
             }
 
@@ -91,7 +91,7 @@ public static class AgentNegotiateTool
                             remainingSats = budgetCheck.RemainingSessionBudget,
                             reason = budgetCheck.DenialReason
                         },
-                        hint = "Reduce the budget amount or check get_budget_status for current limits."
+                        hint = "Reduce the budget amount or check budget action=status for current limits."
                     });
                 }
             }
@@ -125,7 +125,7 @@ public static class AgentNegotiateTool
             if (result.L402Endpoint != null)
             {
                 response["l402Endpoint"] = result.L402Endpoint;
-                response["nextStep"] = $"The provider has an L402 endpoint. Use settle_agent_service(l402Endpoint=\"{result.L402Endpoint}\") " +
+                response["nextStep"] = $"The provider has an L402 endpoint. Use agent_services(action=\"settle\", l402Endpoint=\"{result.L402Endpoint}\") " +
                     "to pay and access the service.";
             }
             else

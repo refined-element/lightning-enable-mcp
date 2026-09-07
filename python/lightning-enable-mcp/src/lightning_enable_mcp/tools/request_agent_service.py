@@ -54,7 +54,10 @@ async def request_agent_service(
         if not capability_event_id or not capability_event_id.strip():
             return json.dumps({
                 "success": False,
-                "error": "Capability event ID is required. Use discover_agent_services to find available capabilities.",
+                "error": (
+                    "Capability event ID is required. Use agent_services action=discover to "
+                    "find available capabilities."
+                ),
             })
 
         if budget_sats <= 0:
@@ -102,7 +105,7 @@ async def request_agent_service(
                         "remainingUsd": float(check.remaining_session_budget_usd),
                         "reason": check.denial_reason,
                     },
-                    "hint": "Reduce the budget amount or check get_budget_status for current limits.",
+                    "hint": "Reduce the budget amount or check budget action=status for current limits.",
                 })
 
         result = await api_client.request_service(
@@ -129,7 +132,8 @@ async def request_agent_service(
         if endpoint:
             response["l402Endpoint"] = endpoint
             response["nextStep"] = (
-                f'The provider has an L402 endpoint. Use settle_agent_service(l402_endpoint="{endpoint}") '
+                f'The provider has an L402 endpoint. Use agent_services(action="settle", '
+                f'l402_endpoint="{endpoint}") '
                 "to pay and access the service."
             )
         else:
@@ -153,9 +157,10 @@ REQUEST_AGENT_SERVICE_TOOL = Tool(
     name="request_agent_service",
     description=(
         "Sends a service request (kind 38401 event) referencing the provider's capability. "
-        "The provider responds with agreement/settlement terms; settle via settle_agent_service. "
+        "The provider responds with agreement/settlement terms; settle via "
+        "agent_services action=settle. "
         "If the provider has an L402 endpoint, you can skip this step "
-        "and use settle_agent_service directly. Requires LIGHTNING_ENABLE_API_KEY."
+        "and use agent_services action=settle directly. Requires LIGHTNING_ENABLE_API_KEY."
     ),
     inputSchema={
         "type": "object",

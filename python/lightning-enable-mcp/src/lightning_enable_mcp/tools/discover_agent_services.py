@@ -57,9 +57,9 @@ async def discover_agent_services(
                 "success": False,
                 "error": "Please provide at least one search filter: 'category', 'hashtags', or 'query'.",
                 "examples": [
-                    {"description": "Find AI services", "call": 'discover_agent_services(category="ai")'},
-                    {"description": "Search for translation", "call": 'discover_agent_services(query="translation")'},
-                    {"description": "Browse by hashtag", "call": 'discover_agent_services(hashtags=["weather", "forecast"])'},
+                    {"description": "Find AI services", "call": 'agent_services(action="discover", category="ai")'},
+                    {"description": "Search for translation", "call": 'agent_services(action="discover", query="translation")'},
+                    {"description": "Browse by hashtag", "call": 'agent_services(action="discover", hashtags=["weather", "forecast"])'},
                 ],
             }, indent=2)
 
@@ -137,8 +137,9 @@ async def discover_agent_services(
             "total": result.get("total", len(formatted)),
             "budget": budget_info,
             "hint": (
-                'Use request_agent_service(capability_event_id="<event_id>") to request a service, '
-                'or settle_agent_service(l402_endpoint="<url>") to pay and access it directly via L402.'
+                'Use agent_services(action="request", capability_event_id="<event_id>") to request '
+                'a service, or agent_services(action="settle", l402_endpoint="<url>") to pay and '
+                'access it directly via L402.'
                 if formatted
                 else "No agent services found. Try different keywords or categories."
             ),

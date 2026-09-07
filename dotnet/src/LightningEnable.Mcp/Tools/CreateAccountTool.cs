@@ -345,7 +345,7 @@ public static class CreateAccountTool
                 },
                 message = configOk
                     ? $"Lightning Enable account activated. Your API key has been saved to {configPath} — restart the MCP " +
-                      "server to unlock the producer/ASA tools (create_l402_challenge, verify_l402_payment, and the " +
+                      "server to unlock the producer and agent-marketplace tools (l402_producer and " +
                       "agent-to-agent commerce tools)."
                     : "Lightning Enable account activated. Save the API key above (config write failed) — set it as " +
                       "LIGHTNING_ENABLE_API_KEY or lightningEnableApiKey in ~/.lightning-enable/config.json to unlock the producer/ASA tools."

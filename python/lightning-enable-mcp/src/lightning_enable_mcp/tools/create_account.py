@@ -332,8 +332,8 @@ async def create_lightning_enable_account(
             "message": (
                 "Lightning Enable account activated. Your API key has been "
                 + ("saved to " + config_file + " — " if config_ok else "returned above (save it: config write failed — ")
-                + "restart the MCP server to unlock the producer/ASA tools (create_l402_challenge, "
-                + "verify_l402_payment, and the agent-to-agent commerce tools)."
+                + "restart the MCP server to unlock the producer and agent-marketplace tools "
+                + "(l402_producer and agent_services)."
             ),
         }
         if not config_ok and config_err:

@@ -422,7 +422,7 @@ class BudgetService:
                     remaining_session_budget_usd=max(Decimal("0"), remaining_session_usd),
                 )
 
-            # Runtime tighten-only caps (set via configure_budget). Sats-based, enforced
+            # Runtime tighten-only caps (set via budget action=tighten). Sats-based, enforced
             # on top of the USD config limits above — most-restrictive-wins. Mirrors the
             # .NET BudgetService runtime-cap enforcement.
             if (
@@ -435,7 +435,7 @@ class BudgetService:
                     amount_usd=amount_usd,
                     denial_reason=(
                         f"Payment of {amount_sats:,} sats exceeds the runtime per-request cap of "
-                        f"{self._runtime_max_per_request_sats:,} sats set via configure_budget."
+                        f"{self._runtime_max_per_request_sats:,} sats set via budget action=tighten."
                     ),
                     remaining_session_budget_usd=max(Decimal("0"), remaining_session_usd),
                 )
@@ -450,7 +450,7 @@ class BudgetService:
                     denial_reason=(
                         f"Payment of {amount_sats:,} sats would exceed the runtime per-session cap of "
                         f"{self._runtime_max_per_session_sats:,} sats (already spent "
-                        f"{self._session_spent_sats:,}) set via configure_budget."
+                        f"{self._session_spent_sats:,}) set via budget action=tighten."
                     ),
                     remaining_session_budget_usd=max(Decimal("0"), remaining_session_usd),
                 )

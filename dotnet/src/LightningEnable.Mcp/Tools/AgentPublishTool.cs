@@ -119,7 +119,7 @@ public static class AgentPublishTool
                 message = $"Agent capability '{serviceId}' published successfully as kind 38400 event.",
                 nextSteps = new
                 {
-                    discovery = $"Other agents can find this via: discover_agent_services(category=\"{categories[0]}\")",
+                    discovery = $"Other agents can find this via: agent_services(action=\"discover\", category=\"{categories[0]}\")",
                     settlement = result.L402Endpoint != null
                         ? $"Payments will be settled via L402 at: {result.L402Endpoint}"
                         : "No L402 endpoint configured. Add one for automatic payment settlement.",

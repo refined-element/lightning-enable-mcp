@@ -314,7 +314,7 @@ public class BudgetService : IBudgetService
                 };
             }
 
-            // Runtime tighten-only caps (set via configure_budget). Sats-based, enforced
+            // Runtime tighten-only caps (set via budget action=tighten). Sats-based, enforced
             // on top of the USD config limits above — most-restrictive-wins.
             if (_runtimeMaxPerRequestSats.HasValue && amountSats > _runtimeMaxPerRequestSats.Value)
             {
@@ -324,7 +324,7 @@ public class BudgetService : IBudgetService
                     AmountSats = amountSats,
                     AmountUsd = amountUsd,
                     DenialReason = $"Payment of {amountSats:N0} sats exceeds the runtime per-request cap of " +
-                                   $"{_runtimeMaxPerRequestSats.Value:N0} sats set via configure_budget.",
+                                   $"{_runtimeMaxPerRequestSats.Value:N0} sats set via budget action=tighten.",
                     RemainingSessionBudgetUsd = Math.Max(0, remainingSessionUsd)
                 };
             }
@@ -336,7 +336,7 @@ public class BudgetService : IBudgetService
                     AmountSats = amountSats,
                     AmountUsd = amountUsd,
                     DenialReason = $"Payment of {amountSats:N0} sats would exceed the runtime per-session cap of " +
-                                   $"{_runtimeMaxPerSessionSats.Value:N0} sats (already spent {_sessionSpentSats:N0}) set via configure_budget.",
+                                   $"{_runtimeMaxPerSessionSats.Value:N0} sats (already spent {_sessionSpentSats:N0}) set via budget action=tighten.",
                     RemainingSessionBudgetUsd = Math.Max(0, remainingSessionUsd)
                 };
             }

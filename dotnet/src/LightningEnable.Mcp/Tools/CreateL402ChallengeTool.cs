@@ -99,7 +99,7 @@ public static class CreateL402ChallengeTool
                     forPayer = $"Pay the Lightning invoice, then present the L402 token: 'L402 {result.Macaroon}:<preimage>' " +
                                "where <preimage> is the proof of payment received after paying the invoice.",
                     tokenFormat = "L402 {macaroon}:{preimage}",
-                    verifyWith = "After receiving the L402 token from the payer, use verify_l402_payment to confirm payment before granting access."
+                    verifyWith = "After receiving the L402 token from the payer, use l402_producer action=verify to confirm payment before granting access."
                 },
                 message = $"L402 challenge created for {priceSats} sats. Share the invoice with the payer."
             }, new JsonSerializerOptions { WriteIndented = true });

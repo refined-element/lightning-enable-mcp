@@ -18,7 +18,7 @@ public static class GetReceiptsTool
 {
     [McpServerTool(Name = "get_receipts", Title = "Durable receipts (deprecated)", ReadOnly = true, OpenWorld = false), Description(
         "Read the durable, append-only payment receipt log (~/.lightning-enable/receipts.jsonl). "
-        + "Unlike get_payment_history (in-memory, this session only), receipts persist across sessions "
+        + "Unlike receipts(source=\"session\") (in-memory, this session only), receipts persist across sessions "
         + "and include the spend policy and how to revoke the wallet. Use to review what an agent has "
         + "spent and how to pull the plug.")]
     public static string GetReceipts(

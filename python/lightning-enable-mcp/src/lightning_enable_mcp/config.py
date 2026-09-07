@@ -67,6 +67,7 @@ def _restrict_file_permissions(path: Path) -> None:
 #: Env vars that set the sats-denominated limits, overriding the config file.
 MAX_PER_PAYMENT_SATS_ENV_VAR = "LIGHTNING_ENABLE_MAX_PER_PAYMENT_SATS"
 MAX_PER_SESSION_SATS_ENV_VAR = "LIGHTNING_ENABLE_MAX_PER_SESSION_SATS"
+AUTO_APPROVE_SATS_ENV_VAR = "LIGHTNING_ENABLE_AUTO_APPROVE_SATS"
 
 
 def _positive_int_or_none(value: object) -> "int | None":
@@ -304,6 +305,22 @@ class PaymentLimits:
     ``LIGHTNING_ENABLE_MAX_PER_SESSION_SATS``.
     """
 
+    auto_approve_sats: "int | None" = None
+    """
+    Satoshis a single payment may spend WITHOUT confirmation while the BTC price is
+    unavailable. Config key ``autoApproveSats``; env var
+    ``LIGHTNING_ENABLE_AUTO_APPROVE_SATS``.
+
+    This is a TIER, not a ceiling, and it applies only when the USD tier ladder cannot
+    be evaluated. It lives beside the sats ceilings because it is only ever consulted
+    together with them — the ceilings say "never more than this", which is not the same
+    statement as "this much is fine unattended", so an outage needs the second one said
+    explicitly. Unset means every payment needs confirmation while the price is down.
+
+    It can never widen a ceiling: ``maxPerPaymentSats`` / ``maxPerSessionSats`` and the
+    runtime tighten caps are all checked first.
+    """
+
     @property
     def has_sats_limits(self) -> bool:
         """Whether this budget can be enforced without a BTC price at all."""
@@ -320,6 +337,7 @@ class PaymentLimits:
             max_per_session=Decimal(str(max_per_session)) if max_per_session is not None else None,
             max_per_payment_sats=_positive_int_or_none(data.get("maxPerPaymentSats")),
             max_per_session_sats=_positive_int_or_none(data.get("maxPerSessionSats")),
+            auto_approve_sats=_positive_int_or_none(data.get("autoApproveSats")),
         )
 
     def to_dict(self) -> dict:
@@ -337,6 +355,8 @@ class PaymentLimits:
             result["maxPerPaymentSats"] = self.max_per_payment_sats
         if self.max_per_session_sats is not None:
             result["maxPerSessionSats"] = self.max_per_session_sats
+        if self.auto_approve_sats is not None:
+            result["autoApproveSats"] = self.auto_approve_sats
         return result
 
 
@@ -541,7 +561,8 @@ class ConfigurationService:
         """
         per_payment = _positive_int_or_none(os.getenv(MAX_PER_PAYMENT_SATS_ENV_VAR))
         per_session = _positive_int_or_none(os.getenv(MAX_PER_SESSION_SATS_ENV_VAR))
-        if per_payment is None and per_session is None:
+        auto_approve = _positive_int_or_none(os.getenv(AUTO_APPROVE_SATS_ENV_VAR))
+        if per_payment is None and per_session is None and auto_approve is None:
             return config
 
         return replace(
@@ -554,6 +575,9 @@ class ConfigurationService:
                 max_per_session_sats=per_session
                 if per_session is not None
                 else config.limits.max_per_session_sats,
+                auto_approve_sats=auto_approve
+                if auto_approve is not None
+                else config.limits.auto_approve_sats,
             ),
         )
 

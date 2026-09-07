@@ -48,6 +48,9 @@ public class BudgetConfigurationService : IBudgetConfigurationService
     /// <summary>Env var that sets <c>limits.maxPerSessionSats</c>, overriding the file.</summary>
     public const string MaxPerSessionSatsEnvVar = "LIGHTNING_ENABLE_MAX_PER_SESSION_SATS";
 
+    /// <summary>Env var that sets <c>limits.autoApproveSats</c>, overriding the file.</summary>
+    public const string AutoApproveSatsEnvVar = "LIGHTNING_ENABLE_AUTO_APPROVE_SATS";
+
     private readonly string _configDirectory;
     private readonly string _configFilePath;
     private UserBudgetConfiguration _configuration;
@@ -135,6 +138,12 @@ public class BudgetConfigurationService : IBudgetConfigurationService
         if (perSession.HasValue)
         {
             config.Limits.MaxPerSessionSats = perSession.Value;
+        }
+
+        var autoApprove = ReadPositiveLongEnv(AutoApproveSatsEnvVar);
+        if (autoApprove.HasValue)
+        {
+            config.Limits.AutoApproveSats = autoApprove.Value;
         }
     }
 

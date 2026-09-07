@@ -63,9 +63,10 @@ Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-ena
   The advertised inventory is now **16 tools = 14 free + 2 API-key-gated** (`lite` 6,
   `full` 32).
 
-- **Sats-denominated budget limits: `limits.maxPerPaymentSats` / `limits.maxPerSessionSats`,
-  both ports** (env: `LIGHTNING_ENABLE_MAX_PER_PAYMENT_SATS` /
-  `LIGHTNING_ENABLE_MAX_PER_SESSION_SATS`). Spending limits were USD-only, so every budget
+- **Sats-denominated budget limits: `limits.maxPerPaymentSats` /
+  `limits.maxPerSessionSats` / `limits.autoApproveSats`, both ports** (env:
+  `LIGHTNING_ENABLE_MAX_PER_PAYMENT_SATS` / `LIGHTNING_ENABLE_MAX_PER_SESSION_SATS` /
+  `LIGHTNING_ENABLE_AUTO_APPROVE_SATS`). Spending limits were USD-only, so every budget
   check needed a BTC price; three price sources being down is rare but real, and when it
   happens the check cannot be evaluated and the payment is refused — correct, but it stops
   the agent dead on a fault that has nothing to do with its budget.
@@ -80,13 +81,20 @@ Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-ena
 
   `budget(action="status")` reports the effective cap in sats, which configured limit
   produced it, the binding denomination (`usd` / `sats` / `runtime` / `none`), whether a
-  price was available, and one sentence on what is and is not in force.
+  price was available, `autoApproveSats`, whether outage mode is active, and one sentence on
+  what is and is not in force.
 
-  The deliberate trade-off: during a price outage the USD *tier* thresholds cannot be
-  evaluated either, so a payment inside the sats caps is approved and logged
-  (`LOG_AND_APPROVE`) rather than prompting for a confirmation code the agent could not
-  obtain anyway. Setting a sats cap is the operator's explicit price-independent
-  authorization; a lower cap is the lever for tighter gating.
+  **Approval during an outage fails closed.** The sats ceilings still bound the spend, but a
+  ceiling says "never more than this" — not "this much is fine unattended", which is what the
+  unevaluable USD tier ladder normally says. So `limits.autoApproveSats` states that second
+  thing explicitly, in satoshis: at or below it a payment is auto-approved; above it, or when
+  it is unset, the payment takes the normal confirmation flow. `LOG_AND_APPROVE` is never
+  returned on this path. `autoApproveSats` is a tier, not a ceiling — it is checked after the
+  sats ceilings, the runtime tighten caps, the first-payment setting and the cooldown, so it
+  can never widen any of them — and it is ignored entirely while a price is available. The
+  auto-pay paths (L402 auto-payment, `send_onchain`, `agent_services action=settle`) refuse
+  anything needing confirmation rather than prompting, so during an outage they proceed only
+  under `autoApproveSats`.
 
 - **The durable receipt log as MCP resources, both ports.** `lightning-enable://receipts`
   (the most recent 200 receipts as JSONL, `application/x-ndjson`) and

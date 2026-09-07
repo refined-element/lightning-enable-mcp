@@ -167,7 +167,8 @@ Limits live in `~/.lightning-enable/config.json` and are read-only at runtime �
     "maxPerPayment": 500.00,
     "maxPerSession": 100.00,
     "maxPerPaymentSats": 5000,
-    "maxPerSessionSats": 50000
+    "maxPerSessionSats": 50000,
+    "autoApproveSats": 100
   }
 }
 ```
@@ -178,12 +179,22 @@ Limits live in `~/.lightning-enable/config.json` and are read-only at runtime �
 | `maxPerSession` | — | Max USD per session |
 | `maxPerPaymentSats` | `LIGHTNING_ENABLE_MAX_PER_PAYMENT_SATS` | Max satoshis per payment |
 | `maxPerSessionSats` | `LIGHTNING_ENABLE_MAX_PER_SESSION_SATS` | Max satoshis per session |
+| `autoApproveSats` | `LIGHTNING_ENABLE_AUTO_APPROVE_SATS` | Satoshis a payment may spend **without confirmation** while the BTC price is unavailable |
 
-**Why set the sats ones.** A USD limit has to be converted at the current BTC price, so when every price source is down the payment cannot be checked and is refused — correct, but it stops the agent. A satoshi limit needs no conversion, so a sats-budgeted agent keeps working through a price outage. Set **both** sats keys to close every gap.
+**Why set the sats ones.** A USD limit has to be converted at the current BTC price, so when every price source is down the payment cannot be checked and is refused — correct, but it stops the agent. A satoshi limit needs no conversion, so a sats-budgeted agent keeps working through a price outage. Set **both** `maxPer…Sats` keys to close every gap.
 
-When both denominations are set, the **stricter** cap wins on every check. `budget(action="status")` reports which one is binding (`bindingDenomination`), the effective cap in sats, and whether a price was available.
+When both denominations are set, the **stricter** cap wins on every check. `budget(action="status")` reports which one is binding (`bindingDenomination`), the effective cap in sats, whether a price was available, and whether outage mode is active.
 
-> During a price outage the USD *tier* thresholds (auto-approve / confirm) cannot be evaluated either, so a payment inside your satoshi caps is approved and logged rather than prompting for a confirmation code the agent could not obtain. If you want tighter gating in that situation, set a lower `maxPerPaymentSats`.
+### What happens during a price outage
+
+The satoshi **ceilings** still bound the spend. But a ceiling says *"never more than this"* — it does not say *"this much is fine unattended"*, and the USD tier ladder that normally says the second thing cannot be evaluated without a price. So approval fails closed:
+
+- **`autoApproveSats` set** — payments at or below it are auto-approved; anything above takes the normal confirmation flow (the agent asks the human for the code printed to the server console).
+- **`autoApproveSats` not set** — every payment needs confirmation until a price source recovers.
+
+`autoApproveSats` is a tier, not a ceiling: it can never widen `maxPerPaymentSats` or `maxPerSessionSats`, which are checked first. It is ignored entirely while a price is available — then the USD tiers decide as usual.
+
+> The auto-pay paths (L402 auto-payment, `send_onchain`, `agent_services action=settle`) refuse anything that needs confirmation rather than prompting. During an outage that means they only proceed under `autoApproveSats`.
 
 ## Tools
 

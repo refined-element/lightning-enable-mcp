@@ -60,12 +60,12 @@ public class BudgetSatsLimitsTests
 
     private sealed class FakeConfigService : IBudgetConfigurationService
     {
-        public FakeConfigService(PaymentLimits limits)
+        public FakeConfigService(PaymentLimits limits, SessionSettings? session = null)
         {
             Configuration = new UserBudgetConfiguration
             {
                 Limits = limits,
-                Session = new SessionSettings
+                Session = session ?? new SessionSettings
                 {
                     RequireApprovalForFirstPayment = false,
                     CooldownSeconds = 0,
@@ -79,8 +79,9 @@ public class BudgetSatsLimitsTests
         public void Reload() { }
     }
 
-    private static BudgetService Service(PaymentLimits limits, bool priceAvailable = true) =>
-        new(new FakeConfigService(limits), new FakePriceService(priceAvailable));
+    private static BudgetService Service(
+        PaymentLimits limits, bool priceAvailable = true, SessionSettings? session = null) =>
+        new(new FakeConfigService(limits, session), new FakePriceService(priceAvailable));
 
     /// <summary>Sats only — no USD limits at all.</summary>
     private static PaymentLimits SatsOnly() => new()
@@ -91,15 +92,26 @@ public class BudgetSatsLimitsTests
         MaxPerSessionSats = 5_000,
     };
 
+    /// <summary>Sats ceilings plus an explicit sats auto-approve tier.</summary>
+    private static PaymentLimits SatsWithAutoApprove() => new()
+    {
+        MaxPerPayment = null,
+        MaxPerSession = null,
+        MaxPerPaymentSats = 1_000,
+        MaxPerSessionSats = 5_000,
+        AutoApproveSats = 100,
+    };
+
     // ── Sats-only budget, price feed down ───────────────────────────────────
 
     [Fact]
-    public async Task SatsOnly_PriceDown_WithinCap_IsAllowed()
+    public async Task SatsOnly_PriceDown_WithinCap_IsNotDenied()
     {
         var result = await Service(SatsOnly(), priceAvailable: false).CheckApprovalLevelAsync(900);
 
         result.Level.Should().NotBe(ApprovalLevel.Deny,
             "a sats budget has no price dependency, so a price outage must not block it");
+        result.CanProceed.Should().BeTrue();
     }
 
     [Fact]
@@ -158,6 +170,152 @@ public class BudgetSatsLimitsTests
         approval.DenialReason!.ToLowerInvariant().Should().Contain("price");
 
         (await service.TryReserveAsync(900)).Success.Should().BeFalse();
+    }
+
+    // ── Tiering during a price outage ───────────────────────────────────────
+    //
+    // With no BTC price the USD tier ladder cannot be evaluated. The sats CEILINGS still
+    // bound the spend, but a ceiling is not an approval tier: it says "never more than
+    // this", not "this much is fine unattended". So the only thing that may auto-approve
+    // during an outage is an explicit sats tier the operator set.
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(99)]
+    [InlineData(100)]
+    public async Task Outage_AtOrBelowAutoApproveSats_IsAutoApproved(long amountSats)
+    {
+        var result = await Service(SatsWithAutoApprove(), priceAvailable: false)
+            .CheckApprovalLevelAsync(amountSats);
+
+        result.Level.Should().Be(ApprovalLevel.AutoApprove);
+        result.RequiresConfirmation.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Outage_AboveAutoApproveSats_RequiresConfirmation()
+    {
+        var result = await Service(SatsWithAutoApprove(), priceAvailable: false)
+            .CheckApprovalLevelAsync(101);
+
+        result.RequiresConfirmation.Should().BeTrue();
+        result.Level.Should().Be(ApprovalLevel.FormConfirm);
+        result.CanProceed.Should().BeTrue("confirmation is a gate, not a denial");
+        result.ConfirmationMessage.Should().Contain("100").And.Contain("sats");
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(500)]
+    [InlineData(1_000)]
+    public async Task Outage_WithoutAutoApproveSats_EveryPaymentRequiresConfirmation(long amountSats)
+    {
+        // No explicit tier means no unattended spending while the price is down.
+        var result = await Service(SatsOnly(), priceAvailable: false)
+            .CheckApprovalLevelAsync(amountSats);
+
+        result.RequiresConfirmation.Should().BeTrue();
+        result.Level.Should().Be(ApprovalLevel.FormConfirm);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(100)]
+    [InlineData(101)]
+    [InlineData(900)]
+    public async Task Outage_NeverLogAndApprove(long amountSats)
+    {
+        // LogAndApprove proceeds unattended — it is not an option without a price.
+        foreach (var limits in new[] { SatsOnly(), SatsWithAutoApprove() })
+        {
+            var result = await Service(limits, priceAvailable: false)
+                .CheckApprovalLevelAsync(amountSats);
+
+            result.Level.Should().NotBe(ApprovalLevel.LogAndApprove);
+        }
+    }
+
+    [Fact]
+    public async Task Outage_TheHardCeilingStillDeniesAboveIt()
+    {
+        var result = await Service(SatsWithAutoApprove(), priceAvailable: false)
+            .CheckApprovalLevelAsync(1_001);
+
+        result.Level.Should().Be(ApprovalLevel.Deny,
+            "a ceiling is checked before any tier — confirmation cannot buy past it");
+    }
+
+    [Fact]
+    public async Task Outage_AnAutoApproveTierAboveTheCeilingCannotWidenIt()
+    {
+        // A misconfigured tier must not become a way around the ceiling.
+        var service = Service(
+            new PaymentLimits
+            {
+                MaxPerPayment = null,
+                MaxPerSession = null,
+                MaxPerPaymentSats = 1_000,
+                AutoApproveSats = 999_999,
+            },
+            priceAvailable: false);
+
+        (await service.CheckApprovalLevelAsync(1_001)).Level.Should().Be(ApprovalLevel.Deny);
+        (await service.TryReserveAsync(1_001)).Success.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Outage_FirstPaymentApprovalSettingIsStillHonoured()
+    {
+        var service = Service(
+            SatsWithAutoApprove(),
+            priceAvailable: false,
+            session: new SessionSettings
+            {
+                RequireApprovalForFirstPayment = true,
+                CooldownSeconds = 0,
+            });
+
+        (await service.CheckApprovalLevelAsync(50)).RequiresConfirmation.Should().BeTrue(
+            "the operator asked for the first payment of the session to be confirmed");
+
+        service.RecordSpend(50);
+        (await service.CheckApprovalLevelAsync(50)).Level.Should().Be(ApprovalLevel.AutoApprove);
+    }
+
+    [Fact]
+    public async Task Outage_TheCooldownStillApplies()
+    {
+        var service = Service(
+            SatsWithAutoApprove(),
+            priceAvailable: false,
+            session: new SessionSettings
+            {
+                RequireApprovalForFirstPayment = false,
+                CooldownSeconds = 60,
+            });
+        service.RecordPaymentTime();
+
+        var result = await service.CheckApprovalLevelAsync(50);
+
+        result.Level.Should().Be(ApprovalLevel.Deny);
+        result.DenialReason.Should().Contain("Cooldown");
+    }
+
+    [Fact]
+    public async Task AutoApproveSats_IsIgnoredWhenThePriceIsAvailable()
+    {
+        // It is an outage-only tier: with a price, the USD ladder decides as always.
+        var service = Service(new PaymentLimits
+        {
+            MaxPerPayment = 500.00m,
+            MaxPerSession = 100.00m,
+            MaxPerPaymentSats = 1_000_000,
+            AutoApproveSats = 1,
+        });
+
+        // 500 sats = $0.50, under the $1.00 autoApprove USD tier -> auto-approved even
+        // though it is far above the 1-sat outage tier.
+        (await service.CheckApprovalLevelAsync(500)).Level.Should().Be(ApprovalLevel.AutoApprove);
     }
 
     // ── Both denominations set: the stricter one wins ────────────────────────
@@ -287,6 +445,42 @@ public class BudgetSatsLimitsTests
     }
 
     [Fact]
+    public async Task Status_OutageModeAndTheSatsAutoApproveTierAreReported()
+    {
+        var service = Service(SatsWithAutoApprove(), priceAvailable: false);
+        await service.CheckApprovalLevelAsync(50);
+
+        var caps = service.GetEffectiveCaps();
+
+        caps.AutoApproveSats.Should().Be(100);
+        caps.OutageModeActive.Should().BeTrue();
+        caps.Note.ToLowerInvariant().Should().Contain("confirmation");
+    }
+
+    [Fact]
+    public async Task Status_OutageModeIsOffWhileThePriceIsAvailable()
+    {
+        var service = Service(SatsWithAutoApprove());
+        await service.CheckApprovalLevelAsync(50);
+
+        var caps = service.GetEffectiveCaps();
+
+        caps.OutageModeActive.Should().BeFalse();
+        caps.AutoApproveSats.Should().Be(100, "still reported, just not in force");
+    }
+
+    [Fact]
+    public void Status_OutageModeIsOffWhenNoSatsLimitsCanCarryTheBudget()
+    {
+        // Without sats limits an outage refuses payments outright — that is not "outage
+        // mode", it is the pre-existing fail-closed path.
+        var caps = Service(new PaymentLimits { MaxPerPayment = 5.00m, MaxPerSession = 100.00m })
+            .GetEffectiveCaps(usdAvailable: false);
+
+        caps.OutageModeActive.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task Status_RuntimeTighten_IsReportedAsBinding()
     {
         var service = Service(SatsOnly());
@@ -322,17 +516,22 @@ public class SatsLimitConfigurationTests : IDisposable
     private readonly string? _originalPerSession =
         Environment.GetEnvironmentVariable(BudgetConfigurationService.MaxPerSessionSatsEnvVar);
 
+    private readonly string? _originalAutoApprove =
+        Environment.GetEnvironmentVariable(BudgetConfigurationService.AutoApproveSatsEnvVar);
+
     public SatsLimitConfigurationTests()
     {
         Directory.CreateDirectory(_dir);
         SetEnv(BudgetConfigurationService.MaxPerPaymentSatsEnvVar, null);
         SetEnv(BudgetConfigurationService.MaxPerSessionSatsEnvVar, null);
+        SetEnv(BudgetConfigurationService.AutoApproveSatsEnvVar, null);
     }
 
     public void Dispose()
     {
         SetEnv(BudgetConfigurationService.MaxPerPaymentSatsEnvVar, _originalPerPayment);
         SetEnv(BudgetConfigurationService.MaxPerSessionSatsEnvVar, _originalPerSession);
+        SetEnv(BudgetConfigurationService.AutoApproveSatsEnvVar, _originalAutoApprove);
         try
         {
             if (Directory.Exists(_dir))
@@ -406,7 +605,42 @@ public class SatsLimitConfigurationTests : IDisposable
 
         limits.MaxPerPaymentSats.Should().BeNull();
         limits.MaxPerSessionSats.Should().BeNull();
+        limits.AutoApproveSats.Should().BeNull();
         limits.HasSatsLimits.Should().BeFalse();
+    }
+
+    [Fact]
+    public void AutoApproveSatsFromTheConfigFile()
+    {
+        var path = WriteConfig("""{"limits": {"maxPerPaymentSats": 2500, "autoApproveSats": 250}}""");
+
+        new BudgetConfigurationService(path).Configuration.Limits.AutoApproveSats
+            .Should().Be(250);
+    }
+
+    [Fact]
+    public void AutoApproveSatsEnvVarOverridesTheConfigFile()
+    {
+        var path = WriteConfig("""{"limits": {"autoApproveSats": 250}}""");
+        SetEnv(BudgetConfigurationService.AutoApproveSatsEnvVar, "42");
+
+        new BudgetConfigurationService(path).Configuration.Limits.AutoApproveSats
+            .Should().Be(42);
+    }
+
+    [Theory]
+    [InlineData("not-a-number")]
+    [InlineData("0")]
+    [InlineData("-5")]
+    [InlineData("")]
+    public void AMalformedAutoApproveEnvValueIsIgnored(string bad)
+    {
+        var path = WriteConfig("""{"limits": {"autoApproveSats": 250}}""");
+        SetEnv(BudgetConfigurationService.AutoApproveSatsEnvVar, bad);
+
+        new BudgetConfigurationService(path).Configuration.Limits.AutoApproveSats
+            .Should().Be(250,
+                "an unusable env value must never silently raise the unattended-spend tier");
     }
 
     [Fact]

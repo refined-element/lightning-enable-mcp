@@ -531,15 +531,32 @@ class BudgetService:
         return None
 
     async def _check_sats_only(self, amount_sats: int) -> ApprovalCheckResult:
-        """Approval decided by the satoshi caps alone, because no BTC price is available.
+        """Approval decided by the satoshi limits alone, because no BTC price is available.
 
-        Only reachable when the operator configured a sats limit — that is the opt-in
-        that says "this many satoshis is authorized without a dollar conversion". The USD
-        TIER ladder (auto-approve / confirm thresholds) cannot be evaluated here, so a
-        payment inside the sats caps comes back as LOG_AND_APPROVE rather than
-        AUTO_APPROVE: it proceeds without a confirmation code the agent could not obtain
-        anyway, but it is explicitly flagged for operator awareness. An operator who
-        wants tighter gating during a price outage sets a lower maxPerPaymentSats.
+        Only reachable when the operator configured a sats CEILING — that is what makes
+        the budget enforceable with no conversion. But a ceiling says "never more than
+        this"; it does not say "this much is fine unattended". Those are different
+        statements, and the USD tier ladder that normally makes the second one cannot be
+        evaluated here.
+
+        So this path FAILS CLOSED on approval:
+
+        * ``limits.autoApproveSats`` at or below → AUTO_APPROVE. This is the operator
+          saying, explicitly and in satoshis, how much may be spent without a human.
+        * above it, or when it is unset → FORM_CONFIRM, i.e. the normal confirmation
+          flow. The paying tools request a code exactly as they always do; the auto-pay
+          paths (which refuse anything needing confirmation) refuse. Neither is touched
+          here — this only decides the level.
+
+        LOG_AND_APPROVE is never returned: it proceeds unattended, which is precisely
+        what must not happen on an unevaluable tier.
+
+        FORM_CONFIRM rather than URL_CONFIRM because URL_CONFIRM's stronger check asks
+        the human to retype the payment's USD amount — the one number that does not
+        exist during a price outage.
+
+        The ceilings and the cooldown are checked BEFORE any of this, so confirmation can
+        never buy past a cap.
         """
         async with self._lock:
             denial = self._sats_config_denial(amount_sats)
@@ -590,13 +607,42 @@ class BudgetService:
                     remaining_session_budget_usd=Decimal("0"),
                 )
 
+            # Inside the ceilings. Now: may it proceed WITHOUT a human?
+            auto_approve_sats = self._config_service.configuration.limits.auto_approve_sats
+            first_payment_needs_approval = (
+                self._is_first_payment
+                and self._config_service.configuration.session.require_approval_for_first_payment
+            )
+
+            if (
+                auto_approve_sats is not None
+                and amount_sats <= auto_approve_sats
+                and not first_payment_needs_approval
+            ):
+                return ApprovalCheckResult(
+                    level=ApprovalLevel.AUTO_APPROVE,
+                    amount_sats=amount_sats,
+                    amount_usd=Decimal("0"),
+                    remaining_session_budget_usd=Decimal("0"),
+                )
+
+            if first_payment_needs_approval:
+                why = "the first payment of the session always requires confirmation"
+            elif auto_approve_sats is None:
+                why = (
+                    "no limits.autoApproveSats is configured, so nothing may be spent "
+                    "unattended while the price is down"
+                )
+            else:
+                why = f"the unattended limit is {auto_approve_sats:,} sats"
+
             return ApprovalCheckResult(
-                level=ApprovalLevel.LOG_AND_APPROVE,
+                level=ApprovalLevel.FORM_CONFIRM,
                 amount_sats=amount_sats,
                 amount_usd=Decimal("0"),
                 confirmation_message=(
-                    f"{amount_sats:,} sats, approved against your satoshi limits. The BTC "
-                    "price is unavailable, so the USD tier thresholds were not evaluated."
+                    f"Approve {amount_sats:,} sats? The BTC price is unavailable, so this "
+                    f"payment was checked against your satoshi limits only and {why}."
                 ),
                 remaining_session_budget_usd=Decimal("0"),
             )
@@ -1064,11 +1110,24 @@ class BudgetService:
                 else session_cap.denomination
             )
 
-        if not usd_available and config.limits.has_sats_limits:
+        # "Outage mode" is the sats-only path actually being in force: no price, and sats
+        # limits able to carry the check. Without them an outage refuses payments outright,
+        # which is the pre-existing fail-closed path rather than a mode.
+        outage_mode_active = not usd_available and config.limits.has_sats_limits
+
+        if outage_mode_active:
+            auto_approve_sats = config.limits.auto_approve_sats
+            unattended = (
+                f"payments up to {auto_approve_sats:,} sats proceed unattended "
+                "(limits.autoApproveSats); anything above needs confirmation"
+                if auto_approve_sats is not None
+                else "every payment needs confirmation, because limits.autoApproveSats is not set"
+            )
             note = (
-                "The BTC price is unavailable, so the USD limits are not being enforced; "
-                "your satoshi limits are carrying the budget on their own. Set both "
-                "maxPerPaymentSats and maxPerSessionSats to close every gap during an outage."
+                "The BTC price is unavailable, so the USD limits and tiers are not being "
+                f"enforced; your satoshi limits are carrying the budget on their own and "
+                f"{unattended}. Set both maxPerPaymentSats and maxPerSessionSats to close "
+                "every gap during an outage."
             )
         elif not usd_available:
             note = (
@@ -1080,7 +1139,8 @@ class BudgetService:
         elif config.limits.has_sats_limits:
             note = (
                 "USD and satoshi limits are both in force; the stricter one wins on every "
-                "check."
+                "check. limits.autoApproveSats applies only while the BTC price is "
+                "unavailable — right now the USD tiers decide what needs confirmation."
             )
         else:
             note = "Limits are USD-denominated and are converted at the current BTC price."
@@ -1101,6 +1161,10 @@ class BudgetService:
                     "maxPerSession": float(config.limits.max_per_session) if config.limits.max_per_session else None,
                     "maxPerPaymentSats": config.limits.max_per_payment_sats,
                     "maxPerSessionSats": config.limits.max_per_session_sats,
+                    # Outage-only tier: what may be spent without a human when the USD
+                    # ladder cannot be evaluated. Null means nothing may.
+                    "autoApproveSats": config.limits.auto_approve_sats,
+                    "outageModeActive": outage_mode_active,
                     "runtimeMaxPerRequestSats": self._runtime_max_per_request_sats,
                     "runtimeMaxPerSessionSats": self._runtime_max_per_session_sats,
                     # What actually binds right now, in sats, and which configured limit

@@ -201,23 +201,36 @@ public class BudgetService : IBudgetService
                 request.Sats.Value <= session.Sats.Value ? request.Source : session.Source);
         }
 
+        // "Outage mode" is the sats-only path actually being in force: no price, and sats
+        // limits able to carry the check. Without them an outage refuses payments outright,
+        // which is the pre-existing fail-closed path rather than a mode.
+        var outageModeActive = !available && limits.HasSatsLimits;
+
+        var unattended = limits.AutoApproveSats.HasValue
+            ? $"payments up to {limits.AutoApproveSats.Value:N0} sats proceed unattended "
+              + "(limits.autoApproveSats); anything above needs confirmation"
+            : "every payment needs confirmation, because limits.autoApproveSats is not set";
+
         var note = (available, limits.HasSatsLimits) switch
         {
             (false, true) =>
-                "The BTC price is unavailable, so the USD limits are not being enforced; your "
-                + "satoshi limits are carrying the budget on their own. Set both maxPerPaymentSats "
-                + "and maxPerSessionSats to close every gap during an outage.",
+                "The BTC price is unavailable, so the USD limits and tiers are not being enforced; "
+                + $"your satoshi limits are carrying the budget on their own and {unattended}. Set "
+                + "both maxPerPaymentSats and maxPerSessionSats to close every gap during an outage.",
             (false, false) =>
                 "The BTC price is unavailable and no satoshi limits are configured, so payments "
                 + "are refused until a price source recovers. Set limits.maxPerPaymentSats / "
                 + "maxPerSessionSats for a budget that needs no price feed.",
             (true, true) =>
-                "USD and satoshi limits are both in force; the stricter one wins on every check.",
+                "USD and satoshi limits are both in force; the stricter one wins on every check. "
+                + "limits.autoApproveSats applies only while the BTC price is unavailable — right "
+                + "now the USD tiers decide what needs confirmation.",
             _ => "Limits are USD-denominated and are converted at the current BTC price.",
         };
 
         return new EffectiveBudgetCaps(
-            request.Sats, request.Source, session.Sats, session.Source, binding, available, note);
+            request.Sats, request.Source, session.Sats, session.Source, binding, available,
+            limits.AutoApproveSats, outageModeActive, note);
     }
 
     public async Task<ApprovalCheckResult> CheckApprovalLevelAsync(
@@ -477,16 +490,35 @@ public class BudgetService : IBudgetService
     }
 
     /// <summary>
-    /// Approval decided by the satoshi caps alone, because no BTC price is available.
+    /// Approval decided by the satoshi limits alone, because no BTC price is available.
     ///
-    /// <para>Only reachable when the operator configured a sats limit — that is the opt-in
-    /// that says "this many satoshis is authorized without a dollar conversion". The USD
-    /// TIER ladder (auto-approve / confirm thresholds) cannot be evaluated here, so a
-    /// payment inside the sats caps comes back as <see cref="ApprovalLevel.LogAndApprove"/>
-    /// rather than <see cref="ApprovalLevel.AutoApprove"/>: it proceeds without a
-    /// confirmation code the agent could not obtain anyway, but it is explicitly flagged
-    /// for operator awareness. An operator who wants tighter gating during a price outage
-    /// sets a lower maxPerPaymentSats.</para>
+    /// <para>Only reachable when the operator configured a sats CEILING — that is what makes
+    /// the budget enforceable with no conversion. But a ceiling says "never more than this";
+    /// it does not say "this much is fine unattended". Those are different statements, and
+    /// the USD tier ladder that normally makes the second one cannot be evaluated here.</para>
+    ///
+    /// <para>So this path FAILS CLOSED on approval:</para>
+    /// <list type="bullet">
+    /// <item><description><c>limits.autoApproveSats</c> at or below →
+    /// <see cref="ApprovalLevel.AutoApprove"/>. This is the operator saying, explicitly and
+    /// in satoshis, how much may be spent without a human.</description></item>
+    /// <item><description>above it, or when it is unset →
+    /// <see cref="ApprovalLevel.FormConfirm"/>, i.e. the normal confirmation flow. The
+    /// paying tools request a code exactly as they always do; the auto-pay paths (which
+    /// refuse anything needing confirmation — see <see cref="CheckBudgetAsync"/>) refuse.
+    /// Neither is touched here: this only decides the level.</description></item>
+    /// </list>
+    ///
+    /// <para><see cref="ApprovalLevel.LogAndApprove"/> is never returned: it proceeds
+    /// unattended, which is precisely what must not happen on an unevaluable tier.</para>
+    ///
+    /// <para><see cref="ApprovalLevel.FormConfirm"/> rather than
+    /// <see cref="ApprovalLevel.UrlConfirm"/> because UrlConfirm's stronger check asks the
+    /// human to retype the payment's USD amount — the one number that does not exist during
+    /// a price outage.</para>
+    ///
+    /// <para>The ceilings and the cooldown are checked BEFORE any of this, so confirmation
+    /// can never buy past a cap.</para>
     /// </summary>
     private ApprovalCheckResult CheckSatsOnly(long amountSats)
     {
@@ -536,14 +568,39 @@ public class BudgetService : IBudgetService
                 };
             }
 
+            // Inside the ceilings. Now: may it proceed WITHOUT a human?
+            var autoApproveSats = _configService.Configuration.Limits.AutoApproveSats;
+            var firstPaymentNeedsApproval =
+                _isFirstPayment && _configService.Configuration.Session.RequireApprovalForFirstPayment;
+
+            if (autoApproveSats.HasValue
+                && amountSats <= autoApproveSats.Value
+                && !firstPaymentNeedsApproval)
+            {
+                return new ApprovalCheckResult
+                {
+                    Level = ApprovalLevel.AutoApprove,
+                    AmountSats = amountSats,
+                    AmountUsd = 0,
+                    RemainingSessionBudgetUsd = 0
+                };
+            }
+
+            var why = firstPaymentNeedsApproval
+                ? "the first payment of the session always requires confirmation"
+                : !autoApproveSats.HasValue
+                    ? "no limits.autoApproveSats is configured, so nothing may be spent "
+                      + "unattended while the price is down"
+                    : $"the unattended limit is {autoApproveSats.Value:N0} sats";
+
             return new ApprovalCheckResult
             {
-                Level = ApprovalLevel.LogAndApprove,
+                Level = ApprovalLevel.FormConfirm,
                 AmountSats = amountSats,
                 AmountUsd = 0,
                 ConfirmationMessage =
-                    $"{amountSats:N0} sats, approved against your satoshi limits. The BTC price is " +
-                    "unavailable, so the USD tier thresholds were not evaluated.",
+                    $"Approve {amountSats:N0} sats? The BTC price is unavailable, so this payment " +
+                    $"was checked against your satoshi limits only and {why}.",
                 RemainingSessionBudgetUsd = 0
             };
         }

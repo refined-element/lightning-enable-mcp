@@ -111,6 +111,10 @@ public static class GetBudgetStatusTool
                     maxPerSessionUsd = config.Limits.MaxPerSession,
                     maxPerPaymentSats = config.Limits.MaxPerPaymentSats,
                     maxPerSessionSats = config.Limits.MaxPerSessionSats,
+                    // Outage-only tier: what may be spent without a human when the USD
+                    // ladder cannot be evaluated. Null means nothing may.
+                    autoApproveSats = effectiveCaps.AutoApproveSats,
+                    outageModeActive = effectiveCaps.OutageModeActive,
                     runtimeMaxPerRequestSats = runtimeConfig.RuntimeMaxPerRequestSats,
                     runtimeMaxPerSessionSats = runtimeConfig.RuntimeMaxPerSessionSats,
                     // What actually binds right now, in sats, and which configured limit

@@ -205,6 +205,25 @@ public class PaymentLimits
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public long? MaxPerSessionSats { get; set; }
 
+    /// <summary>
+    /// Satoshis a single payment may spend WITHOUT confirmation while the BTC price is
+    /// unavailable. Env var <c>LIGHTNING_ENABLE_AUTO_APPROVE_SATS</c>.
+    ///
+    /// <para>This is a TIER, not a ceiling, and it applies only when the USD tier ladder
+    /// cannot be evaluated. It lives beside the sats ceilings because it is only ever
+    /// consulted together with them — the ceilings say "never more than this", which is not
+    /// the same statement as "this much is fine unattended", so an outage needs the second
+    /// one said explicitly. Unset means every payment needs confirmation while the price is
+    /// down.</para>
+    ///
+    /// <para>It can never widen a ceiling: <see cref="MaxPerPaymentSats"/> /
+    /// <see cref="MaxPerSessionSats"/> and the runtime tighten caps are all checked
+    /// first.</para>
+    /// </summary>
+    [JsonPropertyName("autoApproveSats")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? AutoApproveSats { get; set; }
+
     /// <summary>Whether this budget can be enforced without a BTC price at all.</summary>
     [JsonIgnore]
     public bool HasSatsLimits => MaxPerPaymentSats.HasValue || MaxPerSessionSats.HasValue;

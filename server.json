@@ -60,6 +60,13 @@
           "isSecret": true
         },
         {
+          "name": "LIGHTNING_ENABLE_TOOL_PROFILE",
+          "description": "How many tools to advertise: lite (5), standard (15, default), or full (adds the pre-consolidation tool names).",
+          "isRequired": false,
+          "isSecret": false,
+          "default": "standard"
+        },
+        {
           "name": "AGENT_RELAY_URL",
           "description": "Nostr relay URL for agent events (default: wss://agents.lightningenable.com)",
           "isRequired": false,
@@ -114,6 +121,13 @@
           "isSecret": true
         },
         {
+          "name": "LIGHTNING_ENABLE_TOOL_PROFILE",
+          "description": "How many tools to advertise: lite (5), standard (15, default), or full (adds the pre-consolidation tool names).",
+          "isRequired": false,
+          "isSecret": false,
+          "default": "standard"
+        },
+        {
           "name": "AGENT_RELAY_URL",
           "description": "Nostr relay URL for agent events (default: wss://agents.lightningenable.com)",
           "isRequired": false,
@@ -165,6 +179,13 @@
           "description": "Lightning Enable API key (unlocks producer + ASA tools). Optional: no key? The create_lightning_enable_account tool self-provisions one for ~100 sats over Lightning — no card, no subscription required.",
           "isRequired": false,
           "isSecret": true
+        },
+        {
+          "name": "LIGHTNING_ENABLE_TOOL_PROFILE",
+          "description": "How many tools to advertise: lite (5), standard (15, default), or full (adds the pre-consolidation tool names).",
+          "isRequired": false,
+          "isSecret": false,
+          "default": "standard"
         },
         {
           "name": "AGENT_RELAY_URL",

@@ -11,13 +11,10 @@ namespace LightningEnable.Mcp;
 /// Entry point for the Lightning Enable MCP server.
 /// Provides Lightning payment capabilities to AI agents via Model Context Protocol.
 ///
-/// Available tools:
-/// - pay_invoice - Pay any Lightning invoice
-/// - check_wallet_balance - Check wallet balance
-/// - get_payment_history - View payment history
-/// - get_budget_status - View current budget limits (read-only)
-/// - access_l402_resource - Auto-pay L402 challenges
-/// - pay_l402_challenge - Manual L402 payment
+/// The advertised tool set is defined by <see cref="ToolProfiles"/> and selected with
+/// LIGHTNING_ENABLE_TOOL_PROFILE (lite | standard | full; standard is the default).
+/// ToolInventoryTests in the test project is the source of truth for the inventory every
+/// advertised count derives from.
 ///
 /// Wallet Configuration (in priority order):
 /// - Set STRIKE_API_KEY for Strike wallet (https://dashboard.strike.me/)

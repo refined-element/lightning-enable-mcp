@@ -89,6 +89,10 @@ Buy me a Lightning Enable t-shirt from store.lightningenable.com
 
 (This one needs a funded wallet and a shipping address, which is why `test_l402_payment` — one sat, no shipping — is the faster first proof.)
 
+## Claude Desktop manual install (MCPB bundle)
+
+For a one-click install with no config-file editing, grab the packaged [MCPB](https://github.com/modelcontextprotocol/mcpb) bundle from the [`mcpb/`](mcpb/) directory instead of hand-editing JSON: build it locally with `npx -y @anthropic-ai/mcpb pack mcpb lightning-enable-mcp.mcpb` (or download the `.mcpb` artifact from a [`mcpb.yml`](.github/workflows/mcpb.yml) CI run), then double-click the resulting `.mcpb` file or drag it into Claude Desktop's Settings → Extensions — Claude Desktop prompts for your wallet credentials (Strike, NWC, or LND) and optional Lightning Enable API key through its own settings UI instead of a text config file. See [`mcpb/README.md`](mcpb/README.md) for what's in the bundle and [`mcpb/SUBMISSION.md`](mcpb/SUBMISSION.md) for its Anthropic MCP Directory submission status.
+
 ## Claude Desktop Config
 
 Add to your `claude_desktop_config.json`:

@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 from mcp.types import Tool
 
 from .access_resource import access_l402_resource
+from .consolidated import CONFIRMATION_NONCE_DESCRIPTION
 
 # The public 1-sat L402 test resource. Hardcoded on purpose so this tool can never
 # be repurposed into an arbitrary-URL payer. Only the base host is overridable, via
@@ -275,20 +276,16 @@ async def test_l402_payment(
 TEST_L402_PAYMENT_TOOL = Tool(
     name="test_l402_payment",
     description=(
-        "Self-test the Lightning wallet by paying the public 1-sat L402 test "
-        "endpoint end to end. Proves the wallet is connected, returns a preimage, "
-        "and can complete an L402 payment. Costs about 1 satoshi. Use this to "
-        "verify setup or answer 'is my wallet actually working?'. If your budget "
-        "config requires confirmation for this amount, the verdict is "
-        "'needs_confirmation' and the server prints a code to its console — re-run "
-        "with confirmation_nonce set to that code."
+        "Self-test the wallet by paying the public 1-sat L402 test endpoint end to "
+        "end. A 'needs_confirmation' verdict means the server printed a code to "
+        "its console; re-run with confirmation_nonce."
     ),
     inputSchema={
         "type": "object",
         "properties": {
             "confirmation_nonce": {
                 "type": "string",
-                "description": "Confirmation code the human read from the server console, if a prior call returned test='needs_confirmation'. Omit on the first call.",
+                "description": CONFIRMATION_NONCE_DESCRIPTION,
             },
         },
         "required": [],

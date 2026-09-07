@@ -612,28 +612,27 @@ async def _fetch_and_format_manifest(
 DISCOVER_API_TOOL = Tool(
     name="discover_api",
     description=(
-        "Discover L402-enabled APIs. Use 'query' to search the registry for available APIs by keyword, "
-        "or use 'url' to fetch a specific API's manifest with full endpoint details and pricing. "
-        "Use 'category' to browse by category. With budget_aware=true, shows how many calls you can afford."
+        "Discover L402 APIs: search the registry with query/category, or fetch one "
+        "API's manifest with url."
     ),
     inputSchema={
         "type": "object",
         "properties": {
             "url": {
                 "type": "string",
-                "description": "Base URL of the L402-enabled API, or direct URL to the manifest JSON file. If omitted, searches the registry instead.",
+                "description": "Base URL of an L402 API, or a manifest URL. Omit to search the registry.",
             },
             "query": {
                 "type": "string",
-                "description": "Search the L402 API registry by keyword (e.g., 'weather', 'ai', 'geocoding').",
+                "description": "Registry keyword search, e.g. 'weather'",
             },
             "category": {
                 "type": "string",
-                "description": "Filter registry results by category (e.g., 'ai', 'data', 'finance').",
+                "description": "Registry category filter, e.g. 'ai'",
             },
             "budget_aware": {
                 "type": "boolean",
-                "description": "If true, annotate endpoints with affordable call counts based on remaining budget. Default: true.",
+                "description": "Annotate endpoints with affordable call counts",
                 "default": True,
             },
         },

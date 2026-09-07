@@ -274,9 +274,8 @@ async def get_balance(
 GET_BALANCE_TOOL = Tool(
     name="get_balance",
     description=(
-        "Get the connected wallet's balance. Returns the sats balance plus, where "
-        "available, all currency balances (USD, BTC, ... — most useful with Strike) "
-        "and wallet info. Supersedes check_wallet_balance and get_all_balances."
+        "Get the connected wallet's balance in sats, plus all currency balances and "
+        "wallet info where the wallet reports them."
     ),
     inputSchema={
         "type": "object",

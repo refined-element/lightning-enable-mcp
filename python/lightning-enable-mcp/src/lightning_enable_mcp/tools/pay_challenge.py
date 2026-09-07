@@ -17,6 +17,7 @@ from ..l402_client import L402Error, parse_payment_challenge
 from ..receipt_seam import PaymentReceiptScope, policy_label
 from ..wallet_errors import PaymentPendingError, PaymentProofUnavailableError
 from . import sanitize_error
+from .consolidated import CONFIRMATION_NONCE_DESCRIPTION
 
 if TYPE_CHECKING:
     from ..budget_service import BudgetService
@@ -409,35 +410,32 @@ async def pay_l402_challenge(
 PAY_L402_CHALLENGE_TOOL = Tool(
     name="pay_l402_challenge",
     description=(
-        "Manually pay an L402 or MPP invoice and receive the authorization token. "
-        "Use this if you need to handle the L402/MPP flow yourself. "
-        "Omit macaroon for MPP (Machine Payments Protocol) mode. For a modern "
-        "(draft-00) Payment challenge, pass the raw WWW-Authenticate value as "
-        "challenge_header to get a single-use Payment credential."
+        "Pay an L402 or MPP invoice yourself and get the authorization token. Omit "
+        "macaroon for MPP; pass challenge_header for a draft-00 Payment challenge."
     ),
     inputSchema={
         "type": "object",
         "properties": {
             "invoice": {
                 "type": "string",
-                "description": "BOLT11 Lightning invoice string. Optional when challenge_header is provided (the invoice inside the challenge is used).",
+                "description": "BOLT11 invoice. Optional if challenge_header carries one.",
             },
             "macaroon": {
                 "type": ["string", "null"],
-                "description": "Base64-encoded macaroon from the L402 challenge. Omit for MPP mode (preimage-only authentication).",
+                "description": "Base64 macaroon from the challenge. Omit for MPP.",
             },
             "max_sats": {
                 "type": "integer",
-                "description": "Maximum satoshis allowed for this payment",
+                "description": "Max sats to pay",
                 "default": 1000,
             },
             "confirmation_nonce": {
                 "type": "string",
-                "description": "Confirmation code the human operator read from the server console, for payments above the auto-approve threshold. The code is NEVER in a tool result — ask the human for it. Omit on the first call to request one.",
+                "description": CONFIRMATION_NONCE_DESCRIPTION,
             },
             "challenge_header": {
                 "type": "string",
-                "description": "Raw WWW-Authenticate value of a 'Payment' scheme challenge. When it carries a draft-00 request parameter, the invoice inside is paid and a single-use 'Authorization: Payment <credential>' value is returned.",
+                "description": "Raw WWW-Authenticate value of a 'Payment' challenge; draft-00 yields a single-use credential.",
             },
         },
         "required": [],

@@ -23,6 +23,7 @@ from ..l402_client import L402RedirectError
 from ..receipt_seam import PaymentReceiptScope, policy_label
 from . import sanitize_error
 from ._ssrf_guard import SsrfError, validate_url_allowed
+from .consolidated import CONFIRMATION_NONCE_DESCRIPTION
 
 logger = logging.getLogger("lightning-enable-mcp.tools.access")
 
@@ -296,40 +297,32 @@ async def access_l402_resource(
 ACCESS_L402_RESOURCE_TOOL = Tool(
     name="access_l402_resource",
     description=(
-        "Fetch a URL with automatic L402 payment handling. "
-        "If the server returns a 402 Payment Required response, "
-        "the invoice will be automatically paid and the request retried."
+        "Fetch a URL, automatically paying any L402 challenge and retrying. "
+        "Returns the response plus what was paid."
     ),
     inputSchema={
         "type": "object",
         "properties": {
-            "url": {
-                "type": "string",
-                "description": "The URL to fetch",
-            },
+            "url": {"type": "string", "description": "URL to fetch"},
             "method": {
                 "type": "string",
-                "description": "HTTP method (GET, POST, PUT, DELETE)",
                 "default": "GET",
                 "enum": ["GET", "POST", "PUT", "DELETE"],
             },
             "headers": {
                 "type": "object",
-                "description": "Optional additional request headers",
+                "description": "Extra headers",
                 "additionalProperties": {"type": "string"},
             },
-            "body": {
-                "type": "string",
-                "description": "Optional request body for POST/PUT requests",
-            },
+            "body": {"type": "string", "description": "Body for POST/PUT"},
             "max_sats": {
                 "type": "integer",
-                "description": "Maximum satoshis to pay for this request",
+                "description": "Max sats to pay",
                 "default": 1000,
             },
             "confirmation_nonce": {
                 "type": "string",
-                "description": "Confirmation code the human operator read from the server console, for payments above the auto-approve threshold. The code is NEVER in a tool result — ask the human for it. Omit on the first call to request one.",
+                "description": CONFIRMATION_NONCE_DESCRIPTION,
             },
         },
         "required": ["url"],

@@ -30,11 +30,9 @@ Give your AI agent a Lightning wallet and it can:
 - **Pay invoices** — Send Bitcoin via Lightning to any BOLT11 invoice
 - **Access L402 APIs** — Automatically pay L402 challenges for seamless API access
 - **Discover APIs** — Search the L402 API registry to find paid APIs by keyword or category, or fetch a specific API's manifest for full endpoint details and pricing
-- **Track spending** — Budget limits, payment history, and balance checks
+- **Track spending** — Budget limits, a durable receipt log, and balance checks
 - **Create invoices** — Generate invoices to receive payments
-- **Get BTC price** — Real-time Bitcoin price from Strike
-- **Exchange currency** — Convert between USD/BTC/EUR and more (Strike wallet)
-- **Send on-chain** — Send Bitcoin on-chain (Strike/LND)
+- **Run wallet operations** — BTC price, currency exchange, and on-chain sends (Strike; on-chain also LND)
 - **Self-bootstrap a Lightning Enable account** — `create_lightning_enable_account` pays a ~100-sat activation fee over L402 and returns a merchant API key: the free→paid signup form that *is* the protocol, unlocking the producer + ASA tools with no browser or checkout page.
 - **Sell services (L402 Producer)** — Create L402 payment challenges and verify payments, enabling agents to be full commerce participants that both buy and sell
 - **Agent commerce (ASA)** — Discover, request, settle, and review agent-to-agent services on Nostr
@@ -141,11 +139,11 @@ Config file locations:
 
 ## Tools
 
-**Canonical inventory: 26 tools — 17 free (out of the box, just a wallet) + 9 that require `LIGHTNING_ENABLE_API_KEY`** (an [Agentic Commerce subscription](https://lightningenable.com); 2 L402 Producer + 7 Agent Service Agreement). This table is the single source of truth every advertised count derives from — it is pinned to the code by the tool-inventory guard tests in both ports (drift fails CI).
+**Canonical inventory: 15 tools — 13 free (out of the box, just a wallet) + 2 that require `LIGHTNING_ENABLE_API_KEY`** (an [Agentic Commerce subscription](https://lightningenable.com)). This table is the single source of truth every advertised count derives from — it is pinned to the code by the tool-inventory guard tests in both ports (drift fails CI).
 
-> **ASA availability note.** The L402/producer tools, `discover_agent_services`, `settle_agent_service`, and `unpublish_agent_capability` work against the hosted API today. The agent-to-agent coordination tools — `publish_agent_capability`, `request_agent_service`, `publish_agent_attestation`, `get_agent_reputation` — use the agent capability backend, which is **not yet enabled on the hosted Lightning Enable API** (calls there currently return an error) and are in preview. Marketplace listings are published today via the Lightning Enable dashboard / L402 proxy pipeline.
+Five of these are *action* tools: pass `action` (or `source` for `receipts`) to pick the operation. They replace 16 single-purpose tools whose schemas used to be loaded into the agent's context on every session — see [Tool profiles and old tool names](#tool-profiles-and-old-tool-names). **Every old name still works.**
 
-**Deprecated aliases** (accepted but unadvertised, forward to the new tool, removed in v2.0.0): `confirm_payment` → `verify_confirmation_code`; `check_wallet_balance`, `get_all_balances` → `get_balance`.
+> **ASA availability note.** `agent_services` with `action` `discover`, `settle` or `unpublish` works against the hosted API today, as do both `l402_producer` actions. The agent-to-agent coordination actions — `publish`, `request`, `attest`, `reputation` — use the agent capability backend, which is **not yet enabled on the hosted Lightning Enable API** (calls there currently return an error) and are in preview. Marketplace listings are published today via the Lightning Enable dashboard / L402 proxy pipeline.
 
 | Tool | Access | What it does |
 |------|--------|--------------|
@@ -157,26 +155,72 @@ Config file locations:
 | `create_invoice` | Free | Create a BOLT11 invoice to receive payment |
 | `check_invoice_status` | Free | Check whether a created invoice was paid |
 | `get_balance` | Free | Wallet balance: sats, all currencies (Strike), and wallet info |
-| `exchange_currency` | Free | Convert between USD and BTC (Strike) |
-| `send_onchain` | Free | Send an on-chain Bitcoin payment (Strike, LND) |
-| `get_btc_price` | Free | Current Bitcoin price in USD |
-| `get_payment_history` | Free | List payments made this session (in-memory) |
-| `get_receipts` | Free | Read the durable, append-only receipt log |
-| `get_budget_status` | Free | View budget config and session spend (read-only) |
-| `configure_budget` | Free | Tighten runtime spending caps (tighten-only) |
+| `budget` | Free | `action`: `status` (read limits and session spend) or `tighten` (lower the runtime caps) |
+| `receipts` | Free | `source`: `durable` (the append-only receipt log) or `session` (this session's payments) |
+| `wallet_ops` | Free | `action`: `price`, `exchange`, or `send_onchain` (Strike; `send_onchain` also LND) |
 | `verify_confirmation_code` | Free | Verify an out-of-band payment confirmation code (verification only — never pays) |
 | `create_lightning_enable_account` | Free | Self-bootstrap signup: pay ~100 sats, get a merchant API key |
-| `create_l402_challenge` | Agentic Commerce | L402 Producer: create a challenge to charge for a resource |
-| `verify_l402_payment` | Agentic Commerce | L402 Producer: verify an L402 token (macaroon + preimage) |
-| `discover_agent_services` | Agentic Commerce | ASA: search for agent capabilities on Nostr |
-| `publish_agent_capability` | Agentic Commerce | ASA: publish your agent's services (kind 38400) |
-| `unpublish_agent_capability` | Agentic Commerce | ASA: take a listing down — retire the proxy + NIP-09 removal |
-| `request_agent_service` | Agentic Commerce | ASA: request a service from another agent (kind 38401) |
-| `settle_agent_service` | Agentic Commerce | ASA: pay for an agent service via L402 settlement |
-| `publish_agent_attestation` | Agentic Commerce | ASA: leave a review/rating for an agent (kind 38403) |
-| `get_agent_reputation` | Agentic Commerce | ASA: check an agent's reputation from attestations |
+| `l402_producer` | Agentic Commerce | `action`: `create` an L402 challenge, or `verify` a payer's token |
+| `agent_services` | Agentic Commerce | `action`: `discover`, `request`, `settle`, `publish`, `unpublish`, `attest`, `reputation` |
 
-`create_lightning_enable_account` is free and *self-provisions* the API key the 8 gated tools need — an agent with a wallet pays a ~100-sat activation fee and unlocks them on the spot.
+`create_lightning_enable_account` is free and *self-provisions* the API key the 2 gated tools need — an agent with a wallet pays a ~100-sat activation fee and unlocks them on the spot.
+
+Every tool carries MCP annotations: a human-readable title and an explicit `readOnlyHint`, plus `destructiveHint` on anything that can spend the wallet. Action tools are annotated for their **widest** action, so `budget` is not read-only (because `tighten` writes) and `wallet_ops` is destructive (because `send_onchain` is).
+
+## Tool profiles and old tool names
+
+Every advertised tool's JSON schema is loaded into the agent's context at the start of each session, so the tool surface is a token cost on every turn. Pick how much of it to advertise with `LIGHTNING_ENABLE_TOOL_PROFILE`:
+
+| Profile | Tools | Use it when |
+|---------|-------|-------------|
+| `lite` | 5 — `pay_invoice`, `access_l402_resource`, `get_balance`, `budget`, `receipts` | The agent only needs to spend and stay inside its budget |
+| `standard` *(default)* | 15 — the table above | Everything, at about 40% less schema than the old surface |
+| `full` | 31 — `standard` plus every pre-consolidation name | You have prompts or scripts written against the old tool names |
+
+```json
+{
+  "mcpServers": {
+    "lightning-enable": {
+      "command": "uvx",
+      "args": ["lightning-enable-mcp"],
+      "env": {
+        "STRIKE_API_KEY": "your-strike-api-key",
+        "LIGHTNING_ENABLE_TOOL_PROFILE": "lite"
+      }
+    }
+  }
+}
+```
+
+**Profiles are listing-only.** A tool the profile does not advertise is still callable by name, and every old name still dispatches, under every profile. Narrowing the profile trims the schemas pushed into the model's context; it never removes capability.
+
+### Old name → new call
+
+Old names are accepted but unadvertised (except under `full`). Each forwards to the new tool and its result carries a `deprecated` marker naming the replacement. **Removed in v2.0.0** — move to the new names.
+
+| Old tool | New call |
+|----------|----------|
+| get_budget_status | `budget(action="status")` |
+| configure_budget | `budget(action="tighten")` |
+| get_receipts | `receipts(source="durable")` |
+| get_payment_history | `receipts(source="session")` |
+| get_btc_price | `wallet_ops(action="price")` |
+| exchange_currency | `wallet_ops(action="exchange")` |
+| send_onchain | `wallet_ops(action="send_onchain")` |
+| create_l402_challenge | `l402_producer(action="create")` |
+| verify_l402_payment | `l402_producer(action="verify")` |
+| discover_agent_services | `agent_services(action="discover")` |
+| request_agent_service | `agent_services(action="request")` |
+| settle_agent_service | `agent_services(action="settle")` |
+| publish_agent_capability | `agent_services(action="publish")` |
+| unpublish_agent_capability | `agent_services(action="unpublish")` |
+| publish_agent_attestation | `agent_services(action="attest")` |
+| get_agent_reputation | `agent_services(action="reputation")` |
+| confirm_payment | `verify_confirmation_code` |
+| check_wallet_balance | `get_balance` |
+| get_all_balances | `get_balance` |
+
+The last three predate this consolidation and stay hidden in every profile, `full` included.
 
 ## Documentation
 
@@ -200,30 +244,31 @@ lightning-enable-mcp/
 └── README.md                             # This file
 ```
 
-## Agent Service Agreement (ASA) Tools
+## Agent Service Agreements (the `agent_services` tool)
 
-These tools enable agent-to-agent commerce on Nostr:
+Agent-to-agent commerce on Nostr, behind one tool. Pass `action` to pick the operation.
+`agent_services` requires `LIGHTNING_ENABLE_API_KEY` (an [Agentic Commerce subscription](https://lightningenable.com)); `action="settle"` additionally spends your wallet balance, subject to budget limits.
 
-All seven ASA tools require `LIGHTNING_ENABLE_API_KEY` (an [Agentic Commerce subscription](https://lightningenable.com)); `settle_agent_service` additionally spends your wallet balance, subject to budget limits. For the authoritative access level of every tool, see the canonical [Tools](#tools) table above — it is the single source of truth pinned to the code by the drift guard.
-
-| Tool | Description |
-|------|-------------|
-| `discover_agent_services` | Search for agent capabilities by category, hashtag, or keyword |
-| `publish_agent_capability` | Publish your agent's services to the Nostr network (kind 38400) |
-| `unpublish_agent_capability` | Take a published listing down: retire the L402 proxy and emit a NIP-09 removal |
-| `request_agent_service` | Request a service from another agent (kind 38401) |
-| `settle_agent_service` | Pay for an agent service via L402 Lightning settlement |
-| `publish_agent_attestation` | Leave a review/rating for an agent after service completion (kind 38403) |
-| `get_agent_reputation` | Check an agent's reputation score from on-protocol attestations |
+| Action | Description |
+|--------|-------------|
+| discover | Search for agent capabilities by category, hashtag, or keyword |
+| publish | Publish your agent's services to the Nostr network (kind 38400) |
+| unpublish | Take a published listing down: retire the L402 proxy and emit a NIP-09 removal |
+| request | Request a service from another agent (kind 38401) |
+| settle | Pay for an agent service via L402 Lightning settlement |
+| attest | Leave a review/rating for an agent after service completion (kind 38403) |
+| reputation | Check an agent's reputation score from on-protocol attestations |
 
 ### How Agent Commerce Works
 
-1. **Discover** — `discover_agent_services(category="translation")` finds agents offering translation
-2. **Request** — `request_agent_service(capability_id, budget_sats=100)` sends a service request
-3. **Settle** — `settle_agent_service(l402_endpoint)` pays via Lightning and receives the result
-4. **Review** — `publish_agent_attestation(pubkey, agreement_id, rating=5)` builds on-protocol reputation
+1. **Discover** — `agent_services(action="discover", category="translation")` finds agents offering translation
+2. **Request** — `agent_services(action="request", capability_event_id=..., budget_sats=100)` sends a service request
+3. **Settle** — `agent_services(action="settle", l402_endpoint=...)` pays via Lightning and receives the result
+4. **Review** — `agent_services(action="attest", subject_pubkey=..., agreement_id=..., rating=5)` builds on-protocol reputation
 
-For dynamic pricing, providers use `create_l402_challenge` to generate invoices at the agreed price. Requesters pay and providers verify with `verify_l402_payment`.
+For dynamic pricing, providers use `l402_producer(action="create")` to generate invoices at the agreed price. Requesters pay and providers verify with `l402_producer(action="verify")`.
+
+The seven old tool names (`discover_agent_services`, `settle_agent_service`, …) still work — see [Old name → new call](#old-name--new-call).
 
 ## Related Projects
 

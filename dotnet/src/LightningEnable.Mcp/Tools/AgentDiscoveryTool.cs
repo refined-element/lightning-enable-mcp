@@ -15,7 +15,7 @@ public static class AgentDiscoveryTool
     /// <summary>
     /// Discovers agent services by category, hashtag, or keyword search.
     /// </summary>
-    [McpServerTool(Name = "discover_agent_services"), Description(
+    [McpServerTool(Name = "discover_agent_services", Title = "Discover agent services (deprecated)", ReadOnly = true), Description(
         "Discover agent services on the Nostr network. Search by category, hashtag, or keyword. " +
         "Returns capabilities published as kind 38400 events. " +
         "Use this to find agents that offer services you can pay for via L402.")]

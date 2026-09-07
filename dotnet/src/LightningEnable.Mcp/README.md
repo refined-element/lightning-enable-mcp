@@ -178,7 +178,9 @@ Add to your Claude Desktop configuration file:
 
 ## Available Tools
 
-The canonical inventory is the [Tools table in the root README](https://github.com/refined-element/lightning-enable-mcp#tools): 26 tools (17 free / 9 gated). The sections below document a selected subset.
+The canonical inventory is the [Tools table in the root README](https://github.com/refined-element/lightning-enable-mcp#tools): 15 tools (13 free / 2 gated), five of which take an `action` argument. Set `LIGHTNING_ENABLE_TOOL_PROFILE=lite` for a 5-tool surface, or `full` to also advertise the pre-consolidation names.
+
+> Some sections below still use pre-consolidation tool names (`get_payment_history`, `configure_budget`, `get_btc_price`, …). They all still work as deprecated aliases; the [old name → new call table](https://github.com/refined-element/lightning-enable-mcp#old-name--new-call) gives the replacement for each.
 
 **Deprecated aliases** (accepted but unadvertised, forward to the new tool, removed in v2.0.0): `confirm_payment` → `verify_confirmation_code`; `check_wallet_balance` and `get_all_balances` → `get_balance`.
 

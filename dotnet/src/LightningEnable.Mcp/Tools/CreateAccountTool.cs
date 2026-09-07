@@ -41,16 +41,19 @@ public static class CreateAccountTool
     /// <summary>
     /// Activates a Lightning Enable account with a Lightning micropayment and returns the merchant API key.
     /// </summary>
-    [McpServerTool(Name = ToolName), Description(
-        "Self-bootstrapping signup: activate a Lightning Enable account with a tiny Lightning payment " +
-        "(~100 sats) and get back a merchant API key. Requires NO Lightning Enable API key (it CREATES one) " +
-        "— only a connected wallet. On success the API key is saved to ~/.lightning-enable/config.json so the " +
-        "producer/ASA tools unlock. Above-threshold activation fees require a human-supplied confirmation code " +
-        "(same out-of-band flow as pay_l402_challenge).")]
+    [McpServerTool(
+        Name = ToolName,
+        Title = "Create Lightning Enable account",
+        ReadOnly = false,
+        Destructive = true)]
+    [Description(
+        "Self-bootstrapping signup: pay a ~100-sat activation fee for a Lightning Enable "
+        + "merchant API key. Needs only a wallet; the key is saved to "
+        + "~/.lightning-enable/config.json.")]
     public static async Task<string> CreateLightningEnableAccount(
-        [Description("Email address to register the Lightning Enable account under")] string email,
-        [Description("Maximum satoshis to pay for activation. Defaults to 1000; the fee is ~100 sats")] int maxSats = 1000,
-        [Description("Confirmation code the human read from the server console, for an above-threshold activation fee. The code is NEVER in a tool result — ask the human for it. Omit on the first call to request one.")] string? confirmationNonce = null,
+        [Description("Email to register")] string email,
+        [Description("Max sats for the ~100-sat fee")] int maxSats = 1000,
+        [Description("Code the human reads off the server console (never returned to you). Omit to request one.")] string? confirmationNonce = null,
         McpServer? server = null,
         IL402HttpClient? l402Client = null,
         IBudgetService? budgetService = null,

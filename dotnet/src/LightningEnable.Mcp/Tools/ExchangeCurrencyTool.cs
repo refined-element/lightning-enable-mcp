@@ -20,7 +20,7 @@ public static class ExchangeCurrencyTool
     /// <param name="walletService">Injected wallet service.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Exchange result with converted amount.</returns>
-    [McpServerTool(Name = "exchange_currency"), Description("Exchange currency within your wallet (USD to BTC or BTC to USD). Currently only available with Strike wallet.")]
+    [McpServerTool(Name = "exchange_currency", Title = "Exchange currency (deprecated)", ReadOnly = false, Destructive = true), Description("Exchange currency within your wallet (USD to BTC or BTC to USD). Currently only available with Strike wallet.")]
     public static async Task<string> ExchangeCurrency(
         [Description("Currency to convert from: USD or BTC")] string sourceCurrency,
         [Description("Currency to convert to: BTC or USD")] string targetCurrency,

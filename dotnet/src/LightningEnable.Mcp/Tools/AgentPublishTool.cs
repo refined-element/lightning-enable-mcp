@@ -15,7 +15,7 @@ public static class AgentPublishTool
     /// <summary>
     /// Publishes an agent capability to the Nostr network.
     /// </summary>
-    [McpServerTool(Name = "publish_agent_capability"), Description(
+    [McpServerTool(Name = "publish_agent_capability", Title = "Publish capability (deprecated)", ReadOnly = false, Destructive = false), Description(
         "Publish an agent capability advertisement to the Nostr network. " +
         "Makes your agent discoverable by other agents as a kind 38400 listing, published via " +
         "Lightning Enable's L402 proxy pipeline. Provide targetUrl — an L402 proxy is created to " +

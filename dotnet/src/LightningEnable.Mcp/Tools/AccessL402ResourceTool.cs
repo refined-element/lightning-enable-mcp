@@ -30,14 +30,19 @@ public static class AccessL402ResourceTool
     /// <param name="paymentHistory">Injected payment history service.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Response body or error message.</returns>
-    [McpServerTool(Name = "access_l402_resource"), Description("Fetch a URL, automatically pay any L402 Lightning payment challenge")]
+    [McpServerTool(
+        Name = "access_l402_resource",
+        Title = "Fetch paid resource",
+        ReadOnly = false,
+        Destructive = true)]
+    [Description("Fetch a URL, automatically paying any L402 challenge and retrying.")]
     public static async Task<string> AccessL402Resource(
         [Description("The URL to fetch")] string url,
-        [Description("HTTP method (GET, POST, PUT, DELETE). Defaults to GET")] string method = "GET",
-        [Description("Optional headers as JSON object")] string? headers = null,
-        [Description("Optional request body for POST/PUT requests")] string? body = null,
-        [Description("Maximum satoshis to pay for L402 challenge. Defaults to 1000")] int maxSats = 1000,
-        [Description("Confirmation code relayed by the human operator from the server console (stderr). Required when a previous call returned requiresConfirmation=true.")] string? confirmationNonce = null,
+        [Description("HTTP method")] string method = "GET",
+        [Description("Extra headers as a JSON object")] string? headers = null,
+        [Description("Body for POST/PUT")] string? body = null,
+        [Description("Max sats to pay")] int maxSats = 1000,
+        [Description("Code the human reads off the server console (never returned to you). Omit to request one.")] string? confirmationNonce = null,
         McpServer? server = null,
         IL402HttpClient? l402Client = null,
         IBudgetService? budgetService = null,

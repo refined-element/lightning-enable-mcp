@@ -15,7 +15,7 @@ public static class AgentNegotiateTool
     /// <summary>
     /// Requests a service from an agent by sending a kind 38401 event.
     /// </summary>
-    [McpServerTool(Name = "request_agent_service"), Description(
+    [McpServerTool(Name = "request_agent_service", Title = "Request agent service (deprecated)", ReadOnly = false, Destructive = false), Description(
         "Sends a service request (kind 38401 event) referencing the provider's capability. " +
         "The provider responds with agreement/settlement terms; settle via settle_agent_service. " +
         "If the provider has an L402 endpoint, you can skip this step " +

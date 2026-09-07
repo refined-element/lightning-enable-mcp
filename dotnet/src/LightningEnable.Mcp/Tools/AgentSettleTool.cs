@@ -17,7 +17,7 @@ public static class AgentSettleTool
     /// <summary>
     /// Settles an agent service agreement by paying the L402 endpoint (consumer/requester side).
     /// </summary>
-    [McpServerTool(Name = "settle_agent_service"), Description(
+    [McpServerTool(Name = "settle_agent_service", Title = "Settle agent service (deprecated)", ReadOnly = false, Destructive = true), Description(
         "Settle an agent service agreement via L402 payment (CONSUMER/REQUESTER side). " +
         "Pays the L402 endpoint specified in the agreement, completing the service transaction. " +
         "Uses the same L402 auto-pay flow as access_l402_resource. " +

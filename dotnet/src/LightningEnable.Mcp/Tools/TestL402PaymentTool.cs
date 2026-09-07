@@ -33,15 +33,17 @@ public static class TestL402PaymentTool
     // never spend more than a rounding error regardless of what the endpoint returns.
     internal const int MaxTestSats = 10;
 
-    [McpServerTool(Name = "test_l402_payment"), Description(
-        "Self-test the Lightning wallet by paying the public 1-sat L402 test endpoint end to end. "
-        + "Proves the wallet is connected, returns a preimage, and can complete an L402 payment. "
-        + "Costs about 1 satoshi. Use this to verify setup or answer 'is my wallet actually working?'. "
-        + "If your budget config requires confirmation for this amount, the verdict is 'needs_confirmation' "
-        + "and the server prints a code to its console — re-run with confirmationNonce set to that code.")]
+    [McpServerTool(
+        Name = "test_l402_payment",
+        Title = "Wallet self-test",
+        ReadOnly = false,
+        Destructive = true)]
+    [Description(
+        "Self-test the wallet by paying the public 1-sat L402 test endpoint end to end. A "
+        + "needs_confirmation verdict means the server printed a code to its console; re-run "
+        + "with confirmationNonce.")]
     public static async Task<string> TestL402Payment(
-        [Description("Confirmation code the human read from the server console, if a prior call returned "
-            + "test='needs_confirmation'. Omit on the first call.")] string? confirmationNonce = null,
+        [Description("Code the human reads off the server console (never returned to you). Omit to request one.")] string? confirmationNonce = null,
         McpServer? server = null,
         IL402HttpClient? l402Client = null,
         IBudgetService? budgetService = null,

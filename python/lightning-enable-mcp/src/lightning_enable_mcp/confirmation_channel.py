@@ -376,6 +376,7 @@ class WebhookConfirmationChannel:
         self.url = url
         self._secret = secret
         self._client_factory = client_factory or _default_webhook_client_factory
+        self._owns_clients = client_factory is None
         self._timeout = timeout
 
     async def deliver(
@@ -392,8 +393,16 @@ class WebhookConfirmationChannel:
                 "User-Agent": "LightningEnable-MCP/1.0",
             }
 
+            # Only a client this channel built itself is closed after the call. An injected
+            # factory may hand back a shared, long-lived client (pooled + SSRF-pinned); closing
+            # it here would refuse every delivery after the first.
             client = self._client_factory()
-            async with client:
+            if self._owns_clients:
+                async with client:
+                    response = await client.post(
+                        self.url, content=body.encode("utf-8"), headers=headers, timeout=self._timeout
+                    )
+            else:
                 response = await client.post(
                     self.url, content=body.encode("utf-8"), headers=headers, timeout=self._timeout
                 )

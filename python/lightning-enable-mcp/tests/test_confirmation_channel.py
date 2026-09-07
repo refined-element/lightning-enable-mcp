@@ -364,6 +364,29 @@ def _stub_webhook(responder, recorded):
 
 class TestWebhookChannel:
     @pytest.mark.asyncio
+    async def test_reuses_an_injected_shared_client_across_deliveries(self):
+        # An operator/host may inject a factory that returns ONE long-lived client (pooled,
+        # SSRF-pinned). The channel must not close it after the first delivery, or the
+        # second over-threshold payment in the process is refused with "client has been closed".
+        recorded = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            recorded.append(request)
+            return httpx.Response(200)
+
+        shared = httpx.AsyncClient(transport=httpx.MockTransport(handler), follow_redirects=False)
+        channel = WebhookConfirmationChannel(TEST_WEBHOOK_URL, TEST_SECRET, client_factory=lambda: shared)
+
+        first = await channel.deliver(sample_pending("AA1AA1"), sample_request())
+        second = await channel.deliver(sample_pending("BB2BB2"), sample_request())
+
+        assert first.success is True
+        assert second.success is True, second.error
+        assert len(recorded) == 2
+        assert shared.is_closed is False
+        await shared.aclose()
+
+    @pytest.mark.asyncio
     async def test_posts_signed_payload_to_the_configured_url(self):
         recorded = []
         channel = WebhookConfirmationChannel(

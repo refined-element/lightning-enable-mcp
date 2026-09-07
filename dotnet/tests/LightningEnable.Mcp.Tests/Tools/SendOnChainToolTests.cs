@@ -19,26 +19,18 @@ public class SendOnChainToolTests
         return wallet;
     }
 
-    [Fact]
-    public async Task SendOnChain_NoConfirmation_AlwaysRequiresIt_AndDoesNotLeakCode()
+    [Theory]
+    [InlineData(ConfirmationChannelKind.Stderr)]
+    [InlineData(ConfirmationChannelKind.Webhook)]
+    [InlineData(ConfirmationChannelKind.File)]
+    public async Task SendOnChain_NoConfirmation_AlwaysRequiresIt_AndDoesNotLeakCode(ConfirmationChannelKind channel)
     {
         // Even an AUTO-APPROVE-tier amount must require confirmation — on-chain is irreversible (C-2b).
         var wallet = ConfiguredWallet();
         var budget = new Mock<IBudgetService>();
         budget.Setup(b => b.CheckApprovalLevelAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ApprovalCheckResult { Level = ApprovalLevel.AutoApprove, AmountSats = 5000, AmountUsd = 0.05m });
-        budget.Setup(b => b.CreatePendingConfirmation(
-                It.IsAny<long>(), It.IsAny<decimal>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()))
-            .Returns(new PendingConfirmation
-            {
-                Nonce = "ONCH99",
-                AmountSats = 5000,
-                AmountUsd = 0.05m,
-                ToolName = "send_onchain",
-                Description = ValidAddress,
-                CreatedAt = DateTime.UtcNow,
-                ExpiresAt = DateTime.UtcNow.AddMinutes(2)
-            });
+        ConfirmationTestSetup.SetupDelivered(budget, channel, "ONCH99", 5000, 0.05m, "send_onchain");
 
         var result = await SendOnChainTool.SendOnChain(
             address: ValidAddress,
@@ -49,9 +41,35 @@ public class SendOnChainToolTests
         var json = JsonDocument.Parse(result);
         json.RootElement.GetProperty("success").GetBoolean().Should().BeFalse();
         json.RootElement.GetProperty("requiresConfirmation").GetBoolean().Should().BeTrue();
+        json.RootElement.GetProperty("confirmationChannel").GetString()
+            .Should().Be(channel.ToString().ToLowerInvariant());
         json.RootElement.TryGetProperty("nonce", out _).Should().BeFalse("the code must never be in the result");
         result.Should().NotContain("ONCH99", "the confirmation code must not leak into the model-visible result");
         wallet.Verify(w => w.SendOnChainAsync(It.IsAny<string>(), It.IsAny<long>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task SendOnChain_RefuseChannel_RefusesTheIrreversibleSend()
+    {
+        var wallet = ConfiguredWallet();
+        var budget = new Mock<IBudgetService>();
+        budget.Setup(b => b.CheckApprovalLevelAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApprovalCheckResult { Level = ApprovalLevel.AutoApprove, AmountSats = 5000, AmountUsd = 0.05m });
+        ConfirmationTestSetup.SetupRefused(budget);
+
+        var result = await SendOnChainTool.SendOnChain(
+            address: ValidAddress,
+            amountSats: 5000,
+            walletService: wallet.Object,
+            budgetService: budget.Object);
+
+        var json = JsonDocument.Parse(result);
+        json.RootElement.GetProperty("success").GetBoolean().Should().BeFalse();
+        json.RootElement.GetProperty("requiresConfirmation").GetBoolean().Should().BeFalse();
+        json.RootElement.GetProperty("confirmationChannel").GetString().Should().Be("refuse");
+        json.RootElement.GetProperty("error").GetString().Should().Contain("confirmation.channel");
+        wallet.Verify(w => w.SendOnChainAsync(It.IsAny<string>(), It.IsAny<long>(), It.IsAny<CancellationToken>()), Times.Never);
+        budget.Verify(b => b.TryReserveAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]

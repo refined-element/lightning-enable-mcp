@@ -14,6 +14,7 @@ This module provides the BudgetService class that combines:
 import asyncio
 import logging
 import secrets
+import sys
 import threading
 import uuid
 from dataclasses import dataclass
@@ -27,6 +28,15 @@ from .config import (
     ConfigurationService,
     UserBudgetConfiguration,
     get_config_service,
+)
+from .confirmation_channel import (
+    ConfirmationChannel,
+    ConfirmationChannelKind,
+    ConfirmationDispatchResult,
+    ConfirmationRequest,
+    DEFAULT_REFUSAL,
+    StderrConfirmationChannel,
+    create_confirmation_channel,
 )
 from .price_service import PriceService, PriceUnavailableError, get_price_service
 
@@ -163,6 +173,7 @@ class BudgetService:
         self,
         config_service: Optional[ConfigurationService] = None,
         price_service: Optional[PriceService] = None,
+        confirmation_channel: ConfirmationChannel | None = None,
     ) -> None:
         """
         Initialize the BudgetService.
@@ -172,9 +183,15 @@ class BudgetService:
                           uses the global singleton from get_config_service().
             price_service: Optional PriceService instance. If not provided,
                           uses the global singleton from get_price_service().
+            confirmation_channel: Where out-of-band confirmation codes are delivered.
+                          None means the historical local behaviour (print to stderr);
+                          get_budget_service() supplies the configured channel.
         """
         self._config_service = config_service or get_config_service()
         self._price_service = price_service or get_price_service()
+        self._confirmation_channel: ConfirmationChannel = (
+            confirmation_channel or StderrConfirmationChannel()
+        )
 
         # Session tracking
         self._session_spent_sats: int = 0
@@ -712,6 +729,79 @@ class BudgetService:
             self._pending_confirmations[code] = pc
             return pc
 
+    async def request_confirmation(
+        self, request: ConfirmationRequest
+    ) -> ConfirmationDispatchResult:
+        """Ask the configured approval channel for a human confirmation of an over-threshold
+        payment.
+
+        This is the ONLY entry point a payment tool should use: it decides whether a code may
+        exist at all, mints it, delivers it out of band, and — if delivery fails — cancels it
+        again so no orphan code is left behind.
+
+        On the ``refuse`` channel NO pending confirmation is created; the result carries a
+        descriptive, operator-actionable reason. A delivery failure on any other channel is
+        also a refusal: a payment is never approved because its notification could not be sent.
+
+        The returned code is for the HUMAN. It must never appear in a tool result.
+        """
+        channel = self._confirmation_channel
+
+        # REFUSE: short-circuit BEFORE minting. There is no code, so there is nothing an agent
+        # (or anyone reading a log) could replay, and no expiring nonce to reason about.
+        if channel.kind is ConfirmationChannelKind.REFUSE:
+            return ConfirmationDispatchResult.refused(
+                channel.kind, channel.refusal_reason or DEFAULT_REFUSAL
+            )
+
+        pending = self.create_pending_confirmation(
+            request.amount_sats,
+            request.amount_usd,
+            request.tool_name,
+            request.description,
+            destination=request.destination,
+        )
+
+        try:
+            delivery = await channel.deliver(pending, request)
+        except Exception as ex:  # noqa: BLE001 — a broken channel must refuse, not explode
+            delivery = None
+            delivery_error = str(ex)
+        else:
+            delivery_error = delivery.error
+
+        if delivery is None or not delivery.success:
+            # FAIL CLOSED. An undelivered code is not an approval, so drop it rather than
+            # leaving a live nonce nobody was told about.
+            self.cancel_pending_confirmation(pending.nonce)
+            return ConfirmationDispatchResult.refused(
+                channel.kind,
+                "This payment needs human approval and the approval channel "
+                f"({channel.kind.value}) could not deliver the request: {delivery_error}. The "
+                "payment was REFUSED, not approved. The operator must fix the approval channel "
+                "and the agent must then retry the payment from the start.",
+            )
+
+        return ConfirmationDispatchResult.delivered_to(
+            channel.kind, pending, channel.operator_hint
+        )
+
+    @property
+    def confirmation_channel_name(self) -> str:
+        """Which approval channel this service delivers confirmation codes on."""
+        return self._confirmation_channel.kind.value
+
+    def cancel_pending_confirmation(self, nonce: str) -> None:
+        """Drop a pending confirmation without consuming it.
+
+        Used when its out-of-band delivery failed, so an undeliverable code can never be
+        guessed or replayed later.
+        """
+        if not nonce:
+            return
+        with self._confirmation_lock:
+            self._pending_confirmations.pop(nonce, None)
+
     def validate_confirmation(self, nonce: str) -> Optional[PendingConfirmation]:
         """Peek at a confirmation by code WITHOUT consuming it (used by verify_confirmation_code).
 
@@ -940,13 +1030,26 @@ def get_budget_service() -> BudgetService:
     """
     global _default_budget_service
     if _default_budget_service is None:
-        _default_budget_service = BudgetService()
+        # Build the approval channel from config + environment + whether a human could be
+        # watching this console. Any misconfiguration warning is printed once, here.
+        config_service = get_config_service()
+        channel = create_confirmation_channel(
+            config_service.configuration.confirmation,
+            warn=lambda message: print(
+                f"[Lightning Enable] WARNING: {message}", file=sys.stderr, flush=True
+            ),
+        )
+        logger.info("Approval channel for over-threshold payments: %s", channel.kind.value)
+        _default_budget_service = BudgetService(
+            config_service=config_service, confirmation_channel=channel
+        )
     return _default_budget_service
 
 
 def create_budget_service(
     config_service: Optional[ConfigurationService] = None,
     price_service: Optional[PriceService] = None,
+    confirmation_channel: ConfirmationChannel | None = None,
 ) -> BudgetService:
     """
     Create a new BudgetService instance.
@@ -970,4 +1073,8 @@ def create_budget_service(
         mock_price = MockPriceService()
         service = create_budget_service(mock_config, mock_price)
     """
-    return BudgetService(config_service=config_service, price_service=price_service)
+    return BudgetService(
+        config_service=config_service,
+        price_service=price_service,
+        confirmation_channel=confirmation_channel,
+    )

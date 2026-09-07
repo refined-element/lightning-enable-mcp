@@ -49,6 +49,38 @@ Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-ena
   name in every profile; narrowing the profile trims what the model has to read, never what
   the agent can do.
 
+- **A configurable approval channel for over-threshold payments, both ports.** The
+  confirmation code was always printed to the server's stderr — right for a local server with
+  a human at the terminal, wrong for a hosted one (a claude.ai connector, Docker, a fleet),
+  where nobody reads stderr and, on a shared host, the agent might. `confirmation.channel` in
+  `~/.lightning-enable/config.json` (or `LIGHTNING_ENABLE_CONFIRMATION_CHANNEL`) now selects
+  where the code goes:
+
+  | Channel | Behaviour |
+  |---------|-----------|
+  | `stderr` | Print to the server console. The default; unchanged. |
+  | `refuse` | Refuse over-threshold payments outright. **No code is minted at all.** |
+  | `webhook` | POST the pending confirmation to `confirmation.webhookUrl`, signed `X-LightningEnable-Signature: t=…,v1=…` (HMAC-SHA256 over `{t}.{body}`) with `confirmation.webhookSecret`. |
+  | `file` | Append the same JSON line to `confirmation.filePath` (default `~/.lightning-enable/confirmations.jsonl`), 0600 on POSIX. |
+
+  The webhook goes through the same connect-time SSRF guard as agent-supplied URLs (so the
+  URL must be public) and **never** follows redirects — a `3xx` is a delivery failure, so a
+  signed approval can only reach the URL you configured.
+
+  **Two invariants hold on every channel.** The code is never returned in a tool result, and
+  a payment is never approved because its notification could not be delivered — a delivery
+  failure REFUSES the payment and withdraws the minted code. The `refuse` channel creates no
+  pending confirmation at all, and its tool result says so rather than telling the agent to
+  go ask a human for a code that does not exist.
+
+- **Hosted auto-detection.** With no channel configured and stdin not a TTY, the server logs a
+  one-line startup warning naming the risk, and defaults to `refuse` only when
+  `LIGHTNING_ENABLE_HOSTED=1` — an explicit opt-in, so nothing flips behaviour on its own.
+  Otherwise it keeps `stderr`. A channel name the server can't parse fails closed to `refuse`
+  and says so at startup. Webhook and file settings also read from
+  `LIGHTNING_ENABLE_CONFIRMATION_WEBHOOK_URL` / `_SECRET` and `LIGHTNING_ENABLE_CONFIRMATION_FILE`,
+  for deployments with no config file. See "Deploying hosted" in the README.
+
 - **MCP tool annotations on every advertised tool, both ports.** A human-readable `title` and
   an explicit `readOnlyHint` on all of them, `destructiveHint` on everything that can spend the
   wallet (`pay_invoice`, `access_l402_resource`, `pay_l402_challenge`, `test_l402_payment`,

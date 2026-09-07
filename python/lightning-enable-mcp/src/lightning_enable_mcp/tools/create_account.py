@@ -27,7 +27,6 @@ import json
 import logging
 import os
 import re
-import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
@@ -40,6 +39,7 @@ if TYPE_CHECKING:
 
 from mcp.types import Tool
 
+from ..confirmation_channel import ConfirmationRequest
 from ..receipt_seam import PaymentReceiptScope, policy_label
 from .consolidated import CONFIRMATION_NONCE_DESCRIPTION
 
@@ -218,32 +218,50 @@ async def create_lightning_enable_account(
                         })
                     # Human-relayed code validated — fall through and activate.
                 else:
-                    pending = budget_service.create_pending_confirmation(
-                        max_sats, approval.amount_usd, "create_lightning_enable_account", signup_url,
-                        destination=signup_url,
+                    # OUT-OF-BAND CONFIRMATION: the code goes to the human on the CONFIGURED
+                    # approval channel (stderr locally; webhook/file/refuse when hosted) and
+                    # never into this result, so an injected agent can't self-approve.
+                    dispatch = await budget_service.request_confirmation(
+                        ConfirmationRequest(
+                            amount_sats=max_sats,
+                            amount_usd=approval.amount_usd,
+                            tool_name="create_lightning_enable_account",
+                            description=f"activation for {email}",
+                            destination=signup_url,
+                            title="ACCOUNT ACTIVATION CONFIRMATION REQUIRED",
+                            summary=(
+                                f"create_lightning_enable_account — up to ${approval.amount_usd:.2f} "
+                                f"({max_sats:,} sats), email {email}"
+                            ),
+                        )
                     )
-                    print(
-                        "[Lightning Enable] *** ACCOUNT ACTIVATION CONFIRMATION REQUIRED ***\n"
-                        f"  create_lightning_enable_account — up to ${approval.amount_usd:.2f} ({max_sats:,} sats)\n"
-                        f"  email {email}\n"
-                        f"  Confirmation code: {pending.nonce}\n"
-                        "  To approve, give this code to the agent. Expires in 120s.",
-                        file=sys.stderr,
-                        flush=True,
-                    )
+                    if not dispatch.delivered:
+                        return json.dumps({
+                            "success": False,
+                            "requiresConfirmation": False,
+                            "confirmationChannel": dispatch.channel_name,
+                            "error": dispatch.refusal_reason,
+                            "message": (
+                                "The activation was REFUSED, not queued for approval — no human can be asked "
+                                "for a code on this server. Retrying will not help until the operator "
+                                "changes the configuration."
+                            ),
+                            "amount": {"maxSats": max_sats, "maxUsd": float(approval.amount_usd)},
+                        })
                     return json.dumps({
                         "success": False,
                         "requiresConfirmation": True,
+                        "confirmationChannel": dispatch.channel_name,
                         "approvalLevel": approval.level.value,
                         "error": "Account activation requires human confirmation",
                         "message": (
                             f"Activating this account may cost up to ${approval.amount_usd:.2f} ({max_sats:,} sats), "
-                            "above the auto-approve threshold. A confirmation code was printed to the server "
-                            "console/logs — visible to the human operator, NOT to you. Ask the human to read that "
+                            f"above the auto-approve threshold. A confirmation code was {dispatch.operator_hint} "
+                            "— visible to the human operator, NOT to you. Ask the human to read that "
                             "code and give it to you."
                         ),
                         "howToConfirm": (
-                            "Ask the human operator for the confirmation code shown in the server console, then call "
+                            "Ask the human operator for the confirmation code, then call "
                             'create_lightning_enable_account(email="...", confirmation_nonce="<code-from-human>").'
                         ),
                         "amount": {"maxSats": max_sats, "maxUsd": float(approval.amount_usd)},

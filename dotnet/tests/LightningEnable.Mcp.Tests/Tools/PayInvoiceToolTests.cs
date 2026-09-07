@@ -542,10 +542,8 @@ public class PayInvoiceToolTests
 
     #region Out-of-band confirmation Tests
 
-    [Fact]
-    public async Task PayInvoice_RequiresConfirmation_DoesNotLeakCodeInResult()
+    private void SetupRequiresConfirmation()
     {
-        // Arrange — budget says RequiresConfirmation, elicitation unavailable (no server)
         _walletServiceMock.Setup(w => w.IsConfigured).Returns(true);
         _budgetServiceMock.Setup(b => b.CheckApprovalLevelAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ApprovalCheckResult
@@ -555,34 +553,35 @@ public class PayInvoiceToolTests
                 AmountUsd = 5.00m,
                 RemainingSessionBudgetUsd = 95.00m
             });
-        _budgetServiceMock.Setup(b => b.CreatePendingConfirmation(
-                It.IsAny<long>(), It.IsAny<decimal>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()))
-            .Returns(new PendingConfirmation
-            {
-                Nonce = "ABC123",
-                AmountSats = 1000,
-                AmountUsd = 5.00m,
-                ToolName = "pay_invoice",
-                Description = "lnbc1000n1p3abcdef...",
-                CreatedAt = DateTime.UtcNow,
-                ExpiresAt = DateTime.UtcNow.AddMinutes(2)
-            });
         _budgetServiceMock.Setup(b => b.GetUserConfiguration())
             .Returns(new UserBudgetConfiguration());
+    }
 
-        // Act — no McpServer, so elicitation can't work → out-of-band (stderr) path
+    [Theory]
+    [InlineData(ConfirmationChannelKind.Stderr)]
+    [InlineData(ConfirmationChannelKind.Webhook)]
+    [InlineData(ConfirmationChannelKind.File)]
+    public async Task PayInvoice_RequiresConfirmation_DoesNotLeakCodeInResult(ConfirmationChannelKind channel)
+    {
+        // Arrange — budget says RequiresConfirmation, elicitation unavailable (no server)
+        SetupRequiresConfirmation();
+        ConfirmationTestSetup.SetupDelivered(_budgetServiceMock, channel, "ABC123", 1000, 5.00m, "pay_invoice");
+
+        // Act — no McpServer, so elicitation can't work → out-of-band approval-channel path
         var result = await PayInvoiceTool.PayInvoice(
             invoice: TestInvoice,
             walletService: _walletServiceMock.Object,
             budgetService: _budgetServiceMock.Object,
             priceService: _priceServiceMock.Object);
 
-        // Assert — confirmation is requested, but the CODE must NOT appear anywhere in
-        // the model-visible result (it goes to stderr only). This is the core security
-        // property: a prompt-injected agent can't read its own confirmation code.
+        // Assert — confirmation is requested, but the CODE must NOT appear anywhere in the
+        // model-visible result on ANY channel. This is the core security property: a
+        // prompt-injected agent can't read its own confirmation code.
         var json = JsonDocument.Parse(result);
         json.RootElement.GetProperty("success").GetBoolean().Should().BeFalse();
         json.RootElement.GetProperty("requiresConfirmation").GetBoolean().Should().BeTrue();
+        json.RootElement.GetProperty("confirmationChannel").GetString()
+            .Should().Be(channel.ToString().ToLowerInvariant());
         json.RootElement.TryGetProperty("nonce", out _).Should().BeFalse("the code must never be in the result");
         result.Should().NotContain("ABC123", "the confirmation code must not leak into the model-visible result");
         json.RootElement.TryGetProperty("howToConfirm", out _).Should().BeTrue();
@@ -590,6 +589,30 @@ public class PayInvoiceToolTests
         json.RootElement.GetProperty("expiresInSeconds").GetInt32().Should().Be(120);
         json.RootElement.GetProperty("amount").GetProperty("sats").GetInt64().Should().Be(100); // lnbc1000n = 100 sats
         json.RootElement.GetProperty("amount").GetProperty("usd").GetDecimal().Should().Be(5.00m); // contract: USD still surfaced
+    }
+
+    [Fact]
+    public async Task PayInvoice_RefuseChannel_RefusesWithoutPayingAndWithoutOfferingACode()
+    {
+        // Hosted posture: nobody can be handed a code, so the payment is refused outright.
+        SetupRequiresConfirmation();
+        ConfirmationTestSetup.SetupRefused(_budgetServiceMock);
+
+        var result = await PayInvoiceTool.PayInvoice(
+            invoice: TestInvoice,
+            walletService: _walletServiceMock.Object,
+            budgetService: _budgetServiceMock.Object,
+            priceService: _priceServiceMock.Object);
+
+        var json = JsonDocument.Parse(result);
+        json.RootElement.GetProperty("success").GetBoolean().Should().BeFalse();
+        json.RootElement.GetProperty("requiresConfirmation").GetBoolean().Should()
+            .BeFalse("there is no code to ask a human for — asking would send the agent in circles");
+        json.RootElement.GetProperty("confirmationChannel").GetString().Should().Be("refuse");
+        json.RootElement.GetProperty("error").GetString().Should().Contain("confirmation.channel");
+        _walletServiceMock.Verify(
+            w => w.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        _budgetServiceMock.Verify(b => b.TryReserveAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     #endregion

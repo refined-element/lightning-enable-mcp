@@ -16,7 +16,6 @@ payment before delivering the service.
 
 import json
 import logging
-import sys
 from typing import TYPE_CHECKING, Optional
 from urllib.parse import urlparse
 
@@ -24,6 +23,7 @@ from mcp.types import Tool
 
 from .._url_redact import redact_url_for_display as _redact_url_for_display
 from ..config import ApprovalLevel
+from ..confirmation_channel import ConfirmationRequest
 from ..l402_client import L402RedirectError
 from ..receipt_seam import PaymentReceiptScope, policy_label
 from . import sanitize_error
@@ -155,31 +155,51 @@ async def settle_agent_service(
                         })
                     # Human-relayed code validated (amount + tool + endpoint bound) — fall through and settle.
                 else:
-                    pending = budget_service.create_pending_confirmation(
-                        max_sats, result.amount_usd, "settle_agent_service", endpoint_display,
-                        destination=l402_endpoint,
+                    # OUT-OF-BAND CONFIRMATION: the code goes to the human on the CONFIGURED
+                    # approval channel (stderr locally; webhook/file/refuse when hosted) and
+                    # never into this result, so an injected agent can't self-approve.
+                    dispatch = await budget_service.request_confirmation(
+                        ConfirmationRequest(
+                            amount_sats=max_sats,
+                            amount_usd=result.amount_usd,
+                            tool_name="settle_agent_service",
+                            description=endpoint_display,
+                            destination=l402_endpoint,
+                            title="L402 SETTLEMENT CONFIRMATION REQUIRED",
+                            summary=(
+                                f"settle_agent_service — up to ${result.amount_usd:.2f} "
+                                f"({max_sats:,} sats), {endpoint_display}"
+                            ),
+                        )
                     )
-                    print(
-                        "[Lightning Enable] *** L402 SETTLEMENT CONFIRMATION REQUIRED ***\n"
-                        f"  settle_agent_service — up to ${result.amount_usd:.2f} ({max_sats:,} sats), {endpoint_display}\n"
-                        f"  Confirmation code: {pending.nonce}\n"
-                        "  To approve, give this code to the agent. Expires in 120s.",
-                        file=sys.stderr,
-                        flush=True,
-                    )
+                    if not dispatch.delivered:
+                        return json.dumps({
+                            "success": False,
+                            "requiresConfirmation": False,
+                            "confirmationChannel": dispatch.channel_name,
+                            "error": dispatch.refusal_reason,
+                            "message": (
+                                "The settlement was REFUSED, not queued for approval — no human can be asked "
+                                "for a code on this server. Retrying will not help until the operator "
+                                "changes the configuration."
+                            ),
+                            "amount": {"maxSats": max_sats, "maxUsd": float(result.amount_usd)},
+                            "agreementId": agreement_id,
+                        })
                     return json.dumps({
                         "success": False,
                         "requiresConfirmation": True,
+                        "confirmationChannel": dispatch.channel_name,
                         "approvalLevel": result.level.value,
                         "error": "L402 settlement requires human confirmation",
                         "message": (
                             f"Settling this service via {endpoint_display} may cost up to ${result.amount_usd:.2f} "
-                            f"({max_sats:,} sats), above the auto-approve threshold. A confirmation code was printed "
-                            "to the server console/logs — visible to the human operator, NOT to you. Ask the human to "
+                            f"({max_sats:,} sats), above the auto-approve threshold. A confirmation code was "
+                            f"{dispatch.operator_hint} — visible to the human operator, NOT to you. Ask the human to "
                             "read that code and give it to you."
                         ),
                         "howToConfirm": (
-                            "Ask the human operator for the confirmation code shown in the server console, then call "
+                            "Ask the human operator for the confirmation code, then call "
                             'settle_agent_service(l402_endpoint="...", confirmation_nonce="<code-from-human>").'
                         ),
                         "amount": {"maxSats": max_sats, "maxUsd": float(result.amount_usd)},

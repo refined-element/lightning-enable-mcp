@@ -9,6 +9,7 @@ import pytest
 from lightning_enable_mcp.tools.pay_challenge import pay_l402_challenge
 from lightning_enable_mcp.budget_service import PendingConfirmation, SpendReservationResult
 from lightning_enable_mcp.config import ApprovalLevel
+from tests.confirmation_helpers import setup_delivered
 from lightning_enable_mcp.wallet_errors import PaymentPendingError, PreimageUnavailableError
 
 # Reservation id every budget mock hands back from try_reserve; commit/release assert on it.
@@ -42,6 +43,7 @@ def _confirming_budget(code: str = "ABC123", sats: int = 10):
         created_at=now, expires_at=now + timedelta(minutes=2),
     )
     budget.create_pending_confirmation = MagicMock(return_value=pc)
+    setup_delivered(budget, pending=pc)
     budget.validate_and_consume_confirmation = MagicMock(return_value=pc)
     budget.record_spend = MagicMock()
     budget.record_payment_time = MagicMock()

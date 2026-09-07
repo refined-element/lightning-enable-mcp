@@ -13,6 +13,7 @@ public class BudgetService : IBudgetService
     private readonly SemaphoreSlim _semaphore = new(1, 1);
     private readonly IBudgetConfigurationService _configService;
     private readonly IPriceService _priceService;
+    private readonly IConfirmationChannel _confirmationChannel;
 
     private long _sessionSpentSats;
     private int _requestCount;
@@ -45,10 +46,14 @@ public class BudgetService : IBudgetService
 
     public BudgetService(
         IBudgetConfigurationService configService,
-        IPriceService priceService)
+        IPriceService priceService,
+        IConfirmationChannel? confirmationChannel = null)
     {
         _configService = configService;
         _priceService = priceService;
+        // Null means "the historical local behaviour" — print the code to stderr. Program.cs
+        // registers the configured channel, so DI always supplies a real one in the server.
+        _confirmationChannel = confirmationChannel ?? new StderrConfirmationChannel();
         _sessionStarted = DateTime.UtcNow;
         _lastPaymentTime = DateTime.MinValue;
         _isFirstPayment = true;
@@ -479,6 +484,62 @@ public class BudgetService : IBudgetService
 
             _pendingConfirmations[nonce] = confirmation;
             return confirmation;
+        }
+    }
+
+    public async Task<ConfirmationDispatchResult> RequestConfirmationAsync(
+        ConfirmationRequest request, CancellationToken cancellationToken = default)
+    {
+        var channel = _confirmationChannel;
+
+        // REFUSE: short-circuit BEFORE minting. There is no code, so there is nothing an
+        // agent (or anyone reading a log) could replay, and no expiring nonce to reason about.
+        if (channel.Kind == ConfirmationChannelKind.Refuse)
+        {
+            return ConfirmationDispatchResult.Refused(
+                channel.Kind,
+                channel.RefusalReason ?? RefusingConfirmationChannel.Configured().RefusalReason!);
+        }
+
+        var pending = CreatePendingConfirmation(
+            request.AmountSats, request.AmountUsd, request.ToolName, request.Description, request.Destination);
+
+        ConfirmationDeliveryResult delivery;
+        try
+        {
+            delivery = await channel.DeliverAsync(pending, request, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            delivery = ConfirmationDeliveryResult.Fail(ex.Message);
+        }
+
+        if (!delivery.Success)
+        {
+            // FAIL CLOSED. An undelivered code is not an approval, so drop it rather than
+            // leaving a live nonce nobody was told about.
+            CancelPendingConfirmation(pending.Nonce);
+            return ConfirmationDispatchResult.Refused(
+                channel.Kind,
+                $"This payment needs human approval and the approval channel "
+                + $"({channel.Kind.ToString().ToLowerInvariant()}) could not deliver the request: {delivery.Error}. "
+                + "The payment was REFUSED, not approved. The operator must fix the approval channel and the agent "
+                + "must then retry the payment from the start.");
+        }
+
+        return ConfirmationDispatchResult.DeliveredTo(channel.Kind, pending, channel.OperatorHint);
+    }
+
+    public void CancelPendingConfirmation(string nonce)
+    {
+        if (string.IsNullOrWhiteSpace(nonce))
+        {
+            return;
+        }
+
+        lock (_lock)
+        {
+            _pendingConfirmations.Remove(nonce);
         }
     }
 

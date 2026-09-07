@@ -123,25 +123,18 @@ public class CreateAccountToolTests : IDisposable
             It.IsAny<string?>(), It.IsAny<long>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
-    [Fact]
-    public async Task CreateAccount_RequiresConfirmation_DoesNotLeakCode_DoesNotFetch()
+    [Theory]
+    [InlineData(ConfirmationChannelKind.Stderr)]
+    [InlineData(ConfirmationChannelKind.Webhook)]
+    [InlineData(ConfirmationChannelKind.File)]
+    public async Task CreateAccount_RequiresConfirmation_DoesNotLeakCode_DoesNotFetch(ConfirmationChannelKind channel)
     {
         _budgetServiceMock.Setup(b => b.CheckApprovalLevelAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(Approval(ApprovalLevel.FormConfirm, usd: 5.00m));
-        _budgetServiceMock.Setup(b => b.CreatePendingConfirmation(
-                It.IsAny<long>(), It.IsAny<decimal>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()))
-            .Returns(new PendingConfirmation
-            {
-                Nonce = "ABC123",
-                AmountSats = 1000,
-                AmountUsd = 5.00m,
-                ToolName = "create_lightning_enable_account",
-                Description = "activation for agent@example.com",
-                CreatedAt = DateTime.UtcNow,
-                ExpiresAt = DateTime.UtcNow.AddMinutes(2)
-            });
+        ConfirmationTestSetup.SetupDelivered(
+            _budgetServiceMock, channel, "ABC123", 1000, 5.00m, "create_lightning_enable_account");
 
-        // No McpServer → elicitation unavailable → out-of-band (stderr) path.
+        // No McpServer → elicitation unavailable → out-of-band approval-channel path.
         var result = await CreateAccountTool.CreateLightningEnableAccount(
             email: TestEmail, maxSats: 500, l402Client: _l402ClientMock.Object,
             budgetService: _budgetServiceMock.Object, configService: _configServiceMock.Object);
@@ -149,10 +142,32 @@ public class CreateAccountToolTests : IDisposable
         var json = JsonDocument.Parse(result);
         json.RootElement.GetProperty("success").GetBoolean().Should().BeFalse();
         json.RootElement.GetProperty("requiresConfirmation").GetBoolean().Should().BeTrue();
+        json.RootElement.GetProperty("confirmationChannel").GetString()
+            .Should().Be(channel.ToString().ToLowerInvariant());
         json.RootElement.TryGetProperty("nonce", out _).Should().BeFalse("the code must never be in the result");
         result.Should().NotContain("ABC123", "the confirmation code must not leak into the model-visible result");
         json.RootElement.GetProperty("expiresInSeconds").GetInt32().Should().Be(120);
 
+        _l402ClientMock.Verify(c => c.FetchWithL402Async(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(),
+            It.IsAny<string?>(), It.IsAny<long>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task CreateAccount_RefuseChannel_RefusesWithoutActivating()
+    {
+        _budgetServiceMock.Setup(b => b.CheckApprovalLevelAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(Approval(ApprovalLevel.FormConfirm, usd: 5.00m));
+        ConfirmationTestSetup.SetupRefused(_budgetServiceMock);
+
+        var result = await CreateAccountTool.CreateLightningEnableAccount(
+            email: TestEmail, maxSats: 500, l402Client: _l402ClientMock.Object,
+            budgetService: _budgetServiceMock.Object, configService: _configServiceMock.Object);
+
+        var json = JsonDocument.Parse(result);
+        json.RootElement.GetProperty("success").GetBoolean().Should().BeFalse();
+        json.RootElement.GetProperty("requiresConfirmation").GetBoolean().Should().BeFalse();
+        json.RootElement.GetProperty("confirmationChannel").GetString().Should().Be("refuse");
         _l402ClientMock.Verify(c => c.FetchWithL402Async(
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(),
             It.IsAny<string?>(), It.IsAny<long>(), It.IsAny<CancellationToken>()), Times.Never);

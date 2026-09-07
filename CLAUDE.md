@@ -13,6 +13,39 @@ Open-source (MIT) MCP server for AI agent Lightning payments. See the main repo 
 
 `server.json` is committed source-of-truth for the MCP Registry entry — it is NOT rewritten at publish time. `publish-mcp.yml` **verifies** it matches the release version and **fails the registry publish on any drift**, so a partial bump (e.g. csproj/pyproject bumped but `server.json` left stale) is caught before it strands registry.modelcontextprotocol.io on an old version. `server.json`'s `description` must be ≤100 chars (also enforced by MCP Registry and CI validation).
 
+## Approval channel (out-of-band confirmation)
+
+Over-threshold payments require a human-relayed confirmation code. The code is the
+**operator's**, never the model's — it must never appear in a tool result on any channel, and
+a payment is never approved because its notification could not be delivered (a delivery
+failure REFUSES the payment and withdraws the minted code).
+
+Where the code goes is configurable, because stderr is only out-of-band when a human is
+watching the console:
+
+| `confirmation.channel` | Behaviour |
+|------------------------|-----------|
+| `stderr` (default) | Print the code to the server console. The historical local behaviour, unchanged. |
+| `refuse` | Refuse over-threshold payments. **No pending confirmation is created at all.** |
+| `webhook` | POST the pending confirmation to `confirmation.webhookUrl`, signed `X-LightningEnable-Signature: t=…,v1=…` (HMAC-SHA256 over `{t}.{body}`) with `confirmation.webhookSecret`. Goes through the SSRF-guarded client; never follows redirects; a 3xx or non-2xx is a delivery failure. |
+| `file` | Append the same JSON line to `confirmation.filePath` (default `~/.lightning-enable/confirmations.jsonl`), 0600 on POSIX. |
+
+Precedence: `LIGHTNING_ENABLE_CONFIRMATION_CHANNEL` > `confirmation.channel` > auto. Auto
+keeps `stderr` unless stdin is not a TTY **and** `LIGHTNING_ENABLE_HOSTED=1`, which selects
+`refuse`; a non-TTY stdin alone only earns a one-line startup warning (stdio MCP servers
+always have a piped stdin). An unparseable channel name fails closed to `refuse`.
+
+Key files — the two ports mirror each other and must stay in sync:
+- .NET: `Models/ConfirmationSettings.cs`, `Models/ConfirmationRequest.cs`,
+  `Services/ConfirmationChannelResolver.cs`, `Services/ConfirmationChannels.cs`,
+  `Services/ConfirmationChannelFactory.cs`, `BudgetService.RequestConfirmationAsync`.
+- Python: `confirmation_channel.py`, `config.ConfirmationSettings`,
+  `BudgetService.request_confirmation`.
+
+Payment tools MUST call `RequestConfirmationAsync` / `request_confirmation` rather than
+minting a code themselves — that single entry point is what enforces the refuse path and the
+fail-closed cancel.
+
 ## Bug Fix Workflow
 
 When a bug is reported, do NOT immediately start trying to fix it. Follow this process:

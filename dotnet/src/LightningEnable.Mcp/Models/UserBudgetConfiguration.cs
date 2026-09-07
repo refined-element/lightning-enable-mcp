@@ -161,7 +161,13 @@ public class TierThresholds
 }
 
 /// <summary>
-/// Maximum payment limits.
+/// Maximum payment limits, in USD and/or satoshis.
+///
+/// The two denominations are ALTERNATIVES, and both may be set at once — in which case
+/// the stricter cap wins on every check. The reason to set the sats ones is independence
+/// from the BTC price feed: a USD cap cannot be evaluated when every price source is down
+/// (so the payment is refused, correctly), while a sats cap can be enforced with no
+/// conversion at all.
 /// </summary>
 public class PaymentLimits
 {
@@ -179,6 +185,29 @@ public class PaymentLimits
     /// </summary>
     [JsonPropertyName("maxPerSession")]
     public decimal? MaxPerSession { get; set; } = 100.00m;
+
+    /// <summary>
+    /// Maximum satoshis per single payment. Optional; when set it is enforced directly,
+    /// with no BTC price lookup. Env var <c>LIGHTNING_ENABLE_MAX_PER_PAYMENT_SATS</c>.
+    ///
+    /// Written only when set, so a first-run config file does not advertise a null the
+    /// operator has to reason about.
+    /// </summary>
+    [JsonPropertyName("maxPerPaymentSats")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? MaxPerPaymentSats { get; set; }
+
+    /// <summary>
+    /// Maximum satoshis per session. Optional; enforced directly, with no BTC price
+    /// lookup. Env var <c>LIGHTNING_ENABLE_MAX_PER_SESSION_SATS</c>.
+    /// </summary>
+    [JsonPropertyName("maxPerSessionSats")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? MaxPerSessionSats { get; set; }
+
+    /// <summary>Whether this budget can be enforced without a BTC price at all.</summary>
+    [JsonIgnore]
+    public bool HasSatsLimits => MaxPerPaymentSats.HasValue || MaxPerSessionSats.HasValue;
 }
 
 /// <summary>

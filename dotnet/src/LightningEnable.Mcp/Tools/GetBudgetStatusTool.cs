@@ -76,6 +76,10 @@ public static class GetBudgetStatusTool
 
             var remainingUsd = (config.Limits.MaxPerSession ?? 0) - sessionSpentUsd;
 
+            // We just tried to fetch a price, so tell the budget service what we found
+            // rather than letting it report whatever the last payment gate happened to see.
+            var effectiveCaps = budgetService.GetEffectiveCaps(usdAvailable: priceError == null);
+
             return JsonSerializer.Serialize(new
             {
                 success = true,
@@ -105,11 +109,23 @@ public static class GetBudgetStatusTool
                 {
                     maxPerPaymentUsd = config.Limits.MaxPerPayment,
                     maxPerSessionUsd = config.Limits.MaxPerSession,
+                    maxPerPaymentSats = config.Limits.MaxPerPaymentSats,
+                    maxPerSessionSats = config.Limits.MaxPerSessionSats,
                     runtimeMaxPerRequestSats = runtimeConfig.RuntimeMaxPerRequestSats,
                     runtimeMaxPerSessionSats = runtimeConfig.RuntimeMaxPerSessionSats,
+                    // What actually binds right now, in sats, and which configured limit
+                    // produced it — so "why was this refused?" is answerable from status
+                    // alone rather than by re-deriving the USD conversion by hand.
+                    effectivePerPaymentSats = effectiveCaps.PerPaymentSats,
+                    effectivePerPaymentSource = effectiveCaps.PerPaymentSource,
+                    effectivePerSessionSats = effectiveCaps.PerSessionSats,
+                    effectivePerSessionSource = effectiveCaps.PerSessionSource,
+                    bindingDenomination = effectiveCaps.BindingDenomination,
+                    priceAvailable = effectiveCaps.PriceAvailable,
+                    note = effectiveCaps.Note,
                     runtimeCapsNote = (runtimeConfig.RuntimeMaxPerRequestSats.HasValue || runtimeConfig.RuntimeMaxPerSessionSats.HasValue)
-                        ? "Tighter sats caps are set via configure_budget (enforced on top of the USD limits, most-restrictive-wins; can only be lowered further)."
-                        : "No runtime caps set; configure_budget can tighten spending further but never raise it above these limits."
+                        ? "Tighter sats caps are set via budget action=tighten (enforced on top of the config limits, most-restrictive-wins; can only be lowered further)."
+                        : "No runtime caps set; budget action=tighten can tighten spending further but never raise it above these limits."
                 },
                 session = new
                 {

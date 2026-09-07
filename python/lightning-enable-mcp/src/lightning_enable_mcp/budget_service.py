@@ -61,12 +61,41 @@ class ConfigureBudgetResult:
         )
 
 
-def _min_cap(a: Optional[int], b: Optional[int]) -> Optional[int]:
-    """Most-restrictive of two optional sats caps. None means 'no cap' (unlimited), so it
-    is ignored; the result is None only when BOTH inputs are None. Mirrors the .NET
-    ``Math.Min(x, y ?? long.MaxValue)`` with a 0/None sentinel for 'no config limit'."""
-    caps = [c for c in (a, b) if c is not None]
-    return min(caps) if caps else None
+def _min_cap(*caps: "int | None") -> "int | None":
+    """Most-restrictive of any number of optional sats caps. None means 'no cap'
+    (unlimited), so it is ignored; the result is None only when EVERY input is None.
+    Mirrors the .NET ``Math.Min(x, y ?? long.MaxValue)`` with a 0/None sentinel for 'no
+    config limit'."""
+    present = [c for c in caps if c is not None]
+    return min(present) if present else None
+
+
+#: Where an effective cap came from, for ``budget action=status``. Ordered from the
+#: operator's file to the agent's own tightening.
+CAP_SOURCE_USD = "config USD limit (maxPerPayment / maxPerSession)"
+CAP_SOURCE_SATS = "config sats limit (maxPerPaymentSats / maxPerSessionSats)"
+CAP_SOURCE_RUNTIME = "runtime cap (budget action=tighten)"
+CAP_SOURCE_NONE = "no limit configured"
+
+#: ``bindingDenomination`` values reported by ``get_status``.
+_SOURCE_TO_DENOMINATION = {
+    CAP_SOURCE_USD: "usd",
+    CAP_SOURCE_SATS: "sats",
+    CAP_SOURCE_RUNTIME: "runtime",
+    CAP_SOURCE_NONE: "none",
+}
+
+
+@dataclass(frozen=True)
+class EffectiveCap:
+    """A resolved spending cap in satoshis, and which configured limit produced it."""
+
+    sats: "int | None"
+    source: str
+
+    @property
+    def denomination(self) -> str:
+        return _SOURCE_TO_DENOMINATION[self.source]
 
 
 @dataclass
@@ -217,8 +246,82 @@ class BudgetService:
         self._reservations: dict[str, int] = {}
         self._reserved_sats: int = 0
 
+        # Whether the last cap evaluation had a BTC price. False means the USD limits
+        # could not be converted and the sats limits carried the budget on their own —
+        # surfaced by get_status so the operator can see it.
+        self._price_available: bool = True
+
         # Lock for thread safety
         self._lock = asyncio.Lock()
+
+    # =========================================================================
+    # Effective caps
+    #
+    # Every gate resolves the same way: take the most restrictive of the USD config
+    # limit (converted), the sats config limit (used as-is), and the tighten-only
+    # runtime cap. `usd_available` is what makes a sats budget price-independent — with
+    # no price the USD leg is simply absent from the comparison.
+    # =========================================================================
+
+    def _effective_request_cap(self, usd_available: bool) -> EffectiveCap:
+        limits = self._config_service.configuration.limits
+        usd_cap = (
+            self._max_per_payment_sats
+            if usd_available and limits.max_per_payment is not None and self._max_per_payment_sats > 0
+            else None
+        )
+        return self._resolve_cap(usd_cap, limits.max_per_payment_sats, self._runtime_max_per_request_sats)
+
+    def _effective_session_cap(self, usd_available: bool) -> EffectiveCap:
+        limits = self._config_service.configuration.limits
+        usd_cap = (
+            self._max_per_session_sats
+            if usd_available and limits.max_per_session is not None and self._max_per_session_sats > 0
+            else None
+        )
+        return self._resolve_cap(usd_cap, limits.max_per_session_sats, self._runtime_max_per_session_sats)
+
+    @staticmethod
+    def _resolve_cap(
+        usd_derived: "int | None", sats_config: "int | None", runtime: "int | None"
+    ) -> EffectiveCap:
+        """Most-restrictive-wins, remembering WHICH limit won.
+
+        Ties resolve to the config limits before the runtime cap, and to USD before sats,
+        so the reported source names the operator's own setting rather than an equal
+        agent-set one.
+        """
+        winner = _min_cap(usd_derived, sats_config, runtime)
+        if winner is None:
+            return EffectiveCap(None, CAP_SOURCE_NONE)
+        if usd_derived == winner:
+            return EffectiveCap(winner, CAP_SOURCE_USD)
+        if sats_config == winner:
+            return EffectiveCap(winner, CAP_SOURCE_SATS)
+        return EffectiveCap(winner, CAP_SOURCE_RUNTIME)
+
+    async def _refresh_price_and_thresholds(self) -> bool:
+        """Prime the BTC price and the USD->sats cap cache. Returns whether USD limits
+        can be evaluated on this pass.
+
+        A price outage is only survivable when sats limits are configured — that is the
+        whole point of setting them. Without them there is nothing left to enforce, so
+        the caller must fail closed exactly as it always has.
+        """
+        try:
+            await self._price_service.get_btc_price()
+            await self._update_thresholds_if_needed()
+            self._price_available = True
+            return True
+        except PriceUnavailableError:
+            self._price_available = False
+            if not self._config_service.configuration.limits.has_sats_limits:
+                raise
+            logger.warning(
+                "BTC price unavailable; enforcing the satoshi limits only. The USD limits "
+                "cannot be evaluated until a price source recovers."
+            )
+            return False
 
     async def check_approval_level(self, amount_sats: int) -> ApprovalCheckResult:
         """
@@ -245,9 +348,29 @@ class BudgetService:
             - confirmation_message: Message to show user if confirmation needed
             - remaining_session_budget_usd: How much USD is left in session budget
         """
-        await self._update_thresholds_if_needed()
-
         config = self._config_service.configuration
+
+        # A sats budget survives a price outage; a USD-only one cannot be evaluated and
+        # must still fail closed (the PriceUnavailableError propagates, as before).
+        try:
+            usd_available = await self._refresh_price_and_thresholds()
+        except PriceUnavailableError:
+            return ApprovalCheckResult(
+                level=ApprovalLevel.DENY,
+                amount_sats=amount_sats,
+                amount_usd=Decimal("0"),
+                denial_reason=(
+                    "BTC price is currently unavailable (all price sources failed), so this "
+                    "payment cannot be checked against your budget and was refused. Please "
+                    "retry shortly, or set limits.maxPerPaymentSats / maxPerSessionSats in "
+                    "~/.lightning-enable/config.json for a budget that needs no price feed."
+                ),
+                remaining_session_budget_usd=Decimal("0"),
+            )
+
+        if not usd_available:
+            return await self._check_sats_only(amount_sats)
+
         amount_usd = await self._price_service.sats_to_usd(amount_sats)
 
         async with self._lock:
@@ -285,6 +408,19 @@ class BudgetService:
                         ),
                         remaining_session_budget_usd=max(Decimal("0"), remaining_session_usd),
                     )
+
+            # Sats config limits, enforced on top of the USD ones — most-restrictive-wins.
+            # Whichever denomination is tighter denies first, so an operator can set both
+            # and get the stricter of the two without ordering mattering.
+            sats_denial = self._sats_config_denial(amount_sats)
+            if sats_denial is not None:
+                return ApprovalCheckResult(
+                    level=ApprovalLevel.DENY,
+                    amount_sats=amount_sats,
+                    amount_usd=amount_usd,
+                    denial_reason=sats_denial,
+                    remaining_session_budget_usd=max(Decimal("0"), remaining_session_usd),
+                )
 
             # Runtime tighten-only caps (set via configure_budget). Sats-based, enforced
             # on top of the USD config limits above — most-restrictive-wins. Mirrors the
@@ -368,6 +504,103 @@ class BudgetService:
                 remaining_session_budget_usd=max(Decimal("0"), remaining_session_usd),
             )
 
+    def _sats_config_denial(self, amount_sats: int) -> "str | None":
+        """Why the config's sats limits refuse ``amount_sats``, or None if they allow it.
+
+        Caller must hold ``self._lock`` (it reads ``_session_spent_sats``).
+        """
+        limits = self._config_service.configuration.limits
+
+        cap = limits.max_per_payment_sats
+        if cap is not None and amount_sats > cap:
+            return (
+                f"Payment of {amount_sats:,} sats exceeds the per-payment limit of "
+                f"{cap:,} sats (limits.maxPerPaymentSats). Edit "
+                "~/.lightning-enable/config.json to change limits."
+            )
+
+        session_cap = limits.max_per_session_sats
+        if session_cap is not None and self._session_spent_sats + amount_sats > session_cap:
+            remaining = max(0, session_cap - self._session_spent_sats)
+            return (
+                f"Payment of {amount_sats:,} sats would exceed the session limit of "
+                f"{session_cap:,} sats (limits.maxPerSessionSats). Already spent "
+                f"{self._session_spent_sats:,}; {remaining:,} sats remain."
+            )
+
+        return None
+
+    async def _check_sats_only(self, amount_sats: int) -> ApprovalCheckResult:
+        """Approval decided by the satoshi caps alone, because no BTC price is available.
+
+        Only reachable when the operator configured a sats limit — that is the opt-in
+        that says "this many satoshis is authorized without a dollar conversion". The USD
+        TIER ladder (auto-approve / confirm thresholds) cannot be evaluated here, so a
+        payment inside the sats caps comes back as LOG_AND_APPROVE rather than
+        AUTO_APPROVE: it proceeds without a confirmation code the agent could not obtain
+        anyway, but it is explicitly flagged for operator awareness. An operator who
+        wants tighter gating during a price outage sets a lower maxPerPaymentSats.
+        """
+        async with self._lock:
+            denial = self._sats_config_denial(amount_sats)
+            if denial is None:
+                if (
+                    self._runtime_max_per_request_sats is not None
+                    and amount_sats > self._runtime_max_per_request_sats
+                ):
+                    denial = (
+                        f"Payment of {amount_sats:,} sats exceeds the runtime per-request cap "
+                        f"of {self._runtime_max_per_request_sats:,} sats set via "
+                        "budget action=tighten."
+                    )
+                elif (
+                    self._runtime_max_per_session_sats is not None
+                    and self._session_spent_sats + amount_sats
+                    > self._runtime_max_per_session_sats
+                ):
+                    denial = (
+                        f"Payment of {amount_sats:,} sats would exceed the runtime per-session "
+                        f"cap of {self._runtime_max_per_session_sats:,} sats (already spent "
+                        f"{self._session_spent_sats:,}) set via budget action=tighten."
+                    )
+
+            if denial is not None:
+                return ApprovalCheckResult(
+                    level=ApprovalLevel.DENY,
+                    amount_sats=amount_sats,
+                    amount_usd=Decimal("0"),
+                    denial_reason=denial,
+                    remaining_session_budget_usd=Decimal("0"),
+                )
+
+            if not self._is_cooldown_elapsed():
+                config = self._config_service.configuration
+                cooldown_remaining = (
+                    config.session.cooldown_seconds
+                    - (datetime.now(timezone.utc) - self._last_payment_time).total_seconds()
+                )
+                return ApprovalCheckResult(
+                    level=ApprovalLevel.DENY,
+                    amount_sats=amount_sats,
+                    amount_usd=Decimal("0"),
+                    denial_reason=(
+                        f"Cooldown active. Please wait {cooldown_remaining:.1f} seconds "
+                        "before next payment."
+                    ),
+                    remaining_session_budget_usd=Decimal("0"),
+                )
+
+            return ApprovalCheckResult(
+                level=ApprovalLevel.LOG_AND_APPROVE,
+                amount_sats=amount_sats,
+                amount_usd=Decimal("0"),
+                confirmation_message=(
+                    f"{amount_sats:,} sats, approved against your satoshi limits. The BTC "
+                    "price is unavailable, so the USD tier thresholds were not evaluated."
+                ),
+                remaining_session_budget_usd=Decimal("0"),
+            )
+
     def record_spend(self, amount_sats: int) -> None:
         """
         Records that an amount was spent.
@@ -446,29 +679,28 @@ class BudgetService:
         if amount_sats <= 0:
             return SpendReservationResult.denied("Reservation amount must be greater than zero.")
 
-        # FAIL CLOSED on a price outage: the effective caps are USD-derived, so without a
-        # BTC price the reservation cannot be evaluated. Same guard as check_approval_level.
+        # FAIL CLOSED on a price outage — UNLESS the operator configured satoshi limits,
+        # which are enforceable with no conversion. That is exactly what they are for:
+        # three price sources being down must not stop a sats-budgeted agent. The USD
+        # limits are simply absent from the comparison until a source recovers. Refreshing
+        # the cached USD->sats caps happens here too, OUTSIDE the lock (it awaits); the
+        # gate below then runs fully synchronously, so the lock is never held across an await.
         try:
-            await self._price_service.get_btc_price()
+            usd_available = await self._refresh_price_and_thresholds()
         except PriceUnavailableError:
             return SpendReservationResult.denied(
                 "BTC price is currently unavailable (all price sources failed), so this "
-                "payment cannot be checked against your budget and was refused. Please retry shortly."
+                "payment cannot be checked against your budget and was refused. Please retry "
+                "shortly, or set limits.maxPerPaymentSats / maxPerSessionSats in "
+                "~/.lightning-enable/config.json for a budget that needs no price feed."
             )
 
-        # Refresh the cached USD->sats caps OUTSIDE the lock (it awaits); the gate below then
-        # runs fully synchronously against those cached sats values, so the lock is never
-        # held across an await.
-        await self._update_thresholds_if_needed()
-
         async with self._lock:
-            # Effective per-session cap (sats) = most restrictive of the config-file limit
-            # (USD->sats; 0 => "no config limit" => unlimited) and any tighten-only runtime cap.
-            config_session = self._max_per_session_sats if self._max_per_session_sats > 0 else None
-            eff_session_cap = _min_cap(config_session, self._runtime_max_per_session_sats)
-
-            config_request = self._max_per_payment_sats if self._max_per_payment_sats > 0 else None
-            eff_request_cap = _min_cap(config_request, self._runtime_max_per_request_sats)
+            # Effective caps (sats) = most restrictive of the config USD limit (converted,
+            # when a price is available), the config sats limit, and any tighten-only
+            # runtime cap.
+            eff_session_cap = self._effective_session_cap(usd_available).sats
+            eff_request_cap = self._effective_request_cap(usd_available).sats
 
             if eff_request_cap is not None and amount_sats > eff_request_cap:
                 return SpendReservationResult.denied(
@@ -571,22 +803,23 @@ class BudgetService:
         if per_request_sats > per_session_sats:
             return ConfigureBudgetResult.fail("per_request cannot exceed per_session.")
 
-        # Make sure the config-derived sats caps are current before we compare.
-        await self._update_thresholds_if_needed()
+        # Make sure the config-derived sats caps are current before we compare. A price
+        # outage does not block tightening: with sats limits configured the comparison is
+        # made against those alone, which can only ever be MORE restrictive than including
+        # a USD cap would be.
+        try:
+            usd_available = await self._refresh_price_and_thresholds()
+        except PriceUnavailableError:
+            return ConfigureBudgetResult.fail(
+                "BTC price is currently unavailable, so the operator's USD limits cannot be "
+                "converted to compare against. Please retry shortly."
+            )
 
         async with self._lock:
-            # Effective cap = most restrictive of the operator's config-file limit
-            # (USD→sats) and any existing runtime cap. A 0 config cap means "no config
-            # limit set" → treat as unlimited for this comparison.
-            config_req = self._max_per_payment_sats if self._max_per_payment_sats > 0 else None
-            config_sess = self._max_per_session_sats if self._max_per_session_sats > 0 else None
-
-            def _effective(config_cap: Optional[int], runtime_cap: Optional[int]) -> Optional[int]:
-                caps = [c for c in (config_cap, runtime_cap) if c is not None]
-                return min(caps) if caps else None
-
-            eff_req = _effective(config_req, self._runtime_max_per_request_sats)
-            eff_sess = _effective(config_sess, self._runtime_max_per_session_sats)
+            # Effective cap = most restrictive of the operator's config limits (USD→sats
+            # and/or sats) and any existing runtime cap.
+            eff_req = self._effective_request_cap(usd_available).sats
+            eff_sess = self._effective_session_cap(usd_available).sats
 
             # TIGHTEN-ONLY. Refusing to raise caps above the current effective limit is
             # the whole point. None = unlimited (no effective cap), so any request passes.
@@ -597,7 +830,7 @@ class BudgetService:
                     return "unlimited" if v is None else f"{v:,} sats"
 
                 return ConfigureBudgetResult.fail(
-                    "configure_budget can only LOWER spending limits, not raise them. "
+                    "budget action=tighten can only LOWER spending limits, not raise them. "
                     f"Current effective caps: {_fmt(eff_req)}/request, {_fmt(eff_sess)}/session. "
                     "To increase limits, the operator must edit ~/.lightning-enable/config.json — "
                     "an agent cannot raise its own spending authority."
@@ -783,9 +1016,13 @@ class BudgetService:
         """
         return self._config_service.configuration
 
-    def get_status(self) -> dict:
+    def get_status(self, usd_available: "bool | None" = None) -> dict:
         """
         Get current budget status as a dictionary.
+
+        ``usd_available`` says whether a BTC price could be fetched just now — the caller
+        knows, because ``budget action=status`` refreshes the price itself. Omit it to
+        report the state the last budget gate observed.
 
         This is useful for displaying the current state to users or for
         debugging. The returned dict contains:
@@ -805,6 +1042,49 @@ class BudgetService:
         session_limit_usd = config.limits.max_per_session or Decimal("999999999")
         remaining_usd = max(Decimal("0"), session_limit_usd - self._session_spent_usd)
 
+        # get_status is synchronous, so it never fetches a price: the caller passes what
+        # it just observed, or we report the state the last budget gate saw.
+        if usd_available is None:
+            usd_available = self._price_available
+        request_cap = self._effective_request_cap(usd_available)
+        session_cap = self._effective_session_cap(usd_available)
+
+        # The tighter of the two caps decides the headline denomination; with no caps at
+        # all it is "none".
+        if request_cap.sats is None and session_cap.sats is None:
+            binding = "none"
+        elif session_cap.sats is None:
+            binding = request_cap.denomination
+        elif request_cap.sats is None:
+            binding = session_cap.denomination
+        else:
+            binding = (
+                request_cap.denomination
+                if request_cap.sats <= session_cap.sats
+                else session_cap.denomination
+            )
+
+        if not usd_available and config.limits.has_sats_limits:
+            note = (
+                "The BTC price is unavailable, so the USD limits are not being enforced; "
+                "your satoshi limits are carrying the budget on their own. Set both "
+                "maxPerPaymentSats and maxPerSessionSats to close every gap during an outage."
+            )
+        elif not usd_available:
+            note = (
+                "The BTC price is unavailable and no satoshi limits are configured, so "
+                "payments are refused until a price source recovers. Set "
+                "limits.maxPerPaymentSats / maxPerSessionSats for a budget that needs no "
+                "price feed."
+            )
+        elif config.limits.has_sats_limits:
+            note = (
+                "USD and satoshi limits are both in force; the stricter one wins on every "
+                "check."
+            )
+        else:
+            note = "Limits are USD-denominated and are converted at the current BTC price."
+
         return {
             "configuration": {
                 "configFile": self._config_service.config_file_path,
@@ -819,8 +1099,20 @@ class BudgetService:
                 "limits": {
                     "maxPerPayment": float(config.limits.max_per_payment) if config.limits.max_per_payment else None,
                     "maxPerSession": float(config.limits.max_per_session) if config.limits.max_per_session else None,
+                    "maxPerPaymentSats": config.limits.max_per_payment_sats,
+                    "maxPerSessionSats": config.limits.max_per_session_sats,
                     "runtimeMaxPerRequestSats": self._runtime_max_per_request_sats,
                     "runtimeMaxPerSessionSats": self._runtime_max_per_session_sats,
+                    # What actually binds right now, in sats, and which configured limit
+                    # produced it — so "why was this refused?" is answerable from status
+                    # alone rather than by re-deriving the USD conversion by hand.
+                    "effectivePerPaymentSats": request_cap.sats,
+                    "effectivePerPaymentSource": request_cap.source,
+                    "effectivePerSessionSats": session_cap.sats,
+                    "effectivePerSessionSource": session_cap.source,
+                    "bindingDenomination": binding,
+                    "priceAvailable": usd_available,
+                    "note": note,
                 },
                 "session": {
                     "requireApprovalForFirstPayment": config.session.require_approval_for_first_payment,

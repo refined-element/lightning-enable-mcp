@@ -68,7 +68,9 @@ async def get_budget_status(
         price_error = sanitize_error(str(ex))
 
     try:
-        status = budget_service.get_status()
+        # We just tried to fetch a price, so tell get_status what we found rather than
+        # letting it report whatever the last payment gate happened to see.
+        status = budget_service.get_status(usd_available=price_error is None)
         if price_error and isinstance(status.get("price"), dict):
             status["price"]["error"] = price_error
         # Payment count comes from the separate PaymentHistoryService (mirrors the

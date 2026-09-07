@@ -141,6 +141,34 @@ Config file locations:
 | **NWC (Alby Hub)** | Connection string | Yes |
 | **OpenNode** | API key | No (no preimage) |
 
+## Spending limits
+
+Limits live in `~/.lightning-enable/config.json` and are read-only at runtime — an agent can tighten its own caps but never raise them. You can set them in **USD**, in **satoshis**, or both.
+
+```json
+{
+  "limits": {
+    "maxPerPayment": 500.00,
+    "maxPerSession": 100.00,
+    "maxPerPaymentSats": 5000,
+    "maxPerSessionSats": 50000
+  }
+}
+```
+
+| Key | Env var | Meaning |
+|-----|---------|---------|
+| `maxPerPayment` | — | Max USD per payment |
+| `maxPerSession` | — | Max USD per session |
+| `maxPerPaymentSats` | `LIGHTNING_ENABLE_MAX_PER_PAYMENT_SATS` | Max satoshis per payment |
+| `maxPerSessionSats` | `LIGHTNING_ENABLE_MAX_PER_SESSION_SATS` | Max satoshis per session |
+
+**Why set the sats ones.** A USD limit has to be converted at the current BTC price, so when every price source is down the payment cannot be checked and is refused — correct, but it stops the agent. A satoshi limit needs no conversion, so a sats-budgeted agent keeps working through a price outage. Set **both** sats keys to close every gap.
+
+When both denominations are set, the **stricter** cap wins on every check. `budget(action="status")` reports which one is binding (`bindingDenomination`), the effective cap in sats, and whether a price was available.
+
+> During a price outage the USD *tier* thresholds (auto-approve / confirm) cannot be evaluated either, so a payment inside your satoshi caps is approved and logged rather than prompting for a confirmation code the agent could not obtain. If you want tighter gating in that situation, set a lower `maxPerPaymentSats`.
+
 ## Tools
 
 **Canonical inventory: 16 tools — 14 free (out of the box, just a wallet) + 2 that require `LIGHTNING_ENABLE_API_KEY`** (an [Agentic Commerce subscription](https://lightningenable.com)). This table is the single source of truth every advertised count derives from — it is pinned to the code by the tool-inventory guard tests in both ports (drift fails CI).

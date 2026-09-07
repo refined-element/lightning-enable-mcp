@@ -75,6 +75,32 @@ public class BudgetConfig
 }
 
 /// <summary>
+/// The spending caps that actually bind right now, in satoshis, and which configured
+/// limit produced each — so "why was this refused?" is answerable from
+/// <c>budget action=status</c> alone rather than by re-deriving the USD conversion by hand.
+/// </summary>
+/// <param name="PerPaymentSats">Effective per-payment cap, or null when nothing caps it.</param>
+/// <param name="PerPaymentSource">Which configured limit produced <paramref name="PerPaymentSats"/>.</param>
+/// <param name="PerSessionSats">Effective per-session cap, or null when nothing caps it.</param>
+/// <param name="PerSessionSource">Which configured limit produced <paramref name="PerSessionSats"/>.</param>
+/// <param name="BindingDenomination">
+/// <c>usd</c>, <c>sats</c>, <c>runtime</c> or <c>none</c> — the denomination of the tighter
+/// of the two caps.
+/// </param>
+/// <param name="PriceAvailable">
+/// Whether a BTC price was available, i.e. whether the USD limits could be evaluated at all.
+/// </param>
+/// <param name="Note">One sentence for the operator about what is and is not in force.</param>
+public sealed record EffectiveBudgetCaps(
+    long? PerPaymentSats,
+    string PerPaymentSource,
+    long? PerSessionSats,
+    string PerSessionSource,
+    string BindingDenomination,
+    bool PriceAvailable,
+    string Note);
+
+/// <summary>
 /// Result of a configure_budget (tighten-only) operation.
 /// </summary>
 public record ConfigureBudgetResult

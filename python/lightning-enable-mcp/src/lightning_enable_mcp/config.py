@@ -10,7 +10,7 @@ import logging
 import os
 import stat
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from enum import Enum
 from pathlib import Path
@@ -62,6 +62,31 @@ def _restrict_file_permissions(path: Path) -> None:
             path,
             ex,
         )
+
+
+#: Env vars that set the sats-denominated limits, overriding the config file.
+MAX_PER_PAYMENT_SATS_ENV_VAR = "LIGHTNING_ENABLE_MAX_PER_PAYMENT_SATS"
+MAX_PER_SESSION_SATS_ENV_VAR = "LIGHTNING_ENABLE_MAX_PER_SESSION_SATS"
+
+
+def _positive_int_or_none(value: object) -> "int | None":
+    """A spending cap, or None when the value cannot be used as one.
+
+    Anything unusable (non-numeric, zero, negative) returns None so the caller keeps
+    whatever it already had. A cap must never be silently WIDENED by a typo — the
+    operator gets a warning instead.
+    """
+    if value is None:
+        return None
+    try:
+        parsed = int(str(value).strip())
+    except (TypeError, ValueError):
+        logger.warning("Ignoring non-numeric satoshi limit %r.", value)
+        return None
+    if parsed <= 0:
+        logger.warning("Ignoring non-positive satoshi limit %r.", value)
+        return None
+    return parsed
 
 
 class ApprovalLevel(Enum):
@@ -241,7 +266,13 @@ class TierThresholds:
 @dataclass(frozen=True)
 class PaymentLimits:
     """
-    Maximum payment limits.
+    Maximum payment limits, in USD and/or satoshis.
+
+    The two denominations are ALTERNATIVES, and both may be set at once — in which
+    case the stricter cap wins on every check. The reason to set the sats ones is
+    independence from the BTC price feed: a USD cap cannot be evaluated when every
+    price source is down (so the payment is refused, correctly), while a sats cap
+    can be enforced with no conversion at all.
 
     Note: This dataclass is frozen (immutable) - AI cannot modify at runtime.
     """
@@ -259,6 +290,25 @@ class PaymentLimits:
     Default: $100.00
     """
 
+    max_per_payment_sats: "int | None" = None
+    """
+    Maximum satoshis per single payment. Optional; when set it is enforced directly,
+    with no BTC price lookup. Config key ``maxPerPaymentSats``; env var
+    ``LIGHTNING_ENABLE_MAX_PER_PAYMENT_SATS``.
+    """
+
+    max_per_session_sats: "int | None" = None
+    """
+    Maximum satoshis per session. Optional; enforced directly, with no BTC price
+    lookup. Config key ``maxPerSessionSats``; env var
+    ``LIGHTNING_ENABLE_MAX_PER_SESSION_SATS``.
+    """
+
+    @property
+    def has_sats_limits(self) -> bool:
+        """Whether this budget can be enforced without a BTC price at all."""
+        return self.max_per_payment_sats is not None or self.max_per_session_sats is not None
+
     @classmethod
     def from_dict(cls, data: dict) -> "PaymentLimits":
         """Create PaymentLimits from a dictionary."""
@@ -268,14 +318,26 @@ class PaymentLimits:
         return cls(
             max_per_payment=Decimal(str(max_per_payment)) if max_per_payment is not None else None,
             max_per_session=Decimal(str(max_per_session)) if max_per_session is not None else None,
+            max_per_payment_sats=_positive_int_or_none(data.get("maxPerPaymentSats")),
+            max_per_session_sats=_positive_int_or_none(data.get("maxPerSessionSats")),
         )
 
     def to_dict(self) -> dict:
-        """Convert to dictionary for JSON serialization."""
-        return {
+        """Convert to dictionary for JSON serialization.
+
+        The sats keys are emitted only when set: they are an opt-in alternative, and a
+        first-run config file should not advertise two nulls the operator has to reason
+        about.
+        """
+        result: dict = {
             "maxPerPayment": float(self.max_per_payment) if self.max_per_payment is not None else None,
             "maxPerSession": float(self.max_per_session) if self.max_per_session is not None else None,
         }
+        if self.max_per_payment_sats is not None:
+            result["maxPerPaymentSats"] = self.max_per_payment_sats
+        if self.max_per_session_sats is not None:
+            result["maxPerSessionSats"] = self.max_per_session_sats
+        return result
 
 
 @dataclass(frozen=True)
@@ -449,7 +511,9 @@ class ConfigurationService:
                 with open(self._config_file_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
 
-                config = UserBudgetConfiguration.from_dict(data)
+                config = self._apply_sats_limit_env_overrides(
+                    UserBudgetConfiguration.from_dict(data)
+                )
                 self._validate_configuration(config)
                 self._log_config_loaded(config)
                 return config
@@ -463,7 +527,35 @@ class ConfigurationService:
             )
             print("[Lightning Enable] Using default configuration.", file=sys.stderr)
 
-        return self._create_default_configuration()
+        return self._apply_sats_limit_env_overrides(self._create_default_configuration())
+
+    @staticmethod
+    def _apply_sats_limit_env_overrides(
+        config: UserBudgetConfiguration,
+    ) -> UserBudgetConfiguration:
+        """Let the sats-limit env vars override the config file.
+
+        Same precedence as the wallet credentials: environment beats file. An unusable
+        value is IGNORED (with a warning) rather than clearing the limit — a typo must
+        never widen an operator's budget.
+        """
+        per_payment = _positive_int_or_none(os.getenv(MAX_PER_PAYMENT_SATS_ENV_VAR))
+        per_session = _positive_int_or_none(os.getenv(MAX_PER_SESSION_SATS_ENV_VAR))
+        if per_payment is None and per_session is None:
+            return config
+
+        return replace(
+            config,
+            limits=replace(
+                config.limits,
+                max_per_payment_sats=per_payment
+                if per_payment is not None
+                else config.limits.max_per_payment_sats,
+                max_per_session_sats=per_session
+                if per_session is not None
+                else config.limits.max_per_session_sats,
+            ),
+        )
 
     def _create_default_config_file(self) -> None:
         """Create default configuration file with helpful comments."""

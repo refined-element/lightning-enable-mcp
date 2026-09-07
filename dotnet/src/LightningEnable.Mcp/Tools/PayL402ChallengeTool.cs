@@ -19,13 +19,20 @@ public static class PayL402ChallengeTool
     /// <summary>
     /// Manually pays an L402 or MPP invoice and returns the authorization token.
     /// </summary>
-    [McpServerTool(Name = "pay_l402_challenge"), Description("Manually pay an L402 or MPP Lightning invoice to get the authentication token. Omit macaroon for MPP mode. For a modern (draft-00) Payment challenge, pass the raw WWW-Authenticate value as challengeHeader to get a single-use Payment credential.")]
+    [McpServerTool(
+        Name = "pay_l402_challenge",
+        Title = "Pay L402 challenge",
+        ReadOnly = false,
+        Destructive = true)]
+    [Description(
+        "Pay an L402 or MPP invoice yourself and get the authorization token. Omit macaroon "
+        + "for MPP; pass challengeHeader for a draft-00 Payment challenge.")]
     public static async Task<string> PayL402Challenge(
-        [Description("BOLT11 Lightning invoice string from the L402 challenge. Optional when challengeHeader is provided (the invoice inside the challenge is used).")] string? invoice = null,
-        [Description("Base64-encoded macaroon from the L402 challenge. Optional for MPP (Machine Payments Protocol) where only invoice + preimage are needed.")] string? macaroon = null,
-        [Description("Maximum satoshis allowed to pay. Defaults to 1000")] int maxSats = 1000,
-        [Description("Confirmation code relayed by the human operator from the server console (stderr). Required when a previous call returned requiresConfirmation=true.")] string? confirmationNonce = null,
-        [Description("Raw WWW-Authenticate value of a 'Payment' scheme challenge. When it carries a draft-00 request parameter, the invoice inside is paid and a single-use 'Authorization: Payment <credential>' value is returned.")] string? challengeHeader = null,
+        [Description("BOLT11 invoice. Optional if challengeHeader carries one.")] string? invoice = null,
+        [Description("Base64 macaroon from the challenge. Omit for MPP.")] string? macaroon = null,
+        [Description("Max sats to pay")] int maxSats = 1000,
+        [Description("Code the human reads off the server console (never returned to you). Omit to request one.")] string? confirmationNonce = null,
+        [Description("Raw WWW-Authenticate value of a Payment-scheme challenge; draft-00 yields a single-use credential.")] string? challengeHeader = null,
         McpServer? server = null,
         IL402HttpClient? l402Client = null,
         IBudgetService? budgetService = null,

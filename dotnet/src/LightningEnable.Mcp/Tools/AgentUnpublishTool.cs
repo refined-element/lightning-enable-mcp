@@ -16,7 +16,7 @@ public static class AgentUnpublishTool
     /// <summary>
     /// Takes a published listing down.
     /// </summary>
-    [McpServerTool(Name = "unpublish_agent_capability"), Description(
+    [McpServerTool(Name = "unpublish_agent_capability", Title = "Unpublish capability (deprecated)", ReadOnly = false, Destructive = true), Description(
         "Take a published listing down. Retires the L402 proxy and publishes a NIP-09 " +
         "kind 5 deletion plus a status=removed 38400 replacement, so other agents stop " +
         "seeing a dead listing. Works for marketplace listings created via the L402 " +

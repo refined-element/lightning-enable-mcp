@@ -21,7 +21,7 @@ public static class SendOnChainTool
     /// <param name="budgetService">Injected budget service for spending limits.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Payment result with transaction details.</returns>
-    [McpServerTool(Name = "send_onchain"), Description("Send an on-chain Bitcoin payment to a Bitcoin address. Currently only available with Strike wallet.")]
+    [McpServerTool(Name = "send_onchain", Title = "Send on-chain (deprecated)", ReadOnly = false, Destructive = true), Description("Send an on-chain Bitcoin payment to a Bitcoin address. Currently only available with Strike wallet.")]
     public static async Task<string> SendOnChain(
         [Description("Bitcoin address to send to (e.g., bc1q...)")] string address,
         [Description("Amount to send in satoshis")] long amountSats,

@@ -131,15 +131,14 @@ async def check_invoice_status(
 CHECK_INVOICE_STATUS_TOOL = Tool(
     name="check_invoice_status",
     description=(
-        "Check if a Lightning invoice has been paid. "
-        "Use the invoice ID from create_invoice."
+        "Check whether an invoice from create_invoice has been paid."
     ),
     inputSchema={
         "type": "object",
         "properties": {
             "invoice_id": {
                 "type": "string",
-                "description": "The invoice ID returned from create_invoice",
+                "description": "Invoice ID from create_invoice",
             },
         },
         "required": ["invoice_id"],

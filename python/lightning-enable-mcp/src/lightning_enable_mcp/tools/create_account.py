@@ -41,6 +41,7 @@ if TYPE_CHECKING:
 from mcp.types import Tool
 
 from ..receipt_seam import PaymentReceiptScope, policy_label
+from .consolidated import CONFIRMATION_NONCE_DESCRIPTION
 
 logger = logging.getLogger("lightning-enable-mcp.tools.create_account")
 
@@ -382,28 +383,25 @@ async def create_lightning_enable_account(
 CREATE_LIGHTNING_ENABLE_ACCOUNT_TOOL = Tool(
     name="create_lightning_enable_account",
     description=(
-        "Self-bootstrapping signup: activate a Lightning Enable account with a tiny "
-        "Lightning payment (~100 sats) and get back a merchant API key. Requires NO "
-        "Lightning Enable API key (it CREATES one) — only a connected wallet. On success "
-        "the API key is saved to ~/.lightning-enable/config.json so the producer/ASA tools "
-        "unlock. Above-threshold fees require an out-of-band confirmation code (as with "
-        "pay_l402_challenge)."
+        "Self-bootstrapping signup: pay a ~100-sat activation fee for a Lightning "
+        "Enable merchant API key. Needs only a wallet; the key is saved to "
+        "~/.lightning-enable/config.json."
     ),
     inputSchema={
         "type": "object",
         "properties": {
             "email": {
                 "type": "string",
-                "description": "Email address to register the Lightning Enable account under.",
+                "description": "Email to register",
             },
             "max_sats": {
                 "type": "integer",
-                "description": "Maximum satoshis to pay for activation. The fee is ~100 sats.",
+                "description": "Max sats for the ~100-sat fee",
                 "default": 1000,
             },
             "confirmation_nonce": {
                 "type": "string",
-                "description": "Confirmation code the human operator read from the server console, for an above-threshold activation fee. The code is NEVER in a tool result — ask the human for it. Omit on the first call to request one.",
+                "description": CONFIRMATION_NONCE_DESCRIPTION,
             },
         },
         "required": ["email"],

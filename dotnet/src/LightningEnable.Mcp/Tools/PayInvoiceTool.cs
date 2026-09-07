@@ -27,10 +27,15 @@ public static class PayInvoiceTool
     /// <param name="paymentHistory">Injected payment history service.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Payment result with preimage proof.</returns>
-    [McpServerTool(Name = "pay_invoice"), Description("Pay a Lightning invoice directly and get the preimage as proof of payment")]
+    [McpServerTool(
+        Name = "pay_invoice",
+        Title = "Pay Lightning invoice",
+        ReadOnly = false,
+        Destructive = true)]
+    [Description("Pay a BOLT11 Lightning invoice directly and get the preimage as proof.")]
     public static async Task<string> PayInvoice(
-        [Description("BOLT11 Lightning invoice string to pay")] string invoice,
-        [Description("Confirmation code relayed by the human operator from the server console (stderr). Required when a previous call returned requiresConfirmation=true.")] string? confirmationNonce = null,
+        [Description("BOLT11 invoice to pay")] string invoice,
+        [Description("Code the human reads off the server console (never returned to you). Omit to request one.")] string? confirmationNonce = null,
         McpServer? server = null,
         IWalletService? walletService = null,
         IBudgetService? budgetService = null,

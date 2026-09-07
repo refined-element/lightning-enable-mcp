@@ -22,7 +22,7 @@ public static class GetBudgetStatusTool
     /// <param name="configService">Injected config service.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Current budget status in JSON format.</returns>
-    [McpServerTool(Name = "get_budget_status"), Description("View current budget status and spending limits (read-only). Edit ~/.lightning-enable/config.json to change limits.")]
+    [McpServerTool(Name = "get_budget_status", Title = "Budget status (deprecated)", ReadOnly = true, OpenWorld = false), Description("View current budget status and spending limits (read-only). Edit ~/.lightning-enable/config.json to change limits.")]
     public static async Task<string> GetBudgetStatus(
         IBudgetService? budgetService = null,
         IPriceService? priceService = null,

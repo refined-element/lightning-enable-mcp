@@ -3,6 +3,68 @@
 All notable changes to the Lightning Enable MCP server are documented here.
 Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-enable-mcp`).
 
+## [1.25.0] — unreleased
+
+> Version files (`LightningEnable.Mcp.csproj`, `pyproject.toml`, `server.json`) are **not**
+> bumped here — the owner bumps all three in one commit at publish time.
+
+### Changed
+
+- **Tool surface consolidated: 26 advertised tools → 15, in both ports.** Every advertised
+  tool's JSON schema is loaded into the agent's context at the start of each session, so the
+  tool surface was a token cost on every turn. Sixteen single-purpose tools are now five
+  `action` verbs:
+
+  | New call | Replaces |
+  |----------|----------|
+  | `budget(action="status"\|"tighten")` | `get_budget_status`, `configure_budget` |
+  | `receipts(source="durable"\|"session")` | `get_receipts`, `get_payment_history` |
+  | `wallet_ops(action="price"\|"exchange"\|"send_onchain")` | `get_btc_price`, `exchange_currency`, `send_onchain` |
+  | `l402_producer(action="create"\|"verify")` | `create_l402_challenge`, `verify_l402_payment` |
+  | `agent_services(action="discover"\|"request"\|"settle"\|"publish"\|"unpublish"\|"attest"\|"reputation")` | the seven ASA tools |
+
+  Together with tightened descriptions this cuts the advertised schema payload by ~42%
+  (Python 17,926 → 10,259 bytes; .NET 17,864 → 10,479 bytes).
+
+  **No behaviour changed.** Each action dispatches into the same handler the old tool called,
+  so budget checks, out-of-band confirmation (including `send_onchain` always requiring a
+  code), the receipt seam and the SSRF guards are the same code reached by a different name.
+  `check_invoice_status` was deliberately NOT folded into `create_invoice`: reading a status
+  and minting an invoice are different side-effect classes.
+
+- **Descriptions tightened across the retained tools.** Same meaning, fewer tokens; the
+  out-of-band confirmation rule (the code is printed to the server console, never returned in
+  a tool result — ask the human) is kept verbatim everywhere it applies.
+
+### Added
+
+- **`LIGHTNING_ENABLE_TOOL_PROFILE` (`lite` | `standard` | `full`), both ports.** Chooses how
+  much of the surface `tools/list` advertises: `lite` = 5 tools (`pay_invoice`,
+  `access_l402_resource`, `get_balance`, `budget`, `receipts`); `standard` (the default) = the
+  15 consolidated tools; `full` = those plus every pre-consolidation name, for prompts and
+  scripts written against the old surface. An unset or unrecognized value resolves to
+  `standard` (unrecognized also warns) — never to an empty surface.
+
+  **Profiles are listing-only.** A tool the profile does not advertise is still callable by
+  name in every profile; narrowing the profile trims what the model has to read, never what
+  the agent can do.
+
+- **MCP tool annotations on every advertised tool, both ports.** A human-readable `title` and
+  an explicit `readOnlyHint` on all of them, `destructiveHint` on everything that can spend the
+  wallet (`pay_invoice`, `access_l402_resource`, `pay_l402_challenge`, `test_l402_payment`,
+  `create_lightning_enable_account`, `wallet_ops`, `agent_services`), and `idempotentHint` on
+  `budget`. Action tools are annotated for their **widest** action: `budget` is not read-only
+  because `tighten` writes, and `wallet_ops` is destructive because `send_onchain` is.
+
+### Deprecated
+
+- **The 16 pre-consolidation tool names.** They remain accepted and dispatch to their
+  replacement, and every result carries `deprecated: { replaced_by, use, removal }` naming the
+  new call (for example `budget(action="status")`). They are unadvertised unless
+  `LIGHTNING_ENABLE_TOOL_PROFILE=full`. **Removed in v2.0.0.** The three v1 aliases
+  (`confirm_payment`, `check_wallet_balance`, `get_all_balances`) are unchanged and stay hidden
+  in every profile.
+
 ## [1.24.0]
 
 ### Added

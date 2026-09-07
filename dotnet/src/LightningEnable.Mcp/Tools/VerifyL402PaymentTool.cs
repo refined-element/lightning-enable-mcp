@@ -15,7 +15,7 @@ public static class VerifyL402PaymentTool
     /// <summary>
     /// Verifies an L402 token to confirm payment was made.
     /// </summary>
-    [McpServerTool(Name = "verify_l402_payment"), Description(
+    [McpServerTool(Name = "verify_l402_payment", Title = "Verify L402 payment (deprecated)", ReadOnly = true), Description(
         "Verify an L402 token (macaroon + preimage) to confirm payment was made. " +
         "Use this after receiving an L402 token from a payer to validate they paid " +
         "before granting access to the resource. " +

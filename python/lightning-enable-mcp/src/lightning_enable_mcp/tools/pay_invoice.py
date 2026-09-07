@@ -25,6 +25,7 @@ from ..receipt_seam import PaymentReceiptScope, policy_label
 from ..wallet_errors import PaymentPendingError, PreimageUnavailableError
 from ..wallet_messages import WALLET_NOT_CONFIGURED_FOR_PAYMENT
 from . import sanitize_error
+from .consolidated import CONFIRMATION_NONCE_DESCRIPTION
 
 logger = logging.getLogger("lightning-enable-mcp.tools.pay_invoice")
 
@@ -400,24 +401,20 @@ async def pay_invoice(
 PAY_INVOICE_TOOL = Tool(
     name="pay_invoice",
     description=(
-        "Pay a Lightning invoice directly and get the preimage as proof of payment. "
-        "Use this to pay any BOLT11 Lightning invoice without L402 protocol overhead."
+        "Pay a BOLT11 Lightning invoice directly and get the preimage as proof."
     ),
     inputSchema={
         "type": "object",
         "properties": {
-            "invoice": {
-                "type": "string",
-                "description": "BOLT11 Lightning invoice string to pay",
-            },
+            "invoice": {"type": "string", "description": "BOLT11 invoice to pay"},
             "max_sats": {
                 "type": "integer",
-                "description": "Maximum satoshis allowed to pay. Defaults to 1000",
+                "description": "Max sats to pay",
                 "default": 1000,
             },
             "confirmation_nonce": {
                 "type": "string",
-                "description": "Confirmation code the human operator read from the server console, for payments above the auto-approve threshold. The code is NEVER in a tool result — ask the human for it. Omit on the first call to request one.",
+                "description": CONFIRMATION_NONCE_DESCRIPTION,
             },
         },
         "required": ["invoice"],

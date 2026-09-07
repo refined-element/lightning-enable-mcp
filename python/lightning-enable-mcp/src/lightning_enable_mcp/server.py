@@ -9,7 +9,9 @@ import json
 import logging
 import os
 import sys
-from typing import Any
+from collections.abc import Mapping
+from types import MappingProxyType
+from typing import Any, NamedTuple
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
@@ -38,6 +40,7 @@ from .tools.access_resource import access_l402_resource
 from .tools.budget import configure_budget, get_payment_history
 from .tools.budget_status import get_budget_status
 from .tools.check_invoice_status import check_invoice_status
+from .tools.consolidated import ACTION_TOOLS
 from .tools.create_account import create_lightning_enable_account
 from .tools.create_invoice import create_invoice
 from .tools.create_l402_challenge import create_l402_challenge
@@ -50,9 +53,10 @@ from .tools.get_btc_price import get_btc_price
 from .tools.get_receipts import get_receipts
 from .tools.pay_challenge import pay_l402_challenge
 from .tools.pay_invoice import pay_invoice
+from .tools.profiles import PROFILE_ENV_VAR, resolve_profile
 from .tools.publish_agent_attestation import publish_agent_attestation
 from .tools.publish_agent_capability import publish_agent_capability
-from .tools.registry import ALL_TOOLS
+from .tools.registry import tools_for_profile
 from .tools.request_agent_service import request_agent_service
 from .tools.send_onchain import send_onchain
 from .tools.settle_agent_service import settle_agent_service
@@ -88,22 +92,60 @@ def _sanitize_error(msg: str) -> str:
 
 
 # Renamed/merged tools keep their old names as accepted-but-unadvertised forwarding
-# aliases for one minor cycle. An alias dispatches to the new implementation and the
-# forwarded JSON gains a `deprecated` marker. The aliases are intentionally ABSENT from
-# list_tools() (dispatcher-only), so the advertised surface is the new names.
-DEPRECATED_ALIASES = {
-    "confirm_payment": "verify_confirmation_code",
-    "check_wallet_balance": "get_balance",
-    "get_all_balances": "get_balance",
+# aliases. An alias dispatches to the new implementation — injecting the action that
+# selects the old tool's behaviour — and the forwarded JSON gains a `deprecated`
+# marker. Aliases are ABSENT from list_tools() under the default profile, so the
+# advertised surface is the new names; `LIGHTNING_ENABLE_TOOL_PROFILE=full`
+# re-advertises the consolidation's legacy names for prompts written against them.
+class AliasTarget(NamedTuple):
+    """Where a deprecated tool name forwards to."""
+
+    tool: str
+    """Name of the tool that supersedes the alias."""
+
+    args: Mapping[str, Any] = MappingProxyType({})
+    """Arguments injected into the call (the action selecting the old behaviour)."""
+
+    @property
+    def use(self) -> str:
+        """Human-readable call form, e.g. ``budget(action="status")``."""
+        if not self.args:
+            return self.tool
+        inner = ", ".join(f'{k}="{v}"' for k, v in self.args.items())
+        return f"{self.tool}({inner})"
+
+
+DEPRECATED_ALIASES: dict[str, AliasTarget] = {
+    # Pre-consolidation renames (v1).
+    "confirm_payment": AliasTarget("verify_confirmation_code"),
+    "check_wallet_balance": AliasTarget("get_balance"),
+    "get_all_balances": AliasTarget("get_balance"),
+    # Tool-surface consolidation.
+    "get_budget_status": AliasTarget("budget", {"action": "status"}),
+    "configure_budget": AliasTarget("budget", {"action": "tighten"}),
+    "get_receipts": AliasTarget("receipts", {"source": "durable"}),
+    "get_payment_history": AliasTarget("receipts", {"source": "session"}),
+    "get_btc_price": AliasTarget("wallet_ops", {"action": "price"}),
+    "exchange_currency": AliasTarget("wallet_ops", {"action": "exchange"}),
+    "send_onchain": AliasTarget("wallet_ops", {"action": "send_onchain"}),
+    "create_l402_challenge": AliasTarget("l402_producer", {"action": "create"}),
+    "verify_l402_payment": AliasTarget("l402_producer", {"action": "verify"}),
+    "discover_agent_services": AliasTarget("agent_services", {"action": "discover"}),
+    "request_agent_service": AliasTarget("agent_services", {"action": "request"}),
+    "settle_agent_service": AliasTarget("agent_services", {"action": "settle"}),
+    "publish_agent_capability": AliasTarget("agent_services", {"action": "publish"}),
+    "unpublish_agent_capability": AliasTarget("agent_services", {"action": "unpublish"}),
+    "publish_agent_attestation": AliasTarget("agent_services", {"action": "attest"}),
+    "get_agent_reputation": AliasTarget("agent_services", {"action": "reputation"}),
 }
 _ALIAS_REMOVAL = "v2.0.0"
 
 
-def _mark_deprecated(result: str, replaced_by: str) -> str:
+def _mark_deprecated(result: str, target: AliasTarget) -> str:
     """Annotate a forwarded tool result (JSON string) with a deprecation marker.
 
     Parses the underlying tool's JSON response and injects
-    ``deprecated: {replaced_by, removal}``. If the payload is not a JSON object
+    ``deprecated: {replaced_by, use, removal}``. If the payload is not a JSON object
     (unexpected), the original string is returned unchanged so an alias never breaks
     a caller that the new tool would have served.
     """
@@ -113,8 +155,37 @@ def _mark_deprecated(result: str, replaced_by: str) -> str:
         return result
     if not isinstance(data, dict):
         return result
-    data["deprecated"] = {"replaced_by": replaced_by, "removal": _ALIAS_REMOVAL}
+    data["deprecated"] = {
+        "replaced_by": target.tool,
+        "use": target.use,
+        "removal": _ALIAS_REMOVAL,
+    }
     return json.dumps(data, indent=2)
+
+
+def _unknown_action(tool: str, key: str, value: Any) -> str:
+    """Descriptive error for a missing/unrecognized action on a consolidated tool."""
+    _, allowed = ACTION_TOOLS[tool]
+    shown = "missing" if value is None else repr(value)
+    return json.dumps(
+        {
+            "success": False,
+            "error": (
+                f"{tool}: {key} is {shown}. Set {key} to one of: "
+                f"{', '.join(allowed)}."
+            ),
+            "tool": tool,
+            "valid_actions": list(allowed),
+        },
+        indent=2,
+    )
+
+
+def _action_of(tool: str, arguments: Mapping[str, Any]) -> str | None:
+    """Return the validated action for a consolidated tool, or None if invalid."""
+    key, allowed = ACTION_TOOLS[tool]
+    value = arguments.get(key)
+    return value if value in allowed else None
 
 
 class LightningEnableServer:
@@ -122,6 +193,10 @@ class LightningEnableServer:
 
     def __init__(self) -> None:
         self.server = Server("lightning-enable", version=__version__)
+        # How much of the tool surface list_tools advertises. Read once, at startup:
+        # a client caches the tool list for the session anyway. Profiles are
+        # listing-only — every tool stays callable by name in every profile.
+        self.tool_profile: str = resolve_profile(os.getenv(PROFILE_ENV_VAR))
         self.wallet: LndWallet | NWCWallet | OpenNodeWallet | StrikeWallet | None = None
         self.strike_wallet: StrikeWallet | None = None  # For Strike-specific features
         # The wallet routed through the receipt seam (ReceiptRecordingWallet): every
@@ -145,52 +220,27 @@ class LightningEnableServer:
 
         @self.server.list_tools()
         async def list_tools() -> list[Tool]:
-            """Return the list of available tools."""
-            return list(ALL_TOOLS)
+            """Return the tools advertised under the active profile."""
+            return tools_for_profile(self.tool_profile)
 
         @self.server.call_tool()
         async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             """Handle tool invocations."""
+            requested = name
             try:
                 # Ensure services are initialized
                 if self.wallet is None or self.l402_client is None:
                     await self._initialize_services()
 
-                # Tools that don't require a wallet connection.
-                # The ASA discovery/publish/request/attestation/reputation tools
-                # use the Lightning Enable API (or public registry), not the
-                # wallet — only settle_agent_service needs a wallet, so it is
-                # intentionally NOT in this set.
-                producer_tools = {
-                    "create_l402_challenge",
-                    "verify_l402_payment",
-                    "discover_api",
-                    "verify_confirmation_code",
-                    "confirm_payment",  # deprecated alias of verify_confirmation_code
-                    "discover_agent_services",
-                    "publish_agent_capability",
-                    "unpublish_agent_capability",
-                    "request_agent_service",
-                    "publish_agent_attestation",
-                    "get_agent_reputation",
-                }
+                # Resolve a deprecated alias to its replacement FIRST, injecting the
+                # action that selects the old tool's behaviour, so everything below
+                # (wallet guard included) reasons about one canonical name.
+                alias = DEPRECATED_ALIASES.get(name)
+                if alias is not None:
+                    name = alias.tool
+                    arguments = {**arguments, **alias.args}
 
-                # test_l402_payment is allowed through even without a wallet so it can
-                # return its own structured no_wallet verdict (parity with .NET), instead
-                # of this generic guard string (which also wrongly suggests OpenNode, which
-                # cannot do L402).
-                #
-                # get_balance (and its deprecated aliases) is a READ-ONLY balance tool: it
-                # returns its own receiving-oriented no-wallet message (which correctly does
-                # NOT claim OpenNode can't pay L402), so it is exempt from this payment guard.
-                balance_read_tools = {"get_balance", "check_wallet_balance", "get_all_balances"}
-                if (
-                    self.wallet is None
-                    and name not in producer_tools
-                    and name not in balance_read_tools
-                    and name != "test_l402_payment"
-                    and name != "get_receipts"  # reads the durable log; no wallet needed
-                ):
+                if self.wallet is None and self._requires_wallet(name, arguments):
                     return [
                         TextContent(
                             type="text",
@@ -217,11 +267,23 @@ class LightningEnableServer:
                         payment_history_service=self.payment_history_service,
                     )
 
-                elif name == "get_receipts":
-                    result = await get_receipts(
-                        limit=arguments.get("limit", 20),
-                        receipt_service=self.receipt_service,
-                    )
+                elif name == "receipts":
+                    source = _action_of("receipts", arguments)
+                    if source == "durable":
+                        result = await get_receipts(
+                            limit=arguments.get("limit", 20),
+                            receipt_service=self.receipt_service,
+                        )
+                    elif source == "session":
+                        result = await get_payment_history(
+                            limit=arguments.get("limit", 10),
+                            since=arguments.get("since"),
+                            payment_history_service=self.payment_history_service,
+                        )
+                    else:
+                        result = _unknown_action(
+                            "receipts", "source", arguments.get("source")
+                        )
 
                 elif name == "test_l402_payment":
                     result = await test_l402_payment(
@@ -253,30 +315,30 @@ class LightningEnableServer:
                         payment_history_service=self.payment_history_service,
                     )
 
-                elif name in ("get_balance", "check_wallet_balance", "get_all_balances"):
-                    # check_wallet_balance and get_all_balances are deprecated, unadvertised
-                    # aliases that forward to the unified get_balance implementation.
+                elif name == "get_balance":
                     result = await get_balance(
                         wallet=self.wallet,
                         strike_wallet=self.strike_wallet,
                         budget_service=self.budget_service,
                     )
-                    if name in DEPRECATED_ALIASES:
-                        result = _mark_deprecated(result, DEPRECATED_ALIASES[name])
 
-                elif name == "get_payment_history":
-                    result = await get_payment_history(
-                        limit=arguments.get("limit", 10),
-                        since=arguments.get("since"),
-                        payment_history_service=self.payment_history_service,
-                    )
-
-                elif name == "configure_budget":
-                    result = await configure_budget(
-                        per_request=arguments.get("per_request", 1000),
-                        per_session=arguments.get("per_session", 10000),
-                        budget_service=self.budget_service,
-                    )
+                elif name == "budget":
+                    action = _action_of("budget", arguments)
+                    if action == "status":
+                        result = await get_budget_status(
+                            budget_service=self.budget_service,
+                            payment_history_service=self.payment_history_service,
+                        )
+                    elif action == "tighten":
+                        result = await configure_budget(
+                            per_request=arguments.get("per_request", 1000),
+                            per_session=arguments.get("per_session", 10000),
+                            budget_service=self.budget_service,
+                        )
+                    else:
+                        result = _unknown_action(
+                            "budget", "action", arguments.get("action")
+                        )
 
                 elif name == "pay_invoice":
                     result = await pay_invoice(
@@ -302,67 +364,67 @@ class LightningEnableServer:
                         wallet=self.wallet,
                     )
 
-                elif name == "get_btc_price":
-                    result = await get_btc_price(
-                        wallet=self.strike_wallet,
-                    )
-
-                elif name == "exchange_currency":
-                    result = await exchange_currency(
-                        source_currency=arguments.get("source_currency", ""),
-                        target_currency=arguments.get("target_currency", ""),
-                        amount=arguments.get("amount", 0),
-                        wallet=self.strike_wallet,
-                    )
-
-                elif name == "send_onchain":
-                    # send_onchain supports Strike and LND wallets
-                    onchain_wallet = self.strike_wallet
-                    if onchain_wallet is None and isinstance(self.wallet, LndWallet):
-                        onchain_wallet = self.wallet
-                    # Route through the receipt seam so the (irreversible) send leaves
-                    # a durable receipt. The tool unwraps for its isinstance checks.
-                    if onchain_wallet is not None and self.receipt_service is not None:
-                        onchain_wallet = ReceiptRecordingWallet(
-                            onchain_wallet, self.receipt_service, self.budget_service
+                elif name == "wallet_ops":
+                    action = _action_of("wallet_ops", arguments)
+                    if action == "price":
+                        result = await get_btc_price(
+                            wallet=self.strike_wallet,
                         )
-                    result = await send_onchain(
-                        address=arguments.get("address", ""),
-                        amount_sats=arguments.get("amount_sats", 0),
-                        confirmation_nonce=arguments.get("confirmation_nonce"),
-                        wallet=onchain_wallet,
-                        budget_service=self.budget_service,
-                    )
+                    elif action == "exchange":
+                        result = await exchange_currency(
+                            source_currency=arguments.get("source_currency", ""),
+                            target_currency=arguments.get("target_currency", ""),
+                            amount=arguments.get("amount", 0),
+                            wallet=self.strike_wallet,
+                        )
+                    elif action == "send_onchain":
+                        # send_onchain supports Strike and LND wallets
+                        onchain_wallet = self.strike_wallet
+                        if onchain_wallet is None and isinstance(self.wallet, LndWallet):
+                            onchain_wallet = self.wallet
+                        # Route through the receipt seam so the (irreversible) send leaves
+                        # a durable receipt. The tool unwraps for its isinstance checks.
+                        if onchain_wallet is not None and self.receipt_service is not None:
+                            onchain_wallet = ReceiptRecordingWallet(
+                                onchain_wallet, self.receipt_service, self.budget_service
+                            )
+                        result = await send_onchain(
+                            address=arguments.get("address", ""),
+                            amount_sats=arguments.get("amount_sats", 0),
+                            confirmation_nonce=arguments.get("confirmation_nonce"),
+                            wallet=onchain_wallet,
+                            budget_service=self.budget_service,
+                        )
+                    else:
+                        result = _unknown_action(
+                            "wallet_ops", "action", arguments.get("action")
+                        )
 
-                elif name == "get_budget_status":
-                    result = await get_budget_status(
-                        budget_service=self.budget_service,
-                        payment_history_service=self.payment_history_service,
-                    )
+                elif name == "l402_producer":
+                    action = _action_of("l402_producer", arguments)
+                    if action == "create":
+                        result = await create_l402_challenge(
+                            resource=arguments.get("resource", ""),
+                            price_sats=arguments.get("price_sats", 0),
+                            description=arguments.get("description"),
+                            api_client=self.api_client,
+                        )
+                    elif action == "verify":
+                        result = await verify_l402_payment(
+                            macaroon=arguments.get("macaroon", ""),
+                            preimage=arguments.get("preimage", ""),
+                            api_client=self.api_client,
+                        )
+                    else:
+                        result = _unknown_action(
+                            "l402_producer", "action", arguments.get("action")
+                        )
 
-                elif name == "create_l402_challenge":
-                    result = await create_l402_challenge(
-                        resource=arguments.get("resource", ""),
-                        price_sats=arguments.get("price_sats", 0),
-                        description=arguments.get("description"),
-                        api_client=self.api_client,
-                    )
-
-                elif name == "verify_l402_payment":
-                    result = await verify_l402_payment(
-                        macaroon=arguments.get("macaroon", ""),
-                        preimage=arguments.get("preimage", ""),
-                        api_client=self.api_client,
-                    )
-
-                elif name in ("verify_confirmation_code", "confirm_payment"):
-                    # confirm_payment is a deprecated, unadvertised alias that forwards here.
+                elif name == "verify_confirmation_code":
                     result = await verify_confirmation_code(
                         nonce=arguments.get("nonce", ""),
                         budget_service=self.budget_service,
                     )
-                    if name in DEPRECATED_ALIASES:
-                        result = _mark_deprecated(result, DEPRECATED_ALIASES[name])
 
                 elif name == "discover_api":
                     result = await discover_api(
@@ -373,83 +435,121 @@ class LightningEnableServer:
                         budget_service=self.budget_service,
                     )
 
-                elif name == "discover_agent_services":
-                    result = await discover_agent_services(
-                        category=arguments.get("category"),
-                        hashtags=arguments.get("hashtags"),
-                        query=arguments.get("query"),
-                        limit=arguments.get("limit", 20),
-                        api_client=self.api_client,
-                        budget_service=self.budget_service,
-                    )
-
-                elif name == "publish_agent_capability":
-                    result = await publish_agent_capability(
-                        service_id=arguments.get("service_id", ""),
-                        categories=arguments.get("categories", []),
-                        content=arguments.get("content", ""),
-                        price_sats=arguments.get("price_sats", 0),
-                        l402_endpoint=arguments.get("l402_endpoint"),
-                        target_url=arguments.get("target_url"),
-                        hashtags=arguments.get("hashtags"),
-                        api_client=self.api_client,
-                    )
-
-                elif name == "unpublish_agent_capability":
-                    result = await unpublish_agent_capability(
-                        service_id=arguments.get("service_id", ""),
-                        reason=arguments.get("reason"),
-                        api_client=self.api_client,
-                    )
-
-                elif name == "request_agent_service":
-                    result = await request_agent_service(
-                        capability_event_id=arguments.get("capability_event_id", ""),
-                        budget_sats=arguments.get("budget_sats", 0),
-                        parameters=arguments.get("parameters"),
-                        api_client=self.api_client,
-                        budget_service=self.budget_service,
-                    )
-
-                elif name == "publish_agent_attestation":
-                    result = await publish_agent_attestation(
-                        subject_pubkey=arguments.get("subject_pubkey", ""),
-                        agreement_id=arguments.get("agreement_id", ""),
-                        rating=arguments.get("rating", 0),
-                        content=arguments.get("content", ""),
-                        proof=arguments.get("proof"),
-                        api_client=self.api_client,
-                    )
-
-                elif name == "get_agent_reputation":
-                    result = await get_agent_reputation(
-                        pubkey=arguments.get("pubkey", ""),
-                        limit=arguments.get("limit", 20),
-                        api_client=self.api_client,
-                    )
-
-                elif name == "settle_agent_service":
-                    result = await settle_agent_service(
-                        l402_endpoint=arguments.get("l402_endpoint", ""),
-                        method=arguments.get("method", "GET"),
-                        body=arguments.get("body"),
-                        agreement_id=arguments.get("agreement_id"),
-                        max_sats=arguments.get("max_sats", 1000),
-                        confirmation_nonce=arguments.get("confirmation_nonce"),
-                        l402_client=self.l402_client,
-                        budget_service=self.budget_service,
-                    )
+                elif name == "agent_services":
+                    action = _action_of("agent_services", arguments)
+                    if action == "discover":
+                        result = await discover_agent_services(
+                            category=arguments.get("category"),
+                            hashtags=arguments.get("hashtags"),
+                            query=arguments.get("query"),
+                            limit=arguments.get("limit", 20),
+                            api_client=self.api_client,
+                            budget_service=self.budget_service,
+                        )
+                    elif action == "publish":
+                        result = await publish_agent_capability(
+                            service_id=arguments.get("service_id", ""),
+                            categories=arguments.get("categories", []),
+                            content=arguments.get("content", ""),
+                            price_sats=arguments.get("price_sats", 0),
+                            l402_endpoint=arguments.get("l402_endpoint"),
+                            target_url=arguments.get("target_url"),
+                            hashtags=arguments.get("hashtags"),
+                            api_client=self.api_client,
+                        )
+                    elif action == "unpublish":
+                        result = await unpublish_agent_capability(
+                            service_id=arguments.get("service_id", ""),
+                            reason=arguments.get("reason"),
+                            api_client=self.api_client,
+                        )
+                    elif action == "request":
+                        result = await request_agent_service(
+                            capability_event_id=arguments.get("capability_event_id", ""),
+                            budget_sats=arguments.get("budget_sats", 0),
+                            parameters=arguments.get("parameters"),
+                            api_client=self.api_client,
+                            budget_service=self.budget_service,
+                        )
+                    elif action == "attest":
+                        result = await publish_agent_attestation(
+                            subject_pubkey=arguments.get("subject_pubkey", ""),
+                            agreement_id=arguments.get("agreement_id", ""),
+                            rating=arguments.get("rating", 0),
+                            content=arguments.get("content", ""),
+                            proof=arguments.get("proof"),
+                            api_client=self.api_client,
+                        )
+                    elif action == "reputation":
+                        result = await get_agent_reputation(
+                            pubkey=arguments.get("pubkey", ""),
+                            limit=arguments.get("limit", 20),
+                            api_client=self.api_client,
+                        )
+                    elif action == "settle":
+                        result = await settle_agent_service(
+                            l402_endpoint=arguments.get("l402_endpoint", ""),
+                            method=arguments.get("method", "GET"),
+                            body=arguments.get("body"),
+                            agreement_id=arguments.get("agreement_id"),
+                            max_sats=arguments.get("max_sats", 1000),
+                            confirmation_nonce=arguments.get("confirmation_nonce"),
+                            l402_client=self.l402_client,
+                            budget_service=self.budget_service,
+                        )
+                    else:
+                        result = _unknown_action(
+                            "agent_services", "action", arguments.get("action")
+                        )
 
                 else:
-                    result = f"Unknown tool: {name}"
+                    result = f"Unknown tool: {requested}"
 
-                return [TextContent(type="text", text=str(result))]
+                result = str(result)
+                if alias is not None:
+                    result = _mark_deprecated(result, alias)
+                return [TextContent(type="text", text=result)]
 
             except Exception as e:
-                logger.exception(f"Error in tool {name}")
+                logger.exception(f"Error in tool {requested}")
                 # Sanitize exception message to avoid leaking credentials
                 safe_msg = _sanitize_error(str(e))
-                return [TextContent(type="text", text=f"Error in {name}: {safe_msg}")]
+                return [TextContent(type="text", text=f"Error in {requested}: {safe_msg}")]
+
+    # Tools that never need a wallet, by canonical (post-alias) name:
+    #  - discover_api / verify_confirmation_code use no wallet at all.
+    #  - test_l402_payment is allowed through without one so it can return its own
+    #    structured no_wallet verdict (parity with .NET) rather than the generic guard
+    #    string below (which also wrongly suggests OpenNode, which cannot do L402).
+    #  - get_balance is a READ-ONLY balance tool that returns its own
+    #    receiving-oriented no-wallet message, so it is exempt from the payment guard.
+    #  - l402_producer (create/verify) goes to the Lightning Enable API, not a wallet.
+    _WALLET_FREE_TOOLS = frozenset(
+        {
+            "discover_api",
+            "verify_confirmation_code",
+            "test_l402_payment",
+            "get_balance",
+            "l402_producer",
+        }
+    )
+
+    def _requires_wallet(self, name: str, arguments: Mapping[str, Any]) -> bool:
+        """Whether a call needs a configured wallet before it can run.
+
+        Preserves the pre-consolidation policy exactly, now expressed per action for
+        the merged tools: ``receipts`` reads the durable log without a wallet (it is
+        the "pull the plug" audit path) but the session list does not; every
+        ``agent_services`` action except ``settle`` talks to the Lightning Enable API
+        or the public registry rather than the wallet.
+        """
+        if name in self._WALLET_FREE_TOOLS:
+            return False
+        if name == "receipts":
+            return arguments.get("source") != "durable"
+        if name == "agent_services":
+            return arguments.get("action") == "settle"
+        return True
 
     async def _initialize_services(self) -> None:
         """Initialize wallet, L402 client, budget service, and payment history.

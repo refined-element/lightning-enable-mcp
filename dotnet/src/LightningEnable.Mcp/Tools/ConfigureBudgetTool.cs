@@ -24,7 +24,7 @@ public static class ConfigureBudgetTool
     /// <param name="budgetService">Injected budget service.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>JSON result with the new effective caps, or an error.</returns>
-    [McpServerTool(Name = "configure_budget"), Description("Tighten (lower) the session spending limits in sats. Can ONLY lower caps, never raise them above the operator's config — to raise limits, edit ~/.lightning-enable/config.json.")]
+    [McpServerTool(Name = "configure_budget", Title = "Tighten budget (deprecated)", ReadOnly = false, Destructive = false, Idempotent = true, OpenWorld = false), Description("Tighten (lower) the session spending limits in sats. Can ONLY lower caps, never raise them above the operator's config — to raise limits, edit ~/.lightning-enable/config.json.")]
     public static async Task<string> ConfigureBudget(
         [Description("Maximum sats per single request (must be <= current effective cap and <= perSession)")] long perRequest = 1000,
         [Description("Maximum total sats for the whole session (must be <= current effective cap)")] long perSession = 10000,

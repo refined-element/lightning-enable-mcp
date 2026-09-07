@@ -103,17 +103,16 @@ async def verify_confirmation_code(
 VERIFY_CONFIRMATION_CODE_TOOL = Tool(
     name="verify_confirmation_code",
     description=(
-        "Verify whether a payment confirmation code (relayed by the human from the "
-        "server console) is still valid and what it authorizes. VERIFICATION ONLY — "
-        "never executes a payment. To pay, call the original payment tool again with "
-        "confirmation_nonce."
+        "Check whether a payment confirmation code is still valid and what it "
+        "authorizes. Verification ONLY - it never pays; to pay, re-call the payment "
+        "tool with confirmation_nonce."
     ),
     inputSchema={
         "type": "object",
         "properties": {
             "nonce": {
                 "type": "string",
-                "description": "The 6-character confirmation code from the payment request",
+                "description": "The 6-character code from the payment request",
             },
         },
         "required": ["nonce"],

@@ -94,15 +94,18 @@ public static class DiscoverApiTool
     /// <summary>
     /// Discovers L402-enabled API endpoints by searching the registry or fetching a manifest.
     /// </summary>
-    [McpServerTool(Name = "discover_api"), Description(
-        "Discover L402-enabled APIs. Use 'query' to search the registry for available APIs by keyword, " +
-        "or use 'url' to fetch a specific API's manifest with full endpoint details and pricing. " +
-        "Use 'category' to browse by category. With budget_aware=true, shows how many calls you can afford.")]
+    [McpServerTool(
+        Name = "discover_api",
+        Title = "Discover L402 APIs",
+        ReadOnly = true)]
+    [Description(
+        "Discover L402 APIs: search the registry with query/category, or fetch one API "
+        + "manifest with url.")]
     public static async Task<string> DiscoverApi(
-        [Description("Base URL of the L402-enabled API, or direct URL to the manifest JSON file. If omitted, searches the registry instead.")] string? url = null,
-        [Description("Search the L402 API registry by keyword (e.g., 'weather', 'ai', 'geocoding').")] string? query = null,
-        [Description("Filter registry results by category (e.g., 'ai', 'data', 'finance').")] string? category = null,
-        [Description("If true, annotate endpoints with affordable call counts based on remaining budget. Default: true.")] bool budgetAware = true,
+        [Description("Base URL of an L402 API, or a manifest URL. Omit to search the registry.")] string? url = null,
+        [Description("Registry keyword search, e.g. weather")] string? query = null,
+        [Description("Registry category filter, e.g. ai")] string? category = null,
+        [Description("Annotate endpoints with affordable call counts")] bool budgetAware = true,
         IBudgetService? budgetService = null,
         IPriceService? priceService = null,
         IHttpClientFactory? httpClientFactory = null,

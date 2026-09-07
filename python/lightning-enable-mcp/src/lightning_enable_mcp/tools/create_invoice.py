@@ -184,23 +184,22 @@ async def create_invoice(
 CREATE_INVOICE_TOOL = Tool(
     name="create_invoice",
     description=(
-        "Create a Lightning invoice to receive a payment. "
-        "Returns a BOLT11 invoice string to share with the payer."
+        "Create a BOLT11 Lightning invoice to receive a payment."
     ),
     inputSchema={
         "type": "object",
         "properties": {
             "amount_sats": {
                 "type": "integer",
-                "description": "Amount to receive in satoshis",
+                "description": "Satoshis to receive",
             },
             "memo": {
                 "type": "string",
-                "description": "Optional description/memo for the invoice",
+                "description": "Invoice memo",
             },
             "expiry_secs": {
                 "type": "integer",
-                "description": "Invoice expiry time in seconds. Defaults to 3600 (1 hour)",
+                "description": "Expiry in seconds",
                 "default": 3600,
             },
         },

@@ -11,13 +11,10 @@ namespace LightningEnable.Mcp;
 /// Entry point for the Lightning Enable MCP server.
 /// Provides Lightning payment capabilities to AI agents via Model Context Protocol.
 ///
-/// Available tools:
-/// - pay_invoice - Pay any Lightning invoice
-/// - check_wallet_balance - Check wallet balance
-/// - get_payment_history - View payment history
-/// - get_budget_status - View current budget limits (read-only)
-/// - access_l402_resource - Auto-pay L402 challenges
-/// - pay_l402_challenge - Manual L402 payment
+/// The advertised tool set is defined by <see cref="ToolProfiles"/> and selected with
+/// LIGHTNING_ENABLE_TOOL_PROFILE (lite | standard | full; standard is the default).
+/// ToolInventoryTests in the test project is the source of truth for the inventory every
+/// advertised count derives from.
 ///
 /// Wallet Configuration (in priority order):
 /// - Set STRIKE_API_KEY for Strike wallet (https://dashboard.strike.me/)
@@ -291,46 +288,30 @@ public class Program
         // idempotency + restart-safety so a retry never causes a blind duplicate payment.
         builder.Services.AddSingleton<IOperationLedger, OperationLedger>();
 
+        // Which slice of the tool surface to advertise. Every advertised schema is loaded
+        // into the agent's context at the start of each session, so this is a real token
+        // cost on every turn — hence `lite` and the consolidated `standard` default.
+        var toolProfile = ToolProfiles.Resolve(
+            Environment.GetEnvironmentVariable(ToolProfiles.EnvironmentVariable),
+            warning => Console.Error.WriteLine($"[Lightning Enable MCP] {warning}"));
+        Console.Error.WriteLine(
+            $"[Lightning Enable MCP] Tool profile: {toolProfile.ToString().ToLowerInvariant()} "
+            + $"({ToolProfiles.AdvertisedNames(toolProfile).Count} tools advertised; "
+            + $"set {ToolProfiles.EnvironmentVariable}=lite|standard|full)");
+
         // Configure MCP server with stdio transport.
         //
-        // WithToolsFromAssembly() populates the advertised ToolCollection (the 25
-        // canonical tools). The custom CallToolHandler below is consulted by the SDK
-        // ONLY for tool names absent from that collection — i.e. the deprecated
-        // forwarding aliases (confirm_payment, check_wallet_balance, get_all_balances).
-        // Because they are not [McpServerTool] and no ListToolsHandler adds them, they
-        // never appear in list_tools yet remain callable — true hidden aliases, matching
-        // the Python port.
+        // WithToolsFromAssembly() populates the ToolCollection with EVERY [McpServerTool]
+        // in the assembly — the consolidated verbs and the pre-consolidation names alike.
+        // ToolSurface.ApplyTo then removes (a) every deprecated alias, always, and (b)
+        // anything the active profile does not advertise, keeping each removed tool so it
+        // stays callable. The SDK consults the CallToolHandler below only for names absent
+        // from the collection — which is precisely that set.
         builder.Services
             .AddMcpServer()
             .WithStdioServerTransport()
             .WithToolsFromAssembly()
-            .WithCallToolHandler(async (context, cancellationToken) =>
-            {
-                var name = context.Params?.Name ?? string.Empty;
-
-                if (!Tools.DeprecatedAliasDispatcher.IsAlias(name))
-                {
-                    // The 25 advertised tools are served from the ToolCollection before
-                    // this handler runs, so anything reaching here that is not an alias
-                    // is a genuinely unknown tool.
-                    return new ModelContextProtocol.Protocol.CallToolResult
-                    {
-                        IsError = true,
-                        Content = { new ModelContextProtocol.Protocol.TextContentBlock { Text = $"Unknown tool: {name}" } },
-                    };
-                }
-
-                var json = await Tools.DeprecatedAliasDispatcher.DispatchAsync(
-                    name,
-                    context.Params?.Arguments as IReadOnlyDictionary<string, System.Text.Json.JsonElement>,
-                    context.Services!,
-                    cancellationToken);
-
-                return new ModelContextProtocol.Protocol.CallToolResult
-                {
-                    Content = { new ModelContextProtocol.Protocol.TextContentBlock { Text = json } },
-                };
-            });
+            .WithToolSurface(toolProfile);
 
         var host = builder.Build();
         await host.RunAsync();

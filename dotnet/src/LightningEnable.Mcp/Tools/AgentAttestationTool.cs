@@ -15,7 +15,7 @@ public static class AgentAttestationTool
     /// <summary>
     /// Publishes an attestation/review for an agent after a completed agreement.
     /// </summary>
-    [McpServerTool(Name = "publish_agent_attestation"), Description(
+    [McpServerTool(Name = "publish_agent_attestation", Title = "Publish attestation (deprecated)", ReadOnly = false, Destructive = false), Description(
         "Publish an attestation (review) for an agent after a completed agreement. " +
         "Creates a kind 38403 event that builds the agent's on-protocol reputation. " +
         "Requires LIGHTNING_ENABLE_API_KEY. " +
@@ -136,7 +136,7 @@ public static class AgentAttestationTool
     /// <summary>
     /// Queries attestations for an agent and returns their reputation score.
     /// </summary>
-    [McpServerTool(Name = "get_agent_reputation"), Description(
+    [McpServerTool(Name = "get_agent_reputation", Title = "Agent reputation (deprecated)", ReadOnly = true), Description(
         "Get an agent's reputation score and reviews. " +
         "Queries kind 38403 attestation events for the given pubkey off the relay. " +
         "Returns the average rating and individual reviews. Ratings are un-weighted " +

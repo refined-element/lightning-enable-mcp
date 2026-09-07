@@ -22,6 +22,7 @@ from mcp.types import (
 
 from . import __version__
 from .budget_service import BudgetService, get_budget_service
+from .confirmation_channel import CHANNEL_ENV_VAR, VALID_CHANNELS
 from .idempotent_wallet import IdempotentWallet
 from .l402_client import L402Client
 from .lightning_enable_api import LightningEnableApiClient
@@ -677,6 +678,17 @@ class LightningEnableServer:
             # BudgetService.configure_budget tool (tighten-only).
             self.budget_service = get_budget_service()
             logger.info("BudgetService initialized with multi-tier approval")
+            # Where over-threshold confirmation codes go. get_budget_service() resolved this
+            # from config + environment + whether stdin is a TTY, and already printed any
+            # misconfiguration warning; surface the outcome next to the other startup banners.
+            print(
+                "[Lightning Enable MCP] Approval channel: "
+                f"{self.budget_service.confirmation_channel_name} "
+                "(set confirmation.channel in ~/.lightning-enable/config.json, or "
+                f"{CHANNEL_ENV_VAR}={VALID_CHANNELS})",
+                file=sys.stderr,
+                flush=True,
+            )
 
             # Initialize the PaymentHistoryService (separate session audit trail).
             self.payment_history_service = get_payment_history_service()

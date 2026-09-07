@@ -133,23 +133,42 @@ public static class SendOnChainTool
             }
             else
             {
-                var pending = budgetService.CreatePendingConfirmation(
-                    amountSats, approval.AmountUsd, "send_onchain", address, address);
+                // Code to the human on the CONFIGURED approval channel — the model never sees it,
+                // on any channel. On a "refuse" server there is no code at all and the
+                // (irreversible) send is turned down rather than left half-approved.
+                var dispatch = await budgetService.RequestConfirmationAsync(new ConfirmationRequest
+                {
+                    AmountSats = amountSats,
+                    AmountUsd = approval.AmountUsd,
+                    ToolName = "send_onchain",
+                    Description = address,
+                    Destination = address,
+                    Title = "ON-CHAIN SEND CONFIRMATION REQUIRED (irreversible)",
+                    Summary = $"send_onchain — {amountSats:N0} sats to {address}"
+                }, cancellationToken);
 
-                // Code to STDERR only — the human sees it; the model never does.
-                Console.Error.WriteLine(
-                    "[Lightning Enable] *** ON-CHAIN SEND CONFIRMATION REQUIRED (irreversible) ***\n" +
-                    $"  send_onchain — {amountSats:N0} sats to {address}\n" +
-                    $"  Confirmation code: {pending.Nonce}\n" +
-                    "  To approve, give this code to the agent. Expires in 120s.");
+                if (!dispatch.Delivered)
+                {
+                    return JsonSerializer.Serialize(new
+                    {
+                        success = false,
+                        requiresConfirmation = false,
+                        confirmationChannel = dispatch.ChannelName,
+                        error = dispatch.RefusalReason,
+                        message = "The send was REFUSED, not queued for approval — no human can be asked for a code on " +
+                                  "this server. Retrying will not help until the operator changes the configuration.",
+                        amount = new { sats = amountSats, usd = Math.Round(approval.AmountUsd, 2) }
+                    });
+                }
 
                 return JsonSerializer.Serialize(new
                 {
                     success = false,
                     requiresConfirmation = true,
+                    confirmationChannel = dispatch.ChannelName,
                     error = "On-chain send requires human confirmation",
                     message = $"On-chain sends are irreversible, so this {amountSats:N0}-sat send to {address} requires confirmation. " +
-                              "A confirmation code was printed to the server console/logs — visible to the human operator, NOT to you. " +
+                              $"A confirmation code was {dispatch.OperatorHint} — visible to the human operator, NOT to you. " +
                               "Ask the human to read that code and give it to you.",
                     howToConfirm = "Ask the human operator for the confirmation code shown in the server console, then call " +
                                    "send_onchain(address=\"...\", amountSats=..., confirmationNonce=\"<code-from-human>\").",

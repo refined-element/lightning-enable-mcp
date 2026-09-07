@@ -195,29 +195,47 @@ public static class PayL402ChallengeTool
                             // MCP elicitation is unreliable — many clients (including Claude Code)
                             // report Elicitation capability but don't handle it correctly.
                             var invoicePrefix = normalizedInvoice.Substring(0, Math.Min(30, normalizedInvoice.Length)) + "...";
-                            var pending = budgetService.CreatePendingConfirmation(
-                                budgetCheckAmount,
-                                approvalResult.AmountUsd,
-                                "pay_l402_challenge",
-                                invoicePrefix,
-                                normalizedInvoice);
 
-                            // OUT-OF-BAND CONFIRMATION: code to STDERR only (human sees the server
-                            // console/logs; the model only sees tool results). An injected agent
-                            // can't read it to self-approve. The code MUST NOT appear in the result.
-                            Console.Error.WriteLine(
-                                "[Lightning Enable] *** L402 CHALLENGE PAYMENT CONFIRMATION REQUIRED ***\n" +
-                                $"  pay_l402_challenge — {approvalResult.AmountUsd:C} ({budgetCheckAmount:N0} sats), invoice {invoicePrefix}\n" +
-                                $"  Confirmation code: {pending.Nonce}\n" +
-                                "  To approve, give this code to the agent. Expires in 120s.");
+                            // OUT-OF-BAND CONFIRMATION: the code goes to the human on the CONFIGURED
+                            // approval channel (stderr locally; webhook/file/refuse when hosted) and
+                            // never into this result, so an injected agent can't self-approve.
+                            var dispatch = await budgetService.RequestConfirmationAsync(new ConfirmationRequest
+                            {
+                                AmountSats = budgetCheckAmount,
+                                AmountUsd = approvalResult.AmountUsd,
+                                ToolName = "pay_l402_challenge",
+                                Description = invoicePrefix,
+                                Destination = normalizedInvoice,
+                                Title = "L402 CHALLENGE PAYMENT CONFIRMATION REQUIRED",
+                                Summary = $"pay_l402_challenge — {approvalResult.AmountUsd:C} ({budgetCheckAmount:N0} sats), invoice {invoicePrefix}"
+                            }, cancellationToken);
+
+                            if (!dispatch.Delivered)
+                            {
+                                return JsonSerializer.Serialize(new
+                                {
+                                    success = false,
+                                    requiresConfirmation = false,
+                                    confirmationChannel = dispatch.ChannelName,
+                                    error = dispatch.RefusalReason,
+                                    message = "The payment was REFUSED, not queued for approval — no human can be asked for a " +
+                                              "code on this server. Retrying will not help until the operator changes the configuration.",
+                                    amount = new
+                                    {
+                                        sats = budgetCheckAmount,
+                                        usd = Math.Round(approvalResult.AmountUsd, 2)
+                                    }
+                                });
+                            }
 
                             return JsonSerializer.Serialize(new
                             {
                                 success = false,
                                 requiresConfirmation = true,
+                                confirmationChannel = dispatch.ChannelName,
                                 error = "L402 challenge payment requires human confirmation",
                                 message = $"This payment of {approvalResult.AmountUsd:C} ({budgetCheckAmount:N0} sats) exceeds the auto-approve threshold. " +
-                                          "A confirmation code was printed to the server console/logs — visible to the human operator, NOT to you. " +
+                                          $"A confirmation code was {dispatch.OperatorHint} — visible to the human operator, NOT to you. " +
                                           "Ask the human to read that code and give it to you.",
                                 howToConfirm = "Ask the human operator for the confirmation code shown in the server console, then call " +
                                                "pay_l402_challenge(invoice=\"...\", macaroon=\"...\", confirmationNonce=\"<code-from-human>\").",

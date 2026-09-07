@@ -130,6 +130,105 @@ Config file locations:
 - **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
 - **Linux:** `~/.config/claude/claude_desktop_config.json`
 
+## Deploying hosted
+
+A payment above your auto-approve threshold needs a human's approval: the server mints a
+short confirmation code, sends it to **you**, and the agent can only proceed once you read it
+back. The code never appears in a tool result, so a prompt-injected agent can't approve its
+own spending.
+
+That only works if the code reaches a human. On your laptop it goes to the server's console
+(stderr) and you read it there. On a hosted server — a claude.ai connector, a Docker
+container, a fleet — nobody is watching stderr, and on a shared host the agent might read it
+itself. So you choose the **approval channel**.
+
+| Channel | What happens above the threshold | Use it when |
+|---------|----------------------------------|-------------|
+| `stderr` (default) | The code is printed to the server console. | You run the server locally and watch its output. |
+| `refuse` | The payment is refused. No code is minted at all. | You run it hosted and no one can receive a code. |
+| `webhook` | The pending confirmation is POSTed to your URL, HMAC signed. You relay the code to the agent. | You have an ops channel — chat, pager, an approval app. |
+| `file` | The same JSON line is appended to a file you tail. | You collect approvals from logs. |
+
+Whatever the channel, two rules hold: the code is never returned to the agent, and a payment
+is never approved because its notification failed to send — a delivery failure refuses the
+payment and withdraws the code.
+
+### Choosing a channel
+
+Precedence: environment variable, then config file, then automatic.
+
+```json
+{
+  "confirmation": {
+    "channel": "webhook",
+    "webhookUrl": "https://ops.example.com/lightning-approvals",
+    "webhookSecret": "<shared secret>",
+    "filePath": "/var/log/lightning-enable/confirmations.jsonl"
+  }
+}
+```
+
+| Environment variable | Overrides |
+|----------------------|-----------|
+| `LIGHTNING_ENABLE_CONFIRMATION_CHANNEL` | `confirmation.channel` (`stderr` \| `refuse` \| `webhook` \| `file`) |
+| `LIGHTNING_ENABLE_CONFIRMATION_WEBHOOK_URL` | `confirmation.webhookUrl` |
+| `LIGHTNING_ENABLE_CONFIRMATION_WEBHOOK_SECRET` | `confirmation.webhookSecret` |
+| `LIGHTNING_ENABLE_CONFIRMATION_FILE` | `confirmation.filePath` (default `~/.lightning-enable/confirmations.jsonl`) |
+| `LIGHTNING_ENABLE_HOSTED` | Set to `1` to declare a hosted deployment (see below) |
+
+With no channel set, the server decides:
+
+| stdin | `LIGHTNING_ENABLE_HOSTED` | Channel | Startup warning |
+|-------|---------------------------|---------|-----------------|
+| A TTY | anything | `stderr` | none |
+| Not a TTY | unset or `0` | `stderr` | yes — nobody may be reading it |
+| Not a TTY | `1` | `refuse` | yes — over-threshold payments are refused |
+
+An stdio MCP server always has a piped stdin, so the warning is a nudge, not a diagnosis:
+if a human really is watching the console, ignore it. `LIGHTNING_ENABLE_HOSTED=1` is the
+explicit opt-in that turns the safe posture on — nothing flips your behavior automatically.
+
+A channel name the server can't parse fails closed to `refuse` and says so at startup, so a
+typo never silently restores a code nobody reads.
+
+### The webhook payload
+
+`POST` with `Content-Type: application/json` and an HMAC-SHA256 signature over
+`{timestamp}.{body}`, the same scheme the Lightning Enable API signs merchant webhooks with:
+
+```
+X-LightningEnable-Signature: t=1757203200,v1=9f86d081...
+```
+
+```json
+{
+  "type": "payment.confirmation_required",
+  "nonce": "AB12CD",
+  "tool": "pay_invoice",
+  "amountSats": 50000,
+  "amountUsd": 12.34,
+  "destination": "lnbc500u1pj9npjpp5abcdefghijklmnopqr...",
+  "description": "lnbc500u1pj9npjpp5...",
+  "summary": "pay_invoice — $12.34 (50,000 sats), invoice lnbc500u1pj9npjpp5...",
+  "createdAt": "2026-09-07T12:00:00Z",
+  "expiresAt": "2026-09-07T12:02:00Z",
+  "expiresInSeconds": 120
+}
+```
+
+The `file` channel writes this exact object, one JSON line per confirmation, and pins the
+file to `0600` on POSIX — it holds live approval codes.
+
+Two things to know about the webhook:
+
+- The URL must be **public**. It goes through the same connect-time SSRF guard as
+  agent-supplied URLs, so a private, loopback, or metadata address is refused at startup.
+- Redirects are never followed. A `3xx` answer is a delivery failure, so a signed approval
+  only ever reaches the URL you configured.
+
+Codes expire after 120 seconds and are bound to the exact amount, tool, and destination they
+were approved for.
+
 ## Supported Wallets
 
 | Wallet | Setup | L402 Support |

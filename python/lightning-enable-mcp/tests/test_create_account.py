@@ -14,6 +14,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 from lightning_enable_mcp.config import ApprovalLevel, ApprovalCheckResult
+from tests.confirmation_helpers import make_pending, setup_delivered
 from lightning_enable_mcp.tools.create_account import (
     create_lightning_enable_account,
     _merge_api_key_into_config,
@@ -52,6 +53,9 @@ def _budget_with(level, **kwargs):
     pending = MagicMock()
     pending.nonce = "ABC123"
     budget.create_pending_confirmation = MagicMock(return_value=pending)
+    setup_delivered(
+        budget, pending=make_pending(nonce="ABC123", tool_name="create_lightning_enable_account")
+    )
     budget.validate_and_consume_confirmation = MagicMock(return_value=pending)
     return budget
 

@@ -116,6 +116,30 @@ public interface IBudgetService
     PendingConfirmation CreatePendingConfirmation(long amountSats, decimal amountUsd, string toolName, string description, string destination);
 
     /// <summary>
+    /// Asks the configured approval channel for a human confirmation of an over-threshold
+    /// payment. This is the ONLY entry point a payment tool should use: it decides whether a
+    /// code may exist at all, mints it, delivers it out of band, and — if delivery fails —
+    /// cancels it again so no orphan code is left behind.
+    /// <para/>
+    /// On the <c>refuse</c> channel NO pending confirmation is created; the result carries a
+    /// descriptive, operator-actionable reason. A delivery failure on any other channel is also
+    /// a refusal: a payment is never approved because its notification could not be sent.
+    /// <para/>
+    /// The returned code is for the HUMAN. It must never appear in a tool result.
+    /// </summary>
+    /// <param name="request">Amount, tool, destination, and the operator-facing wording.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task<ConfirmationDispatchResult> RequestConfirmationAsync(
+        ConfirmationRequest request, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Drops a pending confirmation without consuming it — used when its out-of-band delivery
+    /// failed, so an undeliverable code can never be guessed or replayed later.
+    /// </summary>
+    /// <param name="nonce">The confirmation code to discard.</param>
+    void CancelPendingConfirmation(string nonce);
+
+    /// <summary>
     /// Validates a nonce and checks expiry WITHOUT consuming it.
     /// Use this in verify_confirmation_code to verify the nonce is valid.
     /// Returns null if the nonce is invalid or expired.

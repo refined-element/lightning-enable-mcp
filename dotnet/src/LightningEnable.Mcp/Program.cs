@@ -278,6 +278,34 @@ public class Program
         // Register agent service for ASA (Agent Service Agreement) operations
         builder.Services.AddHttpClient<IAgentService, AgentService>();
 
+        // Approval channel for over-threshold payments. The confirmation code is the human
+        // operator's, never the model's — so WHERE it goes has to match the deployment. Locally
+        // that is stderr; on a hosted server nobody reads stderr, so the operator picks a
+        // webhook, a file, or "refuse". See the README's "Deploying hosted" section.
+        //
+        // The webhook client reuses the SSRF posture of the agent-URL clients above: the
+        // connect-time IP guard (a confirmation POST carries a live approval code, so it must
+        // never be steerable at a private/metadata address) and AllowAutoRedirect = false, so a
+        // signed approval can only ever reach the exact URL the operator configured.
+        builder.Services.AddHttpClient(ConfirmationChannelFactory.WebhookHttpClientName, client =>
+            {
+                client.Timeout = TimeSpan.FromSeconds(15);
+            })
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            {
+                AllowAutoRedirect = false,
+                ConnectCallback = SsrfConnectValidator.ConnectAsync,
+            });
+
+        builder.Services.AddSingleton<IConfirmationChannel>(sp =>
+        {
+            var httpClientFactory = sp.GetRequiredService<IHttpClientFactory>();
+            return ConfirmationChannelFactory.Create(
+                config.Confirmation,
+                () => httpClientFactory.CreateClient(ConfirmationChannelFactory.WebhookHttpClientName),
+                warning => Console.Error.WriteLine($"[Lightning Enable MCP] WARNING: {warning}"));
+        });
+
         // Register singleton services
         builder.Services.AddSingleton<IBudgetService, BudgetService>();
         builder.Services.AddSingleton<IPaymentHistoryService, PaymentHistoryService>();
@@ -314,6 +342,15 @@ public class Program
             .WithToolSurface(toolProfile);
 
         var host = builder.Build();
+
+        // Resolve the approval channel eagerly so any misconfiguration warning lands at
+        // startup, next to the wallet and tool-profile banners — not on the first payment.
+        var confirmationChannel = host.Services.GetRequiredService<IConfirmationChannel>();
+        Console.Error.WriteLine(
+            $"[Lightning Enable MCP] Approval channel: {confirmationChannel.Kind.ToString().ToLowerInvariant()} "
+            + $"(set confirmation.channel in ~/.lightning-enable/config.json, or "
+            + $"{ConfirmationChannelResolver.ChannelEnvironmentVariable}={ConfirmationChannelResolver.ValidChannels})");
+
         await host.RunAsync();
     }
 }

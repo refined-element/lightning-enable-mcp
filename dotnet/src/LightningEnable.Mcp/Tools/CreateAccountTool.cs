@@ -153,26 +153,46 @@ public static class CreateAccountTool
 
                         if (!elicitationConfirmed)
                         {
-                            var pending = budgetService.CreatePendingConfirmation(
-                                maxSats, approval.AmountUsd, ToolName, $"activation for {email}", signupUrl);
+                            // OUT-OF-BAND CONFIRMATION: the code goes to the human on the CONFIGURED
+                            // approval channel (stderr locally; webhook/file/refuse when hosted) and
+                            // never into this result, so an injected agent can't self-approve.
+                            var dispatch = await budgetService.RequestConfirmationAsync(new ConfirmationRequest
+                            {
+                                AmountSats = maxSats,
+                                AmountUsd = approval.AmountUsd,
+                                ToolName = ToolName,
+                                Description = $"activation for {email}",
+                                Destination = signupUrl,
+                                Title = "ACCOUNT ACTIVATION CONFIRMATION REQUIRED",
+                                Summary = $"{ToolName} — {approval.AmountUsd:C} ({maxSats:N0} sats), email {email}"
+                            }, cancellationToken);
 
-                            // OUT-OF-BAND CONFIRMATION: code to STDERR only (human sees the server
-                            // console/logs; the model only sees tool results). The code MUST NOT
-                            // appear in the result — that is what stops a prompt-injected agent
-                            // from reading it and self-approving.
-                            Console.Error.WriteLine(
-                                "[Lightning Enable] *** ACCOUNT ACTIVATION CONFIRMATION REQUIRED ***\n" +
-                                $"  create_lightning_enable_account — {approval.AmountUsd:C} ({maxSats:N0} sats), email {email}\n" +
-                                $"  Confirmation code: {pending.Nonce}\n" +
-                                "  To approve, give this code to the agent. Expires in 120s.");
+                            if (!dispatch.Delivered)
+                            {
+                                return JsonSerializer.Serialize(new
+                                {
+                                    success = false,
+                                    requiresConfirmation = false,
+                                    confirmationChannel = dispatch.ChannelName,
+                                    error = dispatch.RefusalReason,
+                                    message = "The activation was REFUSED, not queued for approval — no human can be asked for a " +
+                                              "code on this server. Retrying will not help until the operator changes the configuration.",
+                                    amount = new
+                                    {
+                                        maxSats,
+                                        usd = Math.Round(approval.AmountUsd, 2)
+                                    }
+                                });
+                            }
 
                             return JsonSerializer.Serialize(new
                             {
                                 success = false,
                                 requiresConfirmation = true,
+                                confirmationChannel = dispatch.ChannelName,
                                 error = "Account activation requires human confirmation",
                                 message = $"This activation may cost up to {approval.AmountUsd:C} ({maxSats:N0} sats), above the " +
-                                          "auto-approve threshold. A confirmation code was printed to the server console/logs — " +
+                                          $"auto-approve threshold. A confirmation code was {dispatch.OperatorHint} — " +
                                           "visible to the human operator, NOT to you. Ask the human to read that code and give it to you.",
                                 howToConfirm = "Ask the human operator for the confirmation code shown in the server console, then call " +
                                                "create_lightning_enable_account(email=\"...\", confirmationNonce=\"<code-from-human>\").",

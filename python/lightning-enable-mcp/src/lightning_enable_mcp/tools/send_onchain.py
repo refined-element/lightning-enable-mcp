@@ -8,11 +8,11 @@ Supports Strike and LND wallets.
 import asyncio
 import json
 import logging
-import sys
 from typing import TYPE_CHECKING, Optional, Union
 
 from mcp.types import Tool
 
+from ..confirmation_channel import ConfirmationRequest
 from . import sanitize_error
 
 if TYPE_CHECKING:
@@ -144,25 +144,40 @@ async def send_onchain(
             })
         # Human-relayed code validated (amount + tool + address bound) — fall through and send.
     else:
-        pending = budget_service.create_pending_confirmation(
-            amount_sats, budget_result.amount_usd, "send_onchain", address, destination=address
+        # Code to the human on the CONFIGURED approval channel — the model never sees it, on
+        # any channel. On a "refuse" server there is no code at all and the (irreversible)
+        # send is turned down rather than left half-approved.
+        dispatch = await budget_service.request_confirmation(
+            ConfirmationRequest(
+                amount_sats=amount_sats,
+                amount_usd=budget_result.amount_usd,
+                tool_name="send_onchain",
+                description=address,
+                destination=address,
+                title="ON-CHAIN SEND CONFIRMATION REQUIRED (irreversible)",
+                summary=f"send_onchain — {amount_sats:,} sats to {address}",
+            )
         )
-        print(
-            "[Lightning Enable] *** ON-CHAIN SEND CONFIRMATION REQUIRED (irreversible) ***\n"
-            f"  send_onchain — {amount_sats:,} sats to {address}\n"
-            f"  Confirmation code: {pending.nonce}\n"
-            "  To approve, give this code to the agent. Expires in 120s.",
-            file=sys.stderr,
-            flush=True,
-        )
+        if not dispatch.delivered:
+            return json.dumps({
+                "success": False,
+                "requiresConfirmation": False,
+                "confirmationChannel": dispatch.channel_name,
+                "error": dispatch.refusal_reason,
+                "message": "The send was REFUSED, not queued for approval — no human can be asked for a "
+                           "code on this server. Retrying will not help until the operator changes the "
+                           "configuration.",
+                "amount": {"sats": amount_sats, "usd": float(budget_result.amount_usd)},
+            })
         return json.dumps({
             "success": False,
             "requiresConfirmation": True,
+            "confirmationChannel": dispatch.channel_name,
             "error": "On-chain send requires human confirmation",
             "message": f"On-chain sends are irreversible, so this {amount_sats:,}-sat send to {address} requires "
-                       "confirmation. A confirmation code was printed to the server console/logs — visible to the "
+                       f"confirmation. A confirmation code was {dispatch.operator_hint} — visible to the "
                        "human operator, NOT to you. Ask the human to read that code and give it to you.",
-            "howToConfirm": "Ask the human operator for the confirmation code shown in the server console, then call "
+            "howToConfirm": "Ask the human operator for the confirmation code, then call "
                             'send_onchain(address="...", amount_sats=..., confirmation_nonce="<code-from-human>").',
             "amount": {"sats": amount_sats, "usd": float(budget_result.amount_usd)},
             "expiresInSeconds": 120,

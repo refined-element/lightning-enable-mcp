@@ -315,6 +315,58 @@ class SessionSettings:
 
 
 @dataclass(frozen=True)
+class ConfirmationSettings:
+    """
+    The ``confirmation`` section of ~/.lightning-enable/config.json — where the out-of-band
+    confirmation code for an over-threshold payment is delivered.
+
+    Every value can also come from an environment variable (env wins); see
+    ``confirmation_channel.create_confirmation_channel``.
+
+    Note: This dataclass is frozen (immutable) - AI cannot modify at runtime.
+    """
+
+    channel: str | None = None
+    """
+    "stderr" | "refuse" | "webhook" | "file". Unset means decide automatically: stderr,
+    or refuse when LIGHTNING_ENABLE_HOSTED=1 and stdin is not a TTY.
+    """
+
+    webhook_url: str | None = None
+    """Operator URL the "webhook" channel POSTs to. Required for that channel."""
+
+    webhook_secret: str | None = None
+    """
+    Shared secret for the X-LightningEnable-Signature HMAC. Required for the "webhook"
+    channel — an unsigned approval POST is spoofable.
+    """
+
+    file_path: str | None = None
+    """
+    Path the "file" channel appends to. Defaults to ~/.lightning-enable/confirmations.jsonl.
+    Created 0600 on POSIX.
+    """
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ConfirmationSettings":
+        """Create ConfirmationSettings from a dictionary."""
+        return cls(
+            channel=data.get("channel"),
+            webhook_url=data.get("webhookUrl"),
+            webhook_secret=data.get("webhookSecret"),
+            file_path=data.get("filePath"),
+        )
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary for JSON serialization. Omits the secret."""
+        return {
+            "channel": self.channel,
+            "webhookUrl": self.webhook_url,
+            "filePath": self.file_path,
+        }
+
+
+@dataclass(frozen=True)
 class UserBudgetConfiguration:
     """
     User-configurable budget settings stored in ~/.lightning-enable/config.json.
@@ -341,6 +393,12 @@ class UserBudgetConfiguration:
     These can be set here instead of environment variables.
     """
 
+    confirmation: ConfirmationSettings = field(default_factory=ConfirmationSettings)
+    """
+    Where the out-of-band confirmation code for an over-threshold payment is delivered.
+    Defaults to the console (stderr) locally; see the "Deploying hosted" README section.
+    """
+
     lightning_enable_api_key: Optional[str] = None
     """
     Lightning Enable API key for L402 producer tools (create_l402_challenge, verify_l402_payment).
@@ -357,6 +415,7 @@ class UserBudgetConfiguration:
             limits=PaymentLimits.from_dict(data.get("limits", {})),
             session=SessionSettings.from_dict(data.get("session", {})),
             wallets=WalletSettings.from_dict(data.get("wallets", {})),
+            confirmation=ConfirmationSettings.from_dict(data.get("confirmation", {})),
             lightning_enable_api_key=data.get("lightningEnableApiKey"),
         )
 
@@ -368,6 +427,7 @@ class UserBudgetConfiguration:
             "limits": self.limits.to_dict(),
             "session": self.session.to_dict(),
             "wallets": self.wallets.to_dict(),
+            "confirmation": self.confirmation.to_dict(),
         }
 
 

@@ -55,17 +55,33 @@ uvx lightning-enable-mcp
 docker pull refinedelement/lightning-enable-mcp:latest
 ```
 
-### 2. Configure one L402-capable wallet
+### 2. First run — `setup_wallet`
 
-L402 — the whole point of this server — needs a wallet that returns the payment **preimage**. Set exactly one of these (as an env var, e.g. in the [Claude Desktop config](#claude-desktop-config) below):
+Nothing else works without a wallet, so start there. Ask your agent:
 
-- **Strike** (easiest to start) — `STRIKE_API_KEY`, from https://dashboard.strike.me
-- **NWC** (self-custody, Nostr) — `NWC_CONNECTION_STRING`, from CoinOS / CLINK / Alby Hub
+```
+Run setup_wallet
+```
+
+With no arguments it reports which wallet is configured and where the credential came from — the provider and the source, never the credential itself. If there is no wallet, it hands back the setup steps.
+
+**The shortest path is NWC.** In your wallet app (Alby Hub, CoinOS, or any NIP-47 wallet) create a Nostr Wallet Connect connection, copy the `nostr+walletconnect://` string, and give it to the agent:
+
+```
+Run setup_wallet with this connection string: nostr+walletconnect://...
+```
+
+`setup_wallet` validates the string, connects to the wallet to prove it answers, then writes it to `~/.lightning-enable/config.json` with the file's permissions restricted to your user. It reports the wallet's declared methods and balance. Restart the server afterwards so it picks up the new wallet.
+
+**Or set an environment variable** (in the [Claude Desktop config](#claude-desktop-config) below, say). L402 — the whole point of this server — needs a wallet that returns the payment **preimage**:
+
+- **Strike** — `STRIKE_API_KEY`, from https://dashboard.strike.me
+- **NWC** — `NWC_CONNECTION_STRING`, from CoinOS / CLINK / Alby Hub
 - **LND** (your own node — always returns a preimage) — `LND_REST_HOST` + `LND_MACAROON_HEX`
 
 > ⚠️ **OpenNode** (`OPENNODE_API_KEY`) works for **invoicing / direct payments only — it never returns a preimage, so it cannot pay L402 challenges.** Don't make it your only wallet if you want L402 (the core use case).
 
-If several are set, priority is: **LND > NWC > Strike > OpenNode**. See [Supported Wallets](#supported-wallets) for the full compatibility matrix.
+If several are set, priority is: **LND > NWC > Strike > OpenNode**, and **environment variables win over the config file** — `setup_wallet` refuses to write a connection string that an env var would override, and tells you which variable to unset. See [Supported Wallets](#supported-wallets) for the full compatibility matrix.
 
 ### 3. Prove the whole loop works — `test_l402_payment`
 

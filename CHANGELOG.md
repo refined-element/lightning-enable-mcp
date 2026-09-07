@@ -10,7 +10,8 @@ Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-ena
 
 ### Changed
 
-- **Tool surface consolidated: 26 advertised tools → 15, in both ports.** Every advertised
+- **Tool surface consolidated: 26 advertised tools → 15, in both ports** (16 once
+  `setup_wallet` is counted — see Added). Every advertised
   tool's JSON schema is loaded into the agent's context at the start of each session, so the
   tool surface was a token cost on every turn. Sixteen single-purpose tools are now five
   `action` verbs:
@@ -23,8 +24,9 @@ Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-ena
   | `l402_producer(action="create"\|"verify")` | `create_l402_challenge`, `verify_l402_payment` |
   | `agent_services(action="discover"\|"request"\|"settle"\|"publish"\|"unpublish"\|"attest"\|"reputation")` | the seven ASA tools |
 
-  Together with tightened descriptions this cuts the advertised schema payload by ~42%
-  (Python 17,926 → 10,259 bytes; .NET 17,864 → 10,479 bytes).
+  Together with tightened descriptions this cuts the advertised schema payload by ~40%
+  (Python 17,926 → 10,626 bytes; .NET 17,864 → 10,864 bytes) — measured on the final
+  16-tool surface, i.e. after `setup_wallet` was added below.
 
   **No behaviour changed.** Each action dispatches into the same handler the old tool called,
   so budget checks, out-of-band confirmation (including `send_onchain` always requiring a
@@ -38,11 +40,76 @@ Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-ena
 
 ### Added
 
+- **`setup_wallet` — NWC-first wallet onboarding, both ports.** Nothing else in the tool
+  surface works without a wallet, and an agent had no way to discover that or fix it: the
+  only signal was a stderr warning at startup and a "wallet not configured" string on
+  whatever tool it happened to call. Advertised in the `standard` AND `lite` profiles,
+  because an agent needs it before anything else.
+
+  With no arguments it reports which wallet is configured and where the credential came
+  from — the provider and the source, **never the credential** — or, when there is none,
+  the guided path: paste an NWC connection string, or set the LND/Strike env vars, with the
+  exact `config.json` shape to write by hand.
+
+  With `nwc_connection_string` it parses the string, refuses if an environment variable
+  already selects a wallet (env beats config, so writing the file would be a silent no-op),
+  probes the live wallet through the existing NWC client under a 10-second budget, and only
+  then writes `wallets.nwcConnectionString` — merged into the existing document so the
+  operator's limits and any unknown keys survive, with the same 0600 / `icacls` hardening as
+  first-run config creation. It reports the wallet's declared methods and balance; a
+  saved-but-dead credential would otherwise fail later, at a payment, where it is far more
+  expensive to diagnose.
+
+  The advertised inventory is now **16 tools = 14 free + 2 API-key-gated** (`lite` 6,
+  `full` 32).
+
+- **Sats-denominated budget limits: `limits.maxPerPaymentSats` / `limits.maxPerSessionSats`,
+  both ports** (env: `LIGHTNING_ENABLE_MAX_PER_PAYMENT_SATS` /
+  `LIGHTNING_ENABLE_MAX_PER_SESSION_SATS`). Spending limits were USD-only, so every budget
+  check needed a BTC price; three price sources being down is rare but real, and when it
+  happens the check cannot be evaluated and the payment is refused — correct, but it stops
+  the agent dead on a fault that has nothing to do with its budget.
+
+  A sats limit is enforced directly, with **no conversion and no price-feed dependency**. A
+  USD-only budget still fails closed exactly as before. With both denominations set, the
+  **stricter** cap wins on every check — USD is converted only when the feed is available;
+  when it is not, the sats caps carry the budget alone. Every gate (approval check, atomic
+  reservation, tighten) resolves the same three-way most-restrictive-wins across
+  USD-converted, sats, and the runtime tighten cap; tighten-only semantics are unchanged and
+  now also apply against a sats config cap.
+
+  `budget(action="status")` reports the effective cap in sats, which configured limit
+  produced it, the binding denomination (`usd` / `sats` / `runtime` / `none`), whether a
+  price was available, and one sentence on what is and is not in force.
+
+  The deliberate trade-off: during a price outage the USD *tier* thresholds cannot be
+  evaluated either, so a payment inside the sats caps is approved and logged
+  (`LOG_AND_APPROVE`) rather than prompting for a confirmation code the agent could not
+  obtain anyway. Setting a sats cap is the operator's explicit price-independent
+  authorization; a lower cap is the lever for tighter gating.
+
+- **The durable receipt log as MCP resources, both ports.** `lightning-enable://receipts`
+  (the most recent 200 receipts as JSONL, `application/x-ndjson`) and
+  `lightning-enable://receipts/{paymentHash}`. A tool call is the agent deciding to look; a
+  resource is something a client can attach, watch, or show a human without the model
+  spending a turn on it — and the spend log is exactly that kind of artifact. The `receipts`
+  tool is unchanged, and resources are unaffected by the tool profile: they cost no schema
+  bytes in the model's context.
+
+  Redaction now happens at the **read boundary**, so the tool and both resources are covered
+  by one pass. Receipts never carry a preimage by construction, but the log is a plain file
+  on the operator's disk — a hand-edit or a future writer could put one there, and by then
+  it is one read away from a model's context. Credential-shaped fields (preimage, secret,
+  macaroon, connection string, api key, …) are matched by property name, case-insensitively,
+  and their value is replaced with `[REDACTED]` so a reader can see the field was withheld.
+  The payment hash is deliberately not in that set: it is the safe reference the log is
+  keyed on.
+
 - **`LIGHTNING_ENABLE_TOOL_PROFILE` (`lite` | `standard` | `full`), both ports.** Chooses how
-  much of the surface `tools/list` advertises: `lite` = 5 tools (`pay_invoice`,
-  `access_l402_resource`, `get_balance`, `budget`, `receipts`); `standard` (the default) = the
-  15 consolidated tools; `full` = those plus every pre-consolidation name, for prompts and
-  scripts written against the old surface. An unset or unrecognized value resolves to
+  much of the surface `tools/list` advertises: `lite` = 6 tools (`setup_wallet`,
+  `pay_invoice`, `access_l402_resource`, `get_balance`, `budget`, `receipts`); `standard`
+  (the default) = the 16 tools above; `full` = those plus every pre-consolidation name, for
+  prompts and scripts written against the old surface. An unset or unrecognized value resolves to
   `standard` (unrecognized also warns) — never to an empty surface.
 
   **Profiles are listing-only.** A tool the profile does not advertise is still callable by
@@ -55,6 +122,26 @@ Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-ena
   `create_lightning_enable_account`, `wallet_ops`, `agent_services`), and `idempotentHint` on
   `budget`. Action tools are annotated for their **widest** action: `budget` is not read-only
   because `tighten` writes, and `wallet_ops` is destructive because `send_onchain` is.
+
+### Fixed
+
+- **An all-digit NWC wallet pubkey could never connect (.NET).** The 64-hex wallet pubkey in
+  a `nostr+walletconnect://` string is not a hostname, but it was read through `System.Uri`,
+  which applies host rules to it: an all-digit pubkey (a legal x-only key — rare, but a
+  wallet can mint one) parses as a malformed IPv4 literal and is rejected outright. The same
+  check was lossy in the other direction, accepting any host-shaped 64-character value, so a
+  non-hex "pubkey" only failed later at key derivation. Parsing now splits scheme, authority
+  and query by hand and validates the pubkey directly, as the Lightning Enable API does. (The
+  Python port was unaffected.)
+
+- **Agent-facing hints named the pre-consolidation tools.** Result messages still told agents
+  to call `settle_agent_service(...)`, `check get_budget_status`, `use verify_l402_payment`,
+  `set via configure_budget`. Those names still dispatch, so nothing was broken — the agent
+  was just steered onto the deprecated path, came back with a deprecation marker, and paid a
+  round trip for it. Every such hint now names the current call (`agent_services
+  action=settle`, `budget action=status`, `l402_producer action=verify`, `budget
+  action=tighten`), in both ports, with a drift guard in each so they cannot regress. The
+  deprecation aliases themselves are untouched.
 
 ### Deprecated
 

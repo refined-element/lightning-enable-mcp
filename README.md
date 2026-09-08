@@ -34,7 +34,7 @@ Give your AI agent a Lightning wallet and it can:
 - **Create invoices** — Generate invoices to receive payments
 - **Run wallet operations** — BTC price, currency exchange, and on-chain sends (Strike; on-chain also LND)
 - **Self-bootstrap a Lightning Enable account** — `create_lightning_enable_account` pays a ~100-sat activation fee over L402 and returns a merchant API key: the free→paid signup form that *is* the protocol, unlocking the producer + ASA tools with no browser or checkout page.
-- **Sell services (L402 Producer)** — Create L402 payment challenges and verify payments, enabling agents to be full commerce participants that both buy and sell
+- **Sell services (L402 Producer)** — Set up the seller account, put an API behind L402, price its routes, list it publicly, mint payment challenges and verify payer tokens — all from one tool, so an agent can go from an API key to a paid endpoint without touching REST
 - **Agent commerce (ASA)** — Discover, request, settle, and review agent-to-agent services on Nostr
 
 ## Quick Start
@@ -301,7 +301,7 @@ The satoshi **ceilings** still bound the spend. But a ceiling says *"never more 
 
 Five of these are *action* tools: pass `action` (or `source` for `receipts`) to pick the operation. They replace 16 single-purpose tools whose schemas used to be loaded into the agent's context on every session — see [Tool profiles and old tool names](#tool-profiles-and-old-tool-names). **Every old name still works.**
 
-> **ASA availability note.** `agent_services` with `action` `discover`, `settle` or `unpublish` works against the hosted API today, as do both `l402_producer` actions. The agent-to-agent coordination actions — `publish`, `request`, `attest`, `reputation` — use the agent capability backend, which is **not yet enabled on the hosted Lightning Enable API** (calls there currently return an error) and are in preview. Marketplace listings are published today via the Lightning Enable dashboard / L402 proxy pipeline.
+> **ASA availability note.** `agent_services` with `action` `discover`, `settle` or `unpublish` works against the hosted API today, as do `l402_producer`'s `create` and `verify`. The agent-to-agent coordination actions — `publish`, `request`, `attest`, `reputation` — use the agent capability backend, which is **not yet enabled on the hosted Lightning Enable API** (calls there currently return an error) and are in preview. Marketplace listings are published today via the Lightning Enable dashboard / L402 proxy pipeline.
 
 | Tool | Access | What it does |
 |------|--------|--------------|
@@ -319,7 +319,7 @@ Five of these are *action* tools: pass `action` (or `source` for `receipts`) to 
 | `wallet_ops` | Free | `action`: `price`, `exchange`, or `send_onchain` (Strike; `send_onchain` also LND) |
 | `verify_confirmation_code` | Free | Verify an out-of-band payment confirmation code (verification only — never pays) |
 | `create_lightning_enable_account` | Free | Self-bootstrap signup: pay ~100 sats, get a merchant API key |
-| `l402_producer` | Agentic Commerce | `action`: `create` an L402 challenge, or `verify` a payer's token |
+| `l402_producer` | Agentic Commerce | `action`: `configure_receive`, `status`, `create_proxy`, `add_endpoint`, `publish`, `list_challenges`, `create`, `verify` — the whole seller side |
 | `agent_services` | Agentic Commerce | `action`: `discover`, `request`, `settle`, `publish`, `unpublish`, `attest`, `reputation` |
 
 `create_lightning_enable_account` is free and *self-provisions* the API key the 2 gated tools need — an agent with a wallet pays a ~100-sat activation fee and unlocks them on the spot.
@@ -413,6 +413,61 @@ lightning-enable-mcp/
 ├── LICENSE                               # MIT
 └── README.md                             # This file
 ```
+
+## Selling with L402 (the `l402_producer` tool)
+
+The whole seller side behind one tool. Pass `action` to pick the operation. Every action
+needs `LIGHTNING_ENABLE_API_KEY` (an [Agentic Commerce subscription](https://lightningenable.com));
+no action can spend your wallet.
+
+> **API version.** `create`, `verify`, `create_proxy`, `add_endpoint` and `publish` work
+> against every Lightning Enable API build. `configure_receive` needs the NWC receiving lane
+> and `list_challenges` needs the challenge-listing route, both of which ship with the API
+> release this version targets. Run `l402_producer(action="status")` first — it degrades
+> gracefully and tells you what the deployment you are pointed at supports.
+
+| Action | Arguments | What it does |
+|--------|-----------|--------------|
+| `configure_receive` | `nwc_connection_string` *(optional)* | Point L402 payouts at a wallet you control |
+| `status` | `limit` | Plan, receiving wallet, onboarding checklist, recent mints *(read-only)* |
+| `create_proxy` | `name`, `target_base_url`, `description`, `default_price_sats` | Put an existing API behind L402 |
+| `add_endpoint` | `proxy_id`, `endpoint_id`, `path`, `http_method`, `summary`, `price_sats` | Price one route |
+| `publish` | `proxy_id`, `service_name`, `service_description`, `categories` | List the service so other agents can find it |
+| `list_challenges` | `challenge_status`, `limit`, `offset` | Read back what you minted *(read-only)* |
+| `create` | `resource`, `price_sats`, `description` | Mint a one-off invoice + macaroon challenge |
+| `verify` | `macaroon`, `preimage` | Check a payer's token before granting access |
+
+### From an API key to a paid endpoint
+
+No dashboard, no REST client, no human in the loop. Each step is one tool call:
+
+1. **Get an API key.** `create_lightning_enable_account` — pays a ~100-sat activation fee
+   from your wallet and writes the key to `~/.lightning-enable/config.json`. Restart the
+   server so the gated tools unlock. *(Skip if you already have a key.)*
+2. **Point payouts at your own wallet.**
+   `l402_producer(action="configure_receive")` — with no argument it reuses the NWC wallet
+   this server already pays with; pass `nwc_connection_string` to use a different one. The
+   string is never echoed back, only `<set>`.
+3. **Check where you stand.** `l402_producer(action="status")` — plan, receiving wallet, and
+   the onboarding checklist, so the agent can see what is still missing.
+4. **Put your API behind L402.**
+   `l402_producer(action="create_proxy", name="Weather API", target_base_url="https://api.example.com", default_price_sats=25)`
+   — returns a `proxy_id` and the public base URL. Every request under it now answers `402`
+   until it is paid.
+5. **Price each route.**
+   `l402_producer(action="add_endpoint", proxy_id="weather-api", endpoint_id="forecast", path="/forecast", http_method="GET", price_sats=10)`
+   — repeat per route.
+6. **List it.**
+   `l402_producer(action="publish", proxy_id="weather-api", service_description="Five-day forecasts for agents", categories=["weather"])`
+   — returns the OpenAPI and manifest URLs. Other agents find it through `discover_api`.
+7. **Watch the money arrive.**
+   `l402_producer(action="list_challenges", challenge_status="paid")` — payment hash,
+   resource, amount and status. Never a macaroon, never a preimage.
+
+For a resource you are not proxying — a file, a report, a one-off answer — skip steps 4-6 and
+use `create` / `verify` directly.
+
+Payouts settle on **your** wallet. Lightning Enable does not hold the funds.
 
 ## Agent Service Agreements (the `agent_services` tool)
 

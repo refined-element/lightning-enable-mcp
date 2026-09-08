@@ -140,31 +140,110 @@ WALLET_OPS_TOOL = Tool(
 L402_PRODUCER_TOOL = Tool(
     name="l402_producer",
     description=(
-        "Sell access with L402: mint a payment challenge, then verify the token a "
-        "payer presents. Requires LIGHTNING_ENABLE_API_KEY."
+        "Sell access with L402: set up the seller account, monetize an API, mint "
+        "challenges and verify payer tokens. Requires LIGHTNING_ENABLE_API_KEY."
     ),
     inputSchema={
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["create", "verify"],
+                "enum": [
+                    "create",
+                    "verify",
+                    "configure_receive",
+                    "status",
+                    "create_proxy",
+                    "add_endpoint",
+                    "publish",
+                    "list_challenges",
+                ],
                 "description": (
                     "create: mint an invoice + macaroon challenge. verify: check a "
-                    "payer's token before granting access."
+                    "payer's token before granting access. configure_receive: point "
+                    "payouts at your own NWC wallet. status: plan, wallet, checklist "
+                    "and recent mints (read-only). create_proxy: put an API behind "
+                    "L402. add_endpoint: price one route. publish: list the service "
+                    "publicly. list_challenges: read what you minted (read-only). "
+                    "Pass only the arguments tagged with your action."
                 ),
             },
             "resource": {
                 "type": "string",
                 "description": "create: URL or name you are charging for",
             },
-            "price_sats": {"type": "integer", "description": "create: price in sats"},
+            "price_sats": {
+                "type": "integer",
+                "description": "create/add_endpoint: price in sats",
+            },
             "description": {
                 "type": "string",
-                "description": "create: text on the invoice",
+                "description": "create: invoice text; create_proxy: what the API does",
             },
             "macaroon": {"type": "string", "description": "verify: base64 macaroon"},
             "preimage": {"type": "string", "description": "verify: hex preimage"},
+            "nwc_connection_string": {
+                "type": "string",
+                "description": (
+                    "configure_receive: nostr+walletconnect:// string; omit to reuse "
+                    "this server's own NWC wallet"
+                ),
+            },
+            "name": {"type": "string", "description": "create_proxy: service name"},
+            "target_base_url": {
+                "type": "string",
+                "description": "create_proxy: https:// base URL to monetize",
+            },
+            "default_price_sats": {
+                "type": "integer",
+                "description": "create_proxy: default price per request",
+            },
+            "proxy_id": {
+                "type": "string",
+                "description": "add_endpoint/publish: id from create_proxy",
+            },
+            "endpoint_id": {
+                "type": "string",
+                "description": "add_endpoint: stable id for the route",
+            },
+            "path": {
+                "type": "string",
+                "description": "add_endpoint: route path like /forecast",
+            },
+            "http_method": {
+                "type": "string",
+                "description": "add_endpoint: GET, POST, ... (default GET)",
+            },
+            "summary": {
+                "type": "string",
+                "description": "add_endpoint: one-line summary",
+            },
+            "service_name": {
+                "type": "string",
+                "description": "publish: rename the listed service",
+            },
+            "service_description": {
+                "type": "string",
+                "description": "publish: registry description",
+            },
+            "categories": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "publish: registry categories",
+            },
+            "challenge_status": {
+                "type": "string",
+                "enum": ["paid", "unpaid", "expired"],
+                "description": "list_challenges: filter; omit for all",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "status/list_challenges: max rows",
+            },
+            "offset": {
+                "type": "integer",
+                "description": "list_challenges: rows to skip",
+            },
         },
         "required": ["action"],
     },
@@ -276,7 +355,19 @@ ACTION_TOOLS: dict[str, tuple[str, tuple[str, ...]]] = {
     "budget": ("action", ("status", "tighten")),
     "receipts": ("source", ("durable", "session")),
     "wallet_ops": ("action", ("price", "exchange", "send_onchain")),
-    "l402_producer": ("action", ("create", "verify")),
+    "l402_producer": (
+        "action",
+        (
+            "create",
+            "verify",
+            "configure_receive",
+            "status",
+            "create_proxy",
+            "add_endpoint",
+            "publish",
+            "list_challenges",
+        ),
+    ),
     "agent_services": (
         "action",
         (

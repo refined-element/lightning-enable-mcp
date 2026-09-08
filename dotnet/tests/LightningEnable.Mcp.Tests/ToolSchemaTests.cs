@@ -31,11 +31,21 @@ public class ToolSchemaTests
     ///
     /// <para>Raised 0.60 → 0.65 when <c>setup_wallet</c> was added. That tool is not
     /// sprawl — nothing else in the surface works without a wallet, and an agent had no way
-    /// to discover or fix that — but it is ~300 bytes the 0.60 budget did not allow for.
-    /// The consolidation still delivers a ~39% reduction, and the guard keeps roughly 750
-    /// bytes of headroom, so it fails again on the next couple of verbose additions.</para>
+    /// to discover or fix that — but it is ~300 bytes the 0.60 budget did not allow for.</para>
+    ///
+    /// <para>Raised 0.65 → 0.78 when <c>l402_producer</c> grew the six seller-setup actions
+    /// (<c>configure_receive</c>, <c>status</c>, <c>create_proxy</c>, <c>add_endpoint</c>,
+    /// <c>publish</c>, <c>list_challenges</c>). That is ~1.3KB of new arguments, and it is
+    /// the shape this budget exists to encourage: six capabilities folded into an EXISTING
+    /// verb rather than six new tools, and the whole seller side stops needing raw REST. The
+    /// surface still lands near 72% of the pre-consolidation payload, and the guard keeps
+    /// roughly 1KB of headroom, so it fails again on the next verbose addition.</para>
+    ///
+    /// <para>The Python guard (<c>tests/test_tool_profiles.py</c>) holds the same line at a
+    /// different number — its schemas are smaller because the .NET SDK emits a richer
+    /// per-parameter schema — so the two fractions are tuned independently, not copied.</para>
     /// </summary>
-    private const double MaxStandardFraction = 0.65;
+    private const double MaxStandardFraction = 0.78;
 
     private static readonly IReadOnlySet<string> MoneyMovingTools = new HashSet<string>
     {

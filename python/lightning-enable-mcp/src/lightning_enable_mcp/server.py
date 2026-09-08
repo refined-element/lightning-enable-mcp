@@ -58,6 +58,14 @@ from .tools.get_btc_price import get_btc_price
 from .tools.get_receipts import get_receipts
 from .tools.pay_challenge import pay_l402_challenge
 from .tools.pay_invoice import pay_invoice
+from .tools.producer_setup import (
+    add_endpoint,
+    configure_receive,
+    create_proxy,
+    producer_status,
+)
+from .tools.producer_setup import list_challenges as list_l402_challenges
+from .tools.producer_setup import publish as publish_l402_service
 from .tools.profiles import PROFILE_ENV_VAR, resolve_profile
 from .tools.publish_agent_attestation import publish_agent_attestation
 from .tools.publish_agent_capability import publish_agent_capability
@@ -504,6 +512,49 @@ class LightningEnableServer:
                         result = await verify_l402_payment(
                             macaroon=arguments.get("macaroon", ""),
                             preimage=arguments.get("preimage", ""),
+                            api_client=self.api_client,
+                        )
+                    elif action == "configure_receive":
+                        result = await configure_receive(
+                            nwc_connection_string=arguments.get("nwc_connection_string"),
+                            api_client=self.api_client,
+                        )
+                    elif action == "status":
+                        result = await producer_status(
+                            limit=arguments.get("limit", 5),
+                            api_client=self.api_client,
+                        )
+                    elif action == "create_proxy":
+                        result = await create_proxy(
+                            name=arguments.get("name", ""),
+                            target_base_url=arguments.get("target_base_url", ""),
+                            description=arguments.get("description"),
+                            default_price_sats=arguments.get("default_price_sats", 10),
+                            api_client=self.api_client,
+                        )
+                    elif action == "add_endpoint":
+                        result = await add_endpoint(
+                            proxy_id=arguments.get("proxy_id", ""),
+                            endpoint_id=arguments.get("endpoint_id", ""),
+                            path=arguments.get("path", ""),
+                            http_method=arguments.get("http_method", "GET"),
+                            summary=arguments.get("summary"),
+                            price_sats=arguments.get("price_sats", 0),
+                            api_client=self.api_client,
+                        )
+                    elif action == "publish":
+                        result = await publish_l402_service(
+                            proxy_id=arguments.get("proxy_id", ""),
+                            service_name=arguments.get("service_name"),
+                            service_description=arguments.get("service_description"),
+                            categories=arguments.get("categories"),
+                            api_client=self.api_client,
+                        )
+                    elif action == "list_challenges":
+                        result = await list_l402_challenges(
+                            status=arguments.get("challenge_status"),
+                            limit=arguments.get("limit", 20),
+                            offset=arguments.get("offset", 0),
                             api_client=self.api_client,
                         )
                     else:

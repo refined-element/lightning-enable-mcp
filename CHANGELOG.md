@@ -25,8 +25,11 @@ Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-ena
   | `agent_services(action="discover"\|"request"\|"settle"\|"publish"\|"unpublish"\|"attest"\|"reputation")` | the seven ASA tools |
 
   Together with tightened descriptions this cuts the advertised schema payload by ~40%
-  (Python 17,926 → 10,626 bytes; .NET 17,864 → 10,864 bytes) — measured on the final
-  16-tool surface, i.e. after `setup_wallet` was added below.
+  (Python 17,926 → 10,626 bytes; .NET 17,864 → 10,864 bytes) — measured on the 16-tool
+  surface as consolidated, i.e. after `setup_wallet` was added below and before the six
+  seller-setup actions were added to `l402_producer`. With those, the shipped `standard`
+  surface is 12,475 bytes (Python) / 12,910 bytes (.NET) — still ~30% under the old
+  26-tool payload, and still 16 tools.
 
   **No behaviour changed.** Each action dispatches into the same handler the old tool called,
   so budget checks, out-of-band confirmation (including `send_onchain` always requiring a
@@ -39,6 +42,56 @@ Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-ena
   a tool result — ask the human) is kept verbatim everywhere it applies.
 
 ### Added
+
+- **The seller side is now fully tool-driven: six new `l402_producer` actions, both ports.**
+  `create` and `verify` handle one challenge each, but everything that has to happen *before*
+  either is worth calling was raw REST an agent could not reach. An agent with an API key can
+  now go from nothing to a monetized endpoint receiving payments on the merchant's own
+  wallet without leaving the tool surface:
+
+  | Action | Arguments | What it does |
+  |--------|-----------|--------------|
+  | `configure_receive` | `nwc_connection_string` (optional) | Stores the receiving wallet (`PUT /api/merchant/nwc-connection`), then switches the account to it (`PUT /api/merchant/payment-provider`) |
+  | `status` | `limit` | Plan, receiving wallet, onboarding checklist and the most recent mints (read-only) |
+  | `create_proxy` | `name`, `target_base_url`, `description`, `default_price_sats` | Puts an upstream API behind L402; returns the public base URL |
+  | `add_endpoint` | `proxy_id`, `endpoint_id`, `path`, `http_method`, `summary`, `price_sats` | Prices one route and adds it to the manifest |
+  | `publish` | `proxy_id`, `service_name`, `service_description`, `categories` | Enables the manifest and lists it publicly; returns the OpenAPI and manifest URLs |
+  | `list_challenges` | `challenge_status`, `limit`, `offset` | Reads back what was minted (read-only) |
+
+  Argument names follow each port's convention, as they already did: `price_sats` in Python,
+  `priceSats` in .NET. The filter on `list_challenges` is `challenge_status`, not `status`,
+  because `status` is an action name.
+
+  **Same tool, new actions — the advertised inventory is unchanged at 16.** `create` and
+  `verify` are untouched, and both deprecated aliases (`create_l402_challenge`,
+  `verify_l402_payment`) still forward exactly as before.
+
+  **API version.** `create_proxy`, `add_endpoint` and `publish` work against every Lightning
+  Enable API build. `configure_receive` needs the NWC receiving lane
+  (`PUT /api/merchant/nwc-connection`, provider `nwc`) and `list_challenges` needs
+  `GET /api/l402/challenges`, both of which ship with the API release this version targets.
+  `status` degrades gracefully — it reports what the deployment it reached could answer.
+
+  `configure_receive` with no argument reuses the wallet this MCP server itself pays with,
+  but **only when that wallet is an NWC wallet** — an LND / Strike / OpenNode server is
+  refused with a message naming its wallet rather than sent a credential that cannot serve
+  as a receiving connection. The connection string is validated locally before it goes on
+  the wire, and **never comes back**: every result reports `nwcConnectionString: <set>`, and
+  the result JSON is scrubbed of the string (in both its raw and JSON-escaped spellings) in
+  case an upstream error body quoted it.
+
+  Errors surface the Lightning Enable API's own members. It answers in RFC 9457
+  `application/problem+json` with `type`/`title`/`detail` alongside the legacy
+  `error`/`message`, so a failure carries the prose to act on (`"Plan 'free' caps proxy
+  configs at 1"`) *and* the stable slug to branch on (`errorCode: plan_proxy_limit`), plus
+  per-field `validationErrors` when the API rejects a body. The API key never appears in a
+  result. `list_challenges` and `status` copy an allowlist of challenge fields, so a
+  macaroon or preimage cannot ride along — the payment hash is the correlation handle.
+
+  This is ~1.9KB (Python) / ~1.3KB (.NET) of extra schema, so both ports' schema-size guards
+  were raised (0.60 → 0.75 and 0.65 → 0.78 of the pre-consolidation payload). That is the
+  trade the guard exists to make visible: six capabilities folded into an existing verb, with
+  ~1KB of headroom left before it fails again.
 
 - **`setup_wallet` — NWC-first wallet onboarding, both ports.** Nothing else in the tool
   surface works without a wallet, and an agent had no way to discover that or fix it: the

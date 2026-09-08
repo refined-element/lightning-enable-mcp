@@ -59,6 +59,20 @@ public interface IWalletOnboardingService
     WalletSetupState Describe();
 
     /// <summary>
+    /// The NWC connection string THIS server pays with, or <c>null</c> when the wallet that
+    /// wins the priority order is not an NWC wallet.
+    /// </summary>
+    /// <remarks>
+    /// The one place a credential leaves this service, and it exists for exactly one caller:
+    /// <c>l402_producer action=configure_receive</c>, which can hand the operator's own
+    /// wallet to Lightning Enable as the RECEIVING wallet instead of making them paste the
+    /// string again. LND, Strike and OpenNode credentials are not connection strings and
+    /// cannot serve that purpose, so those return <c>null</c> and the caller refuses with a
+    /// message naming the wallet. The value is never logged and never reaches a tool result.
+    /// </remarks>
+    string? ResolveOwnNwcConnectionString();
+
+    /// <summary>
     /// Connects to the wallet the connection string names and asks it what it can do.
     /// Bounded by <see cref="WalletOnboardingService.ProbeTimeout"/> so a black-holed relay
     /// cannot hang the setup call.
@@ -165,6 +179,28 @@ public sealed class WalletOnboardingService : IWalletOnboardingService
             FromEnvironment: winner.Env,
             ConfiguredProviders: configured.Select(c => c.Provider).ToList(),
             ConfigFilePath: _configFilePath);
+    }
+
+    /// <inheritdoc />
+    public string? ResolveOwnNwcConnectionString()
+    {
+        // Only when NWC actually WINS the priority order. A server holding both an LND node
+        // and a leftover NWC string is an LND server, and handing over the NWC wallet would
+        // point the merchant's payouts somewhere they are not spending from.
+        if (!string.Equals(Describe().Provider, "NWC", StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        // Env beats config, exactly as Program's own wallet selection does.
+        var fromEnvironment = Environment.GetEnvironmentVariable("NWC_CONNECTION_STRING");
+        if (!string.IsNullOrEmpty(fromEnvironment)
+            && !fromEnvironment.StartsWith("${", StringComparison.Ordinal))
+        {
+            return fromEnvironment;
+        }
+
+        return _configService?.Configuration?.Wallets?.NwcConnectionString;
     }
 
     /// <summary>An env var counts only when set and actually expanded (not a literal "${...}").</summary>

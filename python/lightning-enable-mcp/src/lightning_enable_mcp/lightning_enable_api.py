@@ -9,6 +9,7 @@ import logging
 import os
 import time
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -18,6 +19,19 @@ logger = logging.getLogger("lightning-enable-mcp.api")
 
 DEFAULT_BASE_URL = "https://api.lightningenable.com"
 REQUEST_TIMEOUT = 30.0
+
+#: Shown when a producer-setup call is made without a merchant API key. Names both places
+#: the key can live and both ways to get one, because an agent that hits this has no other
+#: route forward.
+PRODUCER_API_KEY_REQUIRED = (
+    "Lightning Enable API key not configured. "
+    "Set LIGHTNING_ENABLE_API_KEY environment variable or add 'lightningEnableApiKey' to "
+    "~/.lightning-enable/config.json. "
+    "Requires an Agentic Commerce subscription at https://lightningenable.com. "
+    "Get an API key: 30-day free trial at "
+    "https://api.lightningenable.com/Checkout?plan=individual&utm_source=mcp&utm_medium=tool-hint&utm_campaign=gtm-aug-2026 "
+    "— or call the `create_lightning_enable_account` tool to sign up right here."
+)
 
 
 class LightningEnableApiClient:
@@ -437,8 +451,6 @@ class LightningEnableApiClient:
                 ),
             }
 
-        from urllib.parse import quote
-
         path_proxy = quote(proxy_id, safe="")
         request_body: dict[str, Any] = {}
         if reason:
@@ -642,6 +654,221 @@ class LightningEnableApiClient:
             return {"success": False, "error": "Query failed: Request timed out"}
         except Exception as e:
             return {"success": False, "error": f"Query failed: {e}"}
+
+    # =========================================================================
+    # Producer setup operations (the seller side of the account)
+    #
+    # Everything a merchant has to do BEFORE minting a challenge is worth
+    # anything: point payouts at their own wallet, register an API, price its
+    # endpoints, list it, and read back what was minted. Each maps to one route
+    # on the Lightning Enable API and is called by the `l402_producer` tool.
+    #
+    # These go through `_producer_request`, which is RFC 9457-aware: the API
+    # answers errors as application/problem+json carrying `type`/`title`/`detail`
+    # ALONGSIDE the legacy `error`/`message` members, and an agent needs the
+    # prose AND the stable slug. The two original methods above keep their own
+    # narrower error handling so their published result shape cannot shift.
+    # =========================================================================
+
+    @property
+    def base_url(self) -> str:
+        """The Lightning Enable API this client talks to (no trailing slash)."""
+        return self._base_url
+
+    async def _producer_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_body: dict[str, Any] | None = None,
+        params: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """One producer-setup API call.
+
+        Returns ``{"success": True, "data": {...}, "httpStatus": n}`` or a failure dict
+        carrying the API's own error members. The API key rides in a header set once in
+        ``__init__`` and is never part of a result.
+        """
+        if not self.is_configured:
+            return {"success": False, "error": PRODUCER_API_KEY_REQUIRED}
+
+        try:
+            response = await self._client.request(
+                method,
+                f"{self._base_url}{path}",
+                json=json_body,
+                params=params,
+            )
+        except httpx.TimeoutException:
+            return {
+                "success": False,
+                "error": f"Request timed out calling {method} {path}",
+            }
+        except httpx.HTTPError as e:
+            return {"success": False, "error": f"HTTP error calling {method} {path}: {e}"}
+
+        data = self._safe_json(response)
+        if response.status_code >= 400:
+            return {"success": False, **self._problem_error(response, data)}
+
+        return {
+            "success": True,
+            "data": data if isinstance(data, dict) else {},
+            "httpStatus": response.status_code,
+        }
+
+    async def save_nwc_connection(self, nwc_connection_string: str) -> dict[str, Any]:
+        """``PUT /api/merchant/nwc-connection`` — store the merchant's receiving wallet.
+
+        The argument is a live wallet credential. It is sent, never returned, never
+        logged, and never placed in an error message.
+        """
+        return await self._producer_request(
+            "PUT",
+            "/api/merchant/nwc-connection",
+            json_body={"nwcConnectionString": nwc_connection_string},
+        )
+
+    async def set_payment_provider(self, provider: str) -> dict[str, Any]:
+        """``PUT /api/merchant/payment-provider`` — pick the lane invoices are minted on."""
+        return await self._producer_request(
+            "PUT",
+            "/api/merchant/payment-provider",
+            json_body={"provider": provider},
+        )
+
+    async def get_merchant_account(self) -> dict[str, Any]:
+        """``GET /api/merchant/me`` — plan, entitlements and onboarding flags."""
+        return await self._producer_request("GET", "/api/merchant/me")
+
+    async def get_quickstart(self) -> dict[str, Any]:
+        """``GET /api/merchant/quickstart`` — the onboarding checklist, when present."""
+        return await self._producer_request("GET", "/api/merchant/quickstart")
+
+    async def list_challenges(
+        self,
+        status: str | None = None,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """``GET /api/l402/challenges`` — this merchant's minted challenges."""
+        params: dict[str, str] = {"limit": str(limit), "offset": str(offset)}
+        if status:
+            params["status"] = status
+        return await self._producer_request(
+            "GET", "/api/l402/challenges", params=params
+        )
+
+    async def create_proxy(
+        self,
+        name: str,
+        target_base_url: str,
+        description: str | None = None,
+        default_price_sats: int = 10,
+    ) -> dict[str, Any]:
+        """``POST /api/proxy`` — register an upstream API for L402 monetization."""
+        body: dict[str, Any] = {
+            "name": name,
+            "targetBaseUrl": target_base_url,
+            "defaultPriceSats": default_price_sats,
+        }
+        if description:
+            body["description"] = description
+        return await self._producer_request("POST", "/api/proxy", json_body=body)
+
+    async def rename_proxy(self, proxy_id: str, name: str) -> dict[str, Any]:
+        """``PUT /api/proxy/{proxyId}`` — set the proxy name.
+
+        The manifest's ``service.name`` is the proxy's own ``Name``, so publishing under a
+        different service name is a proxy update, not a manifest-settings field.
+        """
+        return await self._producer_request(
+            "PUT", f"/api/proxy/{quote(proxy_id, safe='')}", json_body={"name": name}
+        )
+
+    async def create_manifest_endpoint(
+        self,
+        proxy_id: str,
+        endpoint_id: str,
+        path: str,
+        http_method: str,
+        summary: str | None,
+        base_price_sats: int,
+    ) -> dict[str, Any]:
+        """``POST /api/proxy/{proxyId}/manifest/endpoints`` — price one route."""
+        body: dict[str, Any] = {
+            "endpointId": endpoint_id,
+            "path": path,
+            "httpMethod": http_method,
+            "basePriceSats": base_price_sats,
+        }
+        if summary:
+            body["summary"] = summary
+        return await self._producer_request(
+            "POST",
+            f"/api/proxy/{quote(proxy_id, safe='')}/manifest/endpoints",
+            json_body=body,
+        )
+
+    async def update_manifest_settings(
+        self,
+        proxy_id: str,
+        service_description: str | None = None,
+        categories: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """``PUT /api/proxy/{proxyId}/manifest/settings`` — publish and list the manifest."""
+        body: dict[str, Any] = {
+            "manifestEnabled": True,
+            "manifestPubliclyListed": True,
+        }
+        if service_description:
+            body["serviceDescription"] = service_description
+        if categories:
+            body["categories"] = categories
+        return await self._producer_request(
+            "PUT",
+            f"/api/proxy/{quote(proxy_id, safe='')}/manifest/settings",
+            json_body=body,
+        )
+
+    @staticmethod
+    def _problem_error(response: httpx.Response, data: Any) -> dict[str, Any]:
+        """The API's own error members, as an agent-readable dict.
+
+        Prefers RFC 9457 ``detail`` (the prose about THIS occurrence), then the legacy
+        ``message``/``error``, then ``title``. ``type`` and the ``error`` slug are carried
+        separately so a caller can branch on a stable identifier instead of prose. Keys
+        that are not present are dropped rather than reported as null.
+        """
+        result: dict[str, Any] = {
+            "error": f"API returned {response.status_code}",
+            "httpStatus": response.status_code,
+        }
+        if not isinstance(data, dict):
+            return result
+
+        for key in ("detail", "message", "error", "title"):
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                result["error"] = value
+                break
+
+        problem_type = data.get("type")
+        if isinstance(problem_type, str) and problem_type:
+            result["errorType"] = problem_type
+
+        code = data.get("error")
+        if isinstance(code, str) and code:
+            result["errorCode"] = code
+
+        # ASP.NET model-validation bodies put the per-field failures here and carry no
+        # detail/message at all, so without this the agent only sees "One or more
+        # validation errors occurred" and cannot tell which field it got wrong.
+        validation = data.get("errors")
+        if isinstance(validation, dict) and validation:
+            result["validationErrors"] = validation
+
+        return result
 
     @staticmethod
     def _safe_json(response: httpx.Response) -> Any:

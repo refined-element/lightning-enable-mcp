@@ -40,7 +40,19 @@ from lightning_enable_mcp.tools.registry import (
 PRE_CONSOLIDATION_SCHEMA_BYTES = 17_926
 
 #: The consolidated surface must be well under the old one, not marginally under.
-MAX_STANDARD_FRACTION = 0.60
+#:
+#: Raised 0.60 → 0.75 when ``l402_producer`` grew the six seller-setup actions
+#: (``configure_receive``, ``status``, ``create_proxy``, ``add_endpoint``, ``publish``,
+#: ``list_challenges``). That is ~1.9KB of new arguments, and it is the shape the budget
+#: is meant to encourage: six capabilities folded into an EXISTING verb rather than six
+#: new tools, and the whole seller side stops needing raw REST. The surface still lands
+#: near 70% of the pre-consolidation payload, and the guard keeps roughly 950 bytes of
+#: headroom, so the next verbose addition fails again.
+#:
+#: ``ToolSchemaTests.cs`` holds the same line at a different number — the .NET SDK emits a
+#: richer per-parameter schema, so that port's payload is larger. The two fractions are
+#: tuned independently rather than copied.
+MAX_STANDARD_FRACTION = 0.75
 
 
 def schema_bytes(tools) -> int:

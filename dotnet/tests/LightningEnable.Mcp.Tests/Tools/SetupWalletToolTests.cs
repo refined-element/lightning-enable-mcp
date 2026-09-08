@@ -37,7 +37,12 @@ public class SetupWalletToolTests
         public int SaveCalls { get; private set; }
         public string? Probed { get; private set; }
 
+        /// <summary>What the server's own wallet would hand to <c>configure_receive</c>.</summary>
+        public string? OwnNwcConnectionString { get; set; }
+
         public WalletSetupState Describe() => State;
+
+        public string? ResolveOwnNwcConnectionString() => OwnNwcConnectionString;
 
         public Task<NwcProbeResult> ProbeNwcAsync(string connectionString, CancellationToken ct = default)
         {

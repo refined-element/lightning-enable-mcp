@@ -61,7 +61,7 @@
         },
         {
           "name": "LIGHTNING_ENABLE_TOOL_PROFILE",
-          "description": "How many tools to advertise: lite (5), standard (15, default), or full (adds the pre-consolidation tool names).",
+          "description": "How many tools to advertise: lite (the five spend/read basics), standard (default), or full (adds the deprecated legacy names), or full (adds the pre-consolidation tool names).",
           "isRequired": false,
           "isSecret": false,
           "default": "standard"
@@ -122,7 +122,7 @@
         },
         {
           "name": "LIGHTNING_ENABLE_TOOL_PROFILE",
-          "description": "How many tools to advertise: lite (5), standard (15, default), or full (adds the pre-consolidation tool names).",
+          "description": "How many tools to advertise: lite (the five spend/read basics), standard (default), or full (adds the deprecated legacy names), or full (adds the pre-consolidation tool names).",
           "isRequired": false,
           "isSecret": false,
           "default": "standard"
@@ -182,7 +182,7 @@
         },
         {
           "name": "LIGHTNING_ENABLE_TOOL_PROFILE",
-          "description": "How many tools to advertise: lite (5), standard (15, default), or full (adds the pre-consolidation tool names).",
+          "description": "How many tools to advertise: lite (the five spend/read basics), standard (default), or full (adds the deprecated legacy names), or full (adds the pre-consolidation tool names).",
           "isRequired": false,
           "isSecret": false,
           "default": "standard"

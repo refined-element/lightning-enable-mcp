@@ -366,7 +366,7 @@ Every advertised tool's JSON schema is loaded into the agent's context at the st
 
 ### Old name → new call
 
-Old names are accepted but unadvertised (except under `full`). Each forwards to the new tool and its result carries a `deprecated` marker naming the replacement. **Removed in v2.0.0** — move to the new names.
+Old names are accepted but unadvertised (except under `full`). Each forwards to the new tool and its result carries a `deprecated` marker naming the replacement. **Removed in v3.0.0** — move to the new names.
 
 | Old tool | New call |
 |----------|----------|

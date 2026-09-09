@@ -3,10 +3,20 @@
 All notable changes to the Lightning Enable MCP server are documented here.
 Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-enable-mcp`).
 
-## [1.25.0] — unreleased
+## [2.0.0] — 2026-09-xx
 
-> Version files (`LightningEnable.Mcp.csproj`, `pyproject.toml`, `server.json`) are **not**
-> bumped here — the owner bumps all three in one commit at publish time.
+**Breaking-by-policy.** Nothing here removes a capability, but the tool-surface
+consolidation is significant enough to ship as a major: the advertised surface is now
+**16 tools in `standard`** (six single-purpose tools folded into five `action` verbs),
+**6 in `lite`**, **32 in `full`**. Every pre-consolidation tool name, plus the three v1
+aliases (`confirm_payment`, `check_wallet_balance`, `get_all_balances`), still works as a
+deprecated alias — the owner has deferred alias removal to **v3.0.0** (originally
+targeted for this release; see Deprecated below). Also new: sats-denominated budget
+limits, a configurable out-of-band confirmation channel (`stderr` / `refuse` / `webhook`
+/ `file`), several new env/config keys (`LIGHTNING_ENABLE_TOOL_PROFILE`,
+`LIGHTNING_ENABLE_CONFIRMATION_CHANNEL` and friends, the `limits.*Sats` budget keys),
+`setup_wallet`, six new `l402_producer` seller-setup actions, and the durable receipt log
+exposed as MCP resources (`lightning-enable://receipts`).
 
 ### Changed
 
@@ -241,7 +251,7 @@ Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-ena
 - **The 16 pre-consolidation tool names.** They remain accepted and dispatch to their
   replacement, and every result carries `deprecated: { replaced_by, use, removal }` naming the
   new call (for example `budget(action="status")`). They are unadvertised unless
-  `LIGHTNING_ENABLE_TOOL_PROFILE=full`. **Removed in v2.0.0.** The three v1 aliases
+  `LIGHTNING_ENABLE_TOOL_PROFILE=full`. **Removed in v3.0.0.** The three v1 aliases
   (`confirm_payment`, `check_wallet_balance`, `get_all_balances`) are unchanged and stay hidden
   in every profile.
 
@@ -429,8 +439,8 @@ Tool-surface consolidation. The advertised tool surface drops from **26 to 25**
 (**18 → 17 free**, 8 gated unchanged). No payment or L402 logic changed — this is a
 tool-surface-only change. The three renamed/merged tools keep their **old names as
 accepted-but-unadvertised forwarding aliases** for one minor cycle (removed in
-**v2.0.0**); an alias still dispatches, forwards to the new tool, and its result carries
-a `deprecated: { replaced_by, removal: "v2.0.0" }` marker.
+**v3.0.0**); an alias still dispatches, forwards to the new tool, and its result carries
+a `deprecated: { replaced_by, removal: "v3.0.0" }` marker.
 
 ### Changed
 
@@ -460,7 +470,7 @@ a `deprecated: { replaced_by, removal: "v2.0.0" }` marker.
 
 - Replace `confirm_payment` with `verify_confirmation_code`, and `check_wallet_balance` /
   `get_all_balances` with `get_balance`. The old names keep working (with a `deprecated`
-  marker in the response) until they are removed in **v2.0.0**. `get_balance` is a strict
+  marker in the response) until they are removed in **v3.0.0**. `get_balance` is a strict
   superset, so existing fields your code read still appear.
 
 ## [1.16.0] — 2026-07-17

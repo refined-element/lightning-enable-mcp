@@ -244,7 +244,7 @@ public class DeprecatedAliasDispatchTests
         var target = DeprecatedAliasDispatcher.Aliases[alias];
         json.GetProperty("deprecated").GetProperty("replaced_by").GetString().Should().Be(target.Tool);
         json.GetProperty("deprecated").GetProperty("use").GetString().Should().Be(target.Use);
-        json.GetProperty("deprecated").GetProperty("removal").GetString().Should().Be("v2.0.0");
+        json.GetProperty("deprecated").GetProperty("removal").GetString().Should().Be("v3.0.0");
     }
 
     [Theory]

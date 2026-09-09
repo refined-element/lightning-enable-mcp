@@ -76,7 +76,7 @@ public class DeprecatedAliasTests
         json.GetProperty("message").GetString().Should().Contain("NOTHING HAS BEEN PAID");
         // ... plus the deprecation marker.
         json.GetProperty("deprecated").GetProperty("replaced_by").GetString().Should().Be("verify_confirmation_code");
-        json.GetProperty("deprecated").GetProperty("removal").GetString().Should().Be("v2.0.0");
+        json.GetProperty("deprecated").GetProperty("removal").GetString().Should().Be("v3.0.0");
     }
 
     [Theory]
@@ -106,7 +106,7 @@ public class DeprecatedAliasTests
         json.GetProperty("wallet").GetProperty("balanceSats").GetInt64().Should().Be(50_000);
         json.GetProperty("balances").GetArrayLength().Should().Be(1);
         json.GetProperty("deprecated").GetProperty("replaced_by").GetString().Should().Be("get_balance");
-        json.GetProperty("deprecated").GetProperty("removal").GetString().Should().Be("v2.0.0");
+        json.GetProperty("deprecated").GetProperty("removal").GetString().Should().Be("v3.0.0");
     }
 
     [Fact]

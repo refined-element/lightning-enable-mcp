@@ -152,7 +152,7 @@ DEPRECATED_ALIASES: dict[str, AliasTarget] = {
     "publish_agent_attestation": AliasTarget("agent_services", {"action": "attest"}),
     "get_agent_reputation": AliasTarget("agent_services", {"action": "reputation"}),
 }
-_ALIAS_REMOVAL = "v2.0.0"
+_ALIAS_REMOVAL = "v3.0.0"
 
 
 def _mark_deprecated(result: str, target: AliasTarget) -> str:

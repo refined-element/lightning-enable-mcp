@@ -268,7 +268,7 @@ class TestDeprecatedAliasDispatch:
         target = DEPRECATED_ALIASES[alias]
         assert data["deprecated"]["replaced_by"] == target.tool
         assert data["deprecated"]["use"] == target.use
-        assert data["deprecated"]["removal"] == "v2.0.0"
+        assert data["deprecated"]["removal"] == "v3.0.0"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("alias", sorted(ALIAS_IMPLEMENTATIONS))

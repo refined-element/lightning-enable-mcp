@@ -40,12 +40,12 @@ public sealed record AliasTarget(string Tool, string Use)
 ///
 /// Either way the old name stays callable but never appears in <c>list_tools</c> — except
 /// under the <c>full</c> profile, which re-advertises the consolidation aliases (listing
-/// only; the call still routes through here). Slated for removal in v2.0.0.
+/// only; the call still routes through here). Slated for removal in v3.0.0.
 /// </summary>
 public static class DeprecatedAliasDispatcher
 {
     /// <summary>Version in which these aliases are removed.</summary>
-    public const string Removal = "v2.0.0";
+    public const string Removal = "v3.0.0";
 
     /// <summary>Old tool name → the tool that supersedes it.</summary>
     public static readonly IReadOnlyDictionary<string, AliasTarget> Aliases =

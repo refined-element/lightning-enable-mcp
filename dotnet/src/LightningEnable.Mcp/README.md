@@ -182,7 +182,7 @@ The canonical inventory is the [Tools table in the root README](https://github.c
 
 > Some sections below still use pre-consolidation tool names (`get_payment_history`, `configure_budget`, `get_btc_price`, …). They all still work as deprecated aliases; the [old name → new call table](https://github.com/refined-element/lightning-enable-mcp#old-name--new-call) gives the replacement for each.
 
-**Deprecated aliases** (accepted but unadvertised, forward to the new tool, removed in v2.0.0): `confirm_payment` → `verify_confirmation_code`; `check_wallet_balance` and `get_all_balances` → `get_balance`.
+**Deprecated aliases** (accepted but unadvertised, forward to the new tool, removed in v3.0.0): `confirm_payment` → `verify_confirmation_code`; `check_wallet_balance` and `get_all_balances` → `get_balance`.
 
 ### create_lightning_enable_account
 

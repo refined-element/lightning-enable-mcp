@@ -296,7 +296,7 @@ class TestDeprecatedAliases:
         assert data["valid"] is True
         assert data["tool"] == "pay_invoice"
         assert data["deprecated"]["replaced_by"] == "verify_confirmation_code"
-        assert data["deprecated"]["removal"] == "v2.0.0"
+        assert data["deprecated"]["removal"] == "v3.0.0"
 
     @pytest.mark.asyncio
     async def test_confirm_payment_is_not_advertised(self):
@@ -323,7 +323,7 @@ class TestDeprecatedAliases:
         assert data["balance_sats"] == 50_000
         assert data["balances"][0]["currency"] == "BTC"
         assert data["deprecated"]["replaced_by"] == "get_balance"
-        assert data["deprecated"]["removal"] == "v2.0.0"
+        assert data["deprecated"]["removal"] == "v3.0.0"
 
     @pytest.mark.asyncio
     async def test_balance_aliases_are_not_advertised(self):

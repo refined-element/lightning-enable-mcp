@@ -78,6 +78,7 @@ Run setup_wallet with this connection string: nostr+walletconnect://...
 - **Strike** — `STRIKE_API_KEY`, from https://dashboard.strike.me
 - **NWC** — `NWC_CONNECTION_STRING`, from CoinOS / CLINK / Alby Hub
 - **LND** (your own node — always returns a preimage) — `LND_REST_HOST` + `LND_MACAROON_HEX`
+  - Self-signed node cert? Set `LND_TLS_CERT_PATH` to the node's `tls.cert` (pins TLS to that cert). `LND_SKIP_TLS_VERIFY=true` is the escape hatch, not the recommendation. Optional: `LND_FEE_LIMIT_SATS`, `LND_PAYMENT_TIMEOUT_SECONDS`.
 
 > ⚠️ **OpenNode** (`OPENNODE_API_KEY`) works for **invoicing / direct payments only — it never returns a preimage, so it cannot pay L402 challenges.** Don't make it your only wallet if you want L402 (the core use case).
 

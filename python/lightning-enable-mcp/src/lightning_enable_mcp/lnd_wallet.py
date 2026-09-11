@@ -13,6 +13,10 @@ Configuration (environment variables or config file):
 - LND_REST_HOST: LND REST API host (e.g., "localhost:8080" or "127.0.0.1:8080")
 - LND_MACAROON_HEX: Admin macaroon in hex format (required for payments)
 - LND_SKIP_TLS_VERIFY: Set to "true" to skip TLS verification (dev only)
+- LND_PAYMENT_TIMEOUT_SECONDS: How long a payment may stay in flight before it is
+  reported as pending (default 25, so a tool call stays well under 30s)
+- LND_FEE_LIMIT_SATS: Fixed routing-fee ceiling per payment. Unset = 5% of the
+  invoice amount, floored at MIN_FEE_LIMIT_SATS.
 
 To get your macaroon in hex format:
 - Linux/Mac: xxd -ps -c 1000 ~/.lnd/data/chain/bitcoin/mainnet/admin.macaroon
@@ -21,15 +25,20 @@ To get your macaroon in hex format:
   ) -replace '-',''
 """
 
+import asyncio
 import base64
 import binascii
+import json
 import logging
+import math
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
 from .wallet_errors import (
+    PaymentPendingError,
     PaymentProofUnavailableError,
     PreimageUnavailableError,
     is_valid_preimage,
@@ -41,6 +50,77 @@ except ImportError:
     httpx = None  # type: ignore
 
 logger = logging.getLogger("lightning-enable-mcp.lnd")
+
+# routerrpc SendPaymentV2 — the supported way to pay an invoice. The legacy
+# lnrpc.SendPaymentSync route this client used to call
+# (POST /v1/channels/transactions) has been REMOVED from LND: a modern node
+# answers it with 404 {"code":5,"message":"Not Found"} and never creates a
+# payment, so every payment failed with "LND API error (404)" while the node
+# recorded no attempt at all. Verified against LND v0.21.3-beta.
+ROUTER_SEND_PATH = "/v2/router/send"
+
+# Kept only as a fallback for nodes old enough to lack routerrpc. A 404 proves the
+# route was never reached, so nothing was submitted and the fallback cannot double-pay.
+LEGACY_SEND_PATH = "channels/transactions"
+
+# LND stops trying after `timeout_seconds`; the client-side bound below is the
+# backstop for a stalled stream, so a payment can never block an agent indefinitely.
+DEFAULT_PAYMENT_TIMEOUT_SECONDS = 25
+STREAM_TIMEOUT_SLACK_SECONDS = 10
+
+# SendPaymentV2 considers ONLY zero-fee routes when fee_limit_sat is left at its
+# default of 0. A limit must always be sent. 5% mirrors lncli's default ceiling; the
+# floor keeps tiny invoices (where 5% rounds to ~0) payable past a 1-sat base fee.
+DEFAULT_FEE_LIMIT_PERCENT = 5
+MIN_FEE_LIMIT_SATS = 2
+
+# Payment states that end the SendPaymentV2 stream.
+TERMINAL_PAYMENT_STATUSES = frozenset({"SUCCEEDED", "FAILED"})
+
+# LND fills payment_preimage with 32 zero bytes when no proof exists. It is 64 valid
+# hex characters, so a length/format check alone accepts it as a preimage.
+ZERO_PREIMAGE_HEX = "0" * 64
+
+
+def _positive_int_env(name: str, default: "int | None") -> "int | None":
+    """Read a positive integer from the environment, falling back to ``default``."""
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("Ignoring %s: %r is not an integer", name, raw)
+        return default
+    if value <= 0:
+        logger.warning("Ignoring %s: must be positive", name)
+        return default
+    return value
+
+
+def _invoice_amount_sats(bolt11: str) -> int:
+    """Best-effort invoice amount, used only to size the routing-fee ceiling."""
+    try:
+        from bolt11 import decode as _decode
+
+        decoded = _decode((bolt11 or "").strip().lower())
+        msat = getattr(decoded, "amount_msat", None)
+        if msat:
+            return -(-int(msat) // 1000)  # ceil; sub-sat rounds up to 1
+        amount = getattr(decoded, "amount", None)
+        return int(amount) if amount else 0
+    except Exception:
+        return 0
+
+
+def _payment_hash_from_bolt11(bolt11: str) -> "str | None":
+    """Public payment hash from the invoice, for reconciling an unresolved payment."""
+    try:
+        from bolt11 import decode as _decode
+
+        return getattr(_decode((bolt11 or "").strip().lower()), "payment_hash", None)
+    except Exception:
+        return None
 
 
 class LndError(Exception):
@@ -135,6 +215,24 @@ class LndWallet:
         )
         self._client: httpx.AsyncClient | None = None
         self._connected = False
+        self._payment_timeout_seconds = _positive_int_env(
+            "LND_PAYMENT_TIMEOUT_SECONDS", DEFAULT_PAYMENT_TIMEOUT_SECONDS
+        )
+        # None = derive per invoice (percentage of the amount).
+        self._fee_limit_sats_override = _positive_int_env("LND_FEE_LIMIT_SATS", None)
+
+    @property
+    def _base_host(self) -> str:
+        """Scheme-normalized host, e.g. ``https://127.0.0.1:8080`` (no trailing slash).
+
+        Derived rather than stored so it is correct even when ``connect()`` has not run
+        (the client can be injected) and for the ``/v2`` routes, which sit outside the
+        client's ``/v1/`` base URL.
+        """
+        host = self.config.rest_host or ""
+        if not host.startswith("https://") and not host.startswith("http://"):
+            host = f"https://{host}"
+        return host.rstrip("/")
 
     @property
     def is_configured(self) -> bool:
@@ -152,11 +250,7 @@ class LndWallet:
             return
 
         # Determine base URL - add scheme if not present
-        host = self.config.rest_host
-        if not host.startswith("https://") and not host.startswith("http://"):
-            host = f"https://{host}"
-
-        base_url = f"{host}/v1/"
+        base_url = f"{self._base_host}/v1/"
 
         self._client = httpx.AsyncClient(
             base_url=base_url,
@@ -225,9 +319,14 @@ class LndWallet:
 
         LND ALWAYS returns the preimage - this is why it's ideal for L402.
 
-        POST /v1/channels/transactions
-        Request: {"payment_request": bolt11}
-        Response: {"payment_preimage": "<base64>", "payment_error": "", "payment_hash": "<base64>"}
+        POST /v2/router/send (routerrpc SendPaymentV2), a server-streaming route whose
+        frames are newline-delimited ``{"result": <lnrpc.Payment>}`` objects. The last
+        frame carries the terminal status; on SUCCEEDED, ``payment_preimage`` is a hex
+        string (NOT base64, unlike the old v1 route).
+
+        The legacy ``POST /v1/channels/transactions`` (lnrpc.SendPaymentSync) has been
+        REMOVED from LND and 404s on a modern node, so it is only tried when v2 itself
+        is absent — see ROUTER_SEND_PATH.
 
         Args:
             bolt11: BOLT11 invoice string
@@ -237,7 +336,9 @@ class LndWallet:
             Payment preimage as hex string
 
         Raises:
-            LndPaymentError: If payment fails
+            LndPaymentError: If the payment provably failed (retryable)
+            PreimageUnavailableError: Settled, but no usable proof (terminal)
+            PaymentPendingError: Accepted/in flight, outcome unknown (do NOT retry)
         """
         if not self.is_configured:
             raise LndPaymentError(
@@ -247,97 +348,242 @@ class LndWallet:
         logger.info(f"Paying invoice via LND: {bolt11[:30]}...")
 
         try:
-            request_body = {"payment_request": bolt11}
-            result = await self._request("POST", "channels/transactions", request_body)
+            payment = await self._router_send_payment(bolt11)
 
-            # Check for payment error
-            payment_error = result.get("payment_error")
-            if payment_error:
-                logger.error(f"LND payment error: {payment_error}")
-                raise LndPaymentError(f"Payment failed: {payment_error}")
+            if payment is None:
+                # routerrpc is not served by this node. The 404 proves the request never
+                # reached a payment RPC, so nothing was submitted and re-sending on the
+                # legacy route cannot double-pay.
+                logger.info(
+                    "LND does not serve routerrpc SendPaymentV2; falling back to the legacy send route"
+                )
+                return await self._legacy_send_payment(bolt11)
 
-            # LND returns preimage as base64 - convert to hex
-            payment_preimage_b64 = result.get("payment_preimage")
-            if payment_preimage_b64:
-                try:
-                    preimage_bytes = base64.b64decode(payment_preimage_b64)
-                except (binascii.Error, ValueError, TypeError) as decode_err:
-                    # LND reported no payment_error, so the payment SETTLED — the funds
-                    # are gone. A preimage that is not decodable base64 — or is the wrong
-                    # type entirely (a JSON number makes base64.b64decode raise TypeError,
-                    # not binascii.Error) — is settled-but-UNPROVABLE, not a payment
-                    # failure. Left to fall through, either error hits the generic
-                    # `except` below and becomes a RETRYABLE LndPaymentError — inviting a
-                    # double-pay. Raise the terminal PreimageUnavailableError instead,
-                    # matching the no-preimage and invalid-format cases.
-                    #
-                    # Deliberately does not echo the offending value (engineering
-                    # standard #5: never log preimage-position content).
-                    logger.error("LND returned a preimage that is not a decodable base64 string")
-                    raise PreimageUnavailableError(
-                        "LND returned a preimage that is not a decodable base64 string. "
-                        "The payment settled, but L402/MPP verification is not possible "
-                        "without a real preimage.",
-                        provider="lnd",
-                        tracking_id=result.get("payment_hash"),
-                    ) from decode_err
-                preimage_hex = preimage_bytes.hex()
+            status = str(payment.get("status") or "").upper()
 
-                # Validate through the shared gate before returning it as proof.
-                # LND "always returns a preimage" in practice, but practice is not a
-                # guard: whatever arrived was decoded and returned unchecked, so a
-                # wrong-length value would go to the caller as proof of payment.
-                # Anything that is not 32 bytes hex-encoded cannot be a preimage.
-                if not is_valid_preimage(preimage_hex):
-                    # PreimageUnavailableError, NOT LndPaymentError: LND reported no
-                    # payment_error, so the payment SETTLED and the funds are gone.
-                    # Per the wallet_errors contract that is NOT "the payment failed" —
-                    # raising a payment error would invite a retry that pays twice.
-                    #
-                    # Deliberately does not echo the offending value (engineering
-                    # standard #5: never log preimage-position content).
-                    logger.error("LND returned a value that is not a valid preimage")
-                    payment_hash = result.get("payment_hash")
-                    raise PreimageUnavailableError(
-                        "LND returned a value that is not a valid 64-character hex "
-                        "preimage. The payment settled, but L402/MPP verification is "
-                        "not possible without a real preimage.",
-                        provider="lnd",
-                        tracking_id=payment_hash,
-                    )
+            if status == "FAILED":
+                reason = payment.get("failure_reason") or "FAILED"
+                logger.error("LND payment failed: %s", reason)
+                raise LndPaymentError(f"Payment failed: {reason}")
 
-                logger.info("LND payment succeeded, preimage received")
-                return preimage_hex
+            if status != "SUCCEEDED":
+                # IN_FLIGHT / INITIATED / no frame at all. The payment was ACCEPTED, so
+                # this is neither success nor failure: reporting it as a failure would
+                # invite a retry that pays twice. Non-terminal by contract.
+                raise PaymentPendingError(
+                    "LND accepted the payment but has not settled it "
+                    f"(status: {status or 'unknown'}). Do NOT retry it — check its "
+                    "status on your node (lncli listpayments) before doing anything else.",
+                    provider="lnd",
+                    tracking_id=payment.get("payment_hash") or _payment_hash_from_bolt11(bolt11),
+                    status=status or None,
+                )
 
-            # LND reported no payment_error above, so the payment SETTLED — the funds
-            # are gone. A missing/empty preimage does NOT mean the payment failed; it
-            # means the payment is UNPROVABLE. Raising LndPaymentError here (the old
-            # behavior) surfaces a settled payment as a failure, and the caller retries
-            # and pays twice. Per the wallet_errors contract this is one of the two
-            # states that are NOT "the payment failed" — the terminal, non-retryable
-            # PreimageUnavailableError (mirrors the .NET SucceededWithoutPreimage
-            # contract in Models/NwcConfig.cs). It is re-raised untouched by the
-            # PaymentProofUnavailableError handler below, not rewrapped as a failure.
-            #
-            # Deliberately does not echo any response content (engineering standard #5).
-            logger.error("LND payment settled but no preimage was returned")
-            raise PreimageUnavailableError(
-                "The payment settled, but LND returned no preimage, so L402/MPP "
-                "verification is not possible without a real preimage.",
-                provider="lnd",
-                tracking_id=result.get("payment_hash"),
+            # SUCCEEDED: v2 returns the preimage as a hex string, already decoded.
+            return self._preimage_from_settled_hex(
+                payment.get("payment_preimage"), payment.get("payment_hash")
             )
 
         except LndError:
             raise
         except PaymentProofUnavailableError:
-            # Settled-but-unprovable is NOT a payment failure. Must be re-raised
-            # before the generic handler below, which would otherwise rewrap it as
-            # an LndPaymentError and tell the agent to retry a payment that already
-            # took the money.
+            # Settled-but-unprovable and accepted-but-unsettled are NOT payment failures.
+            # Must be re-raised before the generic handler below, which would otherwise
+            # rewrap them as an LndPaymentError and tell the agent to retry a payment
+            # that may already have taken the money.
             raise
         except Exception as e:
             raise LndPaymentError(f"Payment failed: {e!s}") from e
+
+    async def _router_send_payment(self, bolt11: str) -> dict[str, Any] | None:
+        """Pay via routerrpc SendPaymentV2.
+
+        Returns the last ``lnrpc.Payment`` frame (``{}`` if the node sent none), or
+        ``None`` when the route itself is absent (404) so the caller can fall back.
+
+        The whole read is bounded: LND gives up after ``timeout_seconds`` and the
+        client-side ``wait_for`` covers a stream that stalls without closing, so a
+        payment can never block the calling agent indefinitely.
+        """
+        if not self._connected or not self._client:
+            await self.connect()
+
+        body = {
+            "payment_request": bolt11,
+            "timeout_seconds": self._payment_timeout_seconds,
+            # LND REST takes 64-bit fields as strings.
+            "fee_limit_sat": str(self._fee_limit_sats(bolt11)),
+            # Only the terminal frame is of interest; skip the IN_FLIGHT chatter.
+            "no_inflight_updates": True,
+        }
+        url = f"{self._base_host}{ROUTER_SEND_PATH}"
+
+        try:
+            return await asyncio.wait_for(
+                self._read_router_send_stream(url, body),
+                timeout=self._payment_timeout_seconds + STREAM_TIMEOUT_SLACK_SECONDS,
+            )
+        except asyncio.TimeoutError as timeout_err:
+            # The request WAS submitted, so this is pending, not failed. Bounded by
+            # construction: the alternative (waiting forever on a stalled read) is the
+            # hang this bound exists to prevent.
+            raise PaymentPendingError(
+                "LND did not report a final payment status within "
+                f"{self._payment_timeout_seconds + STREAM_TIMEOUT_SLACK_SECONDS}s. The "
+                "payment may still be in flight — do NOT retry it; check its status on "
+                "your node (lncli listpayments).",
+                provider="lnd",
+                tracking_id=_payment_hash_from_bolt11(bolt11),
+            ) from timeout_err
+        except httpx.RequestError as e:
+            raise LndError(f"Failed to connect to LND: {e!s}") from e
+
+    async def _read_router_send_stream(
+        self, url: str, body: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Read the NDJSON payment stream. See ``_router_send_payment`` for the contract."""
+        assert self._client is not None  # connect() ran in the caller
+        last_payment: dict[str, Any] | None = None
+
+        async with self._client.stream("POST", url, json=body) as response:
+            if response.status_code == 404:
+                await response.aread()
+                return None
+            if response.status_code >= 400:
+                await response.aread()
+                # Deliberately NOT retried on the legacy route: the route exists, so the
+                # payment may have been submitted before the error.
+                raise LndError(f"LND API error ({response.status_code}): {response.text}")
+
+            async for raw_line in response.aiter_lines():
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    frame = json.loads(line)
+                except ValueError:
+                    continue  # skip a torn/partial frame rather than failing the payment
+                if not isinstance(frame, dict):
+                    continue
+
+                error = frame.get("error")
+                if error:
+                    message = error.get("message") if isinstance(error, dict) else str(error)
+                    raise LndError(f"LND payment stream error: {message}")
+
+                result = frame.get("result")
+                if isinstance(result, dict):
+                    last_payment = result
+                    if str(result.get("status") or "").upper() in TERMINAL_PAYMENT_STATUSES:
+                        break
+
+        return last_payment if last_payment is not None else {}
+
+    async def _legacy_send_payment(self, bolt11: str) -> str:
+        """Pay via the pre-routerrpc lnrpc.SendPaymentSync route (old nodes only)."""
+        result = await self._request("POST", LEGACY_SEND_PATH, {"payment_request": bolt11})
+
+        # Check for payment error
+        payment_error = result.get("payment_error")
+        if payment_error:
+            logger.error(f"LND payment error: {payment_error}")
+            raise LndPaymentError(f"Payment failed: {payment_error}")
+
+        # The legacy route returns the preimage as base64 - convert to hex
+        payment_preimage_b64 = result.get("payment_preimage")
+        if payment_preimage_b64:
+            try:
+                preimage_bytes = base64.b64decode(payment_preimage_b64)
+            except (binascii.Error, ValueError, TypeError) as decode_err:
+                # LND reported no payment_error, so the payment SETTLED — the funds
+                # are gone. A preimage that is not decodable base64 — or is the wrong
+                # type entirely (a JSON number makes base64.b64decode raise TypeError,
+                # not binascii.Error) — is settled-but-UNPROVABLE, not a payment
+                # failure. Left to fall through, either error hits the generic
+                # `except` in pay_invoice and becomes a RETRYABLE LndPaymentError —
+                # inviting a double-pay. Raise the terminal PreimageUnavailableError
+                # instead, matching the no-preimage and invalid-format cases.
+                #
+                # Deliberately does not echo the offending value (engineering
+                # standard #5: never log preimage-position content).
+                logger.error("LND returned a preimage that is not a decodable base64 string")
+                raise PreimageUnavailableError(
+                    "LND returned a preimage that is not a decodable base64 string. "
+                    "The payment settled, but L402/MPP verification is not possible "
+                    "without a real preimage.",
+                    provider="lnd",
+                    tracking_id=result.get("payment_hash"),
+                ) from decode_err
+
+            return self._preimage_from_settled_hex(
+                preimage_bytes.hex(), result.get("payment_hash")
+            )
+
+        # LND reported no payment_error above, so the payment SETTLED — the funds
+        # are gone. A missing/empty preimage does NOT mean the payment failed; it
+        # means the payment is UNPROVABLE. Raising LndPaymentError here (the old
+        # behavior) surfaces a settled payment as a failure, and the caller retries
+        # and pays twice. Per the wallet_errors contract this is one of the two
+        # states that are NOT "the payment failed" — the terminal, non-retryable
+        # PreimageUnavailableError (mirrors the .NET SucceededWithoutPreimage
+        # contract in Models/NwcConfig.cs). It is re-raised untouched by
+        # pay_invoice's PaymentProofUnavailableError handler, not rewrapped.
+        #
+        # Deliberately does not echo any response content (engineering standard #5).
+        logger.error("LND payment settled but no preimage was returned")
+        raise PreimageUnavailableError(
+            "The payment settled, but LND returned no preimage, so L402/MPP "
+            "verification is not possible without a real preimage.",
+            provider="lnd",
+            tracking_id=result.get("payment_hash"),
+        )
+
+    def _preimage_from_settled_hex(
+        self, preimage_hex: object, payment_hash: object
+    ) -> str:
+        """Gate for the one field L402 treats as proof of payment.
+
+        The payment has SETTLED by the time this runs, so anything that is not a real
+        preimage is settled-but-UNPROVABLE (terminal), never a payment failure — a
+        failure would invite a retry that pays twice.
+        """
+        tracking_id = payment_hash if isinstance(payment_hash, str) and payment_hash else None
+
+        # LND "always returns a preimage" in practice, but practice is not a guard:
+        # anything that is not 32 bytes hex-encoded cannot be a preimage, and the
+        # all-zero value is LND's explicit "no proof here" sentinel — it passes a
+        # length/hex check, so it has to be rejected by name.
+        candidate = preimage_hex.strip().lower() if isinstance(preimage_hex, str) else preimage_hex
+        if not is_valid_preimage(candidate) or candidate == ZERO_PREIMAGE_HEX:
+            # Deliberately does not echo the offending value (engineering standard #5:
+            # never log preimage-position content).
+            logger.error("LND returned a value that is not a valid preimage")
+            raise PreimageUnavailableError(
+                "LND returned a value that is not a valid 64-character hex preimage. "
+                "The payment settled, but L402/MPP verification is not possible "
+                "without a real preimage.",
+                provider="lnd",
+                tracking_id=tracking_id,
+            )
+
+        logger.info("LND payment succeeded, preimage received")
+        return candidate  # type: ignore[return-value]
+
+    def _fee_limit_sats(self, bolt11: str) -> int:
+        """Routing-fee ceiling for one payment.
+
+        Never 0: SendPaymentV2 reads a 0 limit as "consider only zero-fee routes", which
+        silently fails most real payments.
+        """
+        if self._fee_limit_sats_override is not None:
+            return self._fee_limit_sats_override
+
+        amount_sats = _invoice_amount_sats(bolt11)
+        if not amount_sats:
+            return MIN_FEE_LIMIT_SATS
+        return max(
+            math.ceil(amount_sats * DEFAULT_FEE_LIMIT_PERCENT / 100), MIN_FEE_LIMIT_SATS
+        )
 
     async def get_balance(self) -> int:
         """

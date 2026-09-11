@@ -3,7 +3,7 @@
 All notable changes to the Lightning Enable MCP server are documented here.
 Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-enable-mcp`).
 
-## [2.0.0] — 2026-09-xx
+## [2.0.0] — 2026-09-10
 
 **Breaking-by-policy.** Nothing here removes a capability, but the tool-surface
 consolidation is significant enough to ship as a major: the advertised surface is now

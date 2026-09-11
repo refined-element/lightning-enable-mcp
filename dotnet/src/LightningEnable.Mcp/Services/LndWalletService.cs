@@ -151,12 +151,23 @@ public class LndWalletService : IWalletService, IDisposable
         if (!string.IsNullOrWhiteSpace(tlsCertPath) && !tlsCertPath.StartsWith("${"))
         {
             // LND writes tls.cert as PEM; accept DER too. Public certificate only, no key.
-            var pemOrDer = File.ReadAllBytes(tlsCertPath.Trim());
-            var pinned = System.Text.Encoding.ASCII.GetString(pemOrDer, 0, Math.Min(pemOrDer.Length, 32)).Contains("-----BEGIN")
-                ? X509Certificate2.CreateFromPem(System.Text.Encoding.ASCII.GetString(pemOrDer))
+            var path = tlsCertPath.Trim();
+            X509Certificate2 pinned;
+            try
+            {
+                var pemOrDer = File.ReadAllBytes(path);
+                pinned = System.Text.Encoding.ASCII.GetString(pemOrDer, 0, Math.Min(pemOrDer.Length, 32)).Contains("-----BEGIN")
+                    ? X509Certificate2.CreateFromPem(System.Text.Encoding.ASCII.GetString(pemOrDer))
 #pragma warning disable SYSLIB0057 // net8.0 target has no X509CertificateLoader
-                : new X509Certificate2(pemOrDer);
+                    : new X509Certificate2(pemOrDer);
 #pragma warning restore SYSLIB0057
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or CryptographicException or ArgumentException)
+            {
+                throw new InvalidOperationException(
+                    $"LND_TLS_CERT_PATH points at '{path}' but the certificate could not be read: {ex.Message}. " +
+                    "Set it to the node's tls.cert (PEM or DER), or unset it to use default TLS validation.", ex);
+            }
             var pinnedThumbprint = pinned.GetCertHashString(System.Security.Cryptography.HashAlgorithmName.SHA256);
             Console.Error.WriteLine("[LND] Pinning TLS certificate from LND_TLS_CERT_PATH");
             return (_, cert, _, _) =>
@@ -345,44 +356,67 @@ public class LndWalletService : IWalletService, IDisposable
                     null);
             }
 
+            // From here on the node has answered 2xx, so it may already have accepted the
+            // payment. A transport failure while reading the body proves nothing about the
+            // outcome: it MUST surface as pending (with the invoice hash for reconciliation),
+            // never as the retryable HTTP_ERROR/EXCEPTION failure - that invites a retry
+            // that pays twice.
             JsonObject? lastPayment = null;
-            await using var stream = await response.Content.ReadAsStreamAsync(token);
-            using var reader = new StreamReader(stream);
-
-            while (await reader.ReadLineAsync(token) is { } rawLine)
+            try
             {
-                var line = rawLine.Trim();
-                if (line.Length == 0) continue;
+                await using var stream = await response.Content.ReadAsStreamAsync(token);
+                using var reader = new StreamReader(stream);
 
-                JsonNode? frame;
-                try
+                while (await reader.ReadLineAsync(token) is { } rawLine)
                 {
-                    frame = JsonNode.Parse(line);
-                }
-                catch (JsonException)
-                {
-                    continue; // skip a torn/partial frame rather than failing the payment
-                }
+                    var line = rawLine.Trim();
+                    if (line.Length == 0) continue;
 
-                if (frame is not JsonObject frameObj) continue;
+                    JsonNode? frame;
+                    try
+                    {
+                        frame = JsonNode.Parse(line);
+                    }
+                    catch (JsonException)
+                    {
+                        continue; // skip a torn/partial frame rather than failing the payment
+                    }
 
-                if (frameObj["error"] is { } error)
-                {
-                    var message = error is JsonObject errObj
-                        ? StringOrNull(errObj["message"]) ?? error.ToJsonString()
-                        : error.ToJsonString();
-                    Console.Error.WriteLine("[LND] Payment stream error");
-                    return new RouterOutcome(false,
-                        NwcPaymentResult.Failed("STREAM_ERROR", $"LND payment stream error: {message}"),
-                        null);
-                }
+                    if (frame is not JsonObject frameObj) continue;
 
-                if (frameObj["result"] is JsonObject result)
-                {
-                    lastPayment = result;
-                    var status = (StringOrNull(result["status"]) ?? "").ToUpperInvariant();
-                    if (status is "SUCCEEDED" or "FAILED") break;
+                    if (frameObj["error"] is { } error)
+                    {
+                        var message = error is JsonObject errObj
+                            ? StringOrNull(errObj["message"]) ?? error.ToJsonString()
+                            : error.ToJsonString();
+                        Console.Error.WriteLine("[LND] Payment stream error");
+                        return new RouterOutcome(false,
+                            NwcPaymentResult.Failed("STREAM_ERROR", $"LND payment stream error: {message}"),
+                            null);
+                    }
+
+                    if (frameObj["result"] is JsonObject result)
+                    {
+                        lastPayment = result;
+                        var status = (StringOrNull(result["status"]) ?? "").ToUpperInvariant();
+                        if (status is "SUCCEEDED" or "FAILED") break;
+                    }
                 }
+            }
+            catch (OperationCanceledException)
+            {
+                throw; // caller cancellation propagates; the client-side bound is handled below
+            }
+            catch (Exception readEx)
+            {
+                var trackingId = StringOrNull(lastPayment?["payment_hash"]) ?? PaymentHashHexFromBolt11(bolt11) ?? "unknown";
+                Console.Error.WriteLine($"[LND] Lost the connection after LND accepted the payment request ({readEx.GetType().Name}) - reporting pending");
+                return new RouterOutcome(false,
+                    NwcPaymentResult.Pending(
+                        trackingId,
+                        $"Lost the connection to LND after it accepted the payment request ({readEx.GetType().Name}: {readEx.Message}). " +
+                        "The payment may have gone through - do NOT retry it; check its status on your node (lncli listpayments) before doing anything else."),
+                    null);
             }
 
             return new RouterOutcome(false, null, lastPayment);

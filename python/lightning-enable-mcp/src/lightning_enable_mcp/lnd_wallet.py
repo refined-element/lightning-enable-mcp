@@ -420,7 +420,7 @@ class LndWallet:
 
         try:
             return await asyncio.wait_for(
-                self._read_router_send_stream(url, body),
+                self._read_router_send_stream(url, body, bolt11),
                 timeout=self._payment_timeout_seconds + STREAM_TIMEOUT_SLACK_SECONDS,
             )
         except asyncio.TimeoutError as timeout_err:
@@ -439,7 +439,7 @@ class LndWallet:
             raise LndError(f"Failed to connect to LND: {e!s}") from e
 
     async def _read_router_send_stream(
-        self, url: str, body: dict[str, Any]
+        self, url: str, body: dict[str, Any], bolt11: str
     ) -> dict[str, Any] | None:
         """Read the NDJSON payment stream. See ``_router_send_payment`` for the contract."""
         assert self._client is not None  # connect() ran in the caller
@@ -455,27 +455,48 @@ class LndWallet:
                 # payment may have been submitted before the error.
                 raise LndError(f"LND API error ({response.status_code}): {response.text}")
 
-            async for raw_line in response.aiter_lines():
-                line = raw_line.strip()
-                if not line:
-                    continue
-                try:
-                    frame = json.loads(line)
-                except ValueError:
-                    continue  # skip a torn/partial frame rather than failing the payment
-                if not isinstance(frame, dict):
-                    continue
+            # From here on the node has answered 2xx, so it may already have accepted
+            # the payment. A transport failure while reading the body proves nothing
+            # about the outcome: it MUST surface as pending (with the invoice hash for
+            # reconciliation), never as the retryable connection error the caller maps
+            # to "payment failed" - that invites a retry that pays twice.
+            try:
+                async for raw_line in response.aiter_lines():
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    try:
+                        frame = json.loads(line)
+                    except ValueError:
+                        continue  # skip a torn/partial frame rather than failing the payment
+                    if not isinstance(frame, dict):
+                        continue
 
-                error = frame.get("error")
-                if error:
-                    message = error.get("message") if isinstance(error, dict) else str(error)
-                    raise LndError(f"LND payment stream error: {message}")
+                    error = frame.get("error")
+                    if error:
+                        message = error.get("message") if isinstance(error, dict) else str(error)
+                        raise LndError(f"LND payment stream error: {message}")
 
-                result = frame.get("result")
-                if isinstance(result, dict):
-                    last_payment = result
-                    if str(result.get("status") or "").upper() in TERMINAL_PAYMENT_STATUSES:
-                        break
+                    result = frame.get("result")
+                    if isinstance(result, dict):
+                        last_payment = result
+                        if str(result.get("status") or "").upper() in TERMINAL_PAYMENT_STATUSES:
+                            break
+            except (LndError, PaymentProofUnavailableError):
+                raise
+            except Exception as read_err:
+                tracking_id = (
+                    (last_payment or {}).get("payment_hash") or _payment_hash_from_bolt11(bolt11)
+                )
+                raise PaymentPendingError(
+                    "Lost the connection to LND after it accepted the payment request "
+                    f"({type(read_err).__name__}: {read_err!s}). The payment may have gone "
+                    "through - do NOT retry it; check its status on your node "
+                    "(lncli listpayments) before doing anything else.",
+                    provider="lnd",
+                    tracking_id=tracking_id,
+                    status=str((last_payment or {}).get("status") or "") or None,
+                ) from read_err
 
         return last_payment if last_payment is not None else {}
 

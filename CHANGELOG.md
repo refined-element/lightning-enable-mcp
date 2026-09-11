@@ -228,6 +228,19 @@ exposed as MCP resources (`lightning-enable://receipts`).
 
 ### Fixed
 
+- **A dropped connection mid-payment was reported as a retryable failure (LND, both
+  runtimes).** Once the node had answered 2xx on `POST /v2/router/send` it may already
+  have accepted the payment, but a transport error while reading the streamed frames
+  (connection reset, torn chunk, read timeout) was wrapped as "Failed to connect to LND"
+  / `HTTP_ERROR` / `EXCEPTION` — a *retryable* failure that invited a second payment of
+  the same invoice. After a 2xx, any read error now surfaces as **pending** with the
+  invoice payment hash as the tracking id (`PaymentPendingError` in Python,
+  `NwcPaymentResult.Pending` in .NET), never as failed or succeeded. Errors before any
+  response still map to the plain connection failure, because nothing was submitted.
+  Also added the missing routing-fee tests (5% ceil, 2-sat floor, `LND_FEE_LIMIT_SATS`
+  override honored, `0`/negative/non-numeric override ignored) in both runtimes, and an
+  unreadable `LND_TLS_CERT_PATH` now fails with a clear configuration error naming the
+  path instead of an unhandled exception at handler creation (.NET).
 - **Every LND payment failed with a 404 (Python).** The client paid through
   `POST /v1/channels/transactions` — the `lnrpc.SendPaymentSync` route, which LND has
   REMOVED. A current node answers it with `404 {"code":5,"message":"Not Found"}` and never

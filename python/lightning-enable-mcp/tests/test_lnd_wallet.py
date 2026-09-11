@@ -3,10 +3,12 @@ Tests for LND Wallet
 """
 
 import base64
+import httpx
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 from lightning_enable_mcp.lnd_wallet import (
+    MIN_FEE_LIMIT_SATS,
     LndConfig,
     LndError,
     LndOnChainResult,
@@ -1121,3 +1123,145 @@ class TestLndRouterSendPaymentV2:
         with pytest.raises(LndError, match="500"):
             await wallet.pay_invoice("lnbc30n1...")
         assert wallet._client.request_calls == []
+
+
+# ---------------------------------------------------------------------------
+# Transport failures AFTER the 2xx headers arrived.
+#
+# Once LND has answered 2xx on /v2/router/send the node may already have accepted
+# the payment. A read error from that point on (connection dropped mid-stream, a
+# torn chunk, a read timeout) proves nothing about the payment's outcome, so it
+# must surface as PENDING with the invoice payment hash for reconciliation -
+# never as the retryable LndPaymentError, which invites a double-pay.
+# ---------------------------------------------------------------------------
+
+
+def _signed_invoice(amount_sats: int | None, payment_hash_hex: str = "ab" * 32) -> str:
+    """A real, signed mainnet BOLT11 so the wallet's bolt11 decoding runs for real."""
+    from bolt11 import Bolt11, MilliSatoshi, Tag, TagChar, Tags, encode
+
+    tags = Tags(
+        [
+            Tag(TagChar.payment_hash, payment_hash_hex),
+            Tag(TagChar.description, "fee-limit fixture"),
+            Tag(TagChar.payment_secret, "cd" * 32),
+        ]
+    )
+    invoice = Bolt11(
+        currency="bc",
+        date=1700000000,
+        tags=tags,
+        amount_msat=MilliSatoshi(amount_sats * 1000) if amount_sats else None,
+    )
+    return encode(invoice, "11" * 32)
+
+
+class _BrokenAfterHeadersStream(_FakeStream):
+    """200 + headers arrive, then the body read raises a transport error."""
+
+    def __init__(self, error: Exception, lines=None):
+        super().__init__(status_code=200, lines=lines)
+        self._error = error
+
+    async def aiter_lines(self):
+        for line in self._lines:
+            yield line
+        raise self._error
+
+
+_MID_STREAM_ERRORS = [
+    pytest.param(httpx.ReadError("connection reset"), id="ReadError"),
+    pytest.param(httpx.RemoteProtocolError("peer closed connection"), id="RemoteProtocolError"),
+    pytest.param(httpx.ReadTimeout("read timed out"), id="ReadTimeout"),
+]
+
+
+class TestLndTransportErrorAfterHeaders:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("error", _MID_STREAM_ERRORS)
+    async def test_read_error_with_no_frames_is_pending_with_the_invoice_hash(self, error):
+        from lightning_enable_mcp.wallet_errors import PaymentPendingError
+
+        bolt11 = _signed_invoice(30, payment_hash_hex="ab" * 32)
+        wallet = _router_wallet(stream=_BrokenAfterHeadersStream(error))
+
+        with pytest.raises(PaymentPendingError) as excinfo:
+            await wallet.pay_invoice(bolt11)
+
+        assert not isinstance(excinfo.value, LndPaymentError), "must not be the retryable failure"
+        assert excinfo.value.provider == "lnd"
+        assert excinfo.value.tracking_id == "ab" * 32
+        assert wallet._client.request_calls == [], "no legacy-route retry after a 2xx"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("error", _MID_STREAM_ERRORS)
+    async def test_read_error_after_an_in_flight_frame_is_pending_not_failed(self, error):
+        from lightning_enable_mcp.wallet_errors import PaymentPendingError
+
+        bolt11 = _signed_invoice(30, payment_hash_hex="ab" * 32)
+        stream = _BrokenAfterHeadersStream(
+            error, lines=[_frame(status="IN_FLIGHT", payment_preimage=ZERO_PREIMAGE)]
+        )
+        wallet = _router_wallet(stream=stream)
+
+        with pytest.raises(PaymentPendingError) as excinfo:
+            await wallet.pay_invoice(bolt11)
+
+        assert not isinstance(excinfo.value, LndPaymentError)
+        assert excinfo.value.tracking_id == "ab" * 32
+        assert wallet._client.request_calls == []
+
+    @pytest.mark.asyncio
+    async def test_connect_error_before_any_response_is_still_a_connection_failure(self):
+        """No 2xx was ever observed, so nothing was submitted: the plain error stands."""
+
+        class _NeverConnects(_FakeStream):
+            async def __aenter__(self):
+                raise httpx.ConnectError("refused")
+
+        wallet = _router_wallet(stream=_NeverConnects())
+        with pytest.raises(LndError, match="Failed to connect"):
+            await wallet.pay_invoice(_signed_invoice(30))
+
+
+class TestLndFeeLimit:
+    """Routing-fee ceiling: 5% of the invoice, ceil'd, floored at 2 sats, env-overridable."""
+
+    def _wallet(self, monkeypatch, override: str | None = None):
+        if override is None:
+            monkeypatch.delenv("LND_FEE_LIMIT_SATS", raising=False)
+        else:
+            monkeypatch.setenv("LND_FEE_LIMIT_SATS", override)
+        return LndWallet(rest_host="localhost:8080", macaroon_hex="abc123", skip_tls_verify=True)
+
+    @pytest.mark.parametrize(
+        ("amount_sats", "expected"),
+        [
+            (1000, 50),  # 5% exactly
+            (1001, 51),  # 5% = 50.05 -> ceil
+            (30, 2),  # 5% = 1.5 -> ceil 2 == floor
+            (10, 2),  # 5% = 0.5 -> ceil 1 -> floor 2
+            (1, 2),  # floor
+        ],
+    )
+    def test_five_percent_ceil_with_a_two_sat_floor(self, monkeypatch, amount_sats, expected):
+        wallet = self._wallet(monkeypatch)
+        assert wallet._fee_limit_sats(_signed_invoice(amount_sats)) == expected
+
+    def test_amountless_invoice_gets_the_floor(self, monkeypatch):
+        wallet = self._wallet(monkeypatch)
+        assert wallet._fee_limit_sats(_signed_invoice(None)) == MIN_FEE_LIMIT_SATS
+
+    def test_undecodable_invoice_gets_the_floor(self, monkeypatch):
+        wallet = self._wallet(monkeypatch)
+        assert wallet._fee_limit_sats("lnbc30n1...") == MIN_FEE_LIMIT_SATS
+
+    def test_env_override_wins_over_the_percentage(self, monkeypatch):
+        wallet = self._wallet(monkeypatch, override="7")
+        assert wallet._fee_limit_sats(_signed_invoice(1000)) == 7
+
+    @pytest.mark.parametrize("bad", ["0", "-3", "abc", "  "])
+    def test_invalid_override_is_ignored(self, monkeypatch, bad):
+        """0 means 'zero-fee routes only' to SendPaymentV2, so it must never pass through."""
+        wallet = self._wallet(monkeypatch, override=bad)
+        assert wallet._fee_limit_sats(_signed_invoice(1000)) == 50

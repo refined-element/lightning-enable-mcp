@@ -285,7 +285,8 @@ public class LndWalletServiceTests
     private static async Task<(NwcPaymentResult Result, RoutingHandler Handler)> PayViaRouter(
         Func<HttpResponseMessage> routerResponse,
         Func<HttpResponseMessage>? legacyResponse = null,
-        Action<LndWalletService>? configure = null)
+        Action<LndWalletService>? configure = null,
+        string bolt11 = "lnbc30n1p3abcdef")
     {
         var originalHost = Environment.GetEnvironmentVariable("LND_REST_HOST");
         var originalMacaroon = Environment.GetEnvironmentVariable("LND_MACAROON_HEX");
@@ -304,7 +305,7 @@ public class LndWalletServiceTests
             using var service = new LndWalletService(httpClient);
             configure?.Invoke(service);
 
-            var result = await service.PayInvoiceAsync("lnbc30n1p3abcdef");
+            var result = await service.PayInvoiceAsync(bolt11);
             return (result, handler);
         }
         finally
@@ -532,5 +533,199 @@ public class LndWalletServiceTests
         {
             File.Delete(path);
         }
+    }
+    // -----------------------------------------------------------------------
+    // Transport failures AFTER the 2xx headers arrived.
+    //
+    // Once LND has answered 2xx on /v2/router/send the node may already have accepted
+    // the payment. An IOException from the body read (connection dropped mid-stream, a
+    // torn chunk, a read timeout) proves nothing about the outcome, so it must surface
+    // as Pending with the invoice payment hash for reconciliation - never as the
+    // retryable Failed("HTTP_ERROR") / Failed("EXCEPTION"), which invites a double-pay.
+    // -----------------------------------------------------------------------
+
+    /// <summary>A real, signed mainnet BOLT11 for 30 sats whose payment hash is 0xab repeated 32 times.</summary>
+    private const string SignedBolt11Ab =
+        "lnbc300n1pj48ugqpp54w46h2at4w46h2at4w46h2at4w46h2at4w46h2at4w46h2at4w4sdqvve5hsar4wfjssp5ehxumnwdehxumnwdehxumnwdehxumnwdehxumnwdehxumnwdehxs06u9h7uafxwghsp89k25c54uyvlhvx6tqgdfxl4nsydtte98pj3pvglezl4hppm69wqmfwz6qhj7qfegnea04dsdp66ljkfau43ehuqqfftjap";
+
+    private static readonly string PaymentHashAb = string.Concat(Enumerable.Repeat("ab", 32));
+
+    /// <summary>Delivers the prefix bytes, then the body read throws the given error.</summary>
+    private sealed class BrokenAfterHeadersContent : HttpContent
+    {
+        private readonly byte[] _prefix;
+        private readonly Exception _error;
+
+        public BrokenAfterHeadersContent(string prefix, Exception error)
+        {
+            _prefix = System.Text.Encoding.UTF8.GetBytes(prefix);
+            _error = error;
+        }
+
+        protected override Task SerializeToStreamAsync(Stream stream, System.Net.TransportContext? context) =>
+            throw new NotSupportedException("read via the content stream");
+
+        protected override Task<Stream> CreateContentReadStreamAsync() =>
+            Task.FromResult<Stream>(new BrokenStream(_prefix, _error));
+
+        protected override bool TryComputeLength(out long length) { length = -1; return false; }
+
+        private sealed class BrokenStream : Stream
+        {
+            private readonly byte[] _prefix;
+            private readonly Exception _error;
+            private int _pos;
+
+            public BrokenStream(byte[] prefix, Exception error) { _prefix = prefix; _error = error; }
+
+            public override bool CanRead => true;
+            public override bool CanSeek => false;
+            public override bool CanWrite => false;
+            public override long Length => throw new NotSupportedException();
+            public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+            public override void Flush() { }
+            public override int Read(byte[] buffer, int offset, int count)
+            {
+                if (_pos >= _prefix.Length) throw _error;
+                var n = Math.Min(count, _prefix.Length - _pos);
+                Array.Copy(_prefix, _pos, buffer, offset, n);
+                _pos += n;
+                return n;
+            }
+            public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+            {
+                if (_pos >= _prefix.Length) return ValueTask.FromException<int>(_error);
+                var n = Math.Min(buffer.Length, _prefix.Length - _pos);
+                _prefix.AsMemory(_pos, n).CopyTo(buffer);
+                _pos += n;
+                return ValueTask.FromResult(n);
+            }
+            public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
+                ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+            public override void SetLength(long value) => throw new NotSupportedException();
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        }
+    }
+
+    public static TheoryData<Exception> MidStreamErrors => new()
+    {
+        new IOException("connection reset by peer"),
+        new HttpRequestException("the response ended prematurely"),
+        new HttpIOException(HttpRequestError.ResponseEnded, "response ended"),
+    };
+
+    [Theory]
+    [MemberData(nameof(MidStreamErrors))]
+    public async Task PayInvoice_ReadErrorAfter2xxWithNoFrames_IsPendingWithTheInvoiceHash(Exception error)
+    {
+        var (result, handler) = await PayViaRouter(
+            () => new HttpResponseMessage(HttpStatusCode.OK) { Content = new BrokenAfterHeadersContent("", error) },
+            bolt11: SignedBolt11Ab);
+
+        result.IsPending.Should().BeTrue("a 2xx was observed, so the node may have accepted the payment");
+        result.Success.Should().BeFalse();
+        result.HasPreimage.Should().BeFalse();
+        result.ErrorCode.Should().Be("PAYMENT_PENDING", "must not be the retryable HTTP_ERROR/EXCEPTION");
+        result.TrackingId.Should().Be(PaymentHashAb);
+        handler.Requests.Should().HaveCount(1, "no legacy-route retry after a 2xx");
+    }
+
+    [Theory]
+    [MemberData(nameof(MidStreamErrors))]
+    public async Task PayInvoice_ReadErrorAfterAnInFlightFrame_IsPendingNotFailed(Exception error)
+    {
+        var (result, handler) = await PayViaRouter(
+            () => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new BrokenAfterHeadersContent(Frame("IN_FLIGHT", preimage: ZeroPreimage), error)
+            },
+            bolt11: SignedBolt11Ab);
+
+        result.IsPending.Should().BeTrue();
+        result.Success.Should().BeFalse();
+        result.ErrorCode.Should().Be("PAYMENT_PENDING");
+        result.TrackingId.Should().Be(PaymentHashAb);
+        handler.Requests.Should().HaveCount(1);
+    }
+
+    [Fact]
+    public async Task PayInvoice_ConnectErrorBeforeAnyResponse_IsStillAConnectionFailure()
+    {
+        // No 2xx was ever observed, so nothing was submitted: the retryable failure stands.
+        var (result, _) = await PayViaRouter(
+            () => throw new HttpRequestException("connection refused"),
+            bolt11: SignedBolt11Ab);
+
+        result.IsPending.Should().BeFalse();
+        result.Success.Should().BeFalse();
+        result.ErrorCode.Should().Be("HTTP_ERROR");
+    }
+
+    // -----------------------------------------------------------------------
+    // Routing-fee ceiling: 5% of the invoice, ceil'd, floored at 2 sats, env-overridable.
+    // -----------------------------------------------------------------------
+
+    private static LndWalletService FeeService(string? feeLimitOverride)
+    {
+        var original = Environment.GetEnvironmentVariable("LND_FEE_LIMIT_SATS");
+        try
+        {
+            Environment.SetEnvironmentVariable("LND_FEE_LIMIT_SATS", feeLimitOverride);
+            return new LndWalletService(new HttpClient());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("LND_FEE_LIMIT_SATS", original);
+        }
+    }
+
+    [Theory]
+    [InlineData("lnbc10u1p3abcdef", 50)]    // 1000 sats: 5% exactly
+    [InlineData("lnbc10010n1p3abcdef", 51)] // 1001 sats: 50.05 -> ceil
+    [InlineData("lnbc300n1p3abcdef", 2)]    // 30 sats: 1.5 -> ceil 2 == floor
+    [InlineData("lnbc100n1p3abcdef", 2)]    // 10 sats: 0.5 -> ceil 1 -> floor 2
+    [InlineData("lnbc10n1p3abcdef", 2)]     // 1 sat: floor
+    public void FeeLimit_FivePercentCeil_WithATwoSatFloor(string bolt11, long expected)
+    {
+        using var service = FeeService(null);
+        service.FeeLimitSats(bolt11).Should().Be(expected);
+    }
+
+    [Fact]
+    public void FeeLimit_AmountlessOrUndecodableInvoice_GetsTheFloor()
+    {
+        using var service = FeeService(null);
+        service.FeeLimitSats("lnbc1p3abcdef").Should().Be(LndWalletService.MinFeeLimitSats);
+        service.FeeLimitSats("not-an-invoice").Should().Be(LndWalletService.MinFeeLimitSats);
+    }
+
+    [Fact]
+    public void FeeLimit_EnvOverride_WinsOverThePercentage()
+    {
+        using var service = FeeService("7");
+        service.FeeLimitSats("lnbc10u1p3abcdef").Should().Be(7);
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("-3")]
+    [InlineData("abc")]
+    [InlineData("  ")]
+    public void FeeLimit_InvalidOverride_IsIgnored(string bad)
+    {
+        // 0 means "zero-fee routes only" to SendPaymentV2, so it must never pass through.
+        using var service = FeeService(bad);
+        service.FeeLimitSats("lnbc10u1p3abcdef").Should().Be(50);
+    }
+
+    [Fact]
+    public void Tls_UnreadableCertPath_FailsWithAClearConfigError()
+    {
+        var missing = Path.Combine(Path.GetTempPath(), $"lnd-tls-missing-{Guid.NewGuid():N}.cert");
+        var act = () => LndWalletService.BuildServerCertificateValidator(null, missing);
+        act.Should().Throw<InvalidOperationException>()
+            .WithMessage("*LND_TLS_CERT_PATH*")
+            .WithMessage($"*{missing}*");
     }
 }

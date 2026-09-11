@@ -157,7 +157,13 @@ public class Program
         // line without per-tool receipt code.
         void AddWallet<TWallet>() where TWallet : class, IWalletService
         {
-            builder.Services.AddHttpClient<TWallet>();
+            var walletClient = builder.Services.AddHttpClient<TWallet>();
+            if (typeof(TWallet) == typeof(LndWalletService))
+            {
+                // A self-signed LND tls.cert needs LND_TLS_CERT_PATH (pin) or
+                // LND_SKIP_TLS_VERIFY=true (dev); both are documented on LndWalletService.
+                walletClient.ConfigurePrimaryHttpMessageHandler(LndWalletService.CreateHttpHandler);
+            }
             // Decorator chain (outermost first): IdempotentWalletService guards against a
             // blind duplicate payment (durable operation ledger) BEFORE the receipt seam and
             // the real wallet — so a refused duplicate neither pays nor writes a receipt.

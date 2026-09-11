@@ -1202,7 +1202,7 @@ public class NwcWalletService : IWalletService, IDisposable
     /// Extracts the payment hash from a BOLT11 Lightning invoice.
     /// Parses bech32 data to find the tagged field with type 1 (payment hash).
     /// </summary>
-    private static byte[]? ExtractPaymentHashFromBolt11(string bolt11)
+    internal static byte[]? ExtractPaymentHashFromBolt11(string bolt11)
     {
         const string bech32Chars = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
 

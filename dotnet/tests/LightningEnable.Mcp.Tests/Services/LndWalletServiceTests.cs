@@ -2,8 +2,7 @@ using System.Net;
 using LightningEnable.Mcp.Models;
 using LightningEnable.Mcp.Services;
 using FluentAssertions;
-using Moq;
-using Moq.Protected;
+using System.Text.Json;
 
 namespace LightningEnable.Mcp.Tests.Services;
 
@@ -19,20 +18,40 @@ public class LndWalletServiceTests
     private const string ValidPreimageHex =
         "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
 
-    private static Mock<HttpMessageHandler> CreateMockHandler(string responseContent)
-    {
-        var mockHandler = new Mock<HttpMessageHandler>();
-        mockHandler.Protected()
-            .Setup<Task<HttpResponseMessage>>(
-                "SendAsync",
-                ItExpr.IsAny<HttpRequestMessage>(),
-                ItExpr.IsAny<CancellationToken>())
-            .ReturnsAsync(new HttpResponseMessage
+    /// <summary>
+    /// A node that does NOT serve routerrpc: <c>/v2/router/send</c> answers 404 (so
+    /// <c>PayInvoiceAsync</c> falls back to the legacy route) and every other request
+    /// gets <paramref name="responseContent"/>. Used by the tests that assert the
+    /// legacy route's base64 preimage semantics.
+    /// </summary>
+    private static RoutingHandler CreateLegacyOnlyHandler(string responseContent) =>
+        new(req => req.RequestUri!.AbsolutePath.EndsWith(LndWalletService.RouterSendPath)
+            ? new HttpResponseMessage(HttpStatusCode.NotFound)
             {
-                StatusCode = HttpStatusCode.OK,
+                Content = new StringContent("""{"code":5,"message":"Not Found"}""")
+            }
+            : new HttpResponseMessage(HttpStatusCode.OK)
+            {
                 Content = new StringContent(responseContent)
             });
-        return mockHandler;
+
+    /// <summary>
+    /// Records every request and answers each with the supplied factory.
+    /// </summary>
+    private sealed class RoutingHandler : HttpMessageHandler
+    {
+        private readonly Func<HttpRequestMessage, HttpResponseMessage> _respond;
+        public List<(string Method, string Path, string Body)> Requests { get; } = new();
+
+        public RoutingHandler(Func<HttpRequestMessage, HttpResponseMessage> respond) => _respond = respond;
+
+        protected override async Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            var body = request.Content is null ? "" : await request.Content.ReadAsStringAsync(cancellationToken);
+            Requests.Add((request.Method.Method, request.RequestUri!.AbsolutePath, body));
+            return _respond(request);
+        }
     }
 
     /// <summary>
@@ -64,7 +83,7 @@ public class LndWalletServiceTests
             Environment.SetEnvironmentVariable("LND_REST_HOST", "localhost:8080");
             Environment.SetEnvironmentVariable("LND_MACAROON_HEX", "abc123");
 
-            using var httpClient = new HttpClient(CreateMockHandler(responseJson).Object);
+            using var httpClient = new HttpClient(CreateLegacyOnlyHandler(responseJson));
             using var service = new LndWalletService(httpClient);
 
             var result = await service.PayInvoiceAsync("lnbc1000n1p3abcdef");
@@ -224,5 +243,294 @@ public class LndWalletServiceTests
             result.ErrorCode.Should().Be("PAYMENT_ERROR");
             return Task.CompletedTask;
         });
+    }
+    // -----------------------------------------------------------------------
+    // routerrpc SendPaymentV2 - the supported payment route.
+    //
+    // LND REMOVED the legacy lnrpc.SendPaymentSync REST route
+    // (POST /v1/channels/transactions). A modern node answers it with
+    // 404 {"code":5,"message":"Not Found"} and never creates a payment, so EVERY
+    // LND payment failed with HTTP_404 and no attempt recorded on the node
+    // (verified against LND v0.21.3-beta). Payments must go to
+    // POST /v2/router/send instead, falling back to the old route only when the
+    // node does not serve v2 (a 404 means nothing was submitted, so the fallback
+    // cannot double-pay).
+    // -----------------------------------------------------------------------
+
+    private const string ZeroPreimage =
+        "0000000000000000000000000000000000000000000000000000000000000000";
+
+    private const string PaymentHashHex =
+        "abababababababababababababababababababababababababababababababab";
+
+    /// <summary>One grpc-gateway server-streaming frame: {"result": &lt;lnrpc.Payment&gt;}.</summary>
+    private static string Frame(string status, string? preimage = null, string? failureReason = null, string? paymentHash = null)
+    {
+        var payment = new Dictionary<string, object?> { ["status"] = status };
+        if (preimage is not null) payment["payment_preimage"] = preimage;
+        if (failureReason is not null) payment["failure_reason"] = failureReason;
+        if (paymentHash is not null) payment["payment_hash"] = paymentHash;
+        return JsonSerializer.Serialize(new { result = payment }) + "\n";
+    }
+
+    private static HttpResponseMessage Ndjson(params string[] frames) =>
+        new(HttpStatusCode.OK) { Content = new StringContent(string.Concat(frames)) };
+
+    /// <summary>
+    /// Runs one PayInvoiceAsync against a node whose /v2/router/send answers with
+    /// <paramref name="routerResponse"/>; the legacy route answers with
+    /// <paramref name="legacyResponse"/> (or fails the test when null, because a
+    /// healthy node must never see it).
+    /// </summary>
+    private static async Task<(NwcPaymentResult Result, RoutingHandler Handler)> PayViaRouter(
+        Func<HttpResponseMessage> routerResponse,
+        Func<HttpResponseMessage>? legacyResponse = null,
+        Action<LndWalletService>? configure = null)
+    {
+        var originalHost = Environment.GetEnvironmentVariable("LND_REST_HOST");
+        var originalMacaroon = Environment.GetEnvironmentVariable("LND_MACAROON_HEX");
+        try
+        {
+            Environment.SetEnvironmentVariable("LND_REST_HOST", "localhost:8080");
+            Environment.SetEnvironmentVariable("LND_MACAROON_HEX", "abc123");
+
+            var handler = new RoutingHandler(req =>
+                req.RequestUri!.AbsolutePath.EndsWith(LndWalletService.RouterSendPath)
+                    ? routerResponse()
+                    : legacyResponse?.Invoke()
+                      ?? throw new InvalidOperationException("unexpected legacy request to " + req.RequestUri));
+
+            using var httpClient = new HttpClient(handler);
+            using var service = new LndWalletService(httpClient);
+            configure?.Invoke(service);
+
+            var result = await service.PayInvoiceAsync("lnbc30n1p3abcdef");
+            return (result, handler);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("LND_REST_HOST", originalHost);
+            Environment.SetEnvironmentVariable("LND_MACAROON_HEX", originalMacaroon);
+        }
+    }
+
+    [Fact]
+    public async Task PayInvoice_PostsToRouterSendV2_NotTheRemovedV1Route()
+    {
+        var (result, handler) = await PayViaRouter(
+            () => Ndjson(Frame("SUCCEEDED", preimage: ValidPreimageHex)));
+
+        result.Success.Should().BeTrue();
+        result.HasPreimage.Should().BeTrue();
+        result.PreimageHex.Should().Be(ValidPreimageHex);
+
+        handler.Requests.Should().HaveCount(1, "the removed route must not be touched at all on a healthy node");
+        handler.Requests[0].Method.Should().Be("POST");
+        handler.Requests[0].Path.Should().Be("/v2/router/send");
+    }
+
+    [Fact]
+    public async Task PayInvoice_SendsANonZeroFeeLimitAndANodeSideTimeout()
+    {
+        // SendPaymentV2 considers ONLY zero-fee routes when fee_limit_sat is 0.
+        var (_, handler) = await PayViaRouter(
+            () => Ndjson(Frame("SUCCEEDED", preimage: ValidPreimageHex)));
+
+        using var body = JsonDocument.Parse(handler.Requests[0].Body);
+        var root = body.RootElement;
+        root.GetProperty("payment_request").GetString().Should().Be("lnbc30n1p3abcdef");
+        long.Parse(root.GetProperty("fee_limit_sat").GetString()!).Should().BePositive();
+        // A node-side timeout keeps the call bounded even if the client never cancels.
+        root.GetProperty("timeout_seconds").GetInt32().Should().BePositive();
+    }
+
+    [Fact]
+    public async Task PayInvoice_FailedFrame_IsARetryableFailure()
+    {
+        var (result, _) = await PayViaRouter(
+            () => Ndjson(Frame("FAILED", preimage: ZeroPreimage, failureReason: "FAILURE_REASON_NO_ROUTE")));
+
+        result.Success.Should().BeFalse();
+        result.IsPending.Should().BeFalse();
+        result.ErrorMessage.Should().Contain("NO_ROUTE");
+    }
+
+    [Fact]
+    public async Task PayInvoice_AllZeroPreimage_IsNeverReturnedAsProof()
+    {
+        // LND fills payment_preimage with 32 zero bytes when there is no proof. It is 64
+        // valid hex characters, so a length/hex check alone accepts it - and the agent
+        // would publish it as an L402 Authorization preimage for a payment it cannot prove.
+        var (result, _) = await PayViaRouter(
+            () => Ndjson(Frame("SUCCEEDED", preimage: ZeroPreimage, paymentHash: PaymentHashHex)));
+
+        result.Success.Should().BeTrue("the payment settled - it is unprovable, not failed");
+        result.HasPreimage.Should().BeFalse();
+        result.PreimageHex.Should().BeNull();
+        result.IsPending.Should().BeFalse();
+        result.TrackingId.Should().Be(PaymentHashHex);
+    }
+
+    [Fact]
+    public async Task PayInvoice_InFlightWithoutATerminalFrame_IsPendingNotFailed()
+    {
+        // Reporting an in-flight payment as failed invites a double-pay.
+        var (result, _) = await PayViaRouter(
+            () => Ndjson(Frame("IN_FLIGHT", preimage: ZeroPreimage)));
+
+        result.IsPending.Should().BeTrue();
+        result.Success.Should().BeFalse();
+        result.HasPreimage.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task PayInvoice_NoFramesAtAll_IsPendingNotFailed()
+    {
+        var (result, _) = await PayViaRouter(() => Ndjson());
+
+        result.IsPending.Should().BeTrue();
+        result.Success.Should().BeFalse();
+    }
+
+    /// <summary>A response body that never yields a byte - models a stalled LND stream.</summary>
+    private sealed class HangingContent : HttpContent
+    {
+        protected override Task SerializeToStreamAsync(Stream stream, System.Net.TransportContext? context) =>
+            Task.Delay(Timeout.Infinite);
+
+        protected override Task<Stream> CreateContentReadStreamAsync() =>
+            Task.FromResult<Stream>(new HangingStream());
+
+        protected override bool TryComputeLength(out long length) { length = -1; return false; }
+
+        private sealed class HangingStream : Stream
+        {
+            public override bool CanRead => true;
+            public override bool CanSeek => false;
+            public override bool CanWrite => false;
+            public override long Length => throw new NotSupportedException();
+            public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+            public override void Flush() { }
+            public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+            public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+            {
+                await Task.Delay(Timeout.Infinite, cancellationToken);
+                return 0;
+            }
+            public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
+                ReadAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+            public override void SetLength(long value) => throw new NotSupportedException();
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        }
+    }
+
+    [Fact]
+    public async Task PayInvoice_AStalledStream_CannotHangTheAgentForever()
+    {
+        // The reported symptom: pay_invoice blocked for minutes with no result. A stalled
+        // read must surface as a BOUNDED, non-retryable "pending" result, never an
+        // unbounded await.
+        var pay = PayViaRouter(
+            () => new HttpResponseMessage(HttpStatusCode.OK) { Content = new HangingContent() },
+            configure: s => s.ClientReadTimeout = TimeSpan.FromSeconds(1)); // keep the test fast; same code path
+
+        var finished = await Task.WhenAny(pay, Task.Delay(TimeSpan.FromSeconds(30)));
+        finished.Should().BeSameAs(pay, "the client-side bound must fire");
+
+        var (result, _) = await pay;
+        result.IsPending.Should().BeTrue("the request WAS submitted, so this is pending, not failed");
+        result.Success.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task PayInvoice_FallsBackToTheLegacyRoute_WhenV2IsAbsent()
+    {
+        // Old nodes without routerrpc: a 404 means nothing was submitted, so the fallback
+        // is double-pay-safe.
+        var preimageB64 = Convert.ToBase64String(Convert.FromHexString(ValidPreimageHex));
+        var (result, handler) = await PayViaRouter(
+            () => new HttpResponseMessage(HttpStatusCode.NotFound)
+            {
+                Content = new StringContent("""{"code":5,"message":"Not Found"}""")
+            },
+            () => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent($$"""{"payment_preimage":"{{preimageB64}}","payment_error":""}""")
+            });
+
+        result.Success.Should().BeTrue();
+        result.PreimageHex.Should().Be(ValidPreimageHex);
+        handler.Requests.Should().HaveCount(2);
+        handler.Requests[1].Path.Should().Be("/v1/channels/transactions");
+    }
+
+    [Fact]
+    public async Task PayInvoice_V2HttpError_DoesNotFallBack()
+    {
+        // A non-404 error came from a route that EXISTS - retrying it on the legacy route
+        // could submit the payment twice.
+        var (result, handler) = await PayViaRouter(
+            () => new HttpResponseMessage(HttpStatusCode.InternalServerError) { Content = new StringContent("boom") });
+
+        result.Success.Should().BeFalse();
+        result.IsPending.Should().BeFalse();
+        result.ErrorCode.Should().Be("HTTP_500");
+        handler.Requests.Should().HaveCount(1, "the legacy route must not be tried after a non-404 error");
+    }
+    // -----------------------------------------------------------------------
+    // TLS: LND serves a self-signed tls.cert. The doc header on LndWalletService has
+    // advertised LND_TLS_CERT_PATH and LND_SKIP_TLS_VERIFY since the wallet shipped, but
+    // neither was wired to the HttpClient, so a node whose cert is not in the OS trust
+    // store failed the handshake before any route was reached.
+    // -----------------------------------------------------------------------
+
+    private static System.Security.Cryptography.X509Certificates.X509Certificate2 SelfSigned(string cn)
+    {
+        using var key = System.Security.Cryptography.RSA.Create(2048);
+        var req = new System.Security.Cryptography.X509Certificates.CertificateRequest(
+            $"CN={cn}", key, System.Security.Cryptography.HashAlgorithmName.SHA256,
+            System.Security.Cryptography.RSASignaturePadding.Pkcs1);
+        return req.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
+    }
+
+    [Fact]
+    public void Tls_NeitherVarSet_UsesDefaultValidation()
+    {
+        LndWalletService.BuildServerCertificateValidator(null, null).Should().BeNull();
+        LndWalletService.BuildServerCertificateValidator("false", "").Should().BeNull();
+    }
+
+    [Fact]
+    public void Tls_SkipVerify_AcceptsAnyCertificate()
+    {
+        var validator = LndWalletService.BuildServerCertificateValidator("true", null);
+        validator.Should().NotBeNull();
+        using var cert = SelfSigned("lnd");
+        validator!(new HttpRequestMessage(), cert, null, System.Net.Security.SslPolicyErrors.RemoteCertificateChainErrors)
+            .Should().BeTrue();
+    }
+
+    [Fact]
+    public void Tls_CertPath_PinsExactlyThatCertificate()
+    {
+        using var lndCert = SelfSigned("lnd");
+        using var other = SelfSigned("impostor");
+        var path = Path.Combine(Path.GetTempPath(), $"lnd-tls-{Guid.NewGuid():N}.cert");
+        File.WriteAllText(path, lndCert.ExportCertificatePem());
+        try
+        {
+            // Pinning wins even when skip is also set.
+            var validator = LndWalletService.BuildServerCertificateValidator("true", path);
+            validator.Should().NotBeNull();
+            var chainErrors = System.Net.Security.SslPolicyErrors.RemoteCertificateChainErrors;
+            validator!(new HttpRequestMessage(), lndCert, null, chainErrors).Should().BeTrue("the pinned cert is trusted despite being self-signed");
+            validator(new HttpRequestMessage(), other, null, chainErrors).Should().BeFalse("any other cert is rejected");
+            validator(new HttpRequestMessage(), null, null, chainErrors).Should().BeFalse();
+        }
+        finally
+        {
+            File.Delete(path);
+        }
     }
 }

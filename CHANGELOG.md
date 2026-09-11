@@ -244,7 +244,23 @@ exposed as MCP resources (`lightning-enable://receipts`).
   of hanging the agent (`LND_PAYMENT_TIMEOUT_SECONDS`, default 25s); and the all-zero
   preimage LND returns when no proof exists is rejected by name, since it is 64 valid hex
   characters and the format check alone accepted it as L402 proof of payment.
-  **The .NET port has the same removed-route defect and is not fixed here.**
+  **Fixed in .NET the same way (next entry).**
+
+- **Every LND payment failed with a 404 (.NET).** `LndWalletService.PayInvoiceAsync` posted to
+  the same removed `/v1/channels/transactions` route. It now pays through
+  `POST /v2/router/send` and reads the newline-delimited `{"result": <lnrpc.Payment>}` stream
+  until a terminal status, keeping the legacy route only as a 404 fallback (never on any
+  other error: the route then exists and may already have taken the payment). Same
+  funds-safety set as Python: `fee_limit_sat` is always sent (5% of the invoice, floor 2 sats,
+  `LND_FEE_LIMIT_SATS` override); the read is bounded node-side (`timeout_seconds`) and
+  client-side (`LND_PAYMENT_TIMEOUT_SECONDS`, default 25s), and a stall reports as
+  non-retryable pending rather than a failure that invites a double-pay; the all-zero
+  preimage is rejected by name; a non-`SUCCEEDED` terminal frame reports pending. Also wired
+  the documented-but-unimplemented TLS options on the LND client: `LND_TLS_CERT_PATH` pins the
+  node's own `tls.cert` (anything else is rejected) and `LND_SKIP_TLS_VERIFY=true` turns
+  verification off with a stderr warning (dev only). Verified end to end against a mainnet
+  LND v0.21.3-beta with the cert pinned: a 3-sat L402 invoice settles with a preimage in 2.0s
+  and the replayed `Authorization: L402` clears the challenge.
 
 - **An all-digit NWC wallet pubkey could never connect (.NET).** The 64-hex wallet pubkey in
   a `nostr+walletconnect://` string is not a hostname, but it was read through `System.Uri`,

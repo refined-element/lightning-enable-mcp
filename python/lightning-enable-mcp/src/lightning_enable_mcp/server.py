@@ -773,6 +773,7 @@ class LightningEnableServer:
         opennode_api_key = _get_env_or_config("OPENNODE_API_KEY", wallet_config.opennode_api_key)
 
         lnd_skip_tls_verify = os.getenv("LND_SKIP_TLS_VERIFY", "").lower() == "true"
+        lnd_tls_cert_path = os.getenv("LND_TLS_CERT_PATH") or None
 
         # Always initialize API client (for producer tools, independent of wallet)
         self.api_client = LightningEnableApiClient()
@@ -826,6 +827,7 @@ class LightningEnableServer:
                     rest_host=lnd_rest_host,
                     macaroon_hex=lnd_macaroon_hex,
                     skip_tls_verify=lnd_skip_tls_verify,
+                    tls_cert_path=lnd_tls_cert_path,
                 )
                 await self.wallet.connect()
                 logger.info("LND wallet connected - preimage always available")

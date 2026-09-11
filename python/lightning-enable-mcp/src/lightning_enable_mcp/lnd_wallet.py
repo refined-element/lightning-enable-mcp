@@ -12,6 +12,9 @@ This is the recommended wallet for L402 because:
 Configuration (environment variables or config file):
 - LND_REST_HOST: LND REST API host (e.g., "localhost:8080" or "127.0.0.1:8080")
 - LND_MACAROON_HEX: Admin macaroon in hex format (required for payments)
+- LND_TLS_CERT_PATH: Path to the node's tls.cert (PEM or DER). Pins that certificate
+  as the only trusted one, which is what LND's self-signed cert needs. Wins over
+  LND_SKIP_TLS_VERIFY when both are set.
 - LND_SKIP_TLS_VERIFY: Set to "true" to skip TLS verification (dev only)
 - LND_PAYMENT_TIMEOUT_SECONDS: How long a payment may stay in flight before it is
   reported as pending (default 25, so a tool call stays well under 30s)
@@ -32,6 +35,7 @@ import json
 import logging
 import math
 import os
+import ssl
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -133,12 +137,69 @@ class LndPaymentError(LndError):
     pass
 
 
+def build_tls_verify(
+    skip_tls_verify: bool, tls_cert_path: str | None
+) -> "bool | ssl.SSLContext":
+    """Server-certificate policy for the LND REST client (the httpx ``verify`` value).
+
+    Mirrors the .NET ``LndWalletService.BuildServerCertificateValidator``:
+
+    - ``LND_TLS_CERT_PATH`` set: an ``SSLContext`` that trusts exactly that certificate
+      (PEM or DER) and nothing from the system store, so LND's self-signed ``tls.cert``
+      validates. Hostname checking is off because the pin already fixes the identity;
+      LND's cert lists only the SANs it was generated with, and a node reached by
+      another address would otherwise fail for no security gain.
+    - ``LND_SKIP_TLS_VERIFY=true``: ``False`` (any certificate accepted) with a warning.
+    - neither: ``True`` (default chain validation).
+
+    Pinning wins over skip when both are set. An unreadable or malformed certificate
+    raises ``LndError`` naming the variable, so a typo fails at startup instead of as an
+    opaque ``CERTIFICATE_VERIFY_FAILED`` on the first request.
+    """
+    path = (tls_cert_path or "").strip()
+    if path and not path.startswith("${"):
+        try:
+            raw = open(path, "rb").read()
+            # PROTOCOL_TLS_CLIENT loads NO default CAs: the pinned file is the whole
+            # trust store (create_default_context would add the system bundle).
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_REQUIRED
+            if raw.lstrip()[:32].startswith(b"-----BEGIN"):
+                context.load_verify_locations(cadata=raw.decode("ascii"))
+            else:
+                context.load_verify_locations(cadata=raw)
+        except (OSError, ssl.SSLError, ValueError, UnicodeDecodeError) as e:
+            raise LndError(
+                f"LND_TLS_CERT_PATH points at '{path}' but the certificate could not be "
+                f"read: {e}. Set it to the node's tls.cert (PEM or DER), or unset it to "
+                "use default TLS validation."
+            ) from e
+        if not context.get_ca_certs(binary_form=True):
+            raise LndError(
+                f"LND_TLS_CERT_PATH points at '{path}' but the certificate could not be "
+                "read: no certificate found in file. Set it to the node's tls.cert "
+                "(PEM or DER), or unset it to use default TLS validation."
+            )
+        logger.info("[LND] Pinning TLS certificate from LND_TLS_CERT_PATH")
+        return context
+
+    if skip_tls_verify:
+        logger.warning(
+            "[LND] WARNING: LND_SKIP_TLS_VERIFY=true - TLS certificate verification is OFF"
+        )
+        return False
+
+    return True
+
+
 @dataclass
 class LndConfig:
     """LND connection configuration."""
     rest_host: str
     macaroon_hex: str
     skip_tls_verify: bool = False
+    tls_cert_path: str | None = None
 
 
 @dataclass
@@ -194,6 +255,7 @@ class LndWallet:
         rest_host: str,
         macaroon_hex: str,
         skip_tls_verify: bool = False,
+        tls_cert_path: str | None = None,
     ) -> None:
         """
         Initialize LND wallet.
@@ -202,6 +264,7 @@ class LndWallet:
             rest_host: LND REST API host (e.g., "localhost:8080")
             macaroon_hex: Admin macaroon in hex format
             skip_tls_verify: Skip TLS certificate verification (dev only)
+            tls_cert_path: Path to the node's tls.cert to pin (wins over skip_tls_verify)
         """
         if httpx is None:
             raise ImportError(
@@ -212,6 +275,7 @@ class LndWallet:
             rest_host=rest_host,
             macaroon_hex=macaroon_hex,
             skip_tls_verify=skip_tls_verify,
+            tls_cert_path=tls_cert_path,
         )
         self._client: httpx.AsyncClient | None = None
         self._connected = False
@@ -252,6 +316,10 @@ class LndWallet:
         # Determine base URL - add scheme if not present
         base_url = f"{self._base_host}/v1/"
 
+        # Resolved here (not in __init__) so a bad LND_TLS_CERT_PATH surfaces as a
+        # connection error, before any request, and never leaves a half-built client.
+        verify = build_tls_verify(self.config.skip_tls_verify, self.config.tls_cert_path)
+
         self._client = httpx.AsyncClient(
             base_url=base_url,
             headers={
@@ -259,7 +327,7 @@ class LndWallet:
                 "Content-Type": "application/json",
             },
             timeout=60.0,
-            verify=not self.config.skip_tls_verify,
+            verify=verify,
         )
 
         self._connected = True

@@ -18,9 +18,13 @@ public static class CheckInvoiceStatusTool
     /// <param name="walletService">Injected wallet service.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Invoice status including whether it has been paid.</returns>
-    [McpServerTool(Name = "check_invoice_status"), Description("Check if a Lightning invoice has been paid. Use the invoice ID from create_invoice.")]
+    [McpServerTool(
+        Name = "check_invoice_status",
+        Title = "Invoice status",
+        ReadOnly = true)]
+    [Description("Check whether an invoice from create_invoice has been paid.")]
     public static async Task<string> CheckInvoiceStatus(
-        [Description("The invoice ID returned from create_invoice")] string invoiceId,
+        [Description("Invoice ID from create_invoice")] string invoiceId,
         IWalletService? walletService = null,
         CancellationToken cancellationToken = default)
     {

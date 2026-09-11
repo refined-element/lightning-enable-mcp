@@ -175,35 +175,34 @@ public class L402ToolsTests
 
     #region Nonce Fallback Tests
 
-    [Fact]
-    public async Task AccessL402Resource_RequiresConfirmation_ElicitationFails_ReturnsNonceFallback()
+    private static Mock<IBudgetService> ConfirmationRequiredBudget(long sats, decimal usd)
     {
-        // Arrange — budget says RequiresConfirmation, no server (elicitation unavailable)
         var budgetServiceMock = new Mock<IBudgetService>();
-        var priceServiceMock = new Mock<IPriceService>();
-
         budgetServiceMock.Setup(b => b.CheckApprovalLevelAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(new ApprovalCheckResult
             {
                 Level = ApprovalLevel.FormConfirm,
-                AmountSats = 1000,
-                AmountUsd = 5.00m,
+                AmountSats = sats,
+                AmountUsd = usd,
                 RemainingSessionBudgetUsd = 95.00m
-            });
-        budgetServiceMock.Setup(b => b.CreatePendingConfirmation(
-                It.IsAny<long>(), It.IsAny<decimal>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()))
-            .Returns(new PendingConfirmation
-            {
-                Nonce = "L4C123",
-                AmountSats = 1000,
-                AmountUsd = 5.00m,
-                ToolName = "access_l402_resource",
-                Description = "https://api.example.com/data",
-                CreatedAt = DateTime.UtcNow,
-                ExpiresAt = DateTime.UtcNow.AddMinutes(2)
             });
         budgetServiceMock.Setup(b => b.GetUserConfiguration())
             .Returns(new UserBudgetConfiguration());
+        return budgetServiceMock;
+    }
+
+    [Theory]
+    [InlineData(ConfirmationChannelKind.Stderr)]
+    [InlineData(ConfirmationChannelKind.Webhook)]
+    [InlineData(ConfirmationChannelKind.File)]
+    public async Task AccessL402Resource_RequiresConfirmation_ElicitationFails_ReturnsNonceFallback(
+        ConfirmationChannelKind channel)
+    {
+        // Arrange — budget says RequiresConfirmation, no server (elicitation unavailable)
+        var budgetServiceMock = ConfirmationRequiredBudget(1000, 5.00m);
+        var priceServiceMock = new Mock<IPriceService>();
+        ConfirmationTestSetup.SetupDelivered(
+            budgetServiceMock, channel, "L4C123", 1000, 5.00m, "access_l402_resource");
 
         // Act — no McpServer, so elicitation can't work
         var result = await AccessL402ResourceTool.AccessL402Resource(
@@ -212,11 +211,13 @@ public class L402ToolsTests
             budgetService: budgetServiceMock.Object,
             priceService: priceServiceMock.Object);
 
-        // Assert — confirmation requested, but the code must NOT leak into the result
-        // (it goes to stderr only — the core out-of-band security property).
+        // Assert — confirmation requested, but the code must NOT leak into the result on ANY
+        // channel (it goes to the operator — the core out-of-band security property).
         var json = JsonDocument.Parse(result);
         json.RootElement.GetProperty("success").GetBoolean().Should().BeFalse();
         json.RootElement.GetProperty("requiresConfirmation").GetBoolean().Should().BeTrue();
+        json.RootElement.GetProperty("confirmationChannel").GetString()
+            .Should().Be(channel.ToString().ToLowerInvariant());
         json.RootElement.TryGetProperty("nonce", out _).Should().BeFalse("the code must never be in the result");
         result.Should().NotContain("L4C123", "the confirmation code must not leak into the model-visible result");
         json.RootElement.TryGetProperty("howToConfirm", out _).Should().BeTrue();
@@ -226,34 +227,36 @@ public class L402ToolsTests
     }
 
     [Fact]
-    public async Task PayL402Challenge_RequiresConfirmation_ElicitationFails_ReturnsNonceFallback()
+    public async Task AccessL402Resource_RefuseChannel_RefusesWithoutFetching()
+    {
+        var budgetServiceMock = ConfirmationRequiredBudget(1000, 5.00m);
+        ConfirmationTestSetup.SetupRefused(budgetServiceMock);
+
+        var result = await AccessL402ResourceTool.AccessL402Resource(
+            url: "https://api.example.com/data",
+            l402Client: _l402ClientMock.Object,
+            budgetService: budgetServiceMock.Object,
+            priceService: new Mock<IPriceService>().Object);
+
+        var json = JsonDocument.Parse(result);
+        json.RootElement.GetProperty("success").GetBoolean().Should().BeFalse();
+        json.RootElement.GetProperty("requiresConfirmation").GetBoolean().Should().BeFalse();
+        json.RootElement.GetProperty("confirmationChannel").GetString().Should().Be("refuse");
+        json.RootElement.GetProperty("error").GetString().Should().Contain("confirmation.channel");
+    }
+
+    [Theory]
+    [InlineData(ConfirmationChannelKind.Stderr)]
+    [InlineData(ConfirmationChannelKind.Webhook)]
+    [InlineData(ConfirmationChannelKind.File)]
+    public async Task PayL402Challenge_RequiresConfirmation_ElicitationFails_ReturnsNonceFallback(
+        ConfirmationChannelKind channel)
     {
         // Arrange — budget says RequiresConfirmation, no server (elicitation unavailable)
-        var budgetServiceMock = new Mock<IBudgetService>();
+        var budgetServiceMock = ConfirmationRequiredBudget(500, 2.50m);
         var priceServiceMock = new Mock<IPriceService>();
-
-        budgetServiceMock.Setup(b => b.CheckApprovalLevelAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new ApprovalCheckResult
-            {
-                Level = ApprovalLevel.FormConfirm,
-                AmountSats = 500,
-                AmountUsd = 2.50m,
-                RemainingSessionBudgetUsd = 97.50m
-            });
-        budgetServiceMock.Setup(b => b.CreatePendingConfirmation(
-                It.IsAny<long>(), It.IsAny<decimal>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>()))
-            .Returns(new PendingConfirmation
-            {
-                Nonce = "PLC456",
-                AmountSats = 500,
-                AmountUsd = 2.50m,
-                ToolName = "pay_l402_challenge",
-                Description = "lnbc500n1pjtest...",
-                CreatedAt = DateTime.UtcNow,
-                ExpiresAt = DateTime.UtcNow.AddMinutes(2)
-            });
-        budgetServiceMock.Setup(b => b.GetUserConfiguration())
-            .Returns(new UserBudgetConfiguration());
+        ConfirmationTestSetup.SetupDelivered(
+            budgetServiceMock, channel, "PLC456", 500, 2.50m, "pay_l402_challenge");
 
         // Act — no McpServer, so elicitation can't work
         var result = await PayL402ChallengeTool.PayL402Challenge(
@@ -267,12 +270,33 @@ public class L402ToolsTests
         var json = JsonDocument.Parse(result);
         json.RootElement.GetProperty("success").GetBoolean().Should().BeFalse();
         json.RootElement.GetProperty("requiresConfirmation").GetBoolean().Should().BeTrue();
+        json.RootElement.GetProperty("confirmationChannel").GetString()
+            .Should().Be(channel.ToString().ToLowerInvariant());
         json.RootElement.TryGetProperty("nonce", out _).Should().BeFalse("the code must never be in the result");
         result.Should().NotContain("PLC456", "the confirmation code must not leak into the model-visible result");
         json.RootElement.TryGetProperty("howToConfirm", out _).Should().BeTrue();
         json.RootElement.GetProperty("expiresInSeconds").GetInt32().Should().Be(120);
         json.RootElement.GetProperty("amount").GetProperty("sats").GetInt64().Should().Be(50); // lnbc500n = 50 sats
         json.RootElement.GetProperty("amount").GetProperty("usd").GetDecimal().Should().Be(2.50m);
+    }
+
+    [Fact]
+    public async Task PayL402Challenge_RefuseChannel_RefusesWithoutPaying()
+    {
+        var budgetServiceMock = ConfirmationRequiredBudget(500, 2.50m);
+        ConfirmationTestSetup.SetupRefused(budgetServiceMock);
+
+        var result = await PayL402ChallengeTool.PayL402Challenge(
+            invoice: "lnbc500n1pjtest",
+            macaroon: "base64macaroon",
+            l402Client: _l402ClientMock.Object,
+            budgetService: budgetServiceMock.Object,
+            priceService: new Mock<IPriceService>().Object);
+
+        var json = JsonDocument.Parse(result);
+        json.RootElement.GetProperty("success").GetBoolean().Should().BeFalse();
+        json.RootElement.GetProperty("requiresConfirmation").GetBoolean().Should().BeFalse();
+        json.RootElement.GetProperty("confirmationChannel").GetString().Should().Be("refuse");
     }
 
     #endregion

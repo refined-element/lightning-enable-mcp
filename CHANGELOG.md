@@ -3,6 +3,305 @@
 All notable changes to the Lightning Enable MCP server are documented here.
 Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-enable-mcp`).
 
+## [2.0.0] — 2026-09-10
+
+**Breaking-by-policy.** Nothing here removes a capability, but the tool-surface
+consolidation is significant enough to ship as a major: the advertised surface is now
+**16 tools in `standard`** (six single-purpose tools folded into five `action` verbs),
+**6 in `lite`**, **32 in `full`**. Every pre-consolidation tool name, plus the three v1
+aliases (`confirm_payment`, `check_wallet_balance`, `get_all_balances`), still works as a
+deprecated alias — the owner has deferred alias removal to **v3.0.0** (originally
+targeted for this release; see Deprecated below). Also new: sats-denominated budget
+limits, a configurable out-of-band confirmation channel (`stderr` / `refuse` / `webhook`
+/ `file`), several new env/config keys (`LIGHTNING_ENABLE_TOOL_PROFILE`,
+`LIGHTNING_ENABLE_CONFIRMATION_CHANNEL` and friends, the `limits.*Sats` budget keys),
+`setup_wallet`, six new `l402_producer` seller-setup actions, and the durable receipt log
+exposed as MCP resources (`lightning-enable://receipts`).
+
+### Changed
+
+- **Tool surface consolidated: 26 advertised tools → 15, in both ports** (16 once
+  `setup_wallet` is counted — see Added). Every advertised
+  tool's JSON schema is loaded into the agent's context at the start of each session, so the
+  tool surface was a token cost on every turn. Sixteen single-purpose tools are now five
+  `action` verbs:
+
+  | New call | Replaces |
+  |----------|----------|
+  | `budget(action="status"\|"tighten")` | `get_budget_status`, `configure_budget` |
+  | `receipts(source="durable"\|"session")` | `get_receipts`, `get_payment_history` |
+  | `wallet_ops(action="price"\|"exchange"\|"send_onchain")` | `get_btc_price`, `exchange_currency`, `send_onchain` |
+  | `l402_producer(action="create"\|"verify")` | `create_l402_challenge`, `verify_l402_payment` |
+  | `agent_services(action="discover"\|"request"\|"settle"\|"publish"\|"unpublish"\|"attest"\|"reputation")` | the seven ASA tools |
+
+  Together with tightened descriptions this cuts the advertised schema payload by ~40%
+  (Python 17,926 → 10,626 bytes; .NET 17,864 → 10,864 bytes) — measured on the 16-tool
+  surface as consolidated, i.e. after `setup_wallet` was added below and before the six
+  seller-setup actions were added to `l402_producer`. With those, the shipped `standard`
+  surface is 12,475 bytes (Python) / 12,910 bytes (.NET) — still ~30% under the old
+  26-tool payload, and still 16 tools.
+
+  **No behaviour changed.** Each action dispatches into the same handler the old tool called,
+  so budget checks, out-of-band confirmation (including `send_onchain` always requiring a
+  code), the receipt seam and the SSRF guards are the same code reached by a different name.
+  `check_invoice_status` was deliberately NOT folded into `create_invoice`: reading a status
+  and minting an invoice are different side-effect classes.
+
+- **Descriptions tightened across the retained tools.** Same meaning, fewer tokens; the
+  out-of-band confirmation rule (the code is printed to the server console, never returned in
+  a tool result — ask the human) is kept verbatim everywhere it applies.
+
+### Added
+
+- **The seller side is now fully tool-driven: six new `l402_producer` actions, both ports.**
+  `create` and `verify` handle one challenge each, but everything that has to happen *before*
+  either is worth calling was raw REST an agent could not reach. An agent with an API key can
+  now go from nothing to a monetized endpoint receiving payments on the merchant's own
+  wallet without leaving the tool surface:
+
+  | Action | Arguments | What it does |
+  |--------|-----------|--------------|
+  | `configure_receive` | `nwc_connection_string` (optional) | Stores the receiving wallet (`PUT /api/merchant/nwc-connection`), then switches the account to it (`PUT /api/merchant/payment-provider`) |
+  | `status` | `limit` | Plan, receiving wallet, onboarding checklist and the most recent mints (read-only) |
+  | `create_proxy` | `name`, `target_base_url`, `description`, `default_price_sats` | Puts an upstream API behind L402; returns the public base URL |
+  | `add_endpoint` | `proxy_id`, `endpoint_id`, `path`, `http_method`, `summary`, `price_sats` | Prices one route and adds it to the manifest |
+  | `publish` | `proxy_id`, `service_name`, `service_description`, `categories` | Enables the manifest and lists it publicly; returns the OpenAPI and manifest URLs |
+  | `list_challenges` | `challenge_status`, `limit`, `offset` | Reads back what was minted (read-only) |
+
+  Argument names follow each port's convention, as they already did: `price_sats` in Python,
+  `priceSats` in .NET. The filter on `list_challenges` is `challenge_status`, not `status`,
+  because `status` is an action name.
+
+  **Same tool, new actions — the advertised inventory is unchanged at 16.** `create` and
+  `verify` are untouched, and both deprecated aliases (`create_l402_challenge`,
+  `verify_l402_payment`) still forward exactly as before.
+
+  **API version.** `create_proxy`, `add_endpoint` and `publish` work against every Lightning
+  Enable API build. `configure_receive` needs the NWC receiving lane
+  (`PUT /api/merchant/nwc-connection`, provider `nwc`) and `list_challenges` needs
+  `GET /api/l402/challenges`, both of which ship with the API release this version targets.
+  `status` degrades gracefully — it reports what the deployment it reached could answer.
+
+  `configure_receive` with no argument reuses the wallet this MCP server itself pays with,
+  but **only when that wallet is an NWC wallet** — an LND / Strike / OpenNode server is
+  refused with a message naming its wallet rather than sent a credential that cannot serve
+  as a receiving connection. The connection string is validated locally before it goes on
+  the wire, and **never comes back**: every result reports `nwcConnectionString: <set>`, and
+  the result JSON is scrubbed of the string (in both its raw and JSON-escaped spellings) in
+  case an upstream error body quoted it.
+
+  Errors surface the Lightning Enable API's own members. It answers in RFC 9457
+  `application/problem+json` with `type`/`title`/`detail` alongside the legacy
+  `error`/`message`, so a failure carries the prose to act on (`"Plan 'free' caps proxy
+  configs at 1"`) *and* the stable slug to branch on (`errorCode: plan_proxy_limit`), plus
+  per-field `validationErrors` when the API rejects a body. The API key never appears in a
+  result. `list_challenges` and `status` copy an allowlist of challenge fields, so a
+  macaroon or preimage cannot ride along — the payment hash is the correlation handle.
+
+  This is ~1.9KB (Python) / ~1.3KB (.NET) of extra schema, so both ports' schema-size guards
+  were raised (0.60 → 0.75 and 0.65 → 0.78 of the pre-consolidation payload). That is the
+  trade the guard exists to make visible: six capabilities folded into an existing verb, with
+  ~1KB of headroom left before it fails again.
+
+- **`setup_wallet` — NWC-first wallet onboarding, both ports.** Nothing else in the tool
+  surface works without a wallet, and an agent had no way to discover that or fix it: the
+  only signal was a stderr warning at startup and a "wallet not configured" string on
+  whatever tool it happened to call. Advertised in the `standard` AND `lite` profiles,
+  because an agent needs it before anything else.
+
+  With no arguments it reports which wallet is configured and where the credential came
+  from — the provider and the source, **never the credential** — or, when there is none,
+  the guided path: paste an NWC connection string, or set the LND/Strike env vars, with the
+  exact `config.json` shape to write by hand.
+
+  With `nwc_connection_string` it parses the string, refuses if an environment variable
+  already selects a wallet (env beats config, so writing the file would be a silent no-op),
+  probes the live wallet through the existing NWC client under a 10-second budget, and only
+  then writes `wallets.nwcConnectionString` — merged into the existing document so the
+  operator's limits and any unknown keys survive, with the same 0600 / `icacls` hardening as
+  first-run config creation. It reports the wallet's declared methods and balance; a
+  saved-but-dead credential would otherwise fail later, at a payment, where it is far more
+  expensive to diagnose.
+
+  The advertised inventory is now **16 tools = 14 free + 2 API-key-gated** (`lite` 6,
+  `full` 32).
+
+- **Sats-denominated budget limits: `limits.maxPerPaymentSats` /
+  `limits.maxPerSessionSats` / `limits.autoApproveSats`, both ports** (env:
+  `LIGHTNING_ENABLE_MAX_PER_PAYMENT_SATS` / `LIGHTNING_ENABLE_MAX_PER_SESSION_SATS` /
+  `LIGHTNING_ENABLE_AUTO_APPROVE_SATS`). Spending limits were USD-only, so every budget
+  check needed a BTC price; three price sources being down is rare but real, and when it
+  happens the check cannot be evaluated and the payment is refused — correct, but it stops
+  the agent dead on a fault that has nothing to do with its budget.
+
+  A sats limit is enforced directly, with **no conversion and no price-feed dependency**. A
+  USD-only budget still fails closed exactly as before. With both denominations set, the
+  **stricter** cap wins on every check — USD is converted only when the feed is available;
+  when it is not, the sats caps carry the budget alone. Every gate (approval check, atomic
+  reservation, tighten) resolves the same three-way most-restrictive-wins across
+  USD-converted, sats, and the runtime tighten cap; tighten-only semantics are unchanged and
+  now also apply against a sats config cap.
+
+  `budget(action="status")` reports the effective cap in sats, which configured limit
+  produced it, the binding denomination (`usd` / `sats` / `runtime` / `none`), whether a
+  price was available, `autoApproveSats`, whether outage mode is active, and one sentence on
+  what is and is not in force.
+
+  **Approval during an outage fails closed.** The sats ceilings still bound the spend, but a
+  ceiling says "never more than this" — not "this much is fine unattended", which is what the
+  unevaluable USD tier ladder normally says. So `limits.autoApproveSats` states that second
+  thing explicitly, in satoshis: at or below it a payment is auto-approved; above it, or when
+  it is unset, the payment takes the normal confirmation flow. `LOG_AND_APPROVE` is never
+  returned on this path. `autoApproveSats` is a tier, not a ceiling — it is checked after the
+  sats ceilings, the runtime tighten caps, the first-payment setting and the cooldown, so it
+  can never widen any of them — and it is ignored entirely while a price is available. The
+  auto-pay paths (L402 auto-payment, `send_onchain`, `agent_services action=settle`) refuse
+  anything needing confirmation rather than prompting, so during an outage they proceed only
+  under `autoApproveSats`.
+
+- **The durable receipt log as MCP resources, both ports.** `lightning-enable://receipts`
+  (the most recent 200 receipts as JSONL, `application/x-ndjson`) and
+  `lightning-enable://receipts/{paymentHash}`. A tool call is the agent deciding to look; a
+  resource is something a client can attach, watch, or show a human without the model
+  spending a turn on it — and the spend log is exactly that kind of artifact. The `receipts`
+  tool is unchanged, and resources are unaffected by the tool profile: they cost no schema
+  bytes in the model's context.
+
+  Redaction now happens at the **read boundary**, so the tool and both resources are covered
+  by one pass. Receipts never carry a preimage by construction, but the log is a plain file
+  on the operator's disk — a hand-edit or a future writer could put one there, and by then
+  it is one read away from a model's context. Credential-shaped fields (preimage, secret,
+  macaroon, connection string, api key, …) are matched by property name, case-insensitively,
+  and their value is replaced with `[REDACTED]` so a reader can see the field was withheld.
+  The payment hash is deliberately not in that set: it is the safe reference the log is
+  keyed on.
+
+- **`LIGHTNING_ENABLE_TOOL_PROFILE` (`lite` | `standard` | `full`), both ports.** Chooses how
+  much of the surface `tools/list` advertises: `lite` = 6 tools (`setup_wallet`,
+  `pay_invoice`, `access_l402_resource`, `get_balance`, `budget`, `receipts`); `standard`
+  (the default) = the 16 tools above; `full` = those plus every pre-consolidation name, for
+  prompts and scripts written against the old surface. An unset or unrecognized value resolves to
+  `standard` (unrecognized also warns) — never to an empty surface.
+
+  **Profiles are listing-only.** A tool the profile does not advertise is still callable by
+  name in every profile; narrowing the profile trims what the model has to read, never what
+  the agent can do.
+
+- **A configurable approval channel for over-threshold payments, both ports.** The
+  confirmation code was always printed to the server's stderr — right for a local server with
+  a human at the terminal, wrong for a hosted one (a claude.ai connector, Docker, a fleet),
+  where nobody reads stderr and, on a shared host, the agent might. `confirmation.channel` in
+  `~/.lightning-enable/config.json` (or `LIGHTNING_ENABLE_CONFIRMATION_CHANNEL`) now selects
+  where the code goes:
+
+  | Channel | Behaviour |
+  |---------|-----------|
+  | `stderr` | Print to the server console. The default; unchanged. |
+  | `refuse` | Refuse over-threshold payments outright. **No code is minted at all.** |
+  | `webhook` | POST the pending confirmation to `confirmation.webhookUrl`, signed `X-LightningEnable-Signature: t=…,v1=…` (HMAC-SHA256 over `{t}.{body}`) with `confirmation.webhookSecret`. |
+  | `file` | Append the same JSON line to `confirmation.filePath` (default `~/.lightning-enable/confirmations.jsonl`), 0600 on POSIX. |
+
+  The webhook goes through the same connect-time SSRF guard as agent-supplied URLs (so the
+  URL must be public) and **never** follows redirects — a `3xx` is a delivery failure, so a
+  signed approval can only reach the URL you configured.
+
+  **Two invariants hold on every channel.** The code is never returned in a tool result, and
+  a payment is never approved because its notification could not be delivered — a delivery
+  failure REFUSES the payment and withdraws the minted code. The `refuse` channel creates no
+  pending confirmation at all, and its tool result says so rather than telling the agent to
+  go ask a human for a code that does not exist.
+
+- **Hosted auto-detection.** With no channel configured and stdin not a TTY, the server logs a
+  one-line startup warning naming the risk, and defaults to `refuse` only when
+  `LIGHTNING_ENABLE_HOSTED=1` — an explicit opt-in, so nothing flips behaviour on its own.
+  Otherwise it keeps `stderr`. A channel name the server can't parse fails closed to `refuse`
+  and says so at startup. Webhook and file settings also read from
+  `LIGHTNING_ENABLE_CONFIRMATION_WEBHOOK_URL` / `_SECRET` and `LIGHTNING_ENABLE_CONFIRMATION_FILE`,
+  for deployments with no config file. See "Deploying hosted" in the README.
+
+- **MCP tool annotations on every advertised tool, both ports.** A human-readable `title` and
+  an explicit `readOnlyHint` on all of them, `destructiveHint` on everything that can spend the
+  wallet (`pay_invoice`, `access_l402_resource`, `pay_l402_challenge`, `test_l402_payment`,
+  `create_lightning_enable_account`, `wallet_ops`, `agent_services`), and `idempotentHint` on
+  `budget`. Action tools are annotated for their **widest** action: `budget` is not read-only
+  because `tighten` writes, and `wallet_ops` is destructive because `send_onchain` is.
+
+### Fixed
+
+- **A dropped connection mid-payment was reported as a retryable failure (LND, both
+  runtimes).** Once the node had answered 2xx on `POST /v2/router/send` it may already
+  have accepted the payment, but a transport error while reading the streamed frames
+  (connection reset, torn chunk, read timeout) was wrapped as "Failed to connect to LND"
+  / `HTTP_ERROR` / `EXCEPTION` — a *retryable* failure that invited a second payment of
+  the same invoice. After a 2xx, any read error now surfaces as **pending** with the
+  invoice payment hash as the tracking id (`PaymentPendingError` in Python,
+  `NwcPaymentResult.Pending` in .NET), never as failed or succeeded. Errors before any
+  response still map to the plain connection failure, because nothing was submitted.
+  Also added the missing routing-fee tests (5% ceil, 2-sat floor, `LND_FEE_LIMIT_SATS`
+  override honored, `0`/negative/non-numeric override ignored) in both runtimes, and an
+  unreadable `LND_TLS_CERT_PATH` now fails with a clear configuration error naming the
+  path instead of an unhandled exception at handler creation (.NET).
+- **Every LND payment failed with a 404 (Python).** The client paid through
+  `POST /v1/channels/transactions` — the `lnrpc.SendPaymentSync` route, which LND has
+  REMOVED. A current node answers it with `404 {"code":5,"message":"Not Found"}` and never
+  creates a payment, so an agent with a working LND wallet could read its balance but
+  could not pay anything, and the node showed no attempt to explain why. Verified against
+  LND v0.21.3-beta. Payments now go through `POST /v2/router/send`
+  (`routerrpc.SendPaymentV2`) and read its streamed payment frames; the old route is kept
+  as a fallback for pre-`routerrpc` nodes and tried only on a 404, which proves nothing
+  was submitted and so cannot double-pay. Three things came with the new route: a
+  routing-fee ceiling is always sent (`SendPaymentV2` reads the default `0` as
+  "zero-fee routes only", which silently fails most payments — default is 5% of the
+  invoice, overridable with `LND_FEE_LIMIT_SATS`); the read is bounded node-side *and*
+  client-side, so a stalled payment stream surfaces as a non-retryable "pending" instead
+  of hanging the agent (`LND_PAYMENT_TIMEOUT_SECONDS`, default 25s); and the all-zero
+  preimage LND returns when no proof exists is rejected by name, since it is 64 valid hex
+  characters and the format check alone accepted it as L402 proof of payment.
+  **Fixed in .NET the same way (next entry).**
+
+- **Every LND payment failed with a 404 (.NET).** `LndWalletService.PayInvoiceAsync` posted to
+  the same removed `/v1/channels/transactions` route. It now pays through
+  `POST /v2/router/send` and reads the newline-delimited `{"result": <lnrpc.Payment>}` stream
+  until a terminal status, keeping the legacy route only as a 404 fallback (never on any
+  other error: the route then exists and may already have taken the payment). Same
+  funds-safety set as Python: `fee_limit_sat` is always sent (5% of the invoice, floor 2 sats,
+  `LND_FEE_LIMIT_SATS` override); the read is bounded node-side (`timeout_seconds`) and
+  client-side (`LND_PAYMENT_TIMEOUT_SECONDS`, default 25s), and a stall reports as
+  non-retryable pending rather than a failure that invites a double-pay; the all-zero
+  preimage is rejected by name; a non-`SUCCEEDED` terminal frame reports pending. Also wired
+  the documented-but-unimplemented TLS options on the LND client: `LND_TLS_CERT_PATH` pins the
+  node's own `tls.cert` (anything else is rejected) and `LND_SKIP_TLS_VERIFY=true` turns
+  verification off with a stderr warning (dev only). Verified end to end against a mainnet
+  LND v0.21.3-beta with the cert pinned: a 3-sat L402 invoice settles with a preimage in 2.0s
+  and the replayed `Authorization: L402` clears the challenge.
+
+- **An all-digit NWC wallet pubkey could never connect (.NET).** The 64-hex wallet pubkey in
+  a `nostr+walletconnect://` string is not a hostname, but it was read through `System.Uri`,
+  which applies host rules to it: an all-digit pubkey (a legal x-only key — rare, but a
+  wallet can mint one) parses as a malformed IPv4 literal and is rejected outright. The same
+  check was lossy in the other direction, accepting any host-shaped 64-character value, so a
+  non-hex "pubkey" only failed later at key derivation. Parsing now splits scheme, authority
+  and query by hand and validates the pubkey directly, as the Lightning Enable API does. (The
+  Python port was unaffected.)
+
+- **Agent-facing hints named the pre-consolidation tools.** Result messages still told agents
+  to call `settle_agent_service(...)`, `check get_budget_status`, `use verify_l402_payment`,
+  `set via configure_budget`. Those names still dispatch, so nothing was broken — the agent
+  was just steered onto the deprecated path, came back with a deprecation marker, and paid a
+  round trip for it. Every such hint now names the current call (`agent_services
+  action=settle`, `budget action=status`, `l402_producer action=verify`, `budget
+  action=tighten`), in both ports, with a drift guard in each so they cannot regress. The
+  deprecation aliases themselves are untouched.
+
+### Deprecated
+
+- **The 16 pre-consolidation tool names.** They remain accepted and dispatch to their
+  replacement, and every result carries `deprecated: { replaced_by, use, removal }` naming the
+  new call (for example `budget(action="status")`). They are unadvertised unless
+  `LIGHTNING_ENABLE_TOOL_PROFILE=full`. **Removed in v3.0.0.** The three v1 aliases
+  (`confirm_payment`, `check_wallet_balance`, `get_all_balances`) are unchanged and stay hidden
+  in every profile.
+
 ## [1.24.0]
 
 ### Added
@@ -187,8 +486,8 @@ Tool-surface consolidation. The advertised tool surface drops from **26 to 25**
 (**18 → 17 free**, 8 gated unchanged). No payment or L402 logic changed — this is a
 tool-surface-only change. The three renamed/merged tools keep their **old names as
 accepted-but-unadvertised forwarding aliases** for one minor cycle (removed in
-**v2.0.0**); an alias still dispatches, forwards to the new tool, and its result carries
-a `deprecated: { replaced_by, removal: "v2.0.0" }` marker.
+**v3.0.0**); an alias still dispatches, forwards to the new tool, and its result carries
+a `deprecated: { replaced_by, removal: "v3.0.0" }` marker.
 
 ### Changed
 
@@ -218,7 +517,7 @@ a `deprecated: { replaced_by, removal: "v2.0.0" }` marker.
 
 - Replace `confirm_payment` with `verify_confirmation_code`, and `check_wallet_balance` /
   `get_all_balances` with `get_balance`. The old names keep working (with a `deprecated`
-  marker in the response) until they are removed in **v2.0.0**. `get_balance` is a strict
+  marker in the response) until they are removed in **v3.0.0**. `get_balance` is a strict
   superset, so existing fields your code read still appear.
 
 ## [1.16.0] — 2026-07-17

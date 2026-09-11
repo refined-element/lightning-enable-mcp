@@ -31,6 +31,62 @@ def _utc_now_iso() -> str:
 
 RECEIPTS_FILENAME = "receipts.jsonl"
 
+#: What a redacted value is replaced with. Matches the tools' error scrubber.
+REDACTED = "[REDACTED]"
+
+#: Substrings that mark a field as credential-shaped, matched case-insensitively anywhere
+#: in the property name. ``preimage`` is the one that matters most: under L402 it is not a
+#: receipt number, it IS the proof of payment.
+_SENSITIVE_NAME_FRAGMENTS = (
+    "preimage",
+    "secret",
+    "macaroon",
+    "connectionstring",
+    "apikey",
+    "privatekey",
+    "password",
+    "token",
+)
+
+#: How deep to walk a receipt. Real receipts are flat; this bounds a pathological one.
+_MAX_REDACT_DEPTH = 8
+
+
+def is_sensitive_field(name: str) -> bool:
+    """Whether a property name looks like it carries a credential."""
+    lowered = name.lower()
+    return any(fragment in lowered for fragment in _SENSITIVE_NAME_FRAGMENTS)
+
+
+def redact_receipt(value, _depth: int = 0):
+    """Strip anything credential-shaped out of a receipt before it leaves the process.
+
+    Receipts never contain a preimage, macaroon, or wallet connection string by
+    construction. This runs anyway, at the READ boundary, because the log is a plain file
+    on the operator's disk: a hand-edit, an interleaved append from another tool, or a
+    future writer that forgets could put one there, and by then the receipt is one read
+    away from a model's context.
+
+    Applied inside :meth:`ReceiptService.read_recent`, so the ``receipts`` tool and the
+    ``lightning-enable://receipts`` resource are covered by the same pass — there is no
+    second surface to keep in sync.
+
+    The value is REPLACED rather than the key dropped: a reader can see the field was
+    present and withheld, instead of silently getting a receipt that looks clean.
+
+    Mirrors the .NET ``ReceiptRedaction``.
+    """
+    if _depth > _MAX_REDACT_DEPTH:
+        return value
+    if isinstance(value, dict):
+        return {
+            key: REDACTED if is_sensitive_field(str(key)) else redact_receipt(item, _depth + 1)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_receipt(item, _depth + 1) for item in value]
+    return value
+
 # Bound disk use: rotate to a single ``.1`` backup once the live file passes this
 # size, so the log is self-limiting (~2x this cap total) without per-write trims.
 MAX_RECEIPTS_BYTES = 5 * 1024 * 1024  # 5 MB
@@ -169,7 +225,9 @@ class ReceiptService:
             except Exception:
                 continue  # skip a torn/partial line rather than fail the whole read
             if isinstance(obj, dict):  # skip non-object lines (hand-edits / interleaved appends)
-                out.append(obj)
+                # Redact at the READ boundary so every surface — the `receipts` tool and
+                # the lightning-enable://receipts resource alike — is covered by one pass.
+                out.append(redact_receipt(obj))
         return out
 
     # ---- internals ----

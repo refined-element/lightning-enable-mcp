@@ -3,10 +3,12 @@ Tests for LND Wallet
 """
 
 import base64
+import httpx
 import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 from lightning_enable_mcp.lnd_wallet import (
+    MIN_FEE_LIMIT_SATS,
     LndConfig,
     LndError,
     LndOnChainResult,
@@ -153,8 +155,7 @@ class TestLndWallet:
         }
 
         wallet._connected = True
-        wallet._client = AsyncMock()
-        wallet._client.request = AsyncMock(return_value=mock_response)
+        wallet._client = _legacy_only_client(mock_response)
 
         result = await wallet.pay_invoice("lnbc100n1...")
         assert result == "deadbeef" * 8
@@ -172,8 +173,7 @@ class TestLndWallet:
         }
 
         wallet._connected = True
-        wallet._client = AsyncMock()
-        wallet._client.request = AsyncMock(return_value=mock_response)
+        wallet._client = _legacy_only_client(mock_response)
 
         with pytest.raises(LndPaymentError, match="insufficient balance"):
             await wallet.pay_invoice("lnbc100n1...")
@@ -200,8 +200,7 @@ class TestLndWallet:
         }
 
         wallet._connected = True
-        wallet._client = AsyncMock()
-        wallet._client.request = AsyncMock(return_value=mock_response)
+        wallet._client = _legacy_only_client(mock_response)
 
         with pytest.raises(PreimageUnavailableError) as excinfo:
             await wallet.pay_invoice("lnbc100n1...")
@@ -225,8 +224,7 @@ class TestLndWallet:
         mock_response.text = "Internal Server Error"
 
         wallet._connected = True
-        wallet._client = AsyncMock()
-        wallet._client.request = AsyncMock(return_value=mock_response)
+        wallet._client = _legacy_only_client(mock_response)
 
         with pytest.raises((LndError, LndPaymentError)):
             await wallet.pay_invoice("lnbc100n1...")
@@ -677,8 +675,7 @@ class TestLndWallet:
         }
 
         wallet._connected = True
-        wallet._client = AsyncMock()
-        wallet._client.request = AsyncMock(return_value=mock_response)
+        wallet._client = _legacy_only_client(mock_response)
 
         result = await wallet.pay_invoice("lnbc100n1...")
         assert result == expected_hex
@@ -751,8 +748,7 @@ class TestLndPreimageValidation:
             "payment_hash": base64.b64encode(b"hash").decode(),
         }
         wallet._connected = True
-        wallet._client = AsyncMock()
-        wallet._client.request = AsyncMock(return_value=mock_response)
+        wallet._client = _legacy_only_client(mock_response)
         return wallet
 
     @pytest.mark.asyncio
@@ -815,8 +811,7 @@ class TestLndPreimageValidation:
         mock_response.status_code = 200
         mock_response.json.return_value = response
         wallet._connected = True
-        wallet._client = AsyncMock()
-        wallet._client.request = AsyncMock(return_value=mock_response)
+        wallet._client = _legacy_only_client(mock_response)
         return wallet
 
     @pytest.mark.asyncio
@@ -919,3 +914,354 @@ class TestLndPreimageValidation:
         assert not isinstance(excinfo.value, LndPaymentError)
         assert excinfo.value.provider == "lnd"
         assert excinfo.value.tracking_id == payment_hash_b64
+
+
+# ---------------------------------------------------------------------------
+# routerrpc SendPaymentV2 - the supported payment route.
+#
+# LND REMOVED the legacy lnrpc.SendPaymentSync REST route
+# (POST /v1/channels/transactions). A modern node answers it with
+# 404 {"code":5,"message":"Not Found"} and never creates a payment, so EVERY
+# LND payment failed with "LND API error (404)" and no attempt recorded on the
+# node. Payments must go to POST /v2/router/send instead, falling back to the
+# old route only when the node does not serve v2 (a 404 means nothing was
+# submitted, so the fallback cannot double-pay).
+# ---------------------------------------------------------------------------
+
+ZERO_PREIMAGE = "0" * 64
+REAL_PREIMAGE = "deadbeef" * 8
+
+
+class _FakeStream:
+    """Stands in for httpx's streaming response context manager."""
+
+    def __init__(self, status_code=200, lines=None, text="", hang=False):
+        self.status_code = status_code
+        self._lines = list(lines or [])
+        self.text = text
+        self._hang = hang
+        self.read = False
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def aread(self):
+        self.read = True
+        return b""
+
+    async def aiter_lines(self):
+        if self._hang:
+            import asyncio
+
+            await asyncio.sleep(3600)  # never yields - models a stalled LND stream
+        for line in self._lines:
+            yield line
+
+
+class _FakeLndClient:
+    """Fake httpx.AsyncClient exposing just the two seams LndWallet uses."""
+
+    def __init__(self, stream=None, request_response=None):
+        self._stream = stream or _FakeStream(status_code=404)
+        self._request_response = request_response
+        self.stream_calls = []
+        self.request_calls = []
+
+    def stream(self, method, url, **kwargs):
+        self.stream_calls.append({"method": method, "url": url, **kwargs})
+        return self._stream
+
+    async def request(self, method, url, json=None):
+        self.request_calls.append({"method": method, "url": url, "json": json})
+        if self._request_response is None:
+            raise AssertionError("unexpected legacy request to " + str(url))
+        return self._request_response
+
+
+def _legacy_only_client(request_response):
+    """A node that does NOT serve routerrpc, so pay_invoice falls back to /v1.
+
+    Used by the tests that assert the legacy route's base64 preimage semantics.
+    """
+    return _FakeLndClient(stream=_FakeStream(status_code=404), request_response=request_response)
+
+
+def _frame(**payment):
+    """One grpc-gateway server-streaming frame: {"result": <lnrpc.Payment>}."""
+    import json as _json
+
+    return _json.dumps({"result": payment})
+
+
+def _router_wallet(stream=None, request_response=None):
+    wallet = LndWallet(rest_host="localhost:8080", macaroon_hex="abc123", skip_tls_verify=True)
+    wallet._connected = True
+    wallet._client = _FakeLndClient(stream=stream, request_response=request_response)
+    return wallet
+
+
+class TestLndRouterSendPaymentV2:
+    """The payment must use routerrpc SendPaymentV2, not the removed v1 route."""
+
+    @pytest.mark.asyncio
+    async def test_pay_invoice_posts_to_router_v2(self):
+        stream = _FakeStream(lines=[_frame(status="SUCCEEDED", payment_preimage=REAL_PREIMAGE)])
+        wallet = _router_wallet(stream=stream)
+
+        assert await wallet.pay_invoice("lnbc30n1...") == REAL_PREIMAGE
+
+        assert len(wallet._client.stream_calls) == 1
+        call = wallet._client.stream_calls[0]
+        assert call["method"] == "POST"
+        assert call["url"].endswith("/v2/router/send")
+        # The removed route must not be touched at all on a healthy node.
+        assert wallet._client.request_calls == []
+
+    @pytest.mark.asyncio
+    async def test_pay_invoice_sends_a_nonzero_fee_limit(self):
+        """SendPaymentV2 considers ONLY zero-fee routes when fee_limit_sat is 0."""
+        stream = _FakeStream(lines=[_frame(status="SUCCEEDED", payment_preimage=REAL_PREIMAGE)])
+        wallet = _router_wallet(stream=stream)
+        await wallet.pay_invoice("lnbc30n1...")
+
+        body = wallet._client.stream_calls[0]["json"]
+        assert body["payment_request"] == "lnbc30n1..."
+        assert int(body["fee_limit_sat"]) > 0
+        # A node-side timeout keeps the call bounded even if the client never cancels.
+        assert int(body["timeout_seconds"]) > 0
+
+    @pytest.mark.asyncio
+    async def test_failed_frame_is_a_retryable_payment_error(self):
+        stream = _FakeStream(
+            lines=[
+                _frame(
+                    status="FAILED",
+                    failure_reason="FAILURE_REASON_NO_ROUTE",
+                    payment_preimage=ZERO_PREIMAGE,
+                )
+            ]
+        )
+        wallet = _router_wallet(stream=stream)
+        with pytest.raises(LndPaymentError, match="NO_ROUTE"):
+            await wallet.pay_invoice("lnbc30n1...")
+
+    @pytest.mark.asyncio
+    async def test_all_zero_preimage_is_never_returned_as_proof(self):
+        """LND fills payment_preimage with 32 zero bytes when there is no proof.
+
+        It is 64 valid hex characters, so a length/hex check alone accepts it - and the
+        agent would publish it as an L402 Authorization preimage for a payment it cannot
+        prove.
+        """
+        from lightning_enable_mcp.wallet_errors import PreimageUnavailableError
+
+        stream = _FakeStream(
+            lines=[_frame(status="SUCCEEDED", payment_preimage=ZERO_PREIMAGE, payment_hash="ab" * 32)]
+        )
+        wallet = _router_wallet(stream=stream)
+        with pytest.raises(PreimageUnavailableError) as excinfo:
+            await wallet.pay_invoice("lnbc30n1...")
+        assert not isinstance(excinfo.value, LndPaymentError)
+        assert excinfo.value.tracking_id == "ab" * 32
+
+    @pytest.mark.asyncio
+    async def test_in_flight_without_a_terminal_frame_is_pending_not_failed(self):
+        """Reporting an in-flight payment as failed invites a double-pay."""
+        from lightning_enable_mcp.wallet_errors import PaymentPendingError
+
+        stream = _FakeStream(lines=[_frame(status="IN_FLIGHT", payment_preimage=ZERO_PREIMAGE)])
+        wallet = _router_wallet(stream=stream)
+        with pytest.raises(PaymentPendingError):
+            await wallet.pay_invoice("lnbc30n1...")
+
+    @pytest.mark.asyncio
+    async def test_no_frames_at_all_is_pending_not_failed(self):
+        from lightning_enable_mcp.wallet_errors import PaymentPendingError
+
+        wallet = _router_wallet(stream=_FakeStream(lines=[]))
+        with pytest.raises(PaymentPendingError):
+            await wallet.pay_invoice("lnbc30n1...")
+
+    @pytest.mark.asyncio
+    async def test_a_stalled_stream_cannot_hang_the_agent_forever(self):
+        """The reported symptom: pay_invoice blocked for minutes with no result.
+
+        A stalled read must surface as a BOUNDED, non-retryable "pending" result, never
+        an unbounded await.
+        """
+        import asyncio
+
+        from lightning_enable_mcp.wallet_errors import PaymentPendingError
+
+        wallet = _router_wallet(stream=_FakeStream(hang=True))
+        wallet._payment_timeout_seconds = 1  # keep the test fast; same code path
+
+        with pytest.raises(PaymentPendingError):
+            await asyncio.wait_for(wallet.pay_invoice("lnbc30n1..."), timeout=30)
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_the_legacy_route_when_v2_is_absent(self):
+        """Old nodes without routerrpc: a 404 means nothing was submitted, so the
+        fallback is double-pay-safe."""
+        preimage_b64 = base64.b64encode(bytes.fromhex(REAL_PREIMAGE)).decode()
+        legacy = MagicMock()
+        legacy.status_code = 200
+        legacy.json.return_value = {"payment_preimage": preimage_b64, "payment_error": ""}
+
+        wallet = _router_wallet(stream=_FakeStream(status_code=404), request_response=legacy)
+        assert await wallet.pay_invoice("lnbc30n1...") == REAL_PREIMAGE
+        assert wallet._client.request_calls[0]["url"] == "channels/transactions"
+
+    @pytest.mark.asyncio
+    async def test_v2_http_error_does_not_fall_back(self):
+        """A non-404 error came from a route that EXISTS - retrying it on the legacy
+        route could submit the payment twice."""
+        wallet = _router_wallet(stream=_FakeStream(status_code=500, text="boom"))
+        with pytest.raises(LndError, match="500"):
+            await wallet.pay_invoice("lnbc30n1...")
+        assert wallet._client.request_calls == []
+
+
+# ---------------------------------------------------------------------------
+# Transport failures AFTER the 2xx headers arrived.
+#
+# Once LND has answered 2xx on /v2/router/send the node may already have accepted
+# the payment. A read error from that point on (connection dropped mid-stream, a
+# torn chunk, a read timeout) proves nothing about the payment's outcome, so it
+# must surface as PENDING with the invoice payment hash for reconciliation -
+# never as the retryable LndPaymentError, which invites a double-pay.
+# ---------------------------------------------------------------------------
+
+
+def _signed_invoice(amount_sats: int | None, payment_hash_hex: str = "ab" * 32) -> str:
+    """A real, signed mainnet BOLT11 so the wallet's bolt11 decoding runs for real."""
+    from bolt11 import Bolt11, MilliSatoshi, Tag, TagChar, Tags, encode
+
+    tags = Tags(
+        [
+            Tag(TagChar.payment_hash, payment_hash_hex),
+            Tag(TagChar.description, "fee-limit fixture"),
+            Tag(TagChar.payment_secret, "cd" * 32),
+        ]
+    )
+    invoice = Bolt11(
+        currency="bc",
+        date=1700000000,
+        tags=tags,
+        amount_msat=MilliSatoshi(amount_sats * 1000) if amount_sats else None,
+    )
+    return encode(invoice, "11" * 32)
+
+
+class _BrokenAfterHeadersStream(_FakeStream):
+    """200 + headers arrive, then the body read raises a transport error."""
+
+    def __init__(self, error: Exception, lines=None):
+        super().__init__(status_code=200, lines=lines)
+        self._error = error
+
+    async def aiter_lines(self):
+        for line in self._lines:
+            yield line
+        raise self._error
+
+
+_MID_STREAM_ERRORS = [
+    pytest.param(httpx.ReadError("connection reset"), id="ReadError"),
+    pytest.param(httpx.RemoteProtocolError("peer closed connection"), id="RemoteProtocolError"),
+    pytest.param(httpx.ReadTimeout("read timed out"), id="ReadTimeout"),
+]
+
+
+class TestLndTransportErrorAfterHeaders:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("error", _MID_STREAM_ERRORS)
+    async def test_read_error_with_no_frames_is_pending_with_the_invoice_hash(self, error):
+        from lightning_enable_mcp.wallet_errors import PaymentPendingError
+
+        bolt11 = _signed_invoice(30, payment_hash_hex="ab" * 32)
+        wallet = _router_wallet(stream=_BrokenAfterHeadersStream(error))
+
+        with pytest.raises(PaymentPendingError) as excinfo:
+            await wallet.pay_invoice(bolt11)
+
+        assert not isinstance(excinfo.value, LndPaymentError), "must not be the retryable failure"
+        assert excinfo.value.provider == "lnd"
+        assert excinfo.value.tracking_id == "ab" * 32
+        assert wallet._client.request_calls == [], "no legacy-route retry after a 2xx"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("error", _MID_STREAM_ERRORS)
+    async def test_read_error_after_an_in_flight_frame_is_pending_not_failed(self, error):
+        from lightning_enable_mcp.wallet_errors import PaymentPendingError
+
+        bolt11 = _signed_invoice(30, payment_hash_hex="ab" * 32)
+        stream = _BrokenAfterHeadersStream(
+            error, lines=[_frame(status="IN_FLIGHT", payment_preimage=ZERO_PREIMAGE)]
+        )
+        wallet = _router_wallet(stream=stream)
+
+        with pytest.raises(PaymentPendingError) as excinfo:
+            await wallet.pay_invoice(bolt11)
+
+        assert not isinstance(excinfo.value, LndPaymentError)
+        assert excinfo.value.tracking_id == "ab" * 32
+        assert wallet._client.request_calls == []
+
+    @pytest.mark.asyncio
+    async def test_connect_error_before_any_response_is_still_a_connection_failure(self):
+        """No 2xx was ever observed, so nothing was submitted: the plain error stands."""
+
+        class _NeverConnects(_FakeStream):
+            async def __aenter__(self):
+                raise httpx.ConnectError("refused")
+
+        wallet = _router_wallet(stream=_NeverConnects())
+        with pytest.raises(LndError, match="Failed to connect"):
+            await wallet.pay_invoice(_signed_invoice(30))
+
+
+class TestLndFeeLimit:
+    """Routing-fee ceiling: 5% of the invoice, ceil'd, floored at 2 sats, env-overridable."""
+
+    def _wallet(self, monkeypatch, override: str | None = None):
+        if override is None:
+            monkeypatch.delenv("LND_FEE_LIMIT_SATS", raising=False)
+        else:
+            monkeypatch.setenv("LND_FEE_LIMIT_SATS", override)
+        return LndWallet(rest_host="localhost:8080", macaroon_hex="abc123", skip_tls_verify=True)
+
+    @pytest.mark.parametrize(
+        ("amount_sats", "expected"),
+        [
+            (1000, 50),  # 5% exactly
+            (1001, 51),  # 5% = 50.05 -> ceil
+            (30, 2),  # 5% = 1.5 -> ceil 2 == floor
+            (10, 2),  # 5% = 0.5 -> ceil 1 -> floor 2
+            (1, 2),  # floor
+        ],
+    )
+    def test_five_percent_ceil_with_a_two_sat_floor(self, monkeypatch, amount_sats, expected):
+        wallet = self._wallet(monkeypatch)
+        assert wallet._fee_limit_sats(_signed_invoice(amount_sats)) == expected
+
+    def test_amountless_invoice_gets_the_floor(self, monkeypatch):
+        wallet = self._wallet(monkeypatch)
+        assert wallet._fee_limit_sats(_signed_invoice(None)) == MIN_FEE_LIMIT_SATS
+
+    def test_undecodable_invoice_gets_the_floor(self, monkeypatch):
+        wallet = self._wallet(monkeypatch)
+        assert wallet._fee_limit_sats("lnbc30n1...") == MIN_FEE_LIMIT_SATS
+
+    def test_env_override_wins_over_the_percentage(self, monkeypatch):
+        wallet = self._wallet(monkeypatch, override="7")
+        assert wallet._fee_limit_sats(_signed_invoice(1000)) == 7
+
+    @pytest.mark.parametrize("bad", ["0", "-3", "abc", "  "])
+    def test_invalid_override_is_ignored(self, monkeypatch, bad):
+        """0 means 'zero-fee routes only' to SendPaymentV2, so it must never pass through."""
+        wallet = self._wallet(monkeypatch, override=bad)
+        assert wallet._fee_limit_sats(_signed_invoice(1000)) == 50

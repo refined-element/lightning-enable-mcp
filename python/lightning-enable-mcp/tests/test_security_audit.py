@@ -173,19 +173,18 @@ class TestLndWalletNoPreimageLogging:
 
             preimage_hex = "deadbeef" * 8  # 64 hex chars
 
-            import base64
-            preimage_b64 = base64.b64encode(bytes.fromhex(preimage_hex)).decode()
-
-            async def mock_request(method, path, json_data=None):
+            # routerrpc SendPaymentV2 returns the preimage as hex (the legacy v1 route
+            # returned base64; it is only reached on nodes without routerrpc).
+            async def mock_router_send(bolt11):
                 return {
-                    "payment_preimage": preimage_b64,
-                    "payment_error": "",
+                    "status": "SUCCEEDED",
+                    "payment_preimage": preimage_hex,
                     "payment_hash": "dummyhash",
                 }
 
             wallet._connected = True
             wallet._client = MagicMock()
-            wallet._request = mock_request
+            wallet._router_send_payment = mock_router_send
 
             result = await wallet.pay_invoice("lnbc1test")
             assert result == preimage_hex

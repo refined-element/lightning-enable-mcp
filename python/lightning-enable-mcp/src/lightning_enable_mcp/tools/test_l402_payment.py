@@ -22,10 +22,13 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..budget_service import BudgetService
-    from ..payment_history_service import PaymentHistoryService
     from ..l402_client import L402Client
+    from ..payment_history_service import PaymentHistoryService
+
+from mcp.types import Tool
 
 from .access_resource import access_l402_resource
+from .consolidated import CONFIRMATION_NONCE_DESCRIPTION
 
 # The public 1-sat L402 test resource. Hardcoded on purpose so this tool can never
 # be repurposed into an arbitrary-URL payer. Only the base host is overridable, via
@@ -267,3 +270,24 @@ async def test_l402_payment(
     )
 
     return interpret(raw, endpoint)
+
+
+# MCP tool schema (lives beside its handler; registered in tools/registry.py).
+TEST_L402_PAYMENT_TOOL = Tool(
+    name="test_l402_payment",
+    description=(
+        "Self-test the wallet by paying the public 1-sat L402 test endpoint end to "
+        "end. A 'needs_confirmation' verdict means the server printed a code to "
+        "its console; re-run with confirmation_nonce."
+    ),
+    inputSchema={
+        "type": "object",
+        "properties": {
+            "confirmation_nonce": {
+                "type": "string",
+                "description": CONFIRMATION_NONCE_DESCRIPTION,
+            },
+        },
+        "required": [],
+    },
+)

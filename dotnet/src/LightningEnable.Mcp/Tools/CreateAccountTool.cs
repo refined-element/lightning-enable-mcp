@@ -41,16 +41,19 @@ public static class CreateAccountTool
     /// <summary>
     /// Activates a Lightning Enable account with a Lightning micropayment and returns the merchant API key.
     /// </summary>
-    [McpServerTool(Name = ToolName), Description(
-        "Self-bootstrapping signup: activate a Lightning Enable account with a tiny Lightning payment " +
-        "(~100 sats) and get back a merchant API key. Requires NO Lightning Enable API key (it CREATES one) " +
-        "— only a connected wallet. On success the API key is saved to ~/.lightning-enable/config.json so the " +
-        "producer/ASA tools unlock. Above-threshold activation fees require a human-supplied confirmation code " +
-        "(same out-of-band flow as pay_l402_challenge).")]
+    [McpServerTool(
+        Name = ToolName,
+        Title = "Create Lightning Enable account",
+        ReadOnly = false,
+        Destructive = true)]
+    [Description(
+        "Self-bootstrapping signup: pay a ~100-sat activation fee for a Lightning Enable "
+        + "merchant API key. Needs only a wallet; the key is saved to "
+        + "~/.lightning-enable/config.json.")]
     public static async Task<string> CreateLightningEnableAccount(
-        [Description("Email address to register the Lightning Enable account under")] string email,
-        [Description("Maximum satoshis to pay for activation. Defaults to 1000; the fee is ~100 sats")] int maxSats = 1000,
-        [Description("Confirmation code the human read from the server console, for an above-threshold activation fee. The code is NEVER in a tool result — ask the human for it. Omit on the first call to request one.")] string? confirmationNonce = null,
+        [Description("Email to register")] string email,
+        [Description("Max sats for the ~100-sat fee")] int maxSats = 1000,
+        [Description("Code the human reads off the server console (never returned to you). Omit to request one.")] string? confirmationNonce = null,
         McpServer? server = null,
         IL402HttpClient? l402Client = null,
         IBudgetService? budgetService = null,
@@ -150,26 +153,46 @@ public static class CreateAccountTool
 
                         if (!elicitationConfirmed)
                         {
-                            var pending = budgetService.CreatePendingConfirmation(
-                                maxSats, approval.AmountUsd, ToolName, $"activation for {email}", signupUrl);
+                            // OUT-OF-BAND CONFIRMATION: the code goes to the human on the CONFIGURED
+                            // approval channel (stderr locally; webhook/file/refuse when hosted) and
+                            // never into this result, so an injected agent can't self-approve.
+                            var dispatch = await budgetService.RequestConfirmationAsync(new ConfirmationRequest
+                            {
+                                AmountSats = maxSats,
+                                AmountUsd = approval.AmountUsd,
+                                ToolName = ToolName,
+                                Description = $"activation for {email}",
+                                Destination = signupUrl,
+                                Title = "ACCOUNT ACTIVATION CONFIRMATION REQUIRED",
+                                Summary = $"{ToolName} — {approval.AmountUsd:C} ({maxSats:N0} sats), email {email}"
+                            }, cancellationToken);
 
-                            // OUT-OF-BAND CONFIRMATION: code to STDERR only (human sees the server
-                            // console/logs; the model only sees tool results). The code MUST NOT
-                            // appear in the result — that is what stops a prompt-injected agent
-                            // from reading it and self-approving.
-                            Console.Error.WriteLine(
-                                "[Lightning Enable] *** ACCOUNT ACTIVATION CONFIRMATION REQUIRED ***\n" +
-                                $"  create_lightning_enable_account — {approval.AmountUsd:C} ({maxSats:N0} sats), email {email}\n" +
-                                $"  Confirmation code: {pending.Nonce}\n" +
-                                "  To approve, give this code to the agent. Expires in 120s.");
+                            if (!dispatch.Delivered)
+                            {
+                                return JsonSerializer.Serialize(new
+                                {
+                                    success = false,
+                                    requiresConfirmation = false,
+                                    confirmationChannel = dispatch.ChannelName,
+                                    error = dispatch.RefusalReason,
+                                    message = "The activation was REFUSED, not queued for approval — no human can be asked for a " +
+                                              "code on this server. Retrying will not help until the operator changes the configuration.",
+                                    amount = new
+                                    {
+                                        maxSats,
+                                        usd = Math.Round(approval.AmountUsd, 2)
+                                    }
+                                });
+                            }
 
                             return JsonSerializer.Serialize(new
                             {
                                 success = false,
                                 requiresConfirmation = true,
+                                confirmationChannel = dispatch.ChannelName,
                                 error = "Account activation requires human confirmation",
                                 message = $"This activation may cost up to {approval.AmountUsd:C} ({maxSats:N0} sats), above the " +
-                                          "auto-approve threshold. A confirmation code was printed to the server console/logs — " +
+                                          $"auto-approve threshold. A confirmation code was {dispatch.OperatorHint} — " +
                                           "visible to the human operator, NOT to you. Ask the human to read that code and give it to you.",
                                 howToConfirm = "Ask the human operator for the confirmation code shown in the server console, then call " +
                                                "create_lightning_enable_account(email=\"...\", confirmationNonce=\"<code-from-human>\").",
@@ -342,8 +365,9 @@ public static class CreateAccountTool
                 },
                 message = configOk
                     ? $"Lightning Enable account activated. Your API key has been saved to {configPath} — restart the MCP " +
-                      "server to unlock the producer/ASA tools (create_l402_challenge, verify_l402_payment, and the " +
-                      "agent-to-agent commerce tools)."
+                      "server to unlock the producer and agent-marketplace tools (l402_producer and " +
+                      "agent-to-agent commerce tools). After the restart, l402_producer action=configure_receive " +
+                      "points payouts at your own wallet, and action=status shows what is still missing."
                     : "Lightning Enable account activated. Save the API key above (config write failed) — set it as " +
                       "LIGHTNING_ENABLE_API_KEY or lightningEnableApiKey in ~/.lightning-enable/config.json to unlock the producer/ASA tools."
             }, new JsonSerializerOptions { WriteIndented = true });

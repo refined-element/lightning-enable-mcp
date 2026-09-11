@@ -15,7 +15,7 @@ public static class CreateL402ChallengeTool
     /// <summary>
     /// Creates an L402 payment challenge (Lightning invoice + macaroon) for a resource.
     /// </summary>
-    [McpServerTool(Name = "create_l402_challenge"), Description(
+    [McpServerTool(Name = "create_l402_challenge", Title = "Create L402 challenge (deprecated)", ReadOnly = false, Destructive = false), Description(
         "Create an L402 payment challenge to charge another agent or user for accessing a resource. " +
         "Returns a Lightning invoice and macaroon. The payer must pay the invoice and present " +
         "the L402 token (macaroon:preimage) back to you for verification. " +
@@ -99,7 +99,7 @@ public static class CreateL402ChallengeTool
                     forPayer = $"Pay the Lightning invoice, then present the L402 token: 'L402 {result.Macaroon}:<preimage>' " +
                                "where <preimage> is the proof of payment received after paying the invoice.",
                     tokenFormat = "L402 {macaroon}:{preimage}",
-                    verifyWith = "After receiving the L402 token from the payer, use verify_l402_payment to confirm payment before granting access."
+                    verifyWith = "After receiving the L402 token from the payer, use l402_producer action=verify to confirm payment before granting access."
                 },
                 message = $"L402 challenge created for {priceSats} sats. Share the invoice with the payer."
             }, new JsonSerializerOptions { WriteIndented = true });

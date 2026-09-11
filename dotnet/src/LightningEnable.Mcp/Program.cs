@@ -11,13 +11,10 @@ namespace LightningEnable.Mcp;
 /// Entry point for the Lightning Enable MCP server.
 /// Provides Lightning payment capabilities to AI agents via Model Context Protocol.
 ///
-/// Available tools:
-/// - pay_invoice - Pay any Lightning invoice
-/// - check_wallet_balance - Check wallet balance
-/// - get_payment_history - View payment history
-/// - get_budget_status - View current budget limits (read-only)
-/// - access_l402_resource - Auto-pay L402 challenges
-/// - pay_l402_challenge - Manual L402 payment
+/// The advertised tool set is defined by <see cref="ToolProfiles"/> and selected with
+/// LIGHTNING_ENABLE_TOOL_PROFILE (lite | standard | full; standard is the default).
+/// ToolInventoryTests in the test project is the source of truth for the inventory every
+/// advertised count derives from.
 ///
 /// Wallet Configuration (in priority order):
 /// - Set STRIKE_API_KEY for Strike wallet (https://dashboard.strike.me/)
@@ -85,6 +82,10 @@ public class Program
 
         // Register budget configuration FIRST (needed by wallet services for config file fallback)
         builder.Services.AddSingleton<IBudgetConfigurationService, BudgetConfigurationService>();
+
+        // Wallet onboarding (setup_wallet): reports what is configured, probes a pasted NWC
+        // connection string against the live wallet, and persists it.
+        builder.Services.AddSingleton<IWalletOnboardingService, WalletOnboardingService>();
 
         // Load config to check for wallet settings
         var configService = new BudgetConfigurationService();
@@ -156,7 +157,13 @@ public class Program
         // line without per-tool receipt code.
         void AddWallet<TWallet>() where TWallet : class, IWalletService
         {
-            builder.Services.AddHttpClient<TWallet>();
+            var walletClient = builder.Services.AddHttpClient<TWallet>();
+            if (typeof(TWallet) == typeof(LndWalletService))
+            {
+                // A self-signed LND tls.cert needs LND_TLS_CERT_PATH (pin) or
+                // LND_SKIP_TLS_VERIFY=true (dev); both are documented on LndWalletService.
+                walletClient.ConfigurePrimaryHttpMessageHandler(LndWalletService.CreateHttpHandler);
+            }
             // Decorator chain (outermost first): IdempotentWalletService guards against a
             // blind duplicate payment (durable operation ledger) BEFORE the receipt seam and
             // the real wallet — so a refused duplicate neither pays nor writes a receipt.
@@ -281,6 +288,34 @@ public class Program
         // Register agent service for ASA (Agent Service Agreement) operations
         builder.Services.AddHttpClient<IAgentService, AgentService>();
 
+        // Approval channel for over-threshold payments. The confirmation code is the human
+        // operator's, never the model's — so WHERE it goes has to match the deployment. Locally
+        // that is stderr; on a hosted server nobody reads stderr, so the operator picks a
+        // webhook, a file, or "refuse". See the README's "Deploying hosted" section.
+        //
+        // The webhook client reuses the SSRF posture of the agent-URL clients above: the
+        // connect-time IP guard (a confirmation POST carries a live approval code, so it must
+        // never be steerable at a private/metadata address) and AllowAutoRedirect = false, so a
+        // signed approval can only ever reach the exact URL the operator configured.
+        builder.Services.AddHttpClient(ConfirmationChannelFactory.WebhookHttpClientName, client =>
+            {
+                client.Timeout = TimeSpan.FromSeconds(15);
+            })
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            {
+                AllowAutoRedirect = false,
+                ConnectCallback = SsrfConnectValidator.ConnectAsync,
+            });
+
+        builder.Services.AddSingleton<IConfirmationChannel>(sp =>
+        {
+            var httpClientFactory = sp.GetRequiredService<IHttpClientFactory>();
+            return ConfirmationChannelFactory.Create(
+                config.Confirmation,
+                () => httpClientFactory.CreateClient(ConfirmationChannelFactory.WebhookHttpClientName),
+                warning => Console.Error.WriteLine($"[Lightning Enable MCP] WARNING: {warning}"));
+        });
+
         // Register singleton services
         builder.Services.AddSingleton<IBudgetService, BudgetService>();
         builder.Services.AddSingleton<IPaymentHistoryService, PaymentHistoryService>();
@@ -291,48 +326,46 @@ public class Program
         // idempotency + restart-safety so a retry never causes a blind duplicate payment.
         builder.Services.AddSingleton<IOperationLedger, OperationLedger>();
 
+        // Which slice of the tool surface to advertise. Every advertised schema is loaded
+        // into the agent's context at the start of each session, so this is a real token
+        // cost on every turn — hence `lite` and the consolidated `standard` default.
+        var toolProfile = ToolProfiles.Resolve(
+            Environment.GetEnvironmentVariable(ToolProfiles.EnvironmentVariable),
+            warning => Console.Error.WriteLine($"[Lightning Enable MCP] {warning}"));
+        Console.Error.WriteLine(
+            $"[Lightning Enable MCP] Tool profile: {toolProfile.ToString().ToLowerInvariant()} "
+            + $"({ToolProfiles.AdvertisedNames(toolProfile).Count} tools advertised; "
+            + $"set {ToolProfiles.EnvironmentVariable}=lite|standard|full)");
+
         // Configure MCP server with stdio transport.
         //
-        // WithToolsFromAssembly() populates the advertised ToolCollection (the 25
-        // canonical tools). The custom CallToolHandler below is consulted by the SDK
-        // ONLY for tool names absent from that collection — i.e. the deprecated
-        // forwarding aliases (confirm_payment, check_wallet_balance, get_all_balances).
-        // Because they are not [McpServerTool] and no ListToolsHandler adds them, they
-        // never appear in list_tools yet remain callable — true hidden aliases, matching
-        // the Python port.
+        // WithToolsFromAssembly() populates the ToolCollection with EVERY [McpServerTool]
+        // in the assembly — the consolidated verbs and the pre-consolidation names alike.
+        // ToolSurface.ApplyTo then removes (a) every deprecated alias, always, and (b)
+        // anything the active profile does not advertise, keeping each removed tool so it
+        // stays callable. The SDK consults the CallToolHandler below only for names absent
+        // from the collection — which is precisely that set.
         builder.Services
             .AddMcpServer()
             .WithStdioServerTransport()
             .WithToolsFromAssembly()
-            .WithCallToolHandler(async (context, cancellationToken) =>
-            {
-                var name = context.Params?.Name ?? string.Empty;
-
-                if (!Tools.DeprecatedAliasDispatcher.IsAlias(name))
-                {
-                    // The 25 advertised tools are served from the ToolCollection before
-                    // this handler runs, so anything reaching here that is not an alias
-                    // is a genuinely unknown tool.
-                    return new ModelContextProtocol.Protocol.CallToolResult
-                    {
-                        IsError = true,
-                        Content = { new ModelContextProtocol.Protocol.TextContentBlock { Text = $"Unknown tool: {name}" } },
-                    };
-                }
-
-                var json = await Tools.DeprecatedAliasDispatcher.DispatchAsync(
-                    name,
-                    context.Params?.Arguments as IReadOnlyDictionary<string, System.Text.Json.JsonElement>,
-                    context.Services!,
-                    cancellationToken);
-
-                return new ModelContextProtocol.Protocol.CallToolResult
-                {
-                    Content = { new ModelContextProtocol.Protocol.TextContentBlock { Text = json } },
-                };
-            });
+            // The durable receipt log, also exposed as lightning-enable://receipts and
+            // lightning-enable://receipts/{paymentHash} — see Resources/ReceiptResources.
+            // Resources are not affected by the tool profile: they cost no schema bytes in
+            // the model's context, so there is nothing to trim.
+            .WithResourcesFromAssembly()
+            .WithToolSurface(toolProfile);
 
         var host = builder.Build();
+
+        // Resolve the approval channel eagerly so any misconfiguration warning lands at
+        // startup, next to the wallet and tool-profile banners — not on the first payment.
+        var confirmationChannel = host.Services.GetRequiredService<IConfirmationChannel>();
+        Console.Error.WriteLine(
+            $"[Lightning Enable MCP] Approval channel: {confirmationChannel.Kind.ToString().ToLowerInvariant()} "
+            + $"(set confirmation.channel in ~/.lightning-enable/config.json, or "
+            + $"{ConfirmationChannelResolver.ChannelEnvironmentVariable}={ConfirmationChannelResolver.ValidChannels})");
+
         await host.RunAsync();
     }
 }

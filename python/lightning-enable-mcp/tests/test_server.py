@@ -18,46 +18,36 @@ from lightning_enable_mcp.nwc_wallet import NWCWallet
 # (dotnet/tests/LightningEnable.Mcp.Tests/ToolInventoryTests.cs) and the docs'
 # MCP Complete Guide — the one place that itemizes the tools for humans.
 #
-# Canonical: 26 total = 17 out-of-the-box (free, just a wallet) + 9 producer/ASA
-# tools (2 producer + 7 ASA). Of the 9, the producer tools and the ASA
-# request/publish/unpublish tools require LIGHTNING_ENABLE_API_KEY;
-# discover_agent_services, settle_agent_service, and get_agent_reputation read the
-# public registry with just a wallet, but are grouped here as the producer/agent-
-# marketplace surface.
+# Canonical (the ``standard`` profile, which is the default): 15 total = 13
+# out-of-the-box (free, just a wallet) + 2 that need LIGHTNING_ENABLE_API_KEY.
+# The 2026-09 tool-surface consolidation folded 16 single-purpose tools into five
+# action-style verbs (budget, receipts, wallet_ops, l402_producer, agent_services),
+# taking the advertised surface from 26 tools to 15; ``setup_wallet`` then added the
+# wallet onboarding step every other tool depends on — see tools/profiles.py.
 #
-# The three renamed/merged tools' OLD names (confirm_payment, check_wallet_balance,
-# get_all_balances) remain accepted-but-unadvertised forwarding aliases — they still
-# dispatch, but are intentionally NOT in this advertised inventory (see
-# TestDeprecatedAliases).
+# Every pre-consolidation name still dispatches as an accepted-but-unadvertised
+# forwarding alias (TestDeprecatedAliases in test_tool_profiles.py), and the
+# ``full`` profile re-advertises them. Neither belongs in this inventory: this is
+# the DEFAULT advertised surface.
 FREE_TOOLS = {
-    "pay_invoice",
-    "get_balance",
-    "get_payment_history",
-    "get_receipts",
-    "get_budget_status",
-    "configure_budget",
-    "create_invoice",
-    "check_invoice_status",
+    "setup_wallet",
     "access_l402_resource",
+    "pay_invoice",
     "pay_l402_challenge",
     "test_l402_payment",
-    "discover_api",
-    "get_btc_price",
-    "exchange_currency",
-    "send_onchain",
+    "get_balance",
+    "budget",
+    "receipts",
+    "create_invoice",
+    "check_invoice_status",
     "verify_confirmation_code",
+    "discover_api",
     "create_lightning_enable_account",
+    "wallet_ops",
 }
 API_KEY_TOOLS = {
-    "create_l402_challenge",
-    "verify_l402_payment",
-    "discover_agent_services",
-    "request_agent_service",
-    "settle_agent_service",
-    "publish_agent_capability",
-    "unpublish_agent_capability",
-    "publish_agent_attestation",
-    "get_agent_reputation",
+    "l402_producer",
+    "agent_services",
 }
 ALL_TOOLS = FREE_TOOLS | API_KEY_TOOLS
 
@@ -102,14 +92,14 @@ class TestLightningEnableServer:
         tool_names = {tool.name for tool in tools}
 
         # The registered set must exactly equal the declared inventory (no drift).
-        # Aliases (confirm_payment, check_wallet_balance, get_all_balances) still
-        # dispatch but must NOT appear here.
+        # Deprecated aliases (every pre-consolidation name) still dispatch but must
+        # NOT appear here.
         assert tool_names == ALL_TOOLS
-        assert len(tool_names) == 26
+        assert len(tool_names) == 16
         # Free/paid split is the source of truth every doc count derives from.
         assert FREE_TOOLS.isdisjoint(API_KEY_TOOLS)
-        assert len(FREE_TOOLS) == 17, "17 out-of-the-box tools"
-        assert len(API_KEY_TOOLS) == 9, "9 producer + ASA tools (2 producer + 7 ASA)"
+        assert len(FREE_TOOLS) == 14, "14 out-of-the-box tools"
+        assert len(API_KEY_TOOLS) == 2, "2 API-key-gated verbs (l402_producer, agent_services)"
         assert tool_names >= FREE_TOOLS
         assert tool_names >= API_KEY_TOOLS
 
@@ -306,7 +296,7 @@ class TestDeprecatedAliases:
         assert data["valid"] is True
         assert data["tool"] == "pay_invoice"
         assert data["deprecated"]["replaced_by"] == "verify_confirmation_code"
-        assert data["deprecated"]["removal"] == "v2.0.0"
+        assert data["deprecated"]["removal"] == "v3.0.0"
 
     @pytest.mark.asyncio
     async def test_confirm_payment_is_not_advertised(self):
@@ -333,7 +323,7 @@ class TestDeprecatedAliases:
         assert data["balance_sats"] == 50_000
         assert data["balances"][0]["currency"] == "BTC"
         assert data["deprecated"]["replaced_by"] == "get_balance"
-        assert data["deprecated"]["removal"] == "v2.0.0"
+        assert data["deprecated"]["removal"] == "v3.0.0"
 
     @pytest.mark.asyncio
     async def test_balance_aliases_are_not_advertised(self):

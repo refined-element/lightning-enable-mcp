@@ -17,7 +17,7 @@ public static class GetPaymentHistoryTool
     /// <param name="limit">Maximum number of payments to return. Defaults to 10.</param>
     /// <param name="historyService">Injected payment history service.</param>
     /// <returns>List of recent payments with details.</returns>
-    [McpServerTool(Name = "get_payment_history"), Description("List recent L402 payments made in this session")]
+    [McpServerTool(Name = "get_payment_history", Title = "Session payments (deprecated)", ReadOnly = true, OpenWorld = false), Description("List recent L402 payments made in this session")]
     public static string GetPaymentHistory(
         [Description("Maximum number of payments to return. Defaults to 10")] int limit = 10,
         IPaymentHistoryService? historyService = null)

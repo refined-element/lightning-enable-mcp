@@ -119,7 +119,8 @@ class TestRequestAgentService:
         assert parsed["success"] is True
         assert parsed["requestEventId"] == "req-1"
         assert parsed["l402Endpoint"] == "https://provider.example/l402"
-        assert "settle_agent_service" in parsed["nextStep"]
+        # The hint must name the CURRENT call, not the deprecated settle_agent_service alias.
+        assert 'agent_services(action="settle"' in parsed["nextStep"]
         # No spend recorded at request time.
         budget.record_spend.assert_not_called()
 

@@ -17,14 +17,14 @@ public static class AgentSettleTool
     /// <summary>
     /// Settles an agent service agreement by paying the L402 endpoint (consumer/requester side).
     /// </summary>
-    [McpServerTool(Name = "settle_agent_service"), Description(
+    [McpServerTool(Name = "settle_agent_service", Title = "Settle agent service (deprecated)", ReadOnly = false, Destructive = true), Description(
         "Settle an agent service agreement via L402 payment (CONSUMER/REQUESTER side). " +
         "Pays the L402 endpoint specified in the agreement, completing the service transaction. " +
         "Uses the same L402 auto-pay flow as access_l402_resource. " +
-        "The L402 endpoint URL comes from discover_agent_services or request_agent_service results. " +
-        "NOTE: If you are the PROVIDER (selling a service), use create_l402_challenge to generate " +
+        "The L402 endpoint URL comes from an agent_services action=discover or action=request result. " +
+        "NOTE: If you are the PROVIDER (selling a service), use l402_producer action=create to generate " +
         "a Lightning invoice at the agreed price, share it with the requester, then use " +
-        "verify_l402_payment to confirm payment before delivering the service.")]
+        "l402_producer action=verify to confirm payment before delivering the service.")]
     public static async Task<string> SettleAgentService(
         [Description("L402 endpoint URL from the service agreement")] string l402Endpoint,
         [Description("HTTP method (GET, POST). Defaults to GET")] string method = "GET",
@@ -47,7 +47,7 @@ public static class AgentSettleTool
                 return JsonSerializer.Serialize(new
                 {
                     success = false,
-                    error = "L402 endpoint URL is required. Get it from discover_agent_services or request_agent_service results."
+                    error = "L402 endpoint URL is required. Get it from an agent_services action=discover or action=request result."
                 });
             }
 
@@ -112,7 +112,7 @@ public static class AgentSettleTool
                             remainingSats = budgetCheck.RemainingSessionBudget,
                             reason = budgetCheck.DenialReason
                         },
-                        hint = "Increase maxSats or check get_budget_status for current limits."
+                        hint = "Increase maxSats or check budget action=status for current limits."
                     });
                 }
             }

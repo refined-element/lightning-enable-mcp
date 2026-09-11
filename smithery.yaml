@@ -70,6 +70,16 @@ startCommand:
         description: >-
           Optional. OpenNode environment — "production" or "dev" (testnet).
           Defaults to production.
+      toolProfile:
+        type: string
+        enum: [lite, standard, full]
+        default: standard
+        description: >-
+          Optional. How many tools to advertise. "lite" is 5 tools (pay, fetch a
+          paid resource, balance, budget, receipts); "standard" is the full
+          15-tool set; "full" also advertises the pre-consolidation tool names
+          for prompts written against them. Every tool stays callable in every
+          profile — the profile only trims what is listed.
   commandFunction: |-
     (config) => {
       const env = {};
@@ -81,6 +91,7 @@ startCommand:
       if (config.lndSkipTlsVerify === true) env.LND_SKIP_TLS_VERIFY   = 'true';
       if (config.opennodeApiKey)        env.OPENNODE_API_KEY          = config.opennodeApiKey;
       if (config.opennodeEnvironment)   env.OPENNODE_ENVIRONMENT      = config.opennodeEnvironment;
+      if (config.toolProfile)           env.LIGHTNING_ENABLE_TOOL_PROFILE = config.toolProfile;
       return {
         command: 'uvx',
         args: ['lightning-enable-mcp'],

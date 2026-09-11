@@ -7,20 +7,23 @@ Uses the new BudgetService with multi-tier approval logic.
 
 import json
 import logging
-import sys
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from ..budget_service import BudgetService
-    from ..payment_history_service import PaymentHistoryService
     from ..l402_client import L402Client
+    from ..payment_history_service import PaymentHistoryService
 
+from mcp.types import Tool
+
+from .._url_redact import redact_url_for_display as _redact_url_for_display
 from ..config import ApprovalLevel
+from ..confirmation_channel import ConfirmationRequest
 from ..l402_client import L402RedirectError
 from ..receipt_seam import PaymentReceiptScope, policy_label
-from .._url_redact import redact_url_for_display as _redact_url_for_display
 from . import sanitize_error
 from ._ssrf_guard import SsrfError, validate_url_allowed
+from .consolidated import CONFIRMATION_NONCE_DESCRIPTION
 
 logger = logging.getLogger("lightning-enable-mcp.tools.access")
 
@@ -140,31 +143,50 @@ async def access_l402_resource(
                         })
                     # Human-relayed code validated (amount + tool + URL bound) — fall through.
                 else:
-                    pending = budget_service.create_pending_confirmation(
-                        max_sats, result.amount_usd, "access_l402_resource", url_display,
-                        destination=url,
+                    # OUT-OF-BAND CONFIRMATION: the code goes to the human on the CONFIGURED
+                    # approval channel (stderr locally; webhook/file/refuse when hosted) and
+                    # never into this result, so an injected agent can't self-approve.
+                    dispatch = await budget_service.request_confirmation(
+                        ConfirmationRequest(
+                            amount_sats=max_sats,
+                            amount_usd=result.amount_usd,
+                            tool_name="access_l402_resource",
+                            description=url_display,
+                            destination=url,
+                            title="L402 PAYMENT CONFIRMATION REQUIRED",
+                            summary=(
+                                f"access_l402_resource — up to ${result.amount_usd:.2f} "
+                                f"({max_sats:,} sats), {url_display}"
+                            ),
+                        )
                     )
-                    print(
-                        "[Lightning Enable] *** L402 PAYMENT CONFIRMATION REQUIRED ***\n"
-                        f"  access_l402_resource — up to ${result.amount_usd:.2f} ({max_sats:,} sats), {url_display}\n"
-                        f"  Confirmation code: {pending.nonce}\n"
-                        "  To approve, give this code to the agent. Expires in 120s.",
-                        file=sys.stderr,
-                        flush=True,
-                    )
+                    if not dispatch.delivered:
+                        return json.dumps({
+                            "success": False,
+                            "requiresConfirmation": False,
+                            "confirmationChannel": dispatch.channel_name,
+                            "error": dispatch.refusal_reason,
+                            "message": (
+                                "The request was REFUSED, not queued for approval — no human can be asked "
+                                "for a code on this server. Retrying will not help until the operator "
+                                "changes the configuration."
+                            ),
+                            "amount": {"maxSats": max_sats, "maxUsd": float(result.amount_usd)},
+                        })
                     return json.dumps({
                         "success": False,
                         "requiresConfirmation": True,
+                        "confirmationChannel": dispatch.channel_name,
                         "approvalLevel": result.level.value,
                         "error": "L402 payment requires human confirmation",
                         "message": (
                             f"This L402 request to {url_display} may cost up to ${result.amount_usd:.2f} "
-                            f"({max_sats:,} sats), above the auto-approve threshold. A confirmation code was printed "
-                            "to the server console/logs — visible to the human operator, NOT to you. Ask the human to "
+                            f"({max_sats:,} sats), above the auto-approve threshold. A confirmation code was "
+                            f"{dispatch.operator_hint} — visible to the human operator, NOT to you. Ask the human to "
                             "read that code and give it to you."
                         ),
                         "howToConfirm": (
-                            "Ask the human operator for the confirmation code shown in the server console, then call "
+                            "Ask the human operator for the confirmation code, then call "
                             'access_l402_resource(url="...", confirmation_nonce="<code-from-human>").'
                         ),
                         "amount": {"maxSats": max_sats, "maxUsd": float(result.amount_usd)},
@@ -288,3 +310,40 @@ async def access_l402_resource(
                 )
 
         return json.dumps(error_result, indent=2)
+
+
+# MCP tool schema (lives beside its handler; registered in tools/registry.py).
+ACCESS_L402_RESOURCE_TOOL = Tool(
+    name="access_l402_resource",
+    description=(
+        "Fetch a URL, automatically paying any L402 challenge and retrying. "
+        "Returns the response plus what was paid."
+    ),
+    inputSchema={
+        "type": "object",
+        "properties": {
+            "url": {"type": "string", "description": "URL to fetch"},
+            "method": {
+                "type": "string",
+                "default": "GET",
+                "enum": ["GET", "POST", "PUT", "DELETE"],
+            },
+            "headers": {
+                "type": "object",
+                "description": "Extra headers",
+                "additionalProperties": {"type": "string"},
+            },
+            "body": {"type": "string", "description": "Body for POST/PUT"},
+            "max_sats": {
+                "type": "integer",
+                "description": "Max sats to pay",
+                "default": 1000,
+            },
+            "confirmation_nonce": {
+                "type": "string",
+                "description": CONFIRMATION_NONCE_DESCRIPTION,
+            },
+        },
+        "required": ["url"],
+    },
+)

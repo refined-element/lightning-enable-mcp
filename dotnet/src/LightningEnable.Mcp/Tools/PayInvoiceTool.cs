@@ -27,10 +27,15 @@ public static class PayInvoiceTool
     /// <param name="paymentHistory">Injected payment history service.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Payment result with preimage proof.</returns>
-    [McpServerTool(Name = "pay_invoice"), Description("Pay a Lightning invoice directly and get the preimage as proof of payment")]
+    [McpServerTool(
+        Name = "pay_invoice",
+        Title = "Pay Lightning invoice",
+        ReadOnly = false,
+        Destructive = true)]
+    [Description("Pay a BOLT11 Lightning invoice directly and get the preimage as proof.")]
     public static async Task<string> PayInvoice(
-        [Description("BOLT11 Lightning invoice string to pay")] string invoice,
-        [Description("Confirmation code relayed by the human operator from the server console (stderr). Required when a previous call returned requiresConfirmation=true.")] string? confirmationNonce = null,
+        [Description("BOLT11 invoice to pay")] string invoice,
+        [Description("Code the human reads off the server console (never returned to you). Omit to request one.")] string? confirmationNonce = null,
         McpServer? server = null,
         IWalletService? walletService = null,
         IBudgetService? budgetService = null,
@@ -167,31 +172,49 @@ public static class PayInvoiceTool
                             // report Elicitation capability but don't handle it correctly,
                             // causing payments to fail with no recovery path.
                             var invoicePrefix = normalizedInvoice.Substring(0, Math.Min(30, normalizedInvoice.Length)) + "...";
-                            var pending = budgetService.CreatePendingConfirmation(
-                                amountSats.Value,
-                                approvalResult.AmountUsd,
-                                "pay_invoice",
-                                invoicePrefix,
-                                normalizedInvoice);
 
-                            // OUT-OF-BAND CONFIRMATION: the code is written to STDERR only —
-                            // the human sees the server console/logs; the model does NOT (it
-                            // only sees tool results). So a prompt-injected agent cannot read
-                            // the code to self-approve; only a human watching the output can
-                            // relay it. The code MUST NEVER appear in the tool result below.
-                            Console.Error.WriteLine(
-                                "[Lightning Enable] *** PAYMENT CONFIRMATION REQUIRED ***\n" +
-                                $"  pay_invoice — {approvalResult.AmountUsd:C} ({amountSats.Value:N0} sats), invoice {invoicePrefix}\n" +
-                                $"  Confirmation code: {pending.Nonce}\n" +
-                                "  To approve, give this code to the agent. Expires in 120s.");
+                            // OUT-OF-BAND CONFIRMATION: the code goes to the human on the
+                            // CONFIGURED approval channel — stderr locally, a webhook or file on a
+                            // hosted server, or nowhere at all when the channel is "refuse". On
+                            // every channel it stays out of this tool result, so a prompt-injected
+                            // agent cannot read its own code and self-approve.
+                            var dispatch = await budgetService.RequestConfirmationAsync(new ConfirmationRequest
+                            {
+                                AmountSats = amountSats.Value,
+                                AmountUsd = approvalResult.AmountUsd,
+                                ToolName = "pay_invoice",
+                                Description = invoicePrefix,
+                                Destination = normalizedInvoice,
+                                Title = "PAYMENT CONFIRMATION REQUIRED",
+                                Summary = $"pay_invoice — {approvalResult.AmountUsd:C} ({amountSats.Value:N0} sats), invoice {invoicePrefix}"
+                            }, cancellationToken);
+
+                            if (!dispatch.Delivered)
+                            {
+                                return JsonSerializer.Serialize(new
+                                {
+                                    success = false,
+                                    requiresConfirmation = false,
+                                    confirmationChannel = dispatch.ChannelName,
+                                    error = dispatch.RefusalReason,
+                                    message = "The payment was REFUSED, not queued for approval — no human can be asked for a " +
+                                              "code on this server. Retrying will not help until the operator changes the configuration.",
+                                    amount = new
+                                    {
+                                        sats = amountSats.Value,
+                                        usd = Math.Round(approvalResult.AmountUsd, 2)
+                                    }
+                                });
+                            }
 
                             return JsonSerializer.Serialize(new
                             {
                                 success = false,
                                 requiresConfirmation = true,
+                                confirmationChannel = dispatch.ChannelName,
                                 error = "Payment requires human confirmation",
                                 message = $"This payment of {approvalResult.AmountUsd:C} ({amountSats.Value:N0} sats) exceeds the auto-approve threshold. " +
-                                          "A confirmation code was printed to the server console/logs — visible to the human operator, NOT to you. " +
+                                          $"A confirmation code was {dispatch.OperatorHint} — visible to the human operator, NOT to you. " +
                                           "Ask the human to read that code and give it to you.",
                                 howToConfirm = "Ask the human operator for the confirmation code shown in the server console, then call " +
                                                "pay_invoice(invoice=\"...\", confirmationNonce=\"<code-from-human>\").",

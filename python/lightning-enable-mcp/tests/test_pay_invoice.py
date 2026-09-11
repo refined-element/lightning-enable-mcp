@@ -17,6 +17,7 @@ from lightning_enable_mcp.tools.pay_invoice import pay_invoice
 from lightning_enable_mcp.budget_service import PendingConfirmation, SpendReservationResult
 from lightning_enable_mcp.payment_history_service import PaymentHistoryService
 from lightning_enable_mcp.config import ApprovalLevel
+from tests.confirmation_helpers import setup_delivered
 from lightning_enable_mcp.wallet_errors import PaymentPendingError, PreimageUnavailableError
 
 
@@ -346,6 +347,7 @@ def _confirming_budget(code: str = "ABC123", sats: int = 50000):
         created_at=now, expires_at=now + timedelta(minutes=2),
     )
     budget.create_pending_confirmation = MagicMock(return_value=pc)
+    setup_delivered(budget, pending=pc)
     budget.validate_and_consume_confirmation = MagicMock(return_value=pc)
     budget.record_spend = MagicMock()
     budget.record_payment_time = MagicMock()

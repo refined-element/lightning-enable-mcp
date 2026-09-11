@@ -40,6 +40,13 @@ public class UserBudgetConfiguration
     public WalletSettings Wallets { get; set; } = new();
 
     /// <summary>
+    /// Where the out-of-band confirmation code for an over-threshold payment is delivered.
+    /// Defaults to the console (stderr) locally; see the "Deploying hosted" section of the README.
+    /// </summary>
+    [JsonPropertyName("confirmation")]
+    public ConfirmationSettings Confirmation { get; set; } = new();
+
+    /// <summary>
     /// Lightning Enable API key for L402 producer tools (create_l402_challenge, verify_l402_payment).
     /// Get this from your Lightning Enable dashboard with an Agentic Commerce subscription.
     /// Can also be set via LIGHTNING_ENABLE_API_KEY environment variable.
@@ -161,7 +168,13 @@ public class TierThresholds
 }
 
 /// <summary>
-/// Maximum payment limits.
+/// Maximum payment limits, in USD and/or satoshis.
+///
+/// The two denominations are ALTERNATIVES, and both may be set at once — in which case
+/// the stricter cap wins on every check. The reason to set the sats ones is independence
+/// from the BTC price feed: a USD cap cannot be evaluated when every price source is down
+/// (so the payment is refused, correctly), while a sats cap can be enforced with no
+/// conversion at all.
 /// </summary>
 public class PaymentLimits
 {
@@ -179,6 +192,48 @@ public class PaymentLimits
     /// </summary>
     [JsonPropertyName("maxPerSession")]
     public decimal? MaxPerSession { get; set; } = 100.00m;
+
+    /// <summary>
+    /// Maximum satoshis per single payment. Optional; when set it is enforced directly,
+    /// with no BTC price lookup. Env var <c>LIGHTNING_ENABLE_MAX_PER_PAYMENT_SATS</c>.
+    ///
+    /// Written only when set, so a first-run config file does not advertise a null the
+    /// operator has to reason about.
+    /// </summary>
+    [JsonPropertyName("maxPerPaymentSats")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? MaxPerPaymentSats { get; set; }
+
+    /// <summary>
+    /// Maximum satoshis per session. Optional; enforced directly, with no BTC price
+    /// lookup. Env var <c>LIGHTNING_ENABLE_MAX_PER_SESSION_SATS</c>.
+    /// </summary>
+    [JsonPropertyName("maxPerSessionSats")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? MaxPerSessionSats { get; set; }
+
+    /// <summary>
+    /// Satoshis a single payment may spend WITHOUT confirmation while the BTC price is
+    /// unavailable. Env var <c>LIGHTNING_ENABLE_AUTO_APPROVE_SATS</c>.
+    ///
+    /// <para>This is a TIER, not a ceiling, and it applies only when the USD tier ladder
+    /// cannot be evaluated. It lives beside the sats ceilings because it is only ever
+    /// consulted together with them — the ceilings say "never more than this", which is not
+    /// the same statement as "this much is fine unattended", so an outage needs the second
+    /// one said explicitly. Unset means every payment needs confirmation while the price is
+    /// down.</para>
+    ///
+    /// <para>It can never widen a ceiling: <see cref="MaxPerPaymentSats"/> /
+    /// <see cref="MaxPerSessionSats"/> and the runtime tighten caps are all checked
+    /// first.</para>
+    /// </summary>
+    [JsonPropertyName("autoApproveSats")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public long? AutoApproveSats { get; set; }
+
+    /// <summary>Whether this budget can be enforced without a BTC price at all.</summary>
+    [JsonIgnore]
+    public bool HasSatsLimits => MaxPerPaymentSats.HasValue || MaxPerSessionSats.HasValue;
 }
 
 /// <summary>

@@ -30,14 +30,19 @@ public static class AccessL402ResourceTool
     /// <param name="paymentHistory">Injected payment history service.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Response body or error message.</returns>
-    [McpServerTool(Name = "access_l402_resource"), Description("Fetch a URL, automatically pay any L402 Lightning payment challenge")]
+    [McpServerTool(
+        Name = "access_l402_resource",
+        Title = "Fetch paid resource",
+        ReadOnly = false,
+        Destructive = true)]
+    [Description("Fetch a URL, automatically paying any L402 challenge and retrying.")]
     public static async Task<string> AccessL402Resource(
         [Description("The URL to fetch")] string url,
-        [Description("HTTP method (GET, POST, PUT, DELETE). Defaults to GET")] string method = "GET",
-        [Description("Optional headers as JSON object")] string? headers = null,
-        [Description("Optional request body for POST/PUT requests")] string? body = null,
-        [Description("Maximum satoshis to pay for L402 challenge. Defaults to 1000")] int maxSats = 1000,
-        [Description("Confirmation code relayed by the human operator from the server console (stderr). Required when a previous call returned requiresConfirmation=true.")] string? confirmationNonce = null,
+        [Description("HTTP method")] string method = "GET",
+        [Description("Extra headers as a JSON object")] string? headers = null,
+        [Description("Body for POST/PUT")] string? body = null,
+        [Description("Max sats to pay")] int maxSats = 1000,
+        [Description("Code the human reads off the server console (never returned to you). Omit to request one.")] string? confirmationNonce = null,
         McpServer? server = null,
         IL402HttpClient? l402Client = null,
         IBudgetService? budgetService = null,
@@ -152,29 +157,47 @@ public static class AccessL402ResourceTool
                         // MCP elicitation is unreliable — many clients (including Claude Code)
                         // report Elicitation capability but don't handle it correctly.
                         var urlDisplay = RedactUrl(url);
-                        var pending = budgetService.CreatePendingConfirmation(
-                            maxSats,
-                            approvalResult.AmountUsd,
-                            "access_l402_resource",
-                            urlDisplay,
-                            url);
 
-                        // OUT-OF-BAND CONFIRMATION: code to STDERR only (human sees the server
-                        // console/logs; the model only sees tool results). An injected agent
-                        // can't read it to self-approve. The code MUST NOT appear in the result.
-                        Console.Error.WriteLine(
-                            "[Lightning Enable] *** L402 PAYMENT CONFIRMATION REQUIRED ***\n" +
-                            $"  access_l402_resource — up to {approvalResult.AmountUsd:C} ({maxSats:N0} sats), {urlDisplay}\n" +
-                            $"  Confirmation code: {pending.Nonce}\n" +
-                            "  To approve, give this code to the agent. Expires in 120s.");
+                        // OUT-OF-BAND CONFIRMATION: the code goes to the human on the CONFIGURED
+                        // approval channel (stderr locally; webhook/file/refuse when hosted) and
+                        // never into this result, so an injected agent can't self-approve.
+                        var dispatch = await budgetService.RequestConfirmationAsync(new ConfirmationRequest
+                        {
+                            AmountSats = maxSats,
+                            AmountUsd = approvalResult.AmountUsd,
+                            ToolName = "access_l402_resource",
+                            Description = urlDisplay,
+                            Destination = url,
+                            Title = "L402 PAYMENT CONFIRMATION REQUIRED",
+                            Summary = $"access_l402_resource — up to {approvalResult.AmountUsd:C} ({maxSats:N0} sats), {urlDisplay}"
+                        }, cancellationToken);
+
+                        if (!dispatch.Delivered)
+                        {
+                            return JsonSerializer.Serialize(new
+                            {
+                                success = false,
+                                requiresConfirmation = false,
+                                confirmationChannel = dispatch.ChannelName,
+                                error = dispatch.RefusalReason,
+                                message = "The request was REFUSED, not queued for approval — no human can be asked for a " +
+                                          "code on this server. Retrying will not help until the operator changes the configuration.",
+                                amount = new
+                                {
+                                    maxSats,
+                                    usd = Math.Round(approvalResult.AmountUsd, 2)
+                                }
+                            });
+                        }
 
                         return JsonSerializer.Serialize(new
                         {
                             success = false,
                             requiresConfirmation = true,
+                            confirmationChannel = dispatch.ChannelName,
                             error = "L402 payment requires human confirmation",
                             message = $"This L402 request may cost up to {approvalResult.AmountUsd:C} ({maxSats:N0} sats), which exceeds the auto-approve threshold. " +
-                                      "A confirmation code was printed to the server console/logs — visible to the human operator, NOT to you. " +
+                                      $"A confirmation code was {dispatch.OperatorHint} — visible to the human operator, NOT to you. " +
                                       "Ask the human to read that code and give it to you.",
                             howToConfirm = "Ask the human operator for the confirmation code shown in the server console, then call " +
                                            "access_l402_resource(url=\"...\", confirmationNonce=\"<code-from-human>\").",

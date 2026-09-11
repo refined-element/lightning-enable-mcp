@@ -9,6 +9,8 @@ import json
 import logging
 from typing import TYPE_CHECKING
 
+from mcp.types import Tool
+
 from . import sanitize_error
 
 if TYPE_CHECKING:
@@ -99,3 +101,30 @@ async def get_agent_reputation(
             "success": False,
             "error": f"Error querying agent reputation: {sanitize_error(str(e))}",
         })
+
+
+# MCP tool schema (lives beside its handler; registered in tools/registry.py).
+GET_AGENT_REPUTATION_TOOL = Tool(
+    name="get_agent_reputation",
+    description=(
+        "Get an agent's reputation score and reviews. "
+        "Queries kind 38403 attestation events for the given pubkey off the relay. "
+        "Returns the average rating and individual reviews. Ratings are un-weighted "
+        "on-relay attestations — apply your own proof/Web-of-Trust weighting before trusting them."
+    ),
+    inputSchema={
+        "type": "object",
+        "properties": {
+            "pubkey": {
+                "type": "string",
+                "description": "Pubkey of the agent to query reputation for",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Maximum number of attestations to return",
+                "default": 20,
+            },
+        },
+        "required": ["pubkey"],
+    },
+)

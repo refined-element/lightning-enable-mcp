@@ -188,7 +188,9 @@ public sealed class ReceiptService : IReceiptService
                 {
                     var node = JsonNode.Parse(l);
                     // Only surface object lines; skip a torn/interleaved/non-object line.
-                    if (node is JsonObject) outp.Add(node);
+                    // Redact at the READ boundary so every surface — the `receipts` tool and
+                    // the lightning-enable://receipts resource alike — is covered by one pass.
+                    if (node is JsonObject) outp.Add(ReceiptRedaction.Redact(node)!);
                 }
                 catch { /* skip a torn/partial line rather than fail the whole read */ }
             }

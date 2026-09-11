@@ -9,56 +9,75 @@ import json
 import logging
 import os
 import sys
-from typing import Any
+from collections.abc import Mapping
+from types import MappingProxyType
+from typing import Any, NamedTuple
 
 from mcp.server import Server
+from mcp.server.lowlevel.helper_types import ReadResourceContents
 from mcp.server.stdio import stdio_server
 from mcp.types import (
-    Tool,
+    Resource,
+    ResourceTemplate,
     TextContent,
+    Tool,
 )
+from pydantic import AnyUrl
 
 from . import __version__
 from .budget_service import BudgetService, get_budget_service
+from .confirmation_channel import CHANNEL_ENV_VAR, VALID_CHANNELS
+from .idempotent_wallet import IdempotentWallet
+from .l402_client import L402Client
+from .lightning_enable_api import LightningEnableApiClient
+from .lnd_wallet import LndWallet
+from .nwc_wallet import NWCConfig, NWCWallet
+from .opennode_wallet import OpenNodeWallet
+from .operation_ledger import OperationLedger
 from .payment_history_service import (
     PaymentHistoryService,
     get_payment_history_service,
 )
-from .l402_client import L402Client
-from .lnd_wallet import LndWallet
-from .lightning_enable_api import LightningEnableApiClient
-from .nwc_wallet import NWCWallet, NWCConfig
-from .opennode_wallet import OpenNodeWallet
+from .receipt_seam import ReceiptRecordingWallet
+from .receipt_service import ReceiptService, wallet_label_from
 from .strike_wallet import StrikeWallet
 from .tools.access_resource import access_l402_resource
-from .tools.create_account import create_lightning_enable_account
-from .tools.test_l402_payment import test_l402_payment
-from .tools.get_receipts import get_receipts
-from .receipt_seam import ReceiptRecordingWallet
-from .operation_ledger import OperationLedger
-from .idempotent_wallet import IdempotentWallet
-from .receipt_service import ReceiptService, wallet_label_from
-from .tools.check_invoice_status import check_invoice_status
-from .tools.verify_confirmation_code import verify_confirmation_code
-from .tools.create_invoice import create_invoice
-from .tools.create_l402_challenge import create_l402_challenge
-from .tools.discover_api import discover_api
-from .tools.exchange_currency import exchange_currency
-from .tools.get_balance import get_balance
-from .tools.get_btc_price import get_btc_price
-from .tools.pay_challenge import pay_l402_challenge
-from .tools.pay_invoice import pay_invoice
-from .tools.send_onchain import send_onchain
-from .tools.verify_l402_payment import verify_l402_payment
 from .tools.budget import configure_budget, get_payment_history
 from .tools.budget_status import get_budget_status
+from .tools.check_invoice_status import check_invoice_status
+from .tools.consolidated import ACTION_TOOLS
+from .tools.create_account import create_lightning_enable_account
+from .tools.create_invoice import create_invoice
+from .tools.create_l402_challenge import create_l402_challenge
 from .tools.discover_agent_services import discover_agent_services
-from .tools.publish_agent_capability import publish_agent_capability
-from .tools.unpublish_agent_capability import unpublish_agent_capability
-from .tools.request_agent_service import request_agent_service
-from .tools.publish_agent_attestation import publish_agent_attestation
+from .tools.discover_api import discover_api
+from .tools.exchange_currency import exchange_currency
 from .tools.get_agent_reputation import get_agent_reputation
+from .tools.get_balance import get_balance
+from .tools.get_btc_price import get_btc_price
+from .tools.get_receipts import get_receipts
+from .tools.pay_challenge import pay_l402_challenge
+from .tools.pay_invoice import pay_invoice
+from .tools.producer_setup import (
+    add_endpoint,
+    configure_receive,
+    create_proxy,
+    producer_status,
+)
+from .tools.producer_setup import list_challenges as list_l402_challenges
+from .tools.producer_setup import publish as publish_l402_service
+from .tools.profiles import PROFILE_ENV_VAR, resolve_profile
+from .tools.publish_agent_attestation import publish_agent_attestation
+from .tools.publish_agent_capability import publish_agent_capability
+from .tools.registry import tools_for_profile
+from .tools.request_agent_service import request_agent_service
+from .tools.send_onchain import send_onchain
 from .tools.settle_agent_service import settle_agent_service
+from .tools.setup_wallet import setup_wallet
+from .tools.test_l402_payment import test_l402_payment
+from .tools.unpublish_agent_capability import unpublish_agent_capability
+from .tools.verify_confirmation_code import verify_confirmation_code
+from .tools.verify_l402_payment import verify_l402_payment
 
 # Configure logging
 logging.basicConfig(
@@ -87,22 +106,60 @@ def _sanitize_error(msg: str) -> str:
 
 
 # Renamed/merged tools keep their old names as accepted-but-unadvertised forwarding
-# aliases for one minor cycle. An alias dispatches to the new implementation and the
-# forwarded JSON gains a `deprecated` marker. The aliases are intentionally ABSENT from
-# list_tools() (dispatcher-only), so the advertised surface is the new names.
-DEPRECATED_ALIASES = {
-    "confirm_payment": "verify_confirmation_code",
-    "check_wallet_balance": "get_balance",
-    "get_all_balances": "get_balance",
+# aliases. An alias dispatches to the new implementation — injecting the action that
+# selects the old tool's behaviour — and the forwarded JSON gains a `deprecated`
+# marker. Aliases are ABSENT from list_tools() under the default profile, so the
+# advertised surface is the new names; `LIGHTNING_ENABLE_TOOL_PROFILE=full`
+# re-advertises the consolidation's legacy names for prompts written against them.
+class AliasTarget(NamedTuple):
+    """Where a deprecated tool name forwards to."""
+
+    tool: str
+    """Name of the tool that supersedes the alias."""
+
+    args: Mapping[str, Any] = MappingProxyType({})
+    """Arguments injected into the call (the action selecting the old behaviour)."""
+
+    @property
+    def use(self) -> str:
+        """Human-readable call form, e.g. ``budget(action="status")``."""
+        if not self.args:
+            return self.tool
+        inner = ", ".join(f'{k}="{v}"' for k, v in self.args.items())
+        return f"{self.tool}({inner})"
+
+
+DEPRECATED_ALIASES: dict[str, AliasTarget] = {
+    # Pre-consolidation renames (v1).
+    "confirm_payment": AliasTarget("verify_confirmation_code"),
+    "check_wallet_balance": AliasTarget("get_balance"),
+    "get_all_balances": AliasTarget("get_balance"),
+    # Tool-surface consolidation.
+    "get_budget_status": AliasTarget("budget", {"action": "status"}),
+    "configure_budget": AliasTarget("budget", {"action": "tighten"}),
+    "get_receipts": AliasTarget("receipts", {"source": "durable"}),
+    "get_payment_history": AliasTarget("receipts", {"source": "session"}),
+    "get_btc_price": AliasTarget("wallet_ops", {"action": "price"}),
+    "exchange_currency": AliasTarget("wallet_ops", {"action": "exchange"}),
+    "send_onchain": AliasTarget("wallet_ops", {"action": "send_onchain"}),
+    "create_l402_challenge": AliasTarget("l402_producer", {"action": "create"}),
+    "verify_l402_payment": AliasTarget("l402_producer", {"action": "verify"}),
+    "discover_agent_services": AliasTarget("agent_services", {"action": "discover"}),
+    "request_agent_service": AliasTarget("agent_services", {"action": "request"}),
+    "settle_agent_service": AliasTarget("agent_services", {"action": "settle"}),
+    "publish_agent_capability": AliasTarget("agent_services", {"action": "publish"}),
+    "unpublish_agent_capability": AliasTarget("agent_services", {"action": "unpublish"}),
+    "publish_agent_attestation": AliasTarget("agent_services", {"action": "attest"}),
+    "get_agent_reputation": AliasTarget("agent_services", {"action": "reputation"}),
 }
-_ALIAS_REMOVAL = "v2.0.0"
+_ALIAS_REMOVAL = "v3.0.0"
 
 
-def _mark_deprecated(result: str, replaced_by: str) -> str:
+def _mark_deprecated(result: str, target: AliasTarget) -> str:
     """Annotate a forwarded tool result (JSON string) with a deprecation marker.
 
     Parses the underlying tool's JSON response and injects
-    ``deprecated: {replaced_by, removal}``. If the payload is not a JSON object
+    ``deprecated: {replaced_by, use, removal}``. If the payload is not a JSON object
     (unexpected), the original string is returned unchanged so an alias never breaks
     a caller that the new tool would have served.
     """
@@ -112,8 +169,61 @@ def _mark_deprecated(result: str, replaced_by: str) -> str:
         return result
     if not isinstance(data, dict):
         return result
-    data["deprecated"] = {"replaced_by": replaced_by, "removal": _ALIAS_REMOVAL}
+    data["deprecated"] = {
+        "replaced_by": target.tool,
+        "use": target.use,
+        "removal": _ALIAS_REMOVAL,
+    }
     return json.dumps(data, indent=2)
+
+
+def _unknown_action(tool: str, key: str, value: Any) -> str:
+    """Descriptive error for a missing/unrecognized action on a consolidated tool."""
+    _, allowed = ACTION_TOOLS[tool]
+    shown = "missing" if value is None else repr(value)
+    return json.dumps(
+        {
+            "success": False,
+            "error": (
+                f"{tool}: {key} is {shown}. Set {key} to one of: "
+                f"{', '.join(allowed)}."
+            ),
+            "tool": tool,
+            "valid_actions": list(allowed),
+        },
+        indent=2,
+    )
+
+
+#: The whole-log resource URI.
+RECEIPTS_RESOURCE_URI = "lightning-enable://receipts"
+
+#: The per-payment-hash resource template.
+RECEIPT_BY_HASH_URI_TEMPLATE = "lightning-enable://receipts/{paymentHash}"
+
+#: How many receipts the log resource carries. Matches the ``receipts`` tool's clamp.
+RECEIPTS_RESOURCE_MAX_ROWS = 200
+
+#: How far back a single-hash lookup searches. Deeper than the log resource because looking
+#: up one known payment is a different question from "what happened lately".
+RECEIPT_LOOKUP_WINDOW = 2_000
+
+#: JSONL: newline-delimited JSON, one receipt per line.
+JSON_LINES_MIME_TYPE = "application/x-ndjson"
+
+
+def _to_json_lines(receipts: list[dict]) -> str:
+    """Render receipts as JSONL — compact, one per line. It is only JSONL if none wrap."""
+    return "".join(
+        json.dumps(receipt, separators=(",", ":")) + "\n" for receipt in receipts
+    )
+
+
+def _action_of(tool: str, arguments: Mapping[str, Any]) -> str | None:
+    """Return the validated action for a consolidated tool, or None if invalid."""
+    key, allowed = ACTION_TOOLS[tool]
+    value = arguments.get(key)
+    return value if value in allowed else None
 
 
 class LightningEnableServer:
@@ -121,6 +231,10 @@ class LightningEnableServer:
 
     def __init__(self) -> None:
         self.server = Server("lightning-enable", version=__version__)
+        # How much of the tool surface list_tools advertises. Read once, at startup:
+        # a client caches the tool list for the session anyway. Profiles are
+        # listing-only — every tool stays callable by name in every profile.
+        self.tool_profile: str = resolve_profile(os.getenv(PROFILE_ENV_VAR))
         self.wallet: LndWallet | NWCWallet | OpenNodeWallet | StrikeWallet | None = None
         self.strike_wallet: StrikeWallet | None = None  # For Strike-specific features
         # The wallet routed through the receipt seam (ReceiptRecordingWallet): every
@@ -140,737 +254,86 @@ class LightningEnableServer:
         self._setup_handlers()
 
     def _setup_handlers(self) -> None:
-        """Register MCP tool handlers."""
+        """Register MCP tool and resource handlers."""
 
         @self.server.list_tools()
         async def list_tools() -> list[Tool]:
-            """Return the list of available tools."""
+            """Return the tools advertised under the active profile."""
+            return tools_for_profile(self.tool_profile)
+
+        # ── Resources ───────────────────────────────────────────────────────
+        #
+        # A tool call is the agent deciding to look; a resource is something a client can
+        # attach, watch, or show a human without the model spending a turn on it. The
+        # durable spend log is exactly that kind of artifact — which is why it lives off
+        # the agent's hot path in the first place — so it is worth both shapes.
+        #
+        # Resources are NOT affected by the tool profile: they cost no schema bytes in the
+        # model's context, so there is nothing to trim. Keep in lockstep with the .NET port
+        # (Resources/ReceiptResources.cs).
+
+        @self.server.list_resources()
+        async def list_resources() -> list[Resource]:
             return [
-                Tool(
-                    name="access_l402_resource",
+                Resource(
+                    uri=AnyUrl(RECEIPTS_RESOURCE_URI),
+                    name="receipts",
+                    title="Payment receipts",
+                    mimeType=JSON_LINES_MIME_TYPE,
                     description=(
-                        "Fetch a URL with automatic L402 payment handling. "
-                        "If the server returns a 402 Payment Required response, "
-                        "the invoice will be automatically paid and the request retried."
+                        "The durable, append-only payment receipt log "
+                        "(~/.lightning-enable/receipts.jsonl) — the most recent "
+                        f"{RECEIPTS_RESOURCE_MAX_ROWS} receipts as JSONL, oldest first. "
+                        "Never contains preimages."
                     ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "url": {
-                                "type": "string",
-                                "description": "The URL to fetch",
-                            },
-                            "method": {
-                                "type": "string",
-                                "description": "HTTP method (GET, POST, PUT, DELETE)",
-                                "default": "GET",
-                                "enum": ["GET", "POST", "PUT", "DELETE"],
-                            },
-                            "headers": {
-                                "type": "object",
-                                "description": "Optional additional request headers",
-                                "additionalProperties": {"type": "string"},
-                            },
-                            "body": {
-                                "type": "string",
-                                "description": "Optional request body for POST/PUT requests",
-                            },
-                            "max_sats": {
-                                "type": "integer",
-                                "description": "Maximum satoshis to pay for this request",
-                                "default": 1000,
-                            },
-                            "confirmation_nonce": {
-                                "type": "string",
-                                "description": "Confirmation code the human operator read from the server console, for payments above the auto-approve threshold. The code is NEVER in a tool result — ask the human for it. Omit on the first call to request one.",
-                            },
-                        },
-                        "required": ["url"],
-                    },
-                ),
-                Tool(
-                    name="test_l402_payment",
+                )
+            ]
+
+        @self.server.list_resource_templates()
+        async def list_resource_templates() -> list[ResourceTemplate]:
+            return [
+                ResourceTemplate(
+                    uriTemplate=RECEIPT_BY_HASH_URI_TEMPLATE,
+                    name="receipt",
+                    title="Payment receipt by payment hash",
+                    mimeType=JSON_LINES_MIME_TYPE,
                     description=(
-                        "Self-test the Lightning wallet by paying the public 1-sat L402 test "
-                        "endpoint end to end. Proves the wallet is connected, returns a preimage, "
-                        "and can complete an L402 payment. Costs about 1 satoshi. Use this to "
-                        "verify setup or answer 'is my wallet actually working?'. If your budget "
-                        "config requires confirmation for this amount, the verdict is "
-                        "'needs_confirmation' and the server prints a code to its console — re-run "
-                        "with confirmation_nonce set to that code."
+                        "Every durable receipt recorded for one payment hash, as JSONL. "
+                        "Never contains preimages — the payment hash is the safe reference, "
+                        "the preimage is the proof of payment and is not a receipt field."
                     ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "confirmation_nonce": {
-                                "type": "string",
-                                "description": "Confirmation code the human read from the server console, if a prior call returned test='needs_confirmation'. Omit on the first call.",
-                            },
-                        },
-                        "required": [],
-                    },
-                ),
-                Tool(
-                    name="pay_l402_challenge",
-                    description=(
-                        "Manually pay an L402 or MPP invoice and receive the authorization token. "
-                        "Use this if you need to handle the L402/MPP flow yourself. "
-                        "Omit macaroon for MPP (Machine Payments Protocol) mode. For a modern "
-                        "(draft-00) Payment challenge, pass the raw WWW-Authenticate value as "
-                        "challenge_header to get a single-use Payment credential."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "invoice": {
-                                "type": "string",
-                                "description": "BOLT11 Lightning invoice string. Optional when challenge_header is provided (the invoice inside the challenge is used).",
-                            },
-                            "macaroon": {
-                                "type": ["string", "null"],
-                                "description": "Base64-encoded macaroon from the L402 challenge. Omit for MPP mode (preimage-only authentication).",
-                            },
-                            "max_sats": {
-                                "type": "integer",
-                                "description": "Maximum satoshis allowed for this payment",
-                                "default": 1000,
-                            },
-                            "confirmation_nonce": {
-                                "type": "string",
-                                "description": "Confirmation code the human operator read from the server console, for payments above the auto-approve threshold. The code is NEVER in a tool result — ask the human for it. Omit on the first call to request one.",
-                            },
-                            "challenge_header": {
-                                "type": "string",
-                                "description": "Raw WWW-Authenticate value of a 'Payment' scheme challenge. When it carries a draft-00 request parameter, the invoice inside is paid and a single-use 'Authorization: Payment <credential>' value is returned.",
-                            },
-                        },
-                        "required": [],
-                    },
-                ),
-                Tool(
-                    name="create_lightning_enable_account",
-                    description=(
-                        "Self-bootstrapping signup: activate a Lightning Enable account with a tiny "
-                        "Lightning payment (~100 sats) and get back a merchant API key. Requires NO "
-                        "Lightning Enable API key (it CREATES one) — only a connected wallet. On success "
-                        "the API key is saved to ~/.lightning-enable/config.json so the producer/ASA tools "
-                        "unlock. Above-threshold fees require an out-of-band confirmation code (as with "
-                        "pay_l402_challenge)."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "email": {
-                                "type": "string",
-                                "description": "Email address to register the Lightning Enable account under.",
-                            },
-                            "max_sats": {
-                                "type": "integer",
-                                "description": "Maximum satoshis to pay for activation. The fee is ~100 sats.",
-                                "default": 1000,
-                            },
-                            "confirmation_nonce": {
-                                "type": "string",
-                                "description": "Confirmation code the human operator read from the server console, for an above-threshold activation fee. The code is NEVER in a tool result — ask the human for it. Omit on the first call to request one.",
-                            },
-                        },
-                        "required": ["email"],
-                    },
-                ),
-                Tool(
-                    name="get_balance",
-                    description=(
-                        "Get the connected wallet's balance. Returns the sats balance plus, where "
-                        "available, all currency balances (USD, BTC, ... — most useful with Strike) "
-                        "and wallet info. Supersedes check_wallet_balance and get_all_balances."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {},
-                    },
-                ),
-                Tool(
-                    name="get_payment_history",
-                    description="List recent L402 payments made during this session.",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "limit": {
-                                "type": "integer",
-                                "description": "Maximum number of payments to return",
-                                "default": 10,
-                            },
-                            "since": {
-                                "type": "string",
-                                "description": "ISO timestamp to filter payments from",
-                            },
-                        },
-                    },
-                ),
-                Tool(
-                    name="get_receipts",
-                    description=(
-                        "Read the durable, append-only payment receipt log "
-                        "(~/.lightning-enable/receipts.jsonl). Unlike get_payment_history "
-                        "(in-memory, this session only), receipts persist across sessions and "
-                        "include the spend policy and how to revoke the wallet. Use to review "
-                        "what an agent has spent and how to pull the plug."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "limit": {
-                                "type": "integer",
-                                "description": "Maximum number of recent receipts to return (1-200)",
-                                "default": 20,
-                            },
-                        },
-                    },
-                ),
-                Tool(
-                    name="configure_budget",
-                    description="Set spending limits for the session.",
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "per_request": {
-                                "type": "integer",
-                                "description": "Maximum satoshis per individual request",
-                                "default": 1000,
-                            },
-                            "per_session": {
-                                "type": "integer",
-                                "description": "Maximum total satoshis for the entire session",
-                                "default": 10000,
-                            },
-                        },
-                    },
-                ),
-                Tool(
-                    name="pay_invoice",
-                    description=(
-                        "Pay a Lightning invoice directly and get the preimage as proof of payment. "
-                        "Use this to pay any BOLT11 Lightning invoice without L402 protocol overhead."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "invoice": {
-                                "type": "string",
-                                "description": "BOLT11 Lightning invoice string to pay",
-                            },
-                            "max_sats": {
-                                "type": "integer",
-                                "description": "Maximum satoshis allowed to pay. Defaults to 1000",
-                                "default": 1000,
-                            },
-                            "confirmation_nonce": {
-                                "type": "string",
-                                "description": "Confirmation code the human operator read from the server console, for payments above the auto-approve threshold. The code is NEVER in a tool result — ask the human for it. Omit on the first call to request one.",
-                            },
-                        },
-                        "required": ["invoice"],
-                    },
-                ),
-                Tool(
-                    name="create_invoice",
-                    description=(
-                        "Create a Lightning invoice to receive a payment. "
-                        "Returns a BOLT11 invoice string to share with the payer."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "amount_sats": {
-                                "type": "integer",
-                                "description": "Amount to receive in satoshis",
-                            },
-                            "memo": {
-                                "type": "string",
-                                "description": "Optional description/memo for the invoice",
-                            },
-                            "expiry_secs": {
-                                "type": "integer",
-                                "description": "Invoice expiry time in seconds. Defaults to 3600 (1 hour)",
-                                "default": 3600,
-                            },
-                        },
-                        "required": ["amount_sats"],
-                    },
-                ),
-                Tool(
-                    name="check_invoice_status",
-                    description=(
-                        "Check if a Lightning invoice has been paid. "
-                        "Use the invoice ID from create_invoice."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "invoice_id": {
-                                "type": "string",
-                                "description": "The invoice ID returned from create_invoice",
-                            },
-                        },
-                        "required": ["invoice_id"],
-                    },
-                ),
-                Tool(
-                    name="get_btc_price",
-                    description=(
-                        "Get the current Bitcoin price in USD. "
-                        "Only available with Strike wallet."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {},
-                    },
-                ),
-                Tool(
-                    name="exchange_currency",
-                    description=(
-                        "Exchange currency within your wallet (USD to BTC or BTC to USD). "
-                        "Currently only available with Strike wallet."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "source_currency": {
-                                "type": "string",
-                                "description": "Currency to convert from: USD or BTC",
-                            },
-                            "target_currency": {
-                                "type": "string",
-                                "description": "Currency to convert to: BTC or USD",
-                            },
-                            "amount": {
-                                "type": "number",
-                                "description": "Amount in source currency (e.g., 100 for $100 or 0.001 for 0.001 BTC)",
-                            },
-                        },
-                        "required": ["source_currency", "target_currency", "amount"],
-                    },
-                ),
-                Tool(
-                    name="send_onchain",
-                    description=(
-                        "Send an on-chain Bitcoin payment to a Bitcoin address. "
-                        "Currently only available with Strike wallet."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "address": {
-                                "type": "string",
-                                "description": "Bitcoin address to send to (e.g., bc1q...)",
-                            },
-                            "amount_sats": {
-                                "type": "integer",
-                                "description": "Amount to send in satoshis",
-                            },
-                            "confirmation_nonce": {
-                                "type": "string",
-                                "description": (
-                                    "Confirmation code the human operator read from the server console. "
-                                    "On-chain sends always require it: the first call prints a code to the "
-                                    "console (never in the result) and returns requiresConfirmation; ask the "
-                                    "human and call again with confirmation_nonce set to it."
-                                ),
-                            },
-                        },
-                        "required": ["address", "amount_sats"],
-                    },
-                ),
-                Tool(
-                    name="get_budget_status",
-                    description=(
-                        "View current budget status and spending limits (read-only). "
-                        "Edit ~/.lightning-enable/config.json to change limits."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {},
-                    },
-                ),
-                Tool(
-                    name="create_l402_challenge",
-                    description=(
-                        "Create an L402 payment challenge to charge another agent or user for accessing a resource. "
-                        "Returns a Lightning invoice and macaroon. The payer must pay the invoice and present "
-                        "the L402 token (macaroon:preimage) back to you for verification. "
-                        "Requires LIGHTNING_ENABLE_API_KEY with an Agentic Commerce subscription."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "resource": {
-                                "type": "string",
-                                "description": "Resource identifier - URL, service name, or description of what you're charging for",
-                            },
-                            "price_sats": {
-                                "type": "integer",
-                                "description": "Price in satoshis to charge",
-                            },
-                            "description": {
-                                "type": "string",
-                                "description": "Description shown on the Lightning invoice",
-                            },
-                        },
-                        "required": ["resource", "price_sats"],
-                    },
-                ),
-                Tool(
-                    name="verify_l402_payment",
-                    description=(
-                        "Verify an L402 token (macaroon + preimage) to confirm payment was made. "
-                        "Use this after receiving an L402 token from a payer to validate they paid "
-                        "before granting access to the resource. "
-                        "Requires LIGHTNING_ENABLE_API_KEY with an Agentic Commerce subscription."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "macaroon": {
-                                "type": "string",
-                                "description": "Base64-encoded macaroon from the L402 token",
-                            },
-                            "preimage": {
-                                "type": "string",
-                                "description": "Hex-encoded preimage (proof of payment)",
-                            },
-                        },
-                        "required": ["macaroon", "preimage"],
-                    },
-                ),
-                Tool(
-                    name="verify_confirmation_code",
-                    description=(
-                        "Verify whether a payment confirmation code (relayed by the human from the "
-                        "server console) is still valid and what it authorizes. VERIFICATION ONLY — "
-                        "never executes a payment. To pay, call the original payment tool again with "
-                        "confirmation_nonce."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "nonce": {
-                                "type": "string",
-                                "description": "The 6-character confirmation code from the payment request",
-                            },
-                        },
-                        "required": ["nonce"],
-                    },
-                ),
-                Tool(
-                    name="discover_api",
-                    description=(
-                        "Discover L402-enabled APIs. Use 'query' to search the registry for available APIs by keyword, "
-                        "or use 'url' to fetch a specific API's manifest with full endpoint details and pricing. "
-                        "Use 'category' to browse by category. With budget_aware=true, shows how many calls you can afford."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "url": {
-                                "type": "string",
-                                "description": "Base URL of the L402-enabled API, or direct URL to the manifest JSON file. If omitted, searches the registry instead.",
-                            },
-                            "query": {
-                                "type": "string",
-                                "description": "Search the L402 API registry by keyword (e.g., 'weather', 'ai', 'geocoding').",
-                            },
-                            "category": {
-                                "type": "string",
-                                "description": "Filter registry results by category (e.g., 'ai', 'data', 'finance').",
-                            },
-                            "budget_aware": {
-                                "type": "boolean",
-                                "description": "If true, annotate endpoints with affordable call counts based on remaining budget. Default: true.",
-                                "default": True,
-                            },
-                        },
-                    },
-                ),
-                Tool(
-                    name="discover_agent_services",
-                    description=(
-                        "Discover agent services on the Nostr network. Search by category, hashtag, or keyword. "
-                        "Returns capabilities published as kind 38400 events. "
-                        "Use this to find agents that offer services you can pay for via L402."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "category": {
-                                "type": "string",
-                                "description": "Filter by service category (e.g., 'ai', 'data', 'translation')",
-                            },
-                            "hashtags": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "description": "Filter by hashtags",
-                            },
-                            "query": {
-                                "type": "string",
-                                "description": "Search query",
-                            },
-                            "limit": {
-                                "type": "integer",
-                                "description": "Maximum results to return",
-                                "default": 20,
-                            },
-                        },
-                    },
-                ),
-                Tool(
-                    name="publish_agent_capability",
-                    description=(
-                        "Publish an agent capability advertisement to the Nostr network. "
-                        "Makes your agent discoverable by other agents as a kind 38400 listing, "
-                        "published via Lightning Enable's L402 proxy pipeline. Provide target_url — "
-                        "an L402 proxy is created to back the listing and handle payment. The event "
-                        "is signed by the Lightning Enable platform key. Requires LIGHTNING_ENABLE_API_KEY."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "service_id": {
-                                "type": "string",
-                                "description": "Unique service identifier (used as d-tag)",
-                            },
-                            "categories": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "description": "Service categories (e.g., ['ai', 'translation'])",
-                            },
-                            "content": {
-                                "type": "string",
-                                "description": "Description of the service",
-                            },
-                            "price_sats": {
-                                "type": "integer",
-                                "description": "Price per request in satoshis",
-                            },
-                            "l402_endpoint": {
-                                "type": "string",
-                                "description": "L402 endpoint URL for payment settlement",
-                            },
-                            "target_url": {
-                                "type": "string",
-                                "description": "Target API URL (if auto-creating an L402 proxy via Lightning Enable)",
-                            },
-                            "hashtags": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "description": "Hashtags for discoverability",
-                            },
-                        },
-                        "required": ["service_id", "categories", "content", "price_sats"],
-                    },
-                ),
-                Tool(
-                    name="unpublish_agent_capability",
-                    description=(
-                        "Take a published listing down. Retires the L402 proxy and publishes a "
-                        "NIP-09 kind 5 deletion plus a status=removed 38400 replacement, so other "
-                        "agents stop seeing a dead listing. Works for marketplace listings created "
-                        "via the L402 proxy/dashboard pipeline. Requires LIGHTNING_ENABLE_API_KEY."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "service_id": {
-                                "type": "string",
-                                "description": "The listing's identifier — its Nostr d-tag / proxy id (the value after the last ':' in the card's nw: footer)",
-                            },
-                            "reason": {
-                                "type": "string",
-                                "description": "Optional free-text reason recorded on the removal event",
-                            },
-                        },
-                        "required": ["service_id"],
-                    },
-                ),
-                Tool(
-                    name="request_agent_service",
-                    description=(
-                        "Sends a service request (kind 38401 event) referencing the provider's capability. "
-                        "The provider responds with agreement/settlement terms; settle via settle_agent_service. "
-                        "If the provider has an L402 endpoint, you can skip this step "
-                        "and use settle_agent_service directly. Requires LIGHTNING_ENABLE_API_KEY."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "capability_event_id": {
-                                "type": "string",
-                                "description": "Event ID of the capability to request",
-                            },
-                            "budget_sats": {
-                                "type": "integer",
-                                "description": "Maximum budget in satoshis",
-                            },
-                            "parameters": {
-                                "type": "string",
-                                "description": "Additional parameters as a JSON string",
-                            },
-                        },
-                        "required": ["capability_event_id", "budget_sats"],
-                    },
-                ),
-                Tool(
-                    name="publish_agent_attestation",
-                    description=(
-                        "Publish an attestation (review) for an agent after a completed agreement. "
-                        "Creates a kind 38403 event that builds the agent's on-protocol reputation. "
-                        "Requires LIGHTNING_ENABLE_API_KEY. "
-                        "NOTE: writing attestations is not yet available on the hosted API and "
-                        "returns an error. The platform holds a single signing key, so a "
-                        "platform-signed review would share one pubkey across all reviewers — "
-                        "worthless for reputation — so this is intentionally disabled until "
-                        "per-agent (client-side) signing exists. Reading reputation "
-                        "(get_agent_reputation) works today."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "subject_pubkey": {
-                                "type": "string",
-                                "description": "Pubkey of the agent being reviewed",
-                            },
-                            "agreement_id": {
-                                "type": "string",
-                                "description": "Event ID of the agreement this review is for",
-                            },
-                            "rating": {
-                                "type": "integer",
-                                "description": "Rating from 1-5",
-                            },
-                            "content": {
-                                "type": "string",
-                                "description": "Free-text review content",
-                            },
-                            "proof": {
-                                "type": "string",
-                                "description": "Optional: hash of L402 payment preimage as proof of real transaction",
-                            },
-                        },
-                        "required": ["subject_pubkey", "agreement_id", "rating", "content"],
-                    },
-                ),
-                Tool(
-                    name="get_agent_reputation",
-                    description=(
-                        "Get an agent's reputation score and reviews. "
-                        "Queries kind 38403 attestation events for the given pubkey off the relay. "
-                        "Returns the average rating and individual reviews. Ratings are un-weighted "
-                        "on-relay attestations — apply your own proof/Web-of-Trust weighting before trusting them."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "pubkey": {
-                                "type": "string",
-                                "description": "Pubkey of the agent to query reputation for",
-                            },
-                            "limit": {
-                                "type": "integer",
-                                "description": "Maximum number of attestations to return",
-                                "default": 20,
-                            },
-                        },
-                        "required": ["pubkey"],
-                    },
-                ),
-                Tool(
-                    name="settle_agent_service",
-                    description=(
-                        "Settle an agent service agreement via L402 payment (CONSUMER/REQUESTER side). "
-                        "Pays the L402 endpoint specified in the agreement, completing the service transaction. "
-                        "Uses the same L402 auto-pay flow as access_l402_resource. "
-                        "The L402 endpoint URL comes from discover_agent_services or request_agent_service results. "
-                        "NOTE: If you are the PROVIDER (selling a service), use create_l402_challenge to generate "
-                        "a Lightning invoice at the agreed price, then verify_l402_payment to confirm payment "
-                        "before delivering the service."
-                    ),
-                    inputSchema={
-                        "type": "object",
-                        "properties": {
-                            "l402_endpoint": {
-                                "type": "string",
-                                "description": "L402 endpoint URL from the service agreement",
-                            },
-                            "method": {
-                                "type": "string",
-                                "description": "HTTP method (GET, POST, PUT, DELETE). Defaults to GET",
-                                "default": "GET",
-                            },
-                            "body": {
-                                "type": "string",
-                                "description": "Optional request body for POST requests (e.g., service parameters as JSON)",
-                            },
-                            "agreement_id": {
-                                "type": "string",
-                                "description": "Agreement event ID for tracking",
-                            },
-                            "max_sats": {
-                                "type": "integer",
-                                "description": "Maximum satoshis to pay",
-                                "default": 1000,
-                            },
-                            "confirmation_nonce": {
-                                "type": "string",
-                                "description": "Confirmation code the human operator read from the server console, for settlements above the auto-approve threshold. The code is NEVER in a tool result — ask the human for it. Omit on the first call to request one.",
-                            },
-                        },
-                        "required": ["l402_endpoint"],
-                    },
-                ),
+                )
+            ]
+
+        @self.server.read_resource()
+        async def read_resource(uri: AnyUrl) -> list[ReadResourceContents]:
+            # A list of ReadResourceContents, not a bare str: the str overload is
+            # deprecated in the SDK and cannot carry the JSONL media type.
+            return [
+                ReadResourceContents(
+                    content=self._read_receipts_resource(str(uri)),
+                    mime_type=JSON_LINES_MIME_TYPE,
+                )
             ]
 
         @self.server.call_tool()
         async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             """Handle tool invocations."""
+            requested = name
             try:
                 # Ensure services are initialized
                 if self.wallet is None or self.l402_client is None:
                     await self._initialize_services()
 
-                # Tools that don't require a wallet connection.
-                # The ASA discovery/publish/request/attestation/reputation tools
-                # use the Lightning Enable API (or public registry), not the
-                # wallet — only settle_agent_service needs a wallet, so it is
-                # intentionally NOT in this set.
-                producer_tools = {
-                    "create_l402_challenge",
-                    "verify_l402_payment",
-                    "discover_api",
-                    "verify_confirmation_code",
-                    "confirm_payment",  # deprecated alias of verify_confirmation_code
-                    "discover_agent_services",
-                    "publish_agent_capability",
-                    "unpublish_agent_capability",
-                    "request_agent_service",
-                    "publish_agent_attestation",
-                    "get_agent_reputation",
-                }
+                # Resolve a deprecated alias to its replacement FIRST, injecting the
+                # action that selects the old tool's behaviour, so everything below
+                # (wallet guard included) reasons about one canonical name.
+                alias = DEPRECATED_ALIASES.get(name)
+                if alias is not None:
+                    name = alias.tool
+                    arguments = {**arguments, **alias.args}
 
-                # test_l402_payment is allowed through even without a wallet so it can
-                # return its own structured no_wallet verdict (parity with .NET), instead
-                # of this generic guard string (which also wrongly suggests OpenNode, which
-                # cannot do L402).
-                #
-                # get_balance (and its deprecated aliases) is a READ-ONLY balance tool: it
-                # returns its own receiving-oriented no-wallet message (which correctly does
-                # NOT claim OpenNode can't pay L402), so it is exempt from this payment guard.
-                balance_read_tools = {"get_balance", "check_wallet_balance", "get_all_balances"}
-                if (
-                    self.wallet is None
-                    and name not in producer_tools
-                    and name not in balance_read_tools
-                    and name != "test_l402_payment"
-                    and name != "get_receipts"  # reads the durable log; no wallet needed
-                ):
+                if self.wallet is None and self._requires_wallet(name, arguments):
                     return [
                         TextContent(
                             type="text",
@@ -879,12 +342,18 @@ class LightningEnableServer:
                             "LND_REST_HOST+LND_MACAROON_HEX. "
                             "(OPENNODE_API_KEY is receiving/invoicing only — it cannot pay "
                             "L402 challenges.) "
-                            "Then run test_l402_payment to confirm the wallet works end to end.",
+                            "Call setup_wallet for the guided path, then run "
+                            "test_l402_payment to confirm the wallet works end to end.",
                         )
                     ]
 
                 # Route to appropriate handler
-                if name == "access_l402_resource":
+                if name == "setup_wallet":
+                    result = await setup_wallet(
+                        nwc_connection_string=arguments.get("nwc_connection_string"),
+                    )
+
+                elif name == "access_l402_resource":
                     result = await access_l402_resource(
                         url=arguments["url"],
                         method=arguments.get("method", "GET"),
@@ -897,11 +366,23 @@ class LightningEnableServer:
                         payment_history_service=self.payment_history_service,
                     )
 
-                elif name == "get_receipts":
-                    result = await get_receipts(
-                        limit=arguments.get("limit", 20),
-                        receipt_service=self.receipt_service,
-                    )
+                elif name == "receipts":
+                    source = _action_of("receipts", arguments)
+                    if source == "durable":
+                        result = await get_receipts(
+                            limit=arguments.get("limit", 20),
+                            receipt_service=self.receipt_service,
+                        )
+                    elif source == "session":
+                        result = await get_payment_history(
+                            limit=arguments.get("limit", 10),
+                            since=arguments.get("since"),
+                            payment_history_service=self.payment_history_service,
+                        )
+                    else:
+                        result = _unknown_action(
+                            "receipts", "source", arguments.get("source")
+                        )
 
                 elif name == "test_l402_payment":
                     result = await test_l402_payment(
@@ -933,30 +414,30 @@ class LightningEnableServer:
                         payment_history_service=self.payment_history_service,
                     )
 
-                elif name in ("get_balance", "check_wallet_balance", "get_all_balances"):
-                    # check_wallet_balance and get_all_balances are deprecated, unadvertised
-                    # aliases that forward to the unified get_balance implementation.
+                elif name == "get_balance":
                     result = await get_balance(
                         wallet=self.wallet,
                         strike_wallet=self.strike_wallet,
                         budget_service=self.budget_service,
                     )
-                    if name in DEPRECATED_ALIASES:
-                        result = _mark_deprecated(result, DEPRECATED_ALIASES[name])
 
-                elif name == "get_payment_history":
-                    result = await get_payment_history(
-                        limit=arguments.get("limit", 10),
-                        since=arguments.get("since"),
-                        payment_history_service=self.payment_history_service,
-                    )
-
-                elif name == "configure_budget":
-                    result = await configure_budget(
-                        per_request=arguments.get("per_request", 1000),
-                        per_session=arguments.get("per_session", 10000),
-                        budget_service=self.budget_service,
-                    )
+                elif name == "budget":
+                    action = _action_of("budget", arguments)
+                    if action == "status":
+                        result = await get_budget_status(
+                            budget_service=self.budget_service,
+                            payment_history_service=self.payment_history_service,
+                        )
+                    elif action == "tighten":
+                        result = await configure_budget(
+                            per_request=arguments.get("per_request", 1000),
+                            per_session=arguments.get("per_session", 10000),
+                            budget_service=self.budget_service,
+                        )
+                    else:
+                        result = _unknown_action(
+                            "budget", "action", arguments.get("action")
+                        )
 
                 elif name == "pay_invoice":
                     result = await pay_invoice(
@@ -982,67 +463,110 @@ class LightningEnableServer:
                         wallet=self.wallet,
                     )
 
-                elif name == "get_btc_price":
-                    result = await get_btc_price(
-                        wallet=self.strike_wallet,
-                    )
-
-                elif name == "exchange_currency":
-                    result = await exchange_currency(
-                        source_currency=arguments.get("source_currency", ""),
-                        target_currency=arguments.get("target_currency", ""),
-                        amount=arguments.get("amount", 0),
-                        wallet=self.strike_wallet,
-                    )
-
-                elif name == "send_onchain":
-                    # send_onchain supports Strike and LND wallets
-                    onchain_wallet = self.strike_wallet
-                    if onchain_wallet is None and isinstance(self.wallet, LndWallet):
-                        onchain_wallet = self.wallet
-                    # Route through the receipt seam so the (irreversible) send leaves
-                    # a durable receipt. The tool unwraps for its isinstance checks.
-                    if onchain_wallet is not None and self.receipt_service is not None:
-                        onchain_wallet = ReceiptRecordingWallet(
-                            onchain_wallet, self.receipt_service, self.budget_service
+                elif name == "wallet_ops":
+                    action = _action_of("wallet_ops", arguments)
+                    if action == "price":
+                        result = await get_btc_price(
+                            wallet=self.strike_wallet,
                         )
-                    result = await send_onchain(
-                        address=arguments.get("address", ""),
-                        amount_sats=arguments.get("amount_sats", 0),
-                        confirmation_nonce=arguments.get("confirmation_nonce"),
-                        wallet=onchain_wallet,
-                        budget_service=self.budget_service,
-                    )
+                    elif action == "exchange":
+                        result = await exchange_currency(
+                            source_currency=arguments.get("source_currency", ""),
+                            target_currency=arguments.get("target_currency", ""),
+                            amount=arguments.get("amount", 0),
+                            wallet=self.strike_wallet,
+                        )
+                    elif action == "send_onchain":
+                        # send_onchain supports Strike and LND wallets
+                        onchain_wallet = self.strike_wallet
+                        if onchain_wallet is None and isinstance(self.wallet, LndWallet):
+                            onchain_wallet = self.wallet
+                        # Route through the receipt seam so the (irreversible) send leaves
+                        # a durable receipt. The tool unwraps for its isinstance checks.
+                        if onchain_wallet is not None and self.receipt_service is not None:
+                            onchain_wallet = ReceiptRecordingWallet(
+                                onchain_wallet, self.receipt_service, self.budget_service
+                            )
+                        result = await send_onchain(
+                            address=arguments.get("address", ""),
+                            amount_sats=arguments.get("amount_sats", 0),
+                            confirmation_nonce=arguments.get("confirmation_nonce"),
+                            wallet=onchain_wallet,
+                            budget_service=self.budget_service,
+                        )
+                    else:
+                        result = _unknown_action(
+                            "wallet_ops", "action", arguments.get("action")
+                        )
 
-                elif name == "get_budget_status":
-                    result = await get_budget_status(
-                        budget_service=self.budget_service,
-                        payment_history_service=self.payment_history_service,
-                    )
+                elif name == "l402_producer":
+                    action = _action_of("l402_producer", arguments)
+                    if action == "create":
+                        result = await create_l402_challenge(
+                            resource=arguments.get("resource", ""),
+                            price_sats=arguments.get("price_sats", 0),
+                            description=arguments.get("description"),
+                            api_client=self.api_client,
+                        )
+                    elif action == "verify":
+                        result = await verify_l402_payment(
+                            macaroon=arguments.get("macaroon", ""),
+                            preimage=arguments.get("preimage", ""),
+                            api_client=self.api_client,
+                        )
+                    elif action == "configure_receive":
+                        result = await configure_receive(
+                            nwc_connection_string=arguments.get("nwc_connection_string"),
+                            api_client=self.api_client,
+                        )
+                    elif action == "status":
+                        result = await producer_status(
+                            limit=arguments.get("limit", 5),
+                            api_client=self.api_client,
+                        )
+                    elif action == "create_proxy":
+                        result = await create_proxy(
+                            name=arguments.get("name", ""),
+                            target_base_url=arguments.get("target_base_url", ""),
+                            description=arguments.get("description"),
+                            default_price_sats=arguments.get("default_price_sats", 10),
+                            api_client=self.api_client,
+                        )
+                    elif action == "add_endpoint":
+                        result = await add_endpoint(
+                            proxy_id=arguments.get("proxy_id", ""),
+                            endpoint_id=arguments.get("endpoint_id", ""),
+                            path=arguments.get("path", ""),
+                            http_method=arguments.get("http_method", "GET"),
+                            summary=arguments.get("summary"),
+                            price_sats=arguments.get("price_sats", 0),
+                            api_client=self.api_client,
+                        )
+                    elif action == "publish":
+                        result = await publish_l402_service(
+                            proxy_id=arguments.get("proxy_id", ""),
+                            service_name=arguments.get("service_name"),
+                            service_description=arguments.get("service_description"),
+                            categories=arguments.get("categories"),
+                            api_client=self.api_client,
+                        )
+                    elif action == "list_challenges":
+                        result = await list_l402_challenges(
+                            status=arguments.get("challenge_status"),
+                            limit=arguments.get("limit", 20),
+                            offset=arguments.get("offset", 0),
+                            api_client=self.api_client,
+                        )
+                    else:
+                        result = _unknown_action(
+                            "l402_producer", "action", arguments.get("action")
+                        )
 
-                elif name == "create_l402_challenge":
-                    result = await create_l402_challenge(
-                        resource=arguments.get("resource", ""),
-                        price_sats=arguments.get("price_sats", 0),
-                        description=arguments.get("description"),
-                        api_client=self.api_client,
-                    )
-
-                elif name == "verify_l402_payment":
-                    result = await verify_l402_payment(
-                        macaroon=arguments.get("macaroon", ""),
-                        preimage=arguments.get("preimage", ""),
-                        api_client=self.api_client,
-                    )
-
-                elif name in ("verify_confirmation_code", "confirm_payment"):
-                    # confirm_payment is a deprecated, unadvertised alias that forwards here.
+                elif name == "verify_confirmation_code":
                     result = await verify_confirmation_code(
                         nonce=arguments.get("nonce", ""),
                         budget_service=self.budget_service,
                     )
-                    if name in DEPRECATED_ALIASES:
-                        result = _mark_deprecated(result, DEPRECATED_ALIASES[name])
 
                 elif name == "discover_api":
                     result = await discover_api(
@@ -1053,83 +577,170 @@ class LightningEnableServer:
                         budget_service=self.budget_service,
                     )
 
-                elif name == "discover_agent_services":
-                    result = await discover_agent_services(
-                        category=arguments.get("category"),
-                        hashtags=arguments.get("hashtags"),
-                        query=arguments.get("query"),
-                        limit=arguments.get("limit", 20),
-                        api_client=self.api_client,
-                        budget_service=self.budget_service,
-                    )
-
-                elif name == "publish_agent_capability":
-                    result = await publish_agent_capability(
-                        service_id=arguments.get("service_id", ""),
-                        categories=arguments.get("categories", []),
-                        content=arguments.get("content", ""),
-                        price_sats=arguments.get("price_sats", 0),
-                        l402_endpoint=arguments.get("l402_endpoint"),
-                        target_url=arguments.get("target_url"),
-                        hashtags=arguments.get("hashtags"),
-                        api_client=self.api_client,
-                    )
-
-                elif name == "unpublish_agent_capability":
-                    result = await unpublish_agent_capability(
-                        service_id=arguments.get("service_id", ""),
-                        reason=arguments.get("reason"),
-                        api_client=self.api_client,
-                    )
-
-                elif name == "request_agent_service":
-                    result = await request_agent_service(
-                        capability_event_id=arguments.get("capability_event_id", ""),
-                        budget_sats=arguments.get("budget_sats", 0),
-                        parameters=arguments.get("parameters"),
-                        api_client=self.api_client,
-                        budget_service=self.budget_service,
-                    )
-
-                elif name == "publish_agent_attestation":
-                    result = await publish_agent_attestation(
-                        subject_pubkey=arguments.get("subject_pubkey", ""),
-                        agreement_id=arguments.get("agreement_id", ""),
-                        rating=arguments.get("rating", 0),
-                        content=arguments.get("content", ""),
-                        proof=arguments.get("proof"),
-                        api_client=self.api_client,
-                    )
-
-                elif name == "get_agent_reputation":
-                    result = await get_agent_reputation(
-                        pubkey=arguments.get("pubkey", ""),
-                        limit=arguments.get("limit", 20),
-                        api_client=self.api_client,
-                    )
-
-                elif name == "settle_agent_service":
-                    result = await settle_agent_service(
-                        l402_endpoint=arguments.get("l402_endpoint", ""),
-                        method=arguments.get("method", "GET"),
-                        body=arguments.get("body"),
-                        agreement_id=arguments.get("agreement_id"),
-                        max_sats=arguments.get("max_sats", 1000),
-                        confirmation_nonce=arguments.get("confirmation_nonce"),
-                        l402_client=self.l402_client,
-                        budget_service=self.budget_service,
-                    )
+                elif name == "agent_services":
+                    action = _action_of("agent_services", arguments)
+                    if action == "discover":
+                        result = await discover_agent_services(
+                            category=arguments.get("category"),
+                            hashtags=arguments.get("hashtags"),
+                            query=arguments.get("query"),
+                            limit=arguments.get("limit", 20),
+                            api_client=self.api_client,
+                            budget_service=self.budget_service,
+                        )
+                    elif action == "publish":
+                        result = await publish_agent_capability(
+                            service_id=arguments.get("service_id", ""),
+                            categories=arguments.get("categories", []),
+                            content=arguments.get("content", ""),
+                            price_sats=arguments.get("price_sats", 0),
+                            l402_endpoint=arguments.get("l402_endpoint"),
+                            target_url=arguments.get("target_url"),
+                            hashtags=arguments.get("hashtags"),
+                            api_client=self.api_client,
+                        )
+                    elif action == "unpublish":
+                        result = await unpublish_agent_capability(
+                            service_id=arguments.get("service_id", ""),
+                            reason=arguments.get("reason"),
+                            api_client=self.api_client,
+                        )
+                    elif action == "request":
+                        result = await request_agent_service(
+                            capability_event_id=arguments.get("capability_event_id", ""),
+                            budget_sats=arguments.get("budget_sats", 0),
+                            parameters=arguments.get("parameters"),
+                            api_client=self.api_client,
+                            budget_service=self.budget_service,
+                        )
+                    elif action == "attest":
+                        result = await publish_agent_attestation(
+                            subject_pubkey=arguments.get("subject_pubkey", ""),
+                            agreement_id=arguments.get("agreement_id", ""),
+                            rating=arguments.get("rating", 0),
+                            content=arguments.get("content", ""),
+                            proof=arguments.get("proof"),
+                            api_client=self.api_client,
+                        )
+                    elif action == "reputation":
+                        result = await get_agent_reputation(
+                            pubkey=arguments.get("pubkey", ""),
+                            limit=arguments.get("limit", 20),
+                            api_client=self.api_client,
+                        )
+                    elif action == "settle":
+                        result = await settle_agent_service(
+                            l402_endpoint=arguments.get("l402_endpoint", ""),
+                            method=arguments.get("method", "GET"),
+                            body=arguments.get("body"),
+                            agreement_id=arguments.get("agreement_id"),
+                            max_sats=arguments.get("max_sats", 1000),
+                            confirmation_nonce=arguments.get("confirmation_nonce"),
+                            l402_client=self.l402_client,
+                            budget_service=self.budget_service,
+                        )
+                    else:
+                        result = _unknown_action(
+                            "agent_services", "action", arguments.get("action")
+                        )
 
                 else:
-                    result = f"Unknown tool: {name}"
+                    result = f"Unknown tool: {requested}"
 
-                return [TextContent(type="text", text=str(result))]
+                result = str(result)
+                if alias is not None:
+                    result = _mark_deprecated(result, alias)
+                return [TextContent(type="text", text=result)]
 
             except Exception as e:
-                logger.exception(f"Error in tool {name}")
+                logger.exception(f"Error in tool {requested}")
                 # Sanitize exception message to avoid leaking credentials
                 safe_msg = _sanitize_error(str(e))
-                return [TextContent(type="text", text=f"Error in {name}: {safe_msg}")]
+                return [TextContent(type="text", text=f"Error in {requested}: {safe_msg}")]
+
+    # Tools that never need a wallet, by canonical (post-alias) name:
+    #  - discover_api / verify_confirmation_code use no wallet at all.
+    #  - test_l402_payment is allowed through without one so it can return its own
+    #    structured no_wallet verdict (parity with .NET) rather than the generic guard
+    #    string below (which also wrongly suggests OpenNode, which cannot do L402).
+    #  - get_balance is a READ-ONLY balance tool that returns its own
+    #    receiving-oriented no-wallet message, so it is exempt from the payment guard.
+    #  - l402_producer (create/verify) goes to the Lightning Enable API, not a wallet.
+    #  - setup_wallet is how an agent GETS a wallet — gating it behind one would be a
+    #    deadlock, and it is the tool the guard message below points at.
+    _WALLET_FREE_TOOLS = frozenset(
+        {
+            "setup_wallet",
+            "discover_api",
+            "verify_confirmation_code",
+            "test_l402_payment",
+            "get_balance",
+            "l402_producer",
+        }
+    )
+
+    def _read_receipts_resource(self, uri: str) -> str:
+        """Serve ``lightning-enable://receipts`` and ``.../{paymentHash}`` as JSONL.
+
+        Both go through ``ReceiptService.read_recent``, which redacts at the read boundary,
+        so a preimage cannot leave here even if one somehow reached the file.
+        """
+        normalized = uri.rstrip("/")
+
+        if self.receipt_service is None:
+            raise ValueError(
+                "Receipt logging is not available (no wallet/session initialized), so the "
+                "durable receipt log cannot be read."
+            )
+
+        if normalized == RECEIPTS_RESOURCE_URI:
+            return _to_json_lines(
+                self.receipt_service.read_recent(RECEIPTS_RESOURCE_MAX_ROWS)
+            )
+
+        prefix = RECEIPTS_RESOURCE_URI + "/"
+        if normalized.startswith(prefix):
+            payment_hash = normalized[len(prefix):].strip()
+            if not payment_hash:
+                raise ValueError(
+                    "A payment hash is required. Read "
+                    f"{RECEIPTS_RESOURCE_URI} to see recent receipts and their payment hashes."
+                )
+
+            matches = [
+                receipt
+                for receipt in self.receipt_service.read_recent(RECEIPT_LOOKUP_WINDOW)
+                if str(receipt.get("paymentHash", "")).lower() == payment_hash.lower()
+            ]
+            if not matches:
+                raise ValueError(
+                    f"No receipt found for payment hash '{payment_hash}' in the most recent "
+                    f"{RECEIPT_LOOKUP_WINDOW:,} entries of the durable log. Read "
+                    f"{RECEIPTS_RESOURCE_URI} to see what is there."
+                )
+            return _to_json_lines(matches)
+
+        raise ValueError(
+            f"Unknown resource '{uri}'. This server serves {RECEIPTS_RESOURCE_URI} and "
+            f"{RECEIPT_BY_HASH_URI_TEMPLATE}."
+        )
+
+    def _requires_wallet(self, name: str, arguments: Mapping[str, Any]) -> bool:
+        """Whether a call needs a configured wallet before it can run.
+
+        Preserves the pre-consolidation policy exactly, now expressed per action for
+        the merged tools: ``receipts`` reads the durable log without a wallet (it is
+        the "pull the plug" audit path) but the session list does not; every
+        ``agent_services`` action except ``settle`` talks to the Lightning Enable API
+        or the public registry rather than the wallet.
+        """
+        if name in self._WALLET_FREE_TOOLS:
+            return False
+        if name == "receipts":
+            return arguments.get("source") != "durable"
+        if name == "agent_services":
+            return arguments.get("action") == "settle"
+        return True
 
     async def _initialize_services(self) -> None:
         """Initialize wallet, L402 client, budget service, and payment history.
@@ -1178,7 +789,8 @@ class LightningEnableServer:
                 "No wallet configured. Set one L402-capable wallet: STRIKE_API_KEY, "
                 "NWC_CONNECTION_STRING, or LND_REST_HOST+LND_MACAROON_HEX. "
                 "(OPENNODE_API_KEY is receiving/invoicing only — it cannot pay L402 "
-                "challenges.) Then run test_l402_payment to confirm the wallet works."
+                "challenges.) Call setup_wallet for the guided path, then run "
+                "test_l402_payment to confirm the wallet works."
             )
             return
 
@@ -1257,6 +869,17 @@ class LightningEnableServer:
             # BudgetService.configure_budget tool (tighten-only).
             self.budget_service = get_budget_service()
             logger.info("BudgetService initialized with multi-tier approval")
+            # Where over-threshold confirmation codes go. get_budget_service() resolved this
+            # from config + environment + whether stdin is a TTY, and already printed any
+            # misconfiguration warning; surface the outcome next to the other startup banners.
+            print(
+                "[Lightning Enable MCP] Approval channel: "
+                f"{self.budget_service.confirmation_channel_name} "
+                "(set confirmation.channel in ~/.lightning-enable/config.json, or "
+                f"{CHANNEL_ENV_VAR}={VALID_CHANNELS})",
+                file=sys.stderr,
+                flush=True,
+            )
 
             # Initialize the PaymentHistoryService (separate session audit trail).
             self.payment_history_service = get_payment_history_service()

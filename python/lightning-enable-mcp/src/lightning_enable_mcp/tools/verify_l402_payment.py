@@ -8,8 +8,11 @@ Requires LIGHTNING_ENABLE_API_KEY with an Agentic Commerce subscription.
 
 import json
 import logging
-from . import sanitize_error
 from typing import TYPE_CHECKING
+
+from mcp.types import Tool
+
+from . import sanitize_error
 
 if TYPE_CHECKING:
     from ..lightning_enable_api import LightningEnableApiClient
@@ -95,3 +98,29 @@ async def verify_l402_payment(
             "success": False,
             "error": sanitize_error(str(e))
         })
+
+
+# MCP tool schema (lives beside its handler; registered in tools/registry.py).
+VERIFY_L402_PAYMENT_TOOL = Tool(
+    name="verify_l402_payment",
+    description=(
+        "Verify an L402 token (macaroon + preimage) to confirm payment was made. "
+        "Use this after receiving an L402 token from a payer to validate they paid "
+        "before granting access to the resource. "
+        "Requires LIGHTNING_ENABLE_API_KEY with an Agentic Commerce subscription."
+    ),
+    inputSchema={
+        "type": "object",
+        "properties": {
+            "macaroon": {
+                "type": "string",
+                "description": "Base64-encoded macaroon from the L402 token",
+            },
+            "preimage": {
+                "type": "string",
+                "description": "Hex-encoded preimage (proof of payment)",
+            },
+        },
+        "required": ["macaroon", "preimage"],
+    },
+)

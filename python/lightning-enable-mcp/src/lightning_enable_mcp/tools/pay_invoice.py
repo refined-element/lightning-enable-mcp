@@ -8,22 +8,24 @@ Uses the new BudgetService with multi-tier approval logic.
 import asyncio
 import json
 import logging
-import sys
 from typing import TYPE_CHECKING, Optional, Union
 
 if TYPE_CHECKING:
     from ..budget_service import BudgetService
-    from ..payment_history_service import PaymentHistoryService
     from ..nwc_wallet import NWCWallet
     from ..opennode_wallet import OpenNodeWallet
+    from ..payment_history_service import PaymentHistoryService
 
 from bolt11 import decode as decode_bolt11
+from mcp.types import Tool
 
 from ..config import ApprovalLevel
+from ..confirmation_channel import ConfirmationRequest
 from ..receipt_seam import PaymentReceiptScope, policy_label
 from ..wallet_errors import PaymentPendingError, PreimageUnavailableError
 from ..wallet_messages import WALLET_NOT_CONFIGURED_FOR_PAYMENT
 from . import sanitize_error
+from .consolidated import CONFIRMATION_NONCE_DESCRIPTION
 
 logger = logging.getLogger("lightning-enable-mcp.tools.pay_invoice")
 
@@ -168,32 +170,50 @@ async def pay_invoice(
                         })
                     # Human-relayed code validated (amount + tool + invoice bound) — fall through and pay.
                 else:
-                    pending = budget_service.create_pending_confirmation(
-                        amount_sats, result.amount_usd, "pay_invoice", normalized_invoice[:30] + "...",
-                        destination=normalized_invoice,
+                    # OUT-OF-BAND CONFIRMATION: the code goes to the human on the CONFIGURED
+                    # approval channel (stderr locally; webhook/file/refuse when hosted) and
+                    # never into this result, so an injected agent can't self-approve.
+                    dispatch = await budget_service.request_confirmation(
+                        ConfirmationRequest(
+                            amount_sats=amount_sats,
+                            amount_usd=result.amount_usd,
+                            tool_name="pay_invoice",
+                            description=normalized_invoice[:30] + "...",
+                            destination=normalized_invoice,
+                            title="PAYMENT CONFIRMATION REQUIRED",
+                            summary=(
+                                f"pay_invoice — ${result.amount_usd:.2f} ({amount_sats:,} sats), "
+                                f"invoice {normalized_invoice[:30]}..."
+                            ),
+                        )
                     )
-                    print(
-                        "[Lightning Enable] *** PAYMENT CONFIRMATION REQUIRED ***\n"
-                        f"  pay_invoice — ${result.amount_usd:.2f} ({amount_sats:,} sats), "
-                        f"invoice {normalized_invoice[:30]}...\n"
-                        f"  Confirmation code: {pending.nonce}\n"
-                        "  To approve, give this code to the agent. Expires in 120s.",
-                        file=sys.stderr,
-                        flush=True,
-                    )
+                    if not dispatch.delivered:
+                        return json.dumps({
+                            "success": False,
+                            "requiresConfirmation": False,
+                            "confirmationChannel": dispatch.channel_name,
+                            "error": dispatch.refusal_reason,
+                            "message": (
+                                "The payment was REFUSED, not queued for approval — no human can be asked "
+                                "for a code on this server. Retrying will not help until the operator "
+                                "changes the configuration."
+                            ),
+                            "amount": {"sats": amount_sats, "usd": float(result.amount_usd)},
+                        })
                     return json.dumps({
                         "success": False,
                         "requiresConfirmation": True,
+                        "confirmationChannel": dispatch.channel_name,
                         "approvalLevel": result.level.value,
                         "error": "Payment requires human confirmation",
                         "message": (
                             f"This payment of ${result.amount_usd:.2f} ({amount_sats:,} sats) exceeds the "
-                            "auto-approve threshold. A confirmation code was printed to the server console/logs "
+                            f"auto-approve threshold. A confirmation code was {dispatch.operator_hint} "
                             "— visible to the human operator, NOT to you. Ask the human to read that code and "
                             "give it to you."
                         ),
                         "howToConfirm": (
-                            "Ask the human operator for the confirmation code shown in the server console, then "
+                            "Ask the human operator for the confirmation code, then "
                             'call pay_invoice(invoice="...", confirmation_nonce="<code-from-human>").'
                         ),
                         "amount": {"sats": amount_sats, "usd": float(result.amount_usd)},
@@ -393,3 +413,28 @@ async def pay_invoice(
             "receipt_written": receipt_scope.receipt_written if receipt_scope else None,
             "error": sanitize_error(str(e))
         })
+
+
+# MCP tool schema (lives beside its handler; registered in tools/registry.py).
+PAY_INVOICE_TOOL = Tool(
+    name="pay_invoice",
+    description=(
+        "Pay a BOLT11 Lightning invoice directly and get the preimage as proof."
+    ),
+    inputSchema={
+        "type": "object",
+        "properties": {
+            "invoice": {"type": "string", "description": "BOLT11 invoice to pay"},
+            "max_sats": {
+                "type": "integer",
+                "description": "Max sats to pay",
+                "default": 1000,
+            },
+            "confirmation_nonce": {
+                "type": "string",
+                "description": CONFIRMATION_NONCE_DESCRIPTION,
+            },
+        },
+        "required": ["invoice"],
+    },
+)

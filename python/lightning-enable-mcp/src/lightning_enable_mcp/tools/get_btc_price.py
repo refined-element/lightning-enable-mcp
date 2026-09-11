@@ -7,8 +7,11 @@ Only available with Strike wallet.
 
 import json
 import logging
-from . import sanitize_error
 from typing import TYPE_CHECKING
+
+from mcp.types import Tool
+
+from . import sanitize_error
 
 if TYPE_CHECKING:
     from ..strike_wallet import StrikeWallet
@@ -73,3 +76,17 @@ async def get_btc_price(
             "success": False,
             "error": sanitize_error(str(e))
         })
+
+
+# MCP tool schema (lives beside its handler; registered in tools/registry.py).
+GET_BTC_PRICE_TOOL = Tool(
+    name="get_btc_price",
+    description=(
+        "Get the current Bitcoin price in USD. "
+        "Only available with Strike wallet."
+    ),
+    inputSchema={
+        "type": "object",
+        "properties": {},
+    },
+)

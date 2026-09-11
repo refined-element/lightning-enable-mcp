@@ -4,13 +4,13 @@
   "title": "Lightning Enable MCP Server",
   "_description_max_length": "100 chars max — enforced by MCP Registry and CI validation",
   "description": "AI agent Lightning payments: L402, invoices, wallets, API discovery, budgets, self-serve signup.",
-  "version": "1.24.1",
+  "version": "2.0.0",
   "websiteUrl": "https://docs.lightningenable.com/products/agentic-commerce/mcp-complete-guide",
   "packages": [
     {
       "registryType": "nuget",
       "identifier": "LightningEnable.Mcp",
-      "version": "1.24.1",
+      "version": "2.0.0",
       "transport": {
         "type": "stdio"
       },
@@ -60,6 +60,13 @@
           "isSecret": true
         },
         {
+          "name": "LIGHTNING_ENABLE_TOOL_PROFILE",
+          "description": "How many tools to advertise: lite (the five spend/read basics), standard (default), or full (adds the deprecated legacy names), or full (adds the pre-consolidation tool names).",
+          "isRequired": false,
+          "isSecret": false,
+          "default": "standard"
+        },
+        {
           "name": "AGENT_RELAY_URL",
           "description": "Nostr relay URL for agent events (default: wss://agents.lightningenable.com)",
           "isRequired": false,
@@ -71,7 +78,7 @@
     {
       "registryType": "pypi",
       "identifier": "lightning-enable-mcp",
-      "version": "1.24.1",
+      "version": "2.0.0",
       "transport": {
         "type": "stdio"
       },
@@ -114,6 +121,13 @@
           "isSecret": true
         },
         {
+          "name": "LIGHTNING_ENABLE_TOOL_PROFILE",
+          "description": "How many tools to advertise: lite (the five spend/read basics), standard (default), or full (adds the deprecated legacy names), or full (adds the pre-consolidation tool names).",
+          "isRequired": false,
+          "isSecret": false,
+          "default": "standard"
+        },
+        {
           "name": "AGENT_RELAY_URL",
           "description": "Nostr relay URL for agent events (default: wss://agents.lightningenable.com)",
           "isRequired": false,
@@ -124,7 +138,7 @@
     },
     {
       "registryType": "oci",
-      "identifier": "docker.io/refinedelement/lightning-enable-mcp:1.24.1",
+      "identifier": "docker.io/refinedelement/lightning-enable-mcp:2.0.0",
       "transport": {
         "type": "stdio"
       },
@@ -165,6 +179,13 @@
           "description": "Lightning Enable API key (unlocks producer + ASA tools). Optional: no key? The create_lightning_enable_account tool self-provisions one for ~100 sats over Lightning — no card, no subscription required.",
           "isRequired": false,
           "isSecret": true
+        },
+        {
+          "name": "LIGHTNING_ENABLE_TOOL_PROFILE",
+          "description": "How many tools to advertise: lite (the five spend/read basics), standard (default), or full (adds the deprecated legacy names), or full (adds the pre-consolidation tool names).",
+          "isRequired": false,
+          "isSecret": false,
+          "default": "standard"
         },
         {
           "name": "AGENT_RELAY_URL",

@@ -10,6 +10,8 @@ human (or the agent, on request) reviews what was spent and how to revoke.
 import json
 from typing import TYPE_CHECKING
 
+from mcp.types import Tool
+
 if TYPE_CHECKING:
     from ..receipt_service import ReceiptService
 
@@ -50,3 +52,26 @@ async def get_receipts(
         "receipts": receipts,
         "note": "Append-only spend log — one payment receipt per line. Each includes how to revoke the wallet.",
     }, indent=2)
+
+
+# MCP tool schema (lives beside its handler; registered in tools/registry.py).
+GET_RECEIPTS_TOOL = Tool(
+    name="get_receipts",
+    description=(
+        "Read the durable, append-only payment receipt log "
+        "(~/.lightning-enable/receipts.jsonl). Unlike receipts(source=\"session\") "
+        "(in-memory, this session only), receipts persist across sessions and "
+        "include the spend policy and how to revoke the wallet. Use to review "
+        "what an agent has spent and how to pull the plug."
+    ),
+    inputSchema={
+        "type": "object",
+        "properties": {
+            "limit": {
+                "type": "integer",
+                "description": "Maximum number of recent receipts to return (1-200)",
+                "default": 20,
+            },
+        },
+    },
+)

@@ -24,9 +24,17 @@ public static class VerifyConfirmationCodeTool
     /// confirmation_nonce set to the code. (This tool does echo the code back once you
     /// supply it.)
     /// </summary>
-    [McpServerTool(Name = "verify_confirmation_code"), Description("Verify whether a payment confirmation code (relayed by the human from the server console) is still valid and what it authorizes. VERIFICATION ONLY — never executes a payment. To pay, call the original payment tool again with confirmation_nonce.")]
+    [McpServerTool(
+        Name = "verify_confirmation_code",
+        Title = "Verify confirmation code",
+        ReadOnly = true,
+        OpenWorld = false)]
+    [Description(
+        "Check whether a payment confirmation code is still valid and what it authorizes. "
+        + "Verification ONLY - it never pays; to pay, re-call the payment tool with "
+        + "confirmationNonce.")]
     public static string VerifyConfirmationCode(
-        [Description("The confirmation code the human read from the server console/logs")] string nonce,
+        [Description("The 6-character code from the payment request")] string nonce,
         IBudgetService? budgetService = null)
     {
         if (string.IsNullOrWhiteSpace(nonce))

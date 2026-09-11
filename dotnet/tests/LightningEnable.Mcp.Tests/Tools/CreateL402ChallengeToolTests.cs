@@ -166,7 +166,8 @@ public class CreateL402ChallengeToolTests
 
         var instructions = json.RootElement.GetProperty("instructions");
         instructions.GetProperty("tokenFormat").GetString().Should().Be("L402 {macaroon}:{preimage}");
-        instructions.GetProperty("verifyWith").GetString().Should().Contain("verify_l402_payment");
+        instructions.GetProperty("verifyWith").GetString().Should().Contain("l402_producer action=verify",
+            "the hint must name the CURRENT call, not the deprecated verify_l402_payment alias");
     }
 
     [Fact]

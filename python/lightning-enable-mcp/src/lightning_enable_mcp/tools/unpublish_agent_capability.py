@@ -12,6 +12,8 @@ import json
 import logging
 from typing import TYPE_CHECKING
 
+from mcp.types import Tool
+
 from . import sanitize_error
 
 if TYPE_CHECKING:
@@ -89,3 +91,29 @@ async def unpublish_agent_capability(
             "success": False,
             "error": f"Error unpublishing listing: {sanitize_error(str(e))}",
         })
+
+
+# MCP tool schema (lives beside its handler; registered in tools/registry.py).
+UNPUBLISH_AGENT_CAPABILITY_TOOL = Tool(
+    name="unpublish_agent_capability",
+    description=(
+        "Take a published listing down. Retires the L402 proxy and publishes a "
+        "NIP-09 kind 5 deletion plus a status=removed 38400 replacement, so other "
+        "agents stop seeing a dead listing. Works for marketplace listings created "
+        "via the L402 proxy/dashboard pipeline. Requires LIGHTNING_ENABLE_API_KEY."
+    ),
+    inputSchema={
+        "type": "object",
+        "properties": {
+            "service_id": {
+                "type": "string",
+                "description": "The listing's identifier — its Nostr d-tag / proxy id (the value after the last ':' in the card's nw: footer)",
+            },
+            "reason": {
+                "type": "string",
+                "description": "Optional free-text reason recorded on the removal event",
+            },
+        },
+        "required": ["service_id"],
+    },
+)

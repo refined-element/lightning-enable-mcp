@@ -10,7 +10,7 @@ import logging
 import os
 import stat
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal
 from enum import Enum
 from pathlib import Path
@@ -62,6 +62,32 @@ def _restrict_file_permissions(path: Path) -> None:
             path,
             ex,
         )
+
+
+#: Env vars that set the sats-denominated limits, overriding the config file.
+MAX_PER_PAYMENT_SATS_ENV_VAR = "LIGHTNING_ENABLE_MAX_PER_PAYMENT_SATS"
+MAX_PER_SESSION_SATS_ENV_VAR = "LIGHTNING_ENABLE_MAX_PER_SESSION_SATS"
+AUTO_APPROVE_SATS_ENV_VAR = "LIGHTNING_ENABLE_AUTO_APPROVE_SATS"
+
+
+def _positive_int_or_none(value: object) -> "int | None":
+    """A spending cap, or None when the value cannot be used as one.
+
+    Anything unusable (non-numeric, zero, negative) returns None so the caller keeps
+    whatever it already had. A cap must never be silently WIDENED by a typo — the
+    operator gets a warning instead.
+    """
+    if value is None:
+        return None
+    try:
+        parsed = int(str(value).strip())
+    except (TypeError, ValueError):
+        logger.warning("Ignoring non-numeric satoshi limit %r.", value)
+        return None
+    if parsed <= 0:
+        logger.warning("Ignoring non-positive satoshi limit %r.", value)
+        return None
+    return parsed
 
 
 class ApprovalLevel(Enum):
@@ -241,7 +267,13 @@ class TierThresholds:
 @dataclass(frozen=True)
 class PaymentLimits:
     """
-    Maximum payment limits.
+    Maximum payment limits, in USD and/or satoshis.
+
+    The two denominations are ALTERNATIVES, and both may be set at once — in which
+    case the stricter cap wins on every check. The reason to set the sats ones is
+    independence from the BTC price feed: a USD cap cannot be evaluated when every
+    price source is down (so the payment is refused, correctly), while a sats cap
+    can be enforced with no conversion at all.
 
     Note: This dataclass is frozen (immutable) - AI cannot modify at runtime.
     """
@@ -259,6 +291,41 @@ class PaymentLimits:
     Default: $100.00
     """
 
+    max_per_payment_sats: "int | None" = None
+    """
+    Maximum satoshis per single payment. Optional; when set it is enforced directly,
+    with no BTC price lookup. Config key ``maxPerPaymentSats``; env var
+    ``LIGHTNING_ENABLE_MAX_PER_PAYMENT_SATS``.
+    """
+
+    max_per_session_sats: "int | None" = None
+    """
+    Maximum satoshis per session. Optional; enforced directly, with no BTC price
+    lookup. Config key ``maxPerSessionSats``; env var
+    ``LIGHTNING_ENABLE_MAX_PER_SESSION_SATS``.
+    """
+
+    auto_approve_sats: "int | None" = None
+    """
+    Satoshis a single payment may spend WITHOUT confirmation while the BTC price is
+    unavailable. Config key ``autoApproveSats``; env var
+    ``LIGHTNING_ENABLE_AUTO_APPROVE_SATS``.
+
+    This is a TIER, not a ceiling, and it applies only when the USD tier ladder cannot
+    be evaluated. It lives beside the sats ceilings because it is only ever consulted
+    together with them — the ceilings say "never more than this", which is not the same
+    statement as "this much is fine unattended", so an outage needs the second one said
+    explicitly. Unset means every payment needs confirmation while the price is down.
+
+    It can never widen a ceiling: ``maxPerPaymentSats`` / ``maxPerSessionSats`` and the
+    runtime tighten caps are all checked first.
+    """
+
+    @property
+    def has_sats_limits(self) -> bool:
+        """Whether this budget can be enforced without a BTC price at all."""
+        return self.max_per_payment_sats is not None or self.max_per_session_sats is not None
+
     @classmethod
     def from_dict(cls, data: dict) -> "PaymentLimits":
         """Create PaymentLimits from a dictionary."""
@@ -268,14 +335,29 @@ class PaymentLimits:
         return cls(
             max_per_payment=Decimal(str(max_per_payment)) if max_per_payment is not None else None,
             max_per_session=Decimal(str(max_per_session)) if max_per_session is not None else None,
+            max_per_payment_sats=_positive_int_or_none(data.get("maxPerPaymentSats")),
+            max_per_session_sats=_positive_int_or_none(data.get("maxPerSessionSats")),
+            auto_approve_sats=_positive_int_or_none(data.get("autoApproveSats")),
         )
 
     def to_dict(self) -> dict:
-        """Convert to dictionary for JSON serialization."""
-        return {
+        """Convert to dictionary for JSON serialization.
+
+        The sats keys are emitted only when set: they are an opt-in alternative, and a
+        first-run config file should not advertise two nulls the operator has to reason
+        about.
+        """
+        result: dict = {
             "maxPerPayment": float(self.max_per_payment) if self.max_per_payment is not None else None,
             "maxPerSession": float(self.max_per_session) if self.max_per_session is not None else None,
         }
+        if self.max_per_payment_sats is not None:
+            result["maxPerPaymentSats"] = self.max_per_payment_sats
+        if self.max_per_session_sats is not None:
+            result["maxPerSessionSats"] = self.max_per_session_sats
+        if self.auto_approve_sats is not None:
+            result["autoApproveSats"] = self.auto_approve_sats
+        return result
 
 
 @dataclass(frozen=True)
@@ -315,6 +397,58 @@ class SessionSettings:
 
 
 @dataclass(frozen=True)
+class ConfirmationSettings:
+    """
+    The ``confirmation`` section of ~/.lightning-enable/config.json — where the out-of-band
+    confirmation code for an over-threshold payment is delivered.
+
+    Every value can also come from an environment variable (env wins); see
+    ``confirmation_channel.create_confirmation_channel``.
+
+    Note: This dataclass is frozen (immutable) - AI cannot modify at runtime.
+    """
+
+    channel: str | None = None
+    """
+    "stderr" | "refuse" | "webhook" | "file". Unset means decide automatically: stderr,
+    or refuse when LIGHTNING_ENABLE_HOSTED=1 and stdin is not a TTY.
+    """
+
+    webhook_url: str | None = None
+    """Operator URL the "webhook" channel POSTs to. Required for that channel."""
+
+    webhook_secret: str | None = None
+    """
+    Shared secret for the X-LightningEnable-Signature HMAC. Required for the "webhook"
+    channel — an unsigned approval POST is spoofable.
+    """
+
+    file_path: str | None = None
+    """
+    Path the "file" channel appends to. Defaults to ~/.lightning-enable/confirmations.jsonl.
+    Created 0600 on POSIX.
+    """
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ConfirmationSettings":
+        """Create ConfirmationSettings from a dictionary."""
+        return cls(
+            channel=data.get("channel"),
+            webhook_url=data.get("webhookUrl"),
+            webhook_secret=data.get("webhookSecret"),
+            file_path=data.get("filePath"),
+        )
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary for JSON serialization. Omits the secret."""
+        return {
+            "channel": self.channel,
+            "webhookUrl": self.webhook_url,
+            "filePath": self.file_path,
+        }
+
+
+@dataclass(frozen=True)
 class UserBudgetConfiguration:
     """
     User-configurable budget settings stored in ~/.lightning-enable/config.json.
@@ -341,6 +475,12 @@ class UserBudgetConfiguration:
     These can be set here instead of environment variables.
     """
 
+    confirmation: ConfirmationSettings = field(default_factory=ConfirmationSettings)
+    """
+    Where the out-of-band confirmation code for an over-threshold payment is delivered.
+    Defaults to the console (stderr) locally; see the "Deploying hosted" README section.
+    """
+
     lightning_enable_api_key: Optional[str] = None
     """
     Lightning Enable API key for L402 producer tools (create_l402_challenge, verify_l402_payment).
@@ -357,6 +497,7 @@ class UserBudgetConfiguration:
             limits=PaymentLimits.from_dict(data.get("limits", {})),
             session=SessionSettings.from_dict(data.get("session", {})),
             wallets=WalletSettings.from_dict(data.get("wallets", {})),
+            confirmation=ConfirmationSettings.from_dict(data.get("confirmation", {})),
             lightning_enable_api_key=data.get("lightningEnableApiKey"),
         )
 
@@ -368,6 +509,7 @@ class UserBudgetConfiguration:
             "limits": self.limits.to_dict(),
             "session": self.session.to_dict(),
             "wallets": self.wallets.to_dict(),
+            "confirmation": self.confirmation.to_dict(),
         }
 
 
@@ -449,7 +591,9 @@ class ConfigurationService:
                 with open(self._config_file_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
 
-                config = UserBudgetConfiguration.from_dict(data)
+                config = self._apply_sats_limit_env_overrides(
+                    UserBudgetConfiguration.from_dict(data)
+                )
                 self._validate_configuration(config)
                 self._log_config_loaded(config)
                 return config
@@ -463,7 +607,39 @@ class ConfigurationService:
             )
             print("[Lightning Enable] Using default configuration.", file=sys.stderr)
 
-        return self._create_default_configuration()
+        return self._apply_sats_limit_env_overrides(self._create_default_configuration())
+
+    @staticmethod
+    def _apply_sats_limit_env_overrides(
+        config: UserBudgetConfiguration,
+    ) -> UserBudgetConfiguration:
+        """Let the sats-limit env vars override the config file.
+
+        Same precedence as the wallet credentials: environment beats file. An unusable
+        value is IGNORED (with a warning) rather than clearing the limit — a typo must
+        never widen an operator's budget.
+        """
+        per_payment = _positive_int_or_none(os.getenv(MAX_PER_PAYMENT_SATS_ENV_VAR))
+        per_session = _positive_int_or_none(os.getenv(MAX_PER_SESSION_SATS_ENV_VAR))
+        auto_approve = _positive_int_or_none(os.getenv(AUTO_APPROVE_SATS_ENV_VAR))
+        if per_payment is None and per_session is None and auto_approve is None:
+            return config
+
+        return replace(
+            config,
+            limits=replace(
+                config.limits,
+                max_per_payment_sats=per_payment
+                if per_payment is not None
+                else config.limits.max_per_payment_sats,
+                max_per_session_sats=per_session
+                if per_session is not None
+                else config.limits.max_per_session_sats,
+                auto_approve_sats=auto_approve
+                if auto_approve is not None
+                else config.limits.auto_approve_sats,
+            ),
+        )
 
     def _create_default_config_file(self) -> None:
         """Create default configuration file with helpful comments."""

@@ -13,12 +13,15 @@ import json
 import logging
 import math
 import os
+from typing import TYPE_CHECKING, Any
+from urllib.parse import quote as url_quote
+
+from mcp.types import Tool
+
 from .._redirect import resolve_redirect_location
 from ..ssrf_transport import build_ssrf_safe_async_transport
 from . import sanitize_error
 from ._ssrf_guard import SsrfError, validate_url_allowed
-from typing import TYPE_CHECKING, Any
-from urllib.parse import quote as url_quote
 
 if TYPE_CHECKING:
     from ..budget_service import BudgetService
@@ -603,3 +606,35 @@ async def _fetch_and_format_manifest(
         "budget": budget_info,
         "endpoint_count": len(endpoints),
     }, indent=2)
+
+
+# MCP tool schema (lives beside its handler; registered in tools/registry.py).
+DISCOVER_API_TOOL = Tool(
+    name="discover_api",
+    description=(
+        "Discover L402 APIs: search the registry with query/category, or fetch one "
+        "API's manifest with url."
+    ),
+    inputSchema={
+        "type": "object",
+        "properties": {
+            "url": {
+                "type": "string",
+                "description": "Base URL of an L402 API, or a manifest URL. Omit to search the registry.",
+            },
+            "query": {
+                "type": "string",
+                "description": "Registry keyword search, e.g. 'weather'",
+            },
+            "category": {
+                "type": "string",
+                "description": "Registry category filter, e.g. 'ai'",
+            },
+            "budget_aware": {
+                "type": "boolean",
+                "description": "Annotate endpoints with affordable call counts",
+                "default": True,
+            },
+        },
+    },
+)

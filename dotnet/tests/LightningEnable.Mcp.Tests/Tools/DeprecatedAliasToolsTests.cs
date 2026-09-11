@@ -12,7 +12,12 @@ namespace LightningEnable.Mcp.Tests.Tools;
 /// <summary>
 /// The renamed/merged tools' OLD names remain accepted-but-unadvertised forwarding
 /// aliases: still callable, forwarding to the new tool with a deprecated marker, but
-/// absent from the reflected [McpServerTool] inventory (hidden from list_tools).
+/// absent from the advertised list_tools inventory.
+///
+/// This class covers the three v1 renames, which DeprecatedAliasDispatcher.DispatchAsync
+/// forwards by hand. The 16 consolidation aliases are real [McpServerTool] methods that
+/// ToolSurface pulls out of the advertised collection; they are covered end to end, over
+/// the real protocol, by DeprecatedAliasDispatchTests.
 /// </summary>
 public class DeprecatedAliasTests
 {
@@ -23,7 +28,7 @@ public class DeprecatedAliasTests
     public void Aliases_MapOldNameToReplacement(string alias, string replacement)
     {
         DeprecatedAliasDispatcher.IsAlias(alias).Should().BeTrue();
-        DeprecatedAliasDispatcher.Aliases[alias].Should().Be(replacement);
+        DeprecatedAliasDispatcher.Aliases[alias].Tool.Should().Be(replacement);
     }
 
     [Theory]
@@ -71,7 +76,7 @@ public class DeprecatedAliasTests
         json.GetProperty("message").GetString().Should().Contain("NOTHING HAS BEEN PAID");
         // ... plus the deprecation marker.
         json.GetProperty("deprecated").GetProperty("replaced_by").GetString().Should().Be("verify_confirmation_code");
-        json.GetProperty("deprecated").GetProperty("removal").GetString().Should().Be("v2.0.0");
+        json.GetProperty("deprecated").GetProperty("removal").GetString().Should().Be("v3.0.0");
     }
 
     [Theory]
@@ -101,7 +106,7 @@ public class DeprecatedAliasTests
         json.GetProperty("wallet").GetProperty("balanceSats").GetInt64().Should().Be(50_000);
         json.GetProperty("balances").GetArrayLength().Should().Be(1);
         json.GetProperty("deprecated").GetProperty("replaced_by").GetString().Should().Be("get_balance");
-        json.GetProperty("deprecated").GetProperty("removal").GetString().Should().Be("v2.0.0");
+        json.GetProperty("deprecated").GetProperty("removal").GetString().Should().Be("v3.0.0");
     }
 
     [Fact]
@@ -113,39 +118,32 @@ public class DeprecatedAliasTests
     }
 
     [Fact]
-    public void AliasNames_AreNotInTheAdvertisedMcpServerToolInventory()
+    public async Task AliasNames_AreNotAdvertisedByTheDefaultProfile()
     {
-        // The aliases must be hidden: no [McpServerTool] carries an alias name, so they
-        // never appear in list_tools (matching the Python port's dispatcher-only aliases).
-        var registered = RegisteredMcpServerToolNames();
+        // The aliases must be hidden: none may appear in list_tools on the default
+        // profile (matching the Python port's dispatcher-only aliases).
+        await using var host = await McpToolHost.StartAsync(ToolProfile.Standard);
+        var advertised = await host.AdvertisedNamesAsync();
+
         foreach (var alias in DeprecatedAliasDispatcher.Aliases.Keys)
         {
-            registered.Should().NotContain(alias,
-                $"'{alias}' is a hidden forwarding alias and must not be an advertised [McpServerTool]");
+            advertised.Should().NotContain(alias,
+                $"'{alias}' is a hidden forwarding alias and must not be advertised by default");
         }
     }
 
-    private static HashSet<string> RegisteredMcpServerToolNames()
+    [Fact]
+    public async Task ConsolidationAliases_AreHeldByTheToolSurface_SoTheyStayCallable()
     {
-        var assembly = typeof(PayInvoiceTool).Assembly;
-        var names = new HashSet<string>();
-        foreach (var type in assembly.GetTypes())
-        {
-            var isToolType = type.GetCustomAttributes(inherit: false)
-                .Any(a => a.GetType().Name == "McpServerToolTypeAttribute");
-            if (!isToolType) continue;
+        // The 16 consolidation aliases are served from ToolSurface rather than the
+        // advertised collection; if one stopped being held there it would fall through to
+        // the unknown-tool branch.
+        await using var host = await McpToolHost.StartAsync(ToolProfile.Standard);
 
-            const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic
-                | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly;
-            foreach (var method in type.GetMethods(flags))
-            {
-                var attr = method.GetCustomAttributes(inherit: false)
-                    .FirstOrDefault(a => a.GetType().Name == "McpServerToolAttribute");
-                if (attr is null) continue;
-                var nameValue = attr.GetType().GetProperty("Name")?.GetValue(attr) as string;
-                names.Add(string.IsNullOrEmpty(nameValue) ? method.Name : nameValue);
-            }
+        foreach (var alias in ToolProfiles.LegacyToolNames)
+        {
+            host.Surface.TryGetHidden(alias, out _).Should().BeTrue(
+                $"'{alias}' must stay callable after the consolidation");
         }
-        return names;
     }
 }

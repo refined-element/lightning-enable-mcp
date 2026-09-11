@@ -7,19 +7,22 @@ Manually pay an L402 invoice and get the authorization token.
 import asyncio
 import json
 import logging
-import sys
-from . import sanitize_error
-from ..l402_client import L402Error, parse_payment_challenge
-from ..receipt_seam import PaymentReceiptScope, policy_label
-from ..wallet_errors import PaymentPendingError, PaymentProofUnavailableError
 from typing import TYPE_CHECKING, Optional
 
 from bolt11 import decode as decode_bolt11
+from mcp.types import Tool
+
+from ..confirmation_channel import ConfirmationRequest
+from ..l402_client import L402Error, parse_payment_challenge
+from ..receipt_seam import PaymentReceiptScope, policy_label
+from ..wallet_errors import PaymentPendingError, PaymentProofUnavailableError
+from . import sanitize_error
+from .consolidated import CONFIRMATION_NONCE_DESCRIPTION
 
 if TYPE_CHECKING:
     from ..budget_service import BudgetService
-    from ..payment_history_service import PaymentHistoryService
     from ..nwc_wallet import NWCWallet
+    from ..payment_history_service import PaymentHistoryService
 
 logger = logging.getLogger("lightning-enable-mcp.tools.pay")
 
@@ -207,31 +210,49 @@ async def pay_l402_challenge(
                         })
                     # Human-relayed code validated (amount + tool + invoice bound) — fall through and pay.
                 else:
-                    pending = budget_service.create_pending_confirmation(
-                        amount_sats, approval.amount_usd, "pay_l402_challenge", inv_prefix,
-                        destination=invoice,
+                    # OUT-OF-BAND CONFIRMATION: the code goes to the human on the CONFIGURED
+                    # approval channel (stderr locally; webhook/file/refuse when hosted) and
+                    # never into this result, so an injected agent can't self-approve.
+                    dispatch = await budget_service.request_confirmation(
+                        ConfirmationRequest(
+                            amount_sats=amount_sats,
+                            amount_usd=approval.amount_usd,
+                            tool_name="pay_l402_challenge",
+                            description=inv_prefix,
+                            destination=invoice,
+                            title="L402 CHALLENGE PAYMENT CONFIRMATION REQUIRED",
+                            summary=(
+                                f"pay_l402_challenge — ${approval.amount_usd:.2f} ({amount_sats:,} sats), "
+                                f"invoice {inv_prefix}"
+                            ),
+                        )
                     )
-                    print(
-                        "[Lightning Enable] *** L402 CHALLENGE PAYMENT CONFIRMATION REQUIRED ***\n"
-                        f"  pay_l402_challenge — ${approval.amount_usd:.2f} ({amount_sats:,} sats), "
-                        f"invoice {inv_prefix}\n"
-                        f"  Confirmation code: {pending.nonce}\n"
-                        "  To approve, give this code to the agent. Expires in 120s.",
-                        file=sys.stderr,
-                        flush=True,
-                    )
+                    if not dispatch.delivered:
+                        return json.dumps({
+                            "success": False,
+                            "requiresConfirmation": False,
+                            "confirmationChannel": dispatch.channel_name,
+                            "error": dispatch.refusal_reason,
+                            "message": (
+                                "The payment was REFUSED, not queued for approval — no human can be asked "
+                                "for a code on this server. Retrying will not help until the operator "
+                                "changes the configuration."
+                            ),
+                            "amount": {"sats": amount_sats, "usd": float(approval.amount_usd)},
+                        })
                     return json.dumps({
                         "success": False,
                         "requiresConfirmation": True,
+                        "confirmationChannel": dispatch.channel_name,
                         "error": "L402 challenge payment requires human confirmation",
                         "message": (
                             f"This payment of ${approval.amount_usd:.2f} ({amount_sats:,} sats) exceeds the "
-                            "auto-approve threshold. A confirmation code was printed to the server console/logs "
+                            f"auto-approve threshold. A confirmation code was {dispatch.operator_hint} "
                             "— visible to the human operator, NOT to you. Ask the human to read that code and "
                             "give it to you."
                         ),
                         "howToConfirm": (
-                            "Ask the human operator for the confirmation code shown in the server console, then "
+                            "Ask the human operator for the confirmation code, then "
                             'call pay_l402_challenge(invoice="...", confirmation_nonce="<code-from-human>").'
                         ),
                         "amount": {"sats": amount_sats, "usd": float(approval.amount_usd)},
@@ -401,3 +422,40 @@ async def pay_l402_challenge(
             "receipt_written": receipt_scope.receipt_written if receipt_scope else None,
             "error": sanitize_error(str(e)),
         })
+
+
+# MCP tool schema (lives beside its handler; registered in tools/registry.py).
+PAY_L402_CHALLENGE_TOOL = Tool(
+    name="pay_l402_challenge",
+    description=(
+        "Pay an L402 or MPP invoice yourself and get the authorization token. Omit "
+        "macaroon for MPP; pass challenge_header for a draft-00 Payment challenge."
+    ),
+    inputSchema={
+        "type": "object",
+        "properties": {
+            "invoice": {
+                "type": "string",
+                "description": "BOLT11 invoice. Optional if challenge_header carries one.",
+            },
+            "macaroon": {
+                "type": ["string", "null"],
+                "description": "Base64 macaroon from the challenge. Omit for MPP.",
+            },
+            "max_sats": {
+                "type": "integer",
+                "description": "Max sats to pay",
+                "default": 1000,
+            },
+            "confirmation_nonce": {
+                "type": "string",
+                "description": CONFIRMATION_NONCE_DESCRIPTION,
+            },
+            "challenge_header": {
+                "type": "string",
+                "description": "Raw WWW-Authenticate value of a 'Payment' challenge; draft-00 yields a single-use credential.",
+            },
+        },
+        "required": [],
+    },
+)

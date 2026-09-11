@@ -181,9 +181,11 @@ Or if installed via pip, replace `"command": "uvx", "args": ["lightning-enable-m
 
 ## Available Tools
 
-> **The complete, canonical tool list is the [Tools table in the root README](https://github.com/refined-element/lightning-enable-mcp#tools).** It lists all **26 tools** — **17 free** (out of the box, just a wallet) plus **9 that require `LIGHTNING_ENABLE_API_KEY`** (an [Agentic Commerce subscription](https://lightningenable.com); 2 L402 Producer + 7 Agent Service Agreement) — and is pinned to the code by guard tests in both ports, so it never drifts from what the server actually registers. The sections below document a **selected subset** in detail; they are not the full inventory.
+> **The complete, canonical tool list is the [Tools table in the root README](https://github.com/refined-element/lightning-enable-mcp#tools).** It lists all **16 tools** — **14 free** (out of the box, just a wallet) plus **2 that require `LIGHTNING_ENABLE_API_KEY`** (an [Agentic Commerce subscription](https://lightningenable.com)) — and is pinned to the code by guard tests in both ports, so it never drifts from what the server actually registers. Five of the 16 take an `action` argument; set `LIGHTNING_ENABLE_TOOL_PROFILE=lite` for a 6-tool surface, or `full` to also advertise the pre-consolidation names. The sections below document a **selected subset** in detail; they are not the full inventory.
 >
-> **Deprecated aliases** (accepted but unadvertised, forward to the new tool, removed in v2.0.0): `confirm_payment` → `verify_confirmation_code`; `check_wallet_balance` and `get_all_balances` → `get_balance`.
+> Some of them still use pre-consolidation tool names (`get_payment_history`, `configure_budget`, `get_btc_price`, …). They all still work as deprecated aliases; the [old name → new call table](https://github.com/refined-element/lightning-enable-mcp#old-name--new-call) gives the replacement for each.
+>
+> **Deprecated aliases** (accepted but unadvertised, forward to the new tool, removed in v3.0.0): `confirm_payment` → `verify_confirmation_code`; `check_wallet_balance` and `get_all_balances` → `get_balance`.
 
 ### create_lightning_enable_account
 

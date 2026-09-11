@@ -15,7 +15,7 @@ public static class AgentAttestationTool
     /// <summary>
     /// Publishes an attestation/review for an agent after a completed agreement.
     /// </summary>
-    [McpServerTool(Name = "publish_agent_attestation"), Description(
+    [McpServerTool(Name = "publish_agent_attestation", Title = "Publish attestation (deprecated)", ReadOnly = false, Destructive = false), Description(
         "Publish an attestation (review) for an agent after a completed agreement. " +
         "Creates a kind 38403 event that builds the agent's on-protocol reputation. " +
         "Requires LIGHTNING_ENABLE_API_KEY. " +
@@ -23,7 +23,7 @@ public static class AgentAttestationTool
         "error. The platform holds a single signing key, so a platform-signed review would " +
         "share one pubkey across all reviewers — worthless for reputation — so this is " +
         "intentionally disabled until per-agent (client-side) signing exists. Reading " +
-        "reputation (get_agent_reputation) works today.")]
+        "reputation (agent_services action=reputation) works today.")]
     public static async Task<string> PublishAgentAttestation(
         [Description("Pubkey of the agent being reviewed")] string subjectPubkey,
         [Description("Event ID of the agreement this review is for")] string agreementId,
@@ -118,7 +118,8 @@ public static class AgentAttestationTool
                 message = $"Attestation published successfully as kind 38403 event. Rating: {rating}/5.",
                 nextSteps = new
                 {
-                    viewReputation = $"Use get_agent_reputation(pubkey=\"{subjectPubkey}\") to see the agent's full reputation.",
+                    viewReputation = $"Use agent_services(action=\"reputation\", pubkey=\"{subjectPubkey}\") "
+                        + "to see the agent's full reputation.",
                     discover = "Other agents will see this attestation when evaluating the reviewed agent."
                 }
             }, new JsonSerializerOptions { WriteIndented = true });
@@ -136,7 +137,7 @@ public static class AgentAttestationTool
     /// <summary>
     /// Queries attestations for an agent and returns their reputation score.
     /// </summary>
-    [McpServerTool(Name = "get_agent_reputation"), Description(
+    [McpServerTool(Name = "get_agent_reputation", Title = "Agent reputation (deprecated)", ReadOnly = true), Description(
         "Get an agent's reputation score and reviews. " +
         "Queries kind 38403 attestation events for the given pubkey off the relay. " +
         "Returns the average rating and individual reviews. Ratings are un-weighted " +

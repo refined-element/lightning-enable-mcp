@@ -20,11 +20,16 @@ public static class CreateInvoiceTool
     /// <param name="walletService">Injected wallet service.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Invoice details including BOLT11 string to share with payer.</returns>
-    [McpServerTool(Name = "create_invoice"), Description("Create a Lightning invoice to receive a payment. Returns a BOLT11 invoice string to share with the payer.")]
+    [McpServerTool(
+        Name = "create_invoice",
+        Title = "Create invoice",
+        ReadOnly = false,
+        Destructive = false)]
+    [Description("Create a BOLT11 Lightning invoice to receive a payment.")]
     public static async Task<string> CreateInvoice(
-        [Description("Amount to receive in satoshis")] long amountSats,
-        [Description("Optional description/memo for the invoice")] string? memo = null,
-        [Description("Invoice expiry time in seconds. Defaults to 3600 (1 hour)")] int expirySecs = 3600,
+        [Description("Satoshis to receive")] long amountSats,
+        [Description("Invoice memo")] string? memo = null,
+        [Description("Expiry in seconds")] int expirySecs = 3600,
         IWalletService? walletService = null,
         CancellationToken cancellationToken = default)
     {

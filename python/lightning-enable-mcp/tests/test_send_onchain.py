@@ -17,6 +17,7 @@ from lightning_enable_mcp.tools.send_onchain import send_onchain
 from lightning_enable_mcp.strike_wallet import StrikeWallet
 from lightning_enable_mcp.budget_service import PendingConfirmation, SpendReservationResult
 from lightning_enable_mcp.config import ApprovalLevel
+from tests.confirmation_helpers import setup_delivered
 
 # Reservation id every budget mock hands back from try_reserve; commit/release assert on it.
 _RESV_ID = "resv-1"
@@ -51,6 +52,7 @@ def _approving_budget(code: str = "ABC123"):
         created_at=now, expires_at=now + timedelta(minutes=2),
     )
     budget.create_pending_confirmation = MagicMock(return_value=pc)
+    setup_delivered(budget, pending=pc)
     budget.validate_and_consume_confirmation = MagicMock(return_value=pc)
     budget.record_spend = MagicMock()
     budget.record_payment_time = MagicMock()

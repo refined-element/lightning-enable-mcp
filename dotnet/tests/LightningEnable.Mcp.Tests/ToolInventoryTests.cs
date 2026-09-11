@@ -1,113 +1,80 @@
-using System.Reflection;
 using FluentAssertions;
 using LightningEnable.Mcp.Tools;
 
 namespace LightningEnable.Mcp.Tests;
 
 /// <summary>
-/// Guard test — the SINGLE SOURCE OF TRUTH for the MCP server's tool inventory.
+/// Guard test — the SINGLE SOURCE OF TRUTH for the MCP server's advertised tool inventory.
 ///
-/// The advertised tool counts (package READMEs, docs, marketing) drifted repeatedly
-/// because they were hand-copied into ~20 places. This pins the inventory to the CODE:
-/// it reflects over every <c>[McpServerTool]</c> the server auto-registers
-/// (Program.cs uses <c>WithToolsFromAssembly()</c>) and asserts the exact set plus the
-/// free / API-key split. Add or remove a tool and this test fails until you update the
+/// The advertised tool counts (package READMEs, docs, marketing) drifted repeatedly because
+/// they were hand-copied into ~20 places. This pins the inventory to the CODE: it starts a
+/// real server on the default profile, reads <c>tools/list</c>, and asserts the exact set
+/// plus the free / API-key split. Add or remove a tool and this fails until you update the
 /// ONE list below — which is what every human-facing count is expected to derive from.
 ///
-/// Canonical: 26 total = 17 out-of-the-box (free, just a wallet) + 9 producer/ASA
-/// tools (2 producer + 7 ASA). Of the 9, the producer tools and the ASA request/publish/
-/// unpublish tools require <c>LIGHTNING_ENABLE_API_KEY</c>; ASA discovery, settlement, and
-/// reputation reads (discover_agent_services, settle_agent_service, get_agent_reputation)
-/// work against the public registry with just a wallet, but are grouped here as the
-/// producer/agent-marketplace surface. Keep in lockstep with the Python guard
-/// (python/lightning-enable-mcp/tests/test_server.py) and the docs' MCP Complete Guide.
+/// Canonical (the <c>standard</c> profile, which is the default): 16 total = 14
+/// out-of-the-box (free, just a wallet) + 2 that need <c>LIGHTNING_ENABLE_API_KEY</c>.
+/// The 2026-09 tool-surface consolidation folded 16 single-purpose tools into five
+/// action-style verbs (budget, receipts, wallet_ops, l402_producer, agent_services), taking
+/// the advertised surface from 26 tools to 15; <c>setup_wallet</c> then added the wallet
+/// onboarding step every other tool depends on — see <see cref="ToolProfiles"/>.
 ///
-/// The three renamed/merged tools' OLD names (confirm_payment, check_wallet_balance,
-/// get_all_balances) remain accepted-but-unadvertised forwarding aliases (see
-/// <see cref="DeprecatedAliasTests"/>). They are NOT [McpServerTool] methods — they are
-/// dispatched by a custom CallToolHandler in Program.cs — so they never appear in this
-/// reflected inventory, matching the Python port's hidden-alias behaviour exactly.
+/// Every pre-consolidation name still dispatches as an accepted-but-unadvertised forwarding
+/// alias (see <see cref="DeprecatedAliasDispatchTests"/>), and the <c>full</c> profile
+/// re-advertises them. Neither belongs in this inventory: this is the DEFAULT advertised
+/// surface. Keep in lockstep with the Python guard
+/// (<c>python/lightning-enable-mcp/tests/test_server.py</c>) and the docs' MCP Complete Guide.
 /// </summary>
 public class ToolInventoryTests
 {
-    // 17 tools that work with just a wallet — no LIGHTNING_ENABLE_API_KEY.
+    // 14 tools that work with just a wallet — no LIGHTNING_ENABLE_API_KEY.
     private static readonly IReadOnlySet<string> FreeTools = new HashSet<string>
     {
-        "pay_invoice", "get_balance", "get_payment_history", "get_receipts",
-        "get_budget_status", "configure_budget", "create_invoice", "check_invoice_status",
-        "access_l402_resource", "pay_l402_challenge", "test_l402_payment", "discover_api",
-        "get_btc_price", "exchange_currency", "send_onchain",
-        "verify_confirmation_code", "create_lightning_enable_account",
+        "setup_wallet",
+        "access_l402_resource", "pay_invoice", "pay_l402_challenge", "test_l402_payment",
+        "get_balance", "budget", "receipts", "create_invoice", "check_invoice_status",
+        "verify_confirmation_code", "discover_api", "create_lightning_enable_account",
+        "wallet_ops",
     };
 
-    // 9 producer + ASA (agent-marketplace) tools. The producer tools and the ASA
-    // request/publish/unpublish tools require LIGHTNING_ENABLE_API_KEY; discover_agent_services,
-    // settle_agent_service, and get_agent_reputation read the public registry with just a wallet.
+    // 2 verbs that need LIGHTNING_ENABLE_API_KEY: the L402 producer flow and the
+    // agent-marketplace (ASA) flow.
     private static readonly IReadOnlySet<string> ApiKeyTools = new HashSet<string>
     {
-        "create_l402_challenge", "verify_l402_payment",
-        "discover_agent_services", "request_agent_service", "settle_agent_service",
-        "publish_agent_capability", "unpublish_agent_capability",
-        "publish_agent_attestation", "get_agent_reputation",
+        "l402_producer", "agent_services",
     };
 
-    /// <summary>
-    /// Reflects over the main assembly for every method carrying an
-    /// <c>[McpServerTool]</c> attribute (matched by simple type name so the test does not
-    /// hard-bind to the SDK attribute type), returning each tool's registered name.
-    /// This mirrors what <c>WithToolsFromAssembly()</c> discovers at startup.
-    /// </summary>
-    private static HashSet<string> RegisteredToolNames()
-    {
-        var assembly = typeof(PayInvoiceTool).Assembly;
-        var names = new HashSet<string>();
-
-        foreach (var type in assembly.GetTypes())
-        {
-            // WithToolsFromAssembly() only discovers tools on [McpServerToolType] classes,
-            // so scope the guard the same way — otherwise a stray [McpServerTool] on a type
-            // that forgot [McpServerToolType] would be counted here yet never actually served.
-            var isToolType = type.GetCustomAttributes(inherit: false)
-                .Any(a => a.GetType().Name == "McpServerToolTypeAttribute");
-            if (!isToolType) continue;
-
-            const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic
-                | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly;
-
-            foreach (var method in type.GetMethods(flags))
-            {
-                var attr = method.GetCustomAttributes(inherit: false)
-                    .FirstOrDefault(a => a.GetType().Name == "McpServerToolAttribute");
-                if (attr is null) continue;
-
-                var nameValue = attr.GetType().GetProperty("Name")?.GetValue(attr) as string;
-                names.Add(string.IsNullOrEmpty(nameValue) ? method.Name : nameValue);
-            }
-        }
-
-        return names;
-    }
-
     [Fact]
-    public void RegisteredTools_MatchDeclaredInventory_NoDrift()
+    public async Task AdvertisedTools_MatchDeclaredInventory_NoDrift()
     {
-        var registered = RegisteredToolNames();
+        await using var host = await McpToolHost.StartAsync(ToolProfile.Standard);
+        var advertised = await host.AdvertisedNamesAsync();
 
         var expected = new HashSet<string>(FreeTools);
         expected.UnionWith(ApiKeyTools);
 
-        registered.Should().BeEquivalentTo(expected,
-            "the code's registered [McpServerTool] set must equal the declared inventory — "
-            + "if you added or removed a tool, update FreeTools/ApiKeyTools here (the source "
-            + "of truth every advertised count derives from) and the Python guard to match");
+        advertised.Should().BeEquivalentTo(expected,
+            "the tools the server advertises must equal the declared inventory — if you "
+            + "added or removed a tool, update FreeTools/ApiKeyTools here (the source of "
+            + "truth every advertised count derives from) and the Python guard to match");
     }
 
     [Fact]
-    public void ToolCounts_AreCanonical_26_17_9()
+    public void ToolCounts_AreCanonical_16_14_2()
     {
-        FreeTools.Count.Should().Be(17, "17 out-of-the-box tools");
-        ApiKeyTools.Count.Should().Be(9, "9 producer + ASA tools (2 producer + 7 ASA)");
-        (FreeTools.Count + ApiKeyTools.Count).Should().Be(26, "26 tools total");
+        FreeTools.Count.Should().Be(14, "14 out-of-the-box tools");
+        ApiKeyTools.Count.Should().Be(2, "2 API-key-gated verbs (l402_producer, agent_services)");
+        (FreeTools.Count + ApiKeyTools.Count).Should().Be(16, "16 tools total");
         FreeTools.Overlaps(ApiKeyTools).Should().BeFalse("a tool is either free or API-key-gated, never both");
+    }
+
+    [Fact]
+    public void DeclaredInventory_MatchesTheStandardProfile()
+    {
+        // ToolProfiles.StandardToolNames drives what the server registers; this inventory
+        // is what the docs quote. They must not drift apart.
+        var expected = new HashSet<string>(FreeTools);
+        expected.UnionWith(ApiKeyTools);
+        ToolProfiles.StandardToolNames.Should().BeEquivalentTo(expected);
     }
 }

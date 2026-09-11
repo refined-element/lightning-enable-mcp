@@ -12,6 +12,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 from lightning_enable_mcp.config import ApprovalLevel, ApprovalCheckResult
+from tests.confirmation_helpers import make_pending, setup_delivered
 from lightning_enable_mcp.l402_client import L402Error, L402RedirectError
 from lightning_enable_mcp.tools.settle_agent_service import settle_agent_service
 
@@ -43,6 +44,9 @@ def _budget_with(level, **kwargs):
     pending = MagicMock()
     pending.nonce = "ABC123"
     budget.create_pending_confirmation = MagicMock(return_value=pending)
+    setup_delivered(
+        budget, pending=make_pending(nonce="ABC123", tool_name="settle_agent_service")
+    )
     budget.validate_and_consume_confirmation = MagicMock(return_value=pending)
     return budget
 

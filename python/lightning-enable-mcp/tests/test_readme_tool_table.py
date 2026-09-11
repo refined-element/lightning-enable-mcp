@@ -134,9 +134,14 @@ def test_readme_free_gated_split_matches_inventory(tools_table: dict[str, str]) 
 
 
 def test_readme_tool_counts_are_canonical(tools_table: dict[str, str]) -> None:
-    """26 total = 17 free + 9 gated, matching the guard tests."""
+    """The README's row counts match the inventory in ``test_server.py``.
+
+    Derived, not hand-written: ``test_server.py`` asserts the absolute numbers (15 = 13
+    free + 2 gated), so a deliberate change is made in exactly one place and the README
+    is checked against it rather than against a second copy of the count.
+    """
     free = sum(1 for a in tools_table.values() if a == FREE_LABEL)
     gated = sum(1 for a in tools_table.values() if a == GATED_LABEL)
-    assert free == 17, f"expected 17 free tools in README, found {free}"
-    assert gated == 9, f"expected 9 gated tools in README, found {gated}"
-    assert free + gated == 26, f"expected 26 tools total in README, found {free + gated}"
+    assert free == len(FREE_TOOLS), f"expected {len(FREE_TOOLS)} free tools in README, found {free}"
+    assert gated == len(API_KEY_TOOLS), f"expected {len(API_KEY_TOOLS)} gated tools in README, found {gated}"
+    assert free + gated == len(FREE_TOOLS | API_KEY_TOOLS)

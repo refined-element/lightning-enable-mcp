@@ -38,28 +38,29 @@ def sanitize_error(msg: str, max_len: int = _MAX_ERROR_LEN) -> str:
     return msg
 
 from .access_resource import access_l402_resource
-from .create_account import create_lightning_enable_account
+from .budget import configure_budget, get_payment_history
+from .budget_status import get_budget_status
 from .check_invoice_status import check_invoice_status
-from .verify_confirmation_code import verify_confirmation_code
+from .create_account import create_lightning_enable_account
 from .create_invoice import create_invoice
 from .create_l402_challenge import create_l402_challenge
+from .discover_agent_services import discover_agent_services
 from .discover_api import discover_api
 from .exchange_currency import exchange_currency
+from .get_agent_reputation import get_agent_reputation
 from .get_balance import get_balance
 from .get_btc_price import get_btc_price
 from .pay_challenge import pay_l402_challenge
 from .pay_invoice import pay_invoice
-from .send_onchain import send_onchain
-from .verify_l402_payment import verify_l402_payment
-from .budget import configure_budget, get_payment_history
-from .budget_status import get_budget_status
-from .discover_agent_services import discover_agent_services
-from .publish_agent_capability import publish_agent_capability
-from .unpublish_agent_capability import unpublish_agent_capability
-from .request_agent_service import request_agent_service
 from .publish_agent_attestation import publish_agent_attestation
-from .get_agent_reputation import get_agent_reputation
+from .publish_agent_capability import publish_agent_capability
+from .request_agent_service import request_agent_service
+from .send_onchain import send_onchain
 from .settle_agent_service import settle_agent_service
+from .setup_wallet import setup_wallet
+from .unpublish_agent_capability import unpublish_agent_capability
+from .verify_confirmation_code import verify_confirmation_code
+from .verify_l402_payment import verify_l402_payment
 
 __all__ = [
     "access_l402_resource",
@@ -75,6 +76,7 @@ __all__ = [
     "pay_l402_challenge",
     "pay_invoice",
     "send_onchain",
+    "setup_wallet",
     "verify_l402_payment",
     "configure_budget",
     "get_payment_history",

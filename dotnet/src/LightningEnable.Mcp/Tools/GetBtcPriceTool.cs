@@ -17,7 +17,7 @@ public static class GetBtcPriceTool
     /// <param name="walletService">Injected wallet service.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Current BTC price in USD.</returns>
-    [McpServerTool(Name = "get_btc_price"), Description("Get the current Bitcoin price in USD. Only available with Strike wallet.")]
+    [McpServerTool(Name = "get_btc_price", Title = "BTC price (deprecated)", ReadOnly = true), Description("Get the current Bitcoin price in USD. Only available with Strike wallet.")]
     public static async Task<string> GetBtcPrice(
         IWalletService? walletService = null,
         CancellationToken cancellationToken = default)

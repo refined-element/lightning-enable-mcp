@@ -7,9 +7,12 @@ Returns a BOLT11 invoice string to share with the payer.
 
 import json
 import logging
-from . import sanitize_error
-from ..wallet_messages import WALLET_NOT_CONFIGURED_FOR_RECEIVING
 from typing import TYPE_CHECKING, Union
+
+from mcp.types import Tool
+
+from ..wallet_messages import WALLET_NOT_CONFIGURED_FOR_RECEIVING
+from . import sanitize_error
 
 if TYPE_CHECKING:
     from ..lnd_wallet import LndWallet
@@ -55,8 +58,8 @@ async def create_invoice(
 
     try:
         from ..lnd_wallet import LndWallet
-        from ..strike_wallet import StrikeWallet
         from ..opennode_wallet import OpenNodeWallet
+        from ..strike_wallet import StrikeWallet
 
         if isinstance(wallet, LndWallet):
             # Create invoice via LND REST API
@@ -175,3 +178,31 @@ async def create_invoice(
             "success": False,
             "error": sanitize_error(str(e))
         })
+
+
+# MCP tool schema (lives beside its handler; registered in tools/registry.py).
+CREATE_INVOICE_TOOL = Tool(
+    name="create_invoice",
+    description=(
+        "Create a BOLT11 Lightning invoice to receive a payment."
+    ),
+    inputSchema={
+        "type": "object",
+        "properties": {
+            "amount_sats": {
+                "type": "integer",
+                "description": "Satoshis to receive",
+            },
+            "memo": {
+                "type": "string",
+                "description": "Invoice memo",
+            },
+            "expiry_secs": {
+                "type": "integer",
+                "description": "Expiry in seconds",
+                "default": 3600,
+            },
+        },
+        "required": ["amount_sats"],
+    },
+)

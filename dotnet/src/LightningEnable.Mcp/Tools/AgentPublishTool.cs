@@ -15,7 +15,7 @@ public static class AgentPublishTool
     /// <summary>
     /// Publishes an agent capability to the Nostr network.
     /// </summary>
-    [McpServerTool(Name = "publish_agent_capability"), Description(
+    [McpServerTool(Name = "publish_agent_capability", Title = "Publish capability (deprecated)", ReadOnly = false, Destructive = false), Description(
         "Publish an agent capability advertisement to the Nostr network. " +
         "Makes your agent discoverable by other agents as a kind 38400 listing, published via " +
         "Lightning Enable's L402 proxy pipeline. Provide targetUrl — an L402 proxy is created to " +
@@ -119,7 +119,7 @@ public static class AgentPublishTool
                 message = $"Agent capability '{serviceId}' published successfully as kind 38400 event.",
                 nextSteps = new
                 {
-                    discovery = $"Other agents can find this via: discover_agent_services(category=\"{categories[0]}\")",
+                    discovery = $"Other agents can find this via: agent_services(action=\"discover\", category=\"{categories[0]}\")",
                     settlement = result.L402Endpoint != null
                         ? $"Payments will be settled via L402 at: {result.L402Endpoint}"
                         : "No L402 endpoint configured. Add one for automatic payment settlement.",

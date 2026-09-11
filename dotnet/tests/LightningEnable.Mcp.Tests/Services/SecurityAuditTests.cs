@@ -175,15 +175,17 @@ public class SecurityAuditTests
     public async Task LndWalletService_PayInvoice_DoesNotLogPreimageContent()
     {
         // Arrange
-        var preimageBase64 = Convert.ToBase64String(
-            Convert.FromHexString("abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890"));
-
+        // routerrpc SendPaymentV2 (POST /v2/router/send) streams {"result": <lnrpc.Payment>}
+        // frames with the preimage as HEX. This is the primary payment route.
         var responseJson = System.Text.Json.JsonSerializer.Serialize(new
         {
-            payment_preimage = preimageBase64,
-            payment_error = "",
-            payment_hash = "dummyhash"
-        });
+            result = new
+            {
+                status = "SUCCEEDED",
+                payment_preimage = "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890",
+                payment_hash = "dummyhash"
+            }
+        }) + "\n";
 
         var handler = new MockHttpMessageHandler(
             new HttpResponseMessage(System.Net.HttpStatusCode.OK)

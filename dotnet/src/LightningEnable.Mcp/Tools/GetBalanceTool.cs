@@ -34,7 +34,13 @@ public static class GetBalanceTool
     /// <param name="walletService">Injected wallet service.</param>
     /// <param name="budgetService">Injected budget service for session stats.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    [McpServerTool(Name = "get_balance"), Description("Get the connected wallet's balance: the sats balance plus, where available, all currency balances (USD, BTC, ... — most useful with Strike) and wallet info. Supersedes check_wallet_balance and get_all_balances.")]
+    [McpServerTool(
+        Name = "get_balance",
+        Title = "Wallet balance",
+        ReadOnly = true)]
+    [Description(
+        "Get the connected wallet balance in sats, plus all currency balances and wallet "
+        + "info where the wallet reports them.")]
     public static async Task<string> GetBalance(
         IWalletService? walletService = null,
         IBudgetService? budgetService = null,

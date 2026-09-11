@@ -16,14 +16,16 @@ payment before delivering the service.
 
 import json
 import logging
-import sys
-from urllib.parse import urlparse
 from typing import TYPE_CHECKING, Optional
+from urllib.parse import urlparse
 
+from mcp.types import Tool
+
+from .._url_redact import redact_url_for_display as _redact_url_for_display
 from ..config import ApprovalLevel
+from ..confirmation_channel import ConfirmationRequest
 from ..l402_client import L402RedirectError
 from ..receipt_seam import PaymentReceiptScope, policy_label
-from .._url_redact import redact_url_for_display as _redact_url_for_display
 from . import sanitize_error
 
 if TYPE_CHECKING:
@@ -76,7 +78,10 @@ async def settle_agent_service(
         if not l402_endpoint or not l402_endpoint.strip():
             return json.dumps({
                 "success": False,
-                "error": "L402 endpoint URL is required. Get it from discover_agent_services or request_agent_service results.",
+                "error": (
+                    "L402 endpoint URL is required. Get it from an agent_services "
+                    "action=discover or action=request result."
+                ),
             })
 
         parsed = urlparse(l402_endpoint)
@@ -153,31 +158,51 @@ async def settle_agent_service(
                         })
                     # Human-relayed code validated (amount + tool + endpoint bound) — fall through and settle.
                 else:
-                    pending = budget_service.create_pending_confirmation(
-                        max_sats, result.amount_usd, "settle_agent_service", endpoint_display,
-                        destination=l402_endpoint,
+                    # OUT-OF-BAND CONFIRMATION: the code goes to the human on the CONFIGURED
+                    # approval channel (stderr locally; webhook/file/refuse when hosted) and
+                    # never into this result, so an injected agent can't self-approve.
+                    dispatch = await budget_service.request_confirmation(
+                        ConfirmationRequest(
+                            amount_sats=max_sats,
+                            amount_usd=result.amount_usd,
+                            tool_name="settle_agent_service",
+                            description=endpoint_display,
+                            destination=l402_endpoint,
+                            title="L402 SETTLEMENT CONFIRMATION REQUIRED",
+                            summary=(
+                                f"settle_agent_service — up to ${result.amount_usd:.2f} "
+                                f"({max_sats:,} sats), {endpoint_display}"
+                            ),
+                        )
                     )
-                    print(
-                        "[Lightning Enable] *** L402 SETTLEMENT CONFIRMATION REQUIRED ***\n"
-                        f"  settle_agent_service — up to ${result.amount_usd:.2f} ({max_sats:,} sats), {endpoint_display}\n"
-                        f"  Confirmation code: {pending.nonce}\n"
-                        "  To approve, give this code to the agent. Expires in 120s.",
-                        file=sys.stderr,
-                        flush=True,
-                    )
+                    if not dispatch.delivered:
+                        return json.dumps({
+                            "success": False,
+                            "requiresConfirmation": False,
+                            "confirmationChannel": dispatch.channel_name,
+                            "error": dispatch.refusal_reason,
+                            "message": (
+                                "The settlement was REFUSED, not queued for approval — no human can be asked "
+                                "for a code on this server. Retrying will not help until the operator "
+                                "changes the configuration."
+                            ),
+                            "amount": {"maxSats": max_sats, "maxUsd": float(result.amount_usd)},
+                            "agreementId": agreement_id,
+                        })
                     return json.dumps({
                         "success": False,
                         "requiresConfirmation": True,
+                        "confirmationChannel": dispatch.channel_name,
                         "approvalLevel": result.level.value,
                         "error": "L402 settlement requires human confirmation",
                         "message": (
                             f"Settling this service via {endpoint_display} may cost up to ${result.amount_usd:.2f} "
-                            f"({max_sats:,} sats), above the auto-approve threshold. A confirmation code was printed "
-                            "to the server console/logs — visible to the human operator, NOT to you. Ask the human to "
+                            f"({max_sats:,} sats), above the auto-approve threshold. A confirmation code was "
+                            f"{dispatch.operator_hint} — visible to the human operator, NOT to you. Ask the human to "
                             "read that code and give it to you."
                         ),
                         "howToConfirm": (
-                            "Ask the human operator for the confirmation code shown in the server console, then call "
+                            "Ask the human operator for the confirmation code, then call "
                             'settle_agent_service(l402_endpoint="...", confirmation_nonce="<code-from-human>").'
                         ),
                         "amount": {"maxSats": max_sats, "maxUsd": float(result.amount_usd)},
@@ -315,3 +340,52 @@ async def settle_agent_service(
             "l402Endpoint": l402_endpoint,
             "agreementId": agreement_id,
         })
+
+
+# MCP tool schema (lives beside its handler; registered in tools/registry.py).
+SETTLE_AGENT_SERVICE_TOOL = Tool(
+    name="settle_agent_service",
+    description=(
+        "Settle an agent service agreement via L402 payment (CONSUMER/REQUESTER side). "
+        "Pays the L402 endpoint specified in the agreement, completing the service transaction. "
+        "Uses the same L402 auto-pay flow as access_l402_resource. "
+        "The L402 endpoint URL comes from an agent_services action=discover or "
+        "action=request result. "
+        "NOTE: If you are the PROVIDER (selling a service), use l402_producer action=create to "
+        "generate a Lightning invoice at the agreed price, then l402_producer action=verify "
+        "to confirm payment "
+        "before delivering the service."
+    ),
+    inputSchema={
+        "type": "object",
+        "properties": {
+            "l402_endpoint": {
+                "type": "string",
+                "description": "L402 endpoint URL from the service agreement",
+            },
+            "method": {
+                "type": "string",
+                "description": "HTTP method (GET, POST, PUT, DELETE). Defaults to GET",
+                "default": "GET",
+            },
+            "body": {
+                "type": "string",
+                "description": "Optional request body for POST requests (e.g., service parameters as JSON)",
+            },
+            "agreement_id": {
+                "type": "string",
+                "description": "Agreement event ID for tracking",
+            },
+            "max_sats": {
+                "type": "integer",
+                "description": "Maximum satoshis to pay",
+                "default": 1000,
+            },
+            "confirmation_nonce": {
+                "type": "string",
+                "description": "Confirmation code the human operator read from the server console, for settlements above the auto-approve threshold. The code is NEVER in a tool result — ask the human for it. Omit on the first call to request one.",
+            },
+        },
+        "required": ["l402_endpoint"],
+    },
+)

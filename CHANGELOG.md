@@ -228,6 +228,24 @@ exposed as MCP resources (`lightning-enable://receipts`).
 
 ### Fixed
 
+- **Every LND payment failed with a 404 (Python).** The client paid through
+  `POST /v1/channels/transactions` — the `lnrpc.SendPaymentSync` route, which LND has
+  REMOVED. A current node answers it with `404 {"code":5,"message":"Not Found"}` and never
+  creates a payment, so an agent with a working LND wallet could read its balance but
+  could not pay anything, and the node showed no attempt to explain why. Verified against
+  LND v0.21.3-beta. Payments now go through `POST /v2/router/send`
+  (`routerrpc.SendPaymentV2`) and read its streamed payment frames; the old route is kept
+  as a fallback for pre-`routerrpc` nodes and tried only on a 404, which proves nothing
+  was submitted and so cannot double-pay. Three things came with the new route: a
+  routing-fee ceiling is always sent (`SendPaymentV2` reads the default `0` as
+  "zero-fee routes only", which silently fails most payments — default is 5% of the
+  invoice, overridable with `LND_FEE_LIMIT_SATS`); the read is bounded node-side *and*
+  client-side, so a stalled payment stream surfaces as a non-retryable "pending" instead
+  of hanging the agent (`LND_PAYMENT_TIMEOUT_SECONDS`, default 25s); and the all-zero
+  preimage LND returns when no proof exists is rejected by name, since it is 64 valid hex
+  characters and the format check alone accepted it as L402 proof of payment.
+  **The .NET port has the same removed-route defect and is not fixed here.**
+
 - **An all-digit NWC wallet pubkey could never connect (.NET).** The 64-hex wallet pubkey in
   a `nostr+walletconnect://` string is not a hostname, but it was read through `System.Uri`,
   which applies host rules to it: an all-digit pubkey (a legal x-only key — rare, but a

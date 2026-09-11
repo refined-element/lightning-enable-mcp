@@ -3,6 +3,24 @@
 All notable changes to the Lightning Enable MCP server are documented here.
 Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-enable-mcp`).
 
+## [2.0.1] — 2026-09-11
+
+### Fixed
+
+- **`LND_TLS_CERT_PATH` was ignored by the Python server.** The variable is documented for
+  both ports and honored by .NET, but the Python LND client only read `LND_SKIP_TLS_VERIFY`,
+  so pointing `LND_TLS_CERT_PATH` at the node's own self-signed `tls.cert` still failed
+  every request with `[SSL: CERTIFICATE_VERIFY_FAILED] self-signed certificate`. The 2.0.0
+  notes claimed this was wired; it was not. The Python client now builds its httpx client
+  from `lnd_wallet.build_tls_verify`, mirroring the .NET `BuildServerCertificateValidator`:
+  `LND_TLS_CERT_PATH` pins exactly that certificate (PEM or DER, no system CAs, hostname
+  check off because the pin already fixes the identity); `LND_SKIP_TLS_VERIFY=true` still
+  turns verification off with a stderr warning; pinning wins when both are set; a missing
+  or unreadable path fails at connect time with an error naming `LND_TLS_CERT_PATH` and the
+  path instead of an opaque TLS failure on the first request. Verified against a mainnet
+  LND v0.21.3-beta over stdio: `get_balance` succeeds with the cert pinned and returns the
+  descriptive error with a wrong path. No .NET code change; the version bump is shared.
+
 ## [2.0.0] — 2026-09-10
 
 **Breaking-by-policy.** Nothing here removes a capability, but the tool-surface

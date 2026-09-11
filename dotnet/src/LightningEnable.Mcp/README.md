@@ -74,6 +74,10 @@ dotnet build src/LightningEnable.Mcp
 | `NWC_CONNECTION_STRING` | If using NWC | - | Nostr Wallet Connect URI |
 | `LND_REST_HOST` | If using LND | - | LND REST API host |
 | `LND_MACAROON_HEX` | If using LND | - | LND admin macaroon in hex |
+| `LND_TLS_CERT_PATH` | No | - | Path to the node's `tls.cert` (PEM or DER). Pins TLS to exactly that certificate — use it for self-signed LND certs. Wins over `LND_SKIP_TLS_VERIFY`. |
+| `LND_SKIP_TLS_VERIFY` | No | false | `true` disables TLS verification for the LND REST host (logs a warning). Prefer `LND_TLS_CERT_PATH`. |
+| `LND_FEE_LIMIT_SATS` | No | 5% of amount, min 2 | Routing-fee ceiling per LND payment. |
+| `LND_PAYMENT_TIMEOUT_SECONDS` | No | 25 | Per-payment bound; a stalled payment surfaces as *pending* (never retried automatically). |
 | `LIGHTNING_ENABLE_API_KEY` | For producer tools | - | API key for `create_l402_challenge` and `verify_l402_payment`. Requires Agentic Commerce subscription. |
 
 Configure one wallet provider. If multiple are set, priority order is: LND > NWC > Strike > OpenNode.

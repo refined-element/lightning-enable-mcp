@@ -494,6 +494,11 @@ dotnet pack -c Release -o ./artifacts
 dotnet nuget push ./artifacts/LightningEnable.Mcp.*.nupkg --source nuget.org
 ```
 
+## Support
+
+If something's broken or not working, email support@lightningenable.com — a real person reads it. For general questions, join the Discord: https://discord.gg/rX7NxHY8vx.
+Bug reports and feature requests: open an issue on this repo.
+
 ## License
 
 MIT License - see [LICENSE](../../LICENSE) for details.

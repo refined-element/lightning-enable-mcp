@@ -506,6 +506,11 @@ The seven old tool names (`discover_agent_services`, `settle_agent_service`, …
 
 Lightning Enable does not hold funds — the connected wallet or payment provider (Strike, OpenNode, LND, or an NWC wallet) does. The MCP server runs locally and talks to the wallet/provider you configure and, for L402 discovery, the L402 API registry. Wallet credentials you supply stay on your machine (or, for the hosted API, are encrypted at rest). See the full [Privacy Policy](https://docs.lightningenable.com/legal/privacy-policy) for what data is collected, third parties involved, retention, and contact (privacy@lightningenable.com).
 
+## Support
+
+If something's broken or not working, email support@lightningenable.com — a real person reads it. For general questions, join the Discord: https://discord.gg/rX7NxHY8vx.
+Bug reports and feature requests: open an issue on this repo.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

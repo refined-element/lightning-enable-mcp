@@ -458,9 +458,10 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ## Support
 
-- **Issues**: https://github.com/refined-element/lightning-enable-mcp/issues
+If something's broken or not working, email support@lightningenable.com — a real person reads it. For general questions, join the Discord: https://discord.gg/rX7NxHY8vx.
+Bug reports and feature requests: open an issue on this repo (https://github.com/refined-element/lightning-enable-mcp/issues).
+
 - **Documentation**: https://docs.lightningenable.com
-- **Email**: support@lightningenable.com
 
 ## Related Projects
 

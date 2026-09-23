@@ -115,10 +115,22 @@ public static class PayL402ChallengeTool
             var normalizedInvoice = invoice.Trim().ToLowerInvariant();
             var amountSats = Bolt11Parser.ExtractAmountSats(normalizedInvoice);
 
+            // Refuse up front: an amountless or undecodable invoice has no amount to budget,
+            // approve or confirm against. Checking a stand-in amount would mint a confirmation
+            // code for a payment that L402HttpClient refuses anyway.
+            if (amountSats == null || amountSats.Value <= 0)
+            {
+                return JsonSerializer.Serialize(new
+                {
+                    success = false,
+                    error = "Invoice has no amount specified, or is not a valid BOLT11 invoice (malformed or bad checksum). For security, only valid invoices with explicit amounts are supported."
+                });
+            }
+
             // Modern draft-00 sanity check: the declared amount must agree with the invoice.
             if (paymentChallenge?.IsModern == true &&
                 long.TryParse(paymentChallenge.Amount, out var declaredSats) &&
-                amountSats.HasValue && declaredSats != amountSats.Value)
+                declaredSats != amountSats.Value)
             {
                 return JsonSerializer.Serialize(new
                 {
@@ -127,8 +139,7 @@ public static class PayL402ChallengeTool
                 });
             }
 
-            // Use extracted amount or fall back to maxSats for budget check
-            var budgetCheckAmount = amountSats ?? (long)maxSats;
+            var budgetCheckAmount = amountSats.Value;
 
             // Check budget approval
             if (budgetService != null)

@@ -102,7 +102,7 @@ public static class PayInvoiceTool
                 return JsonSerializer.Serialize(new
                 {
                     success = false,
-                    error = "Invoice has no amount specified. For security, only invoices with explicit amounts are supported."
+                    error = "Invoice has no amount specified, or is not a valid BOLT11 invoice (malformed or bad checksum). For security, only valid invoices with explicit amounts are supported."
                 });
             }
 

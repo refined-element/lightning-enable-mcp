@@ -14,7 +14,7 @@ namespace LightningEnable.Mcp.Tests.Tools;
 /// </summary>
 public class PayL402ChallengeModernTests
 {
-    private const string FixtureInvoice = "lnbc100n1pjtest"; // 10 sats
+    private static readonly string FixtureInvoice = TestInvoices.Build("lnbc100n"); // 10 sats
     private const string FixturePreimage = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     private const string FutureExpiry = "2099-01-01T00:00:00Z";
 
@@ -106,7 +106,7 @@ public class PayL402ChallengeModernTests
         var encoded = B64UrlNoPad(RequestJson());
 
         var result = await PayL402ChallengeTool.PayL402Challenge(
-            invoice: "lnbc200n1pjother",
+            invoice: TestInvoices.Build("lnbc200n"),
             challengeHeader: ModernHeader(encoded),
             l402Client: _l402ClientMock.Object);
 

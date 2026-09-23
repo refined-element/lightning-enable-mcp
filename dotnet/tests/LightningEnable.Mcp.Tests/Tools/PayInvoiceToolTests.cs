@@ -15,7 +15,7 @@ public class PayInvoiceToolTests
     private readonly Mock<IPaymentHistoryService> _paymentHistoryMock;
 
     // Test invoice with amount encoded (100 sats = 1000n = 1000 nano-BTC)
-    private const string TestInvoice = "lnbc1000n1p3abcdef";
+    private static readonly string TestInvoice = TestInvoices.Build("lnbc1000n");
 
     public PayInvoiceToolTests()
     {
@@ -316,12 +316,19 @@ public class PayInvoiceToolTests
     }
 
     [Theory]
-    [InlineData("LNBC1000N1P3ABCDEF", "lnbc1000n1p3abcdef")]
-    [InlineData("  lnbc1000n1p3abcdef  ", "lnbc1000n1p3abcdef")]
-    [InlineData("LnBc1000N1P3AbCdEf", "lnbc1000n1p3abcdef")]
-    public async Task PayInvoice_NormalizesInvoiceToLowercase(string input, string expected)
+    [InlineData("upper")]
+    [InlineData("padded")]
+    [InlineData("mixed")]
+    public async Task PayInvoice_NormalizesInvoiceToLowercase(string variant)
     {
         // Arrange
+        var expected = TestInvoices.Build("lnbc1000n");
+        var input = variant switch
+        {
+            "upper" => expected.ToUpperInvariant(),
+            "padded" => $"  {expected}  ",
+            _ => string.Concat(expected.Select((c, i) => i % 2 == 0 ? char.ToUpperInvariant(c) : c)),
+        };
         _walletServiceMock.Setup(w => w.IsConfigured).Returns(true);
         _walletServiceMock.Setup(w => w.PayInvoiceAsync(expected, It.IsAny<CancellationToken>()))
             .ReturnsAsync(NwcPaymentResult.Succeeded("preimage123"));
@@ -339,7 +346,7 @@ public class PayInvoiceToolTests
     public async Task PayInvoice_TestnetInvoice_AcceptsLntbPrefix()
     {
         // Arrange
-        const string testInvoice = "lntb1000n1p3abcdef"; // Testnet prefix with amount
+        var testInvoice = TestInvoices.Build("lntb1000n"); // Testnet prefix with amount
         const string expectedPreimage = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20";
 
         _walletServiceMock.Setup(w => w.IsConfigured).Returns(true);
@@ -467,7 +474,7 @@ public class PayInvoiceToolTests
     public async Task PayInvoice_Success_ReturnsValidJson()
     {
         // Arrange
-        const string longInvoice = "lnbc1000n1p3abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnop";
+        var longInvoice = TestInvoices.Build("lnbc1000n");
         const string expectedPreimage = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20";
 
         _walletServiceMock.Setup(w => w.IsConfigured).Returns(true);
@@ -517,7 +524,7 @@ public class PayInvoiceToolTests
     public async Task PayInvoice_TruncatesLongInvoiceInResponse()
     {
         // Arrange
-        const string longInvoice = "lnbc1000n1p3abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnop";
+        var longInvoice = TestInvoices.Build("lnbc1000n");
         const string expectedPreimage = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20";
 
         _walletServiceMock.Setup(w => w.IsConfigured).Returns(true);

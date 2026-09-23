@@ -20,7 +20,7 @@ namespace LightningEnable.Mcp.Tests.Services;
 public class ReceiptRecordingWalletServiceTests
 {
     // 210n = 210 nano-BTC = 21 sats
-    private const string TestInvoice = "lnbc210n1p3abcdef";
+    private static readonly string TestInvoice = TestInvoices.Build("lnbc210n");
     private const long TestInvoiceSats = 21;
     private const string TestPreimage = "5f78ca4b8e2c11d3a9b0f6e1d2c3b4a5968778695a4b3c2d1e0f9a8b7c6d5e4f";
 

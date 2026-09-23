@@ -135,7 +135,7 @@ public class L402ToolsTests
 
         // Act
         var result = await PayL402ChallengeTool.PayL402Challenge(
-            invoice: "lnbc100n1pjtest",
+            invoice: TestInvoices.Build("lnbc100n"),
             macaroon: null,
             l402Client: _l402ClientMock.Object);
 
@@ -158,7 +158,7 @@ public class L402ToolsTests
 
         // Act
         var result = await PayL402ChallengeTool.PayL402Challenge(
-            invoice: "lnbc100n1pjtest",
+            invoice: TestInvoices.Build("lnbc100n"),
             macaroon: "base64macaroon",
             l402Client: _l402ClientMock.Object);
 
@@ -260,7 +260,7 @@ public class L402ToolsTests
 
         // Act — no McpServer, so elicitation can't work
         var result = await PayL402ChallengeTool.PayL402Challenge(
-            invoice: "lnbc500n1pjtest",
+            invoice: TestInvoices.Build("lnbc500n"),
             macaroon: "base64macaroon",
             l402Client: _l402ClientMock.Object,
             budgetService: budgetServiceMock.Object,
@@ -287,7 +287,7 @@ public class L402ToolsTests
         ConfirmationTestSetup.SetupRefused(budgetServiceMock);
 
         var result = await PayL402ChallengeTool.PayL402Challenge(
-            invoice: "lnbc500n1pjtest",
+            invoice: TestInvoices.Build("lnbc500n"),
             macaroon: "base64macaroon",
             l402Client: _l402ClientMock.Object,
             budgetService: budgetServiceMock.Object,

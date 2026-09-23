@@ -16,7 +16,7 @@ namespace LightningEnable.Mcp.Tests.Services;
 /// </summary>
 public class L402HttpClientMppDraft00Tests
 {
-    private const string FixtureInvoice = "lnbc100n1pjtest"; // 10 sats
+    private static readonly string FixtureInvoice = TestInvoices.Build("lnbc100n"); // 10 sats
     private const string FixturePreimage = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     private const string FutureExpiry = "2099-01-01T00:00:00Z";
 

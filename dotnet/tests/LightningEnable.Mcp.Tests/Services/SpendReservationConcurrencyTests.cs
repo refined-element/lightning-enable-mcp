@@ -30,8 +30,8 @@ public class SpendReservationConcurrencyTests
 
     // 60,000 sats each at the mock rate (100,000 sats = $1.00) => $0.60 per payment.
     // One fits under a 100,000-sat ($1.00) session cap; two together (120,000) must not.
-    private const string InvoiceA = "lnbc600000n1p3aaaaaa";
-    private const string InvoiceB = "lnbc600000n1p3bbbbbb";
+    private static readonly string InvoiceA = TestInvoices.Build("lnbc600000n");
+    private static readonly string InvoiceB = TestInvoices.Build("lnbc600000n", TestInvoices.DefaultData.Replace("pvjluez", "pvjlue2"));
     private const long PaymentSats = 60_000;
     private const long SessionCapSats = 100_000;
     private const string ValidPreimage = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20";

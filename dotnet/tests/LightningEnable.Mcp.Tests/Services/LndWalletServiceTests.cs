@@ -681,22 +681,22 @@ public class LndWalletServiceTests
     }
 
     [Theory]
-    [InlineData("lnbc10u1p3abcdef", 50)]    // 1000 sats: 5% exactly
-    [InlineData("lnbc10010n1p3abcdef", 51)] // 1001 sats: 50.05 -> ceil
-    [InlineData("lnbc300n1p3abcdef", 2)]    // 30 sats: 1.5 -> ceil 2 == floor
-    [InlineData("lnbc100n1p3abcdef", 2)]    // 10 sats: 0.5 -> ceil 1 -> floor 2
-    [InlineData("lnbc10n1p3abcdef", 2)]     // 1 sat: floor
-    public void FeeLimit_FivePercentCeil_WithATwoSatFloor(string bolt11, long expected)
+    [InlineData("lnbc10u", 50)]    // 1000 sats: 5% exactly
+    [InlineData("lnbc10010n", 51)] // 1001 sats: 50.05 -> ceil
+    [InlineData("lnbc300n", 2)]    // 30 sats: 1.5 -> ceil 2 == floor
+    [InlineData("lnbc100n", 2)]    // 10 sats: 0.5 -> ceil 1 -> floor 2
+    [InlineData("lnbc10n", 2)]     // 1 sat: floor
+    public void FeeLimit_FivePercentCeil_WithATwoSatFloor(string hrp, long expected)
     {
         using var service = FeeService(null);
-        service.FeeLimitSats(bolt11).Should().Be(expected);
+        service.FeeLimitSats(TestInvoices.Build(hrp)).Should().Be(expected);
     }
 
     [Fact]
     public void FeeLimit_AmountlessOrUndecodableInvoice_GetsTheFloor()
     {
         using var service = FeeService(null);
-        service.FeeLimitSats("lnbc1p3abcdef").Should().Be(LndWalletService.MinFeeLimitSats);
+        service.FeeLimitSats(TestInvoices.Build("lnbc")).Should().Be(LndWalletService.MinFeeLimitSats);
         service.FeeLimitSats("not-an-invoice").Should().Be(LndWalletService.MinFeeLimitSats);
     }
 
@@ -704,7 +704,7 @@ public class LndWalletServiceTests
     public void FeeLimit_EnvOverride_WinsOverThePercentage()
     {
         using var service = FeeService("7");
-        service.FeeLimitSats("lnbc10u1p3abcdef").Should().Be(7);
+        service.FeeLimitSats(TestInvoices.Build("lnbc10u")).Should().Be(7);
     }
 
     [Theory]
@@ -716,7 +716,7 @@ public class LndWalletServiceTests
     {
         // 0 means "zero-fee routes only" to SendPaymentV2, so it must never pass through.
         using var service = FeeService(bad);
-        service.FeeLimitSats("lnbc10u1p3abcdef").Should().Be(50);
+        service.FeeLimitSats(TestInvoices.Build("lnbc10u")).Should().Be(50);
     }
 
     [Fact]

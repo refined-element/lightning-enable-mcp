@@ -180,7 +180,7 @@ public class L402HttpClientRedirectTests
                 Content = new StringContent("payment required")
             };
             challenge.Headers.WwwAuthenticate.Add(new AuthenticationHeaderValue(
-                "L402", "macaroon=\"YWJjZGVm\", invoice=\"lnbc100n1pjtest\""));
+                "L402", $"macaroon=\"YWJjZGVm\", invoice=\"{TestInvoices.Build("lnbc100n")}\""));
             return challenge;
         });
 
@@ -243,7 +243,7 @@ public class L402HttpClientRedirectTests
                 Content = new StringContent("payment required")
             };
             challenge.Headers.WwwAuthenticate.Add(new AuthenticationHeaderValue(
-                "L402", "macaroon=\"YWJjZGVm\", invoice=\"lnbc100n1pjtest\""));
+                "L402", $"macaroon=\"YWJjZGVm\", invoice=\"{TestInvoices.Build("lnbc100n")}\""));
             return challenge;
         });
 
@@ -324,7 +324,7 @@ public class L402HttpClientRedirectTests
                 Content = new StringContent("payment required")
             };
             challenge.Headers.WwwAuthenticate.Add(new AuthenticationHeaderValue(
-                "L402", "macaroon=\"YWJjZGVm\", invoice=\"lnbc100n1pjtest\""));
+                "L402", $"macaroon=\"YWJjZGVm\", invoice=\"{TestInvoices.Build("lnbc100n")}\""));
             return challenge;
         });
         var wallet = new Mock<IWalletService>();

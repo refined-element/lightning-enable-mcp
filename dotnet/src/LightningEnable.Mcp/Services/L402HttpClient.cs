@@ -106,12 +106,12 @@ public class L402HttpClient : IL402HttpClient
         var isMpp = string.IsNullOrWhiteSpace(macaroonBase64);
 
         // Extract amount from invoice
-        var amountSats = ExtractAmountFromBolt11(invoice);
+        var amountSats = Bolt11Parser.ExtractAmountSats(invoice);
 
         // Reject no-amount invoices (security: could bypass budget checks)
         if (amountSats == null || amountSats.Value <= 0)
         {
-            throw new InvalidOperationException("Invoice has no amount specified. For security, only invoices with explicit amounts are supported.");
+            throw new InvalidOperationException("Invoice has no amount specified, or is not a valid BOLT11 invoice (malformed or bad checksum). For security, only valid invoices with explicit amounts are supported.");
         }
 
         if (amountSats.Value > maxSats)
@@ -241,12 +241,12 @@ public class L402HttpClient : IL402HttpClient
         }
 
         // Extract amount from invoice
-        var amountSats = ExtractAmountFromBolt11(parsed.Invoice!);
+        var amountSats = Bolt11Parser.ExtractAmountSats(parsed.Invoice!);
 
         // Reject no-amount invoices (security: could bypass budget checks)
         if (amountSats == null || amountSats.Value <= 0)
         {
-            return L402FetchResult.Failed(url, "Payment invoice has no amount specified. For security, only invoices with explicit amounts are supported.", 402);
+            return L402FetchResult.Failed(url, "Payment invoice has no amount specified, or is not a valid BOLT11 invoice (malformed or bad checksum). For security, only valid invoices with explicit amounts are supported.", 402);
         }
 
         if (amountSats.Value > maxSats)
@@ -516,85 +516,5 @@ public class L402HttpClient : IL402HttpClient
         }
 
         return request;
-    }
-
-    /// <summary>
-    /// Extracts the amount in satoshis from a BOLT11 invoice.
-    /// Returns null if no amount is specified or the invoice format is invalid.
-    /// </summary>
-    private static long? ExtractAmountFromBolt11(string bolt11)
-    {
-        if (string.IsNullOrWhiteSpace(bolt11))
-            return null;
-
-        // BOLT11 format: lnbc{amount}{multiplier}...
-        // Multipliers: m = milli (0.001), u = micro (0.000001), n = nano (0.000000001), p = pico (0.000000000001)
-
-        var invoice = bolt11.ToLowerInvariant();
-
-        // Find the network prefix
-        var prefixEnd = 0;
-        if (invoice.StartsWith("lnbcrt"))
-            prefixEnd = 6; // regtest (check first due to longer prefix)
-        else if (invoice.StartsWith("lntbs"))
-            prefixEnd = 5; // signet
-        else if (invoice.StartsWith("lnbc"))
-            prefixEnd = 4; // mainnet
-        else if (invoice.StartsWith("lntb"))
-            prefixEnd = 4; // testnet
-        else
-            return null; // Unknown format
-
-        // Extract amount portion (digits followed by optional multiplier)
-        var amountPart = new StringBuilder();
-        var multiplier = 1.0m;
-
-        for (int i = prefixEnd; i < invoice.Length; i++)
-        {
-            var c = invoice[i];
-
-            if (char.IsDigit(c))
-            {
-                amountPart.Append(c);
-            }
-            else if (c == 'm' || c == 'u' || c == 'n' || c == 'p')
-            {
-                multiplier = c switch
-                {
-                    'm' => 0.001m,      // milli-bitcoin = 100,000 sats
-                    'u' => 0.000001m,   // micro-bitcoin = 100 sats
-                    'n' => 0.000000001m, // nano-bitcoin = 0.1 sats
-                    'p' => 0.000000000001m, // pico-bitcoin = 0.0001 sats
-                    _ => 1.0m
-                };
-                break;
-            }
-            else
-            {
-                // Reached non-amount character without multiplier
-                break;
-            }
-        }
-
-        // No amount specified in invoice (zero-amount invoice)
-        if (amountPart.Length == 0)
-            return null;
-
-        if (!decimal.TryParse(amountPart.ToString(), out var amount))
-            return null;
-
-        // Amount must be positive
-        if (amount <= 0)
-            return null;
-
-        // Convert to satoshis
-        // 1 BTC = 100,000,000 satoshis
-        var btcAmount = amount * multiplier;
-        var sats = btcAmount * 100_000_000m;
-
-        var result = (long)Math.Ceiling(sats);
-
-        // Final safety check - ensure positive result
-        return result > 0 ? result : null;
     }
 }

@@ -12,7 +12,7 @@
 
     <!-- NuGet Package Metadata -->
     <PackageId>LightningEnable.Mcp</PackageId>
-    <Version>2.0.1</Version>
+    <Version>2.0.2</Version>
     <!-- Track the package version so the assembly/file version (read by the MCP serverInfo
          handshake and the startup banner) never drifts. Bump the package version only.
          NOTE: keep the literal version-tag text out of this comment — the publish workflow

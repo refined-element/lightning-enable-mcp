@@ -3,6 +3,14 @@
 All notable changes to the Lightning Enable MCP server are documented here.
 Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-enable-mcp`).
 
+## [2.0.2] — 2026-09-23
+
+### Security
+
+- .NET BOLT11 amount decoder replaced with a checksum-verifying bech32 decoder. The previous
+  parser read whole-BTC invoices (e.g. 1 BTC) and amountless invoices as 1 sat, so budget and
+  approval checks could pass while the wallet paid the encoded amount. Python was not affected.
+
 ## [2.0.1] — 2026-09-11
 
 ### Fixed

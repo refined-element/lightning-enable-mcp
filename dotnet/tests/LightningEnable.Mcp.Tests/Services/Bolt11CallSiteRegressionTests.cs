@@ -121,6 +121,43 @@ public class Bolt11CallSiteRegressionTests
         wallet.Verify(w => w.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
+    [Theory]
+    [InlineData("amountless")]
+    [InlineData("bad-checksum")]
+    public async Task PayL402ChallengeTool_UndecodableAmount_RefusesBeforeAnyApprovalOrConfirmation(string variant)
+    {
+        var invoice = variant == "amountless"
+            ? AmountlessInvoice
+            : TestInvoices.Tamper(TestInvoices.Build("lnbc500n"));
+
+        // Budget that WOULD ask a human for a code if it were consulted — the tool must not
+        // consult it at all for an invoice it cannot read an amount from.
+        var budget = new Mock<IBudgetService>();
+        budget.Setup(b => b.CheckApprovalLevelAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApprovalCheckResult { Level = ApprovalLevel.FormConfirm, AmountSats = 5000 });
+        budget.Setup(b => b.GetUserConfiguration()).Returns(new UserBudgetConfiguration());
+        LightningEnable.Mcp.Tests.Tools.ConfirmationTestSetup.SetupDelivered(
+            budget, ConfirmationChannelKind.Stderr, "NOPE01", 5000, 5m, "pay_l402_challenge");
+        var l402Client = new Mock<IL402HttpClient>();
+
+        var result = await PayL402ChallengeTool.PayL402Challenge(
+            invoice: invoice,
+            macaroon: "YWJjZGVm",
+            maxSats: 5000,
+            l402Client: l402Client.Object,
+            budgetService: budget.Object,
+            priceService: new Mock<IPriceService>().Object);
+
+        var json = JsonDocument.Parse(result).RootElement;
+        json.GetProperty("success").GetBoolean().Should().BeFalse();
+        json.GetProperty("error").GetString().Should().Contain("no amount");
+        json.TryGetProperty("requiresConfirmation", out _).Should().BeFalse();
+        budget.Verify(b => b.CheckApprovalLevelAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()), Times.Never);
+        budget.Verify(b => b.RequestConfirmationAsync(It.IsAny<ConfirmationRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+        l402Client.Verify(c => c.PayChallengeAsync(
+            It.IsAny<string?>(), It.IsAny<string>(), It.IsAny<long>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
     private sealed class StubHandler : HttpMessageHandler
     {
         private readonly Func<HttpRequestMessage, HttpResponseMessage> _responder;

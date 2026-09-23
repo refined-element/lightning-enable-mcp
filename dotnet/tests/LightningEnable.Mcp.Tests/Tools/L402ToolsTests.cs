@@ -94,9 +94,11 @@ public class L402ToolsTests
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync("macaroon:preimage");
 
+        var invoice = TestInvoices.Build("lnbc100n");
+
         // Act
         var result = await PayL402ChallengeTool.PayL402Challenge(
-            invoice: "lnbc100n1...",
+            invoice: invoice,
             macaroon: "base64macaroon",
             l402Client: _l402ClientMock.Object);
 
@@ -107,7 +109,7 @@ public class L402ToolsTests
 
         // Verify L402 client was called
         _l402ClientMock.Verify(c => c.PayChallengeAsync(
-            "base64macaroon", "lnbc100n1...", 1000L, It.IsAny<CancellationToken>()), Times.Once);
+            "base64macaroon", invoice, 1000L, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]

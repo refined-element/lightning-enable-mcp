@@ -429,6 +429,13 @@ class ConfirmationSettings:
     Created 0600 on POSIX.
     """
 
+    ttl_seconds: int | None = None
+    """
+    Seconds a confirmation code stays valid. Default 120 (right for "stderr"); 300-600 is
+    recommended for "webhook"/"file", where a human relays asynchronously. Clamped to
+    30..900. Env: LIGHTNING_ENABLE_CONFIRMATION_TTL_SECONDS.
+    """
+
     @classmethod
     def from_dict(cls, data: dict) -> "ConfirmationSettings":
         """Create ConfirmationSettings from a dictionary."""
@@ -437,6 +444,7 @@ class ConfirmationSettings:
             webhook_url=data.get("webhookUrl"),
             webhook_secret=data.get("webhookSecret"),
             file_path=data.get("filePath"),
+            ttl_seconds=data.get("ttlSeconds"),
         )
 
     def to_dict(self) -> dict:
@@ -445,6 +453,7 @@ class ConfirmationSettings:
             "channel": self.channel,
             "webhookUrl": self.webhook_url,
             "filePath": self.file_path,
+            "ttlSeconds": self.ttl_seconds,
         }
 
 

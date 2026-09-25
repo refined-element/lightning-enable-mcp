@@ -39,12 +39,21 @@ class OperationState(str, Enum):
     SUBMITTED = "submitted"      # sent to the wallet, outcome unknown — blocks a re-pay
     PENDING = "pending"          # accepted, not settled — blocks a re-pay (funds may move)
     SETTLED = "settled"          # money moved — blocks a re-pay
+    UNKNOWN = "unknown"          # submitted, outcome ambiguous (timeout/cancel after execute) — blocks a re-pay
     FAILED_NO_FUNDS = "failed_no_funds"  # proven no funds moved — does NOT block a retry
+    # Contract name shared with the .NET port. Alias of FAILED_NO_FUNDS (same persisted
+    # value), so existing ledgers keep loading.
+    FAILED = "failed_no_funds"
 
 
 # The states in which re-submitting an operation could cause a double-payment.
 MONEY_MOVING_STATES = frozenset(
-    {OperationState.SUBMITTED, OperationState.PENDING, OperationState.SETTLED}
+    {
+        OperationState.SUBMITTED,
+        OperationState.PENDING,
+        OperationState.SETTLED,
+        OperationState.UNKNOWN,
+    }
 )
 
 
@@ -54,6 +63,13 @@ class OperationRecord:
     state: OperationState
     amount_sats: int
     payment_hash: Optional[str] = None
+    # On-chain operations: provider identifiers (public, non-secret) so a retry can look
+    # up status instead of re-sending. Never credentials.
+    kind: Optional[str] = None
+    provider: Optional[str] = None
+    payment_id: Optional[str] = None
+    quote_id: Optional[str] = None
+    tx_id: Optional[str] = None
 
 
 class OperationLedger:
@@ -76,50 +92,73 @@ class OperationLedger:
         self._ensure_loaded()
         return self._index.get(operation_id)  # type: ignore[union-attr]
 
-    def record_submitted(self, operation_id: str, amount_sats: int, provider: str) -> None:
+    def record_submitted(
+        self, operation_id: str, amount_sats: int, provider: str, kind: Optional[str] = None
+    ) -> None:
         """Record submission BEFORE the wallet call, so a crash right after submission
-        still leaves a durable record that blocks a blind re-pay on restart."""
-        self._write(operation_id, OperationState.SUBMITTED, amount_sats, payment_hash=None, provider=provider)
+        still leaves a durable record that blocks a blind re-pay on restart. A fresh
+        submission starts with no provider ids (a prior FAILED attempt's ids are dropped)."""
+        self._write(
+            OperationRecord(operation_id, OperationState.SUBMITTED, amount_sats, None,
+                            kind=kind, provider=provider)
+        )
 
     def record_outcome(
-        self, operation_id: str, state: OperationState, payment_hash: Optional[str]
-    ) -> None:
-        """Record the resolved outcome of an operation."""
-        # Preserve the amount already recorded for this operation.
-        existing = self.lookup(operation_id)
-        amount = existing.amount_sats if existing else 0
-        self._write(operation_id, state, amount, payment_hash, provider=None)
-
-    # ---- internals ----
-
-    def _write(
         self,
         operation_id: str,
         state: OperationState,
-        amount_sats: int,
         payment_hash: Optional[str],
-        provider: Optional[str],
+        *,
+        payment_id: Optional[str] = None,
+        quote_id: Optional[str] = None,
+        tx_id: Optional[str] = None,
     ) -> None:
-        if not operation_id:
+        """Record the resolved outcome of an operation. Ids not supplied keep their
+        previously recorded values (a status refresh must not erase the payment id)."""
+        existing = self.lookup(operation_id)
+        self._write(
+            OperationRecord(
+                operation_id,
+                state,
+                existing.amount_sats if existing else 0,
+                payment_hash or (existing.payment_hash if existing else None),
+                kind=existing.kind if existing else None,
+                provider=existing.provider if existing else None,
+                payment_id=payment_id or (existing.payment_id if existing else None),
+                quote_id=quote_id or (existing.quote_id if existing else None),
+                tx_id=tx_id or (existing.tx_id if existing else None),
+            )
+        )
+
+    # ---- internals ----
+
+    def _write(self, record: OperationRecord) -> None:
+        if not record.operation_id:
             return
         self._ensure_loaded()
         # Update the in-memory index first so idempotency holds for THIS process even if
         # the durable write below fails.
-        self._index[operation_id] = OperationRecord(operation_id, state, amount_sats, payment_hash)  # type: ignore[union-attr]
+        self._index[record.operation_id] = record  # type: ignore[index]
 
         line = {
             "type": "operation",
-            "operationId": operation_id,
-            "state": state.value,
-            "amountSats": amount_sats,
+            "operationId": record.operation_id,
+            "state": record.state.value,
+            "amountSats": record.amount_sats,
             "timestamp": _utc_now_iso(),
         }
-        if provider:
-            line["provider"] = provider
-        # Payment hash is public routing data (safe to persist); it links the operation
-        # to its receipt. Secrets are never written.
-        if payment_hash:
-            line["paymentHash"] = payment_hash
+        # Public identifiers only (payment hash, provider payment/quote ids, txid) — they
+        # link the operation to its receipt / provider record. Secrets are never written.
+        for key, value in (
+            ("kind", record.kind),
+            ("provider", record.provider),
+            ("paymentHash", record.payment_hash),
+            ("paymentId", record.payment_id),
+            ("quoteId", record.quote_id),
+            ("txId", record.tx_id),
+        ):
+            if value:
+                line[key] = value
 
         try:
             self._append(json.dumps(line))
@@ -156,7 +195,15 @@ class OperationLedger:
                             continue
                         # Last line wins — append-only file is in chronological order.
                         self._index[op_id] = OperationRecord(
-                            op_id, state, int(obj.get("amountSats", 0) or 0), obj.get("paymentHash")
+                            op_id,
+                            state,
+                            int(obj.get("amountSats", 0) or 0),
+                            obj.get("paymentHash"),
+                            kind=obj.get("kind"),
+                            provider=obj.get("provider"),
+                            payment_id=obj.get("paymentId"),
+                            quote_id=obj.get("quoteId"),
+                            tx_id=obj.get("txId"),
                         )
             except Exception as e:  # pragma: no cover - defensive
                 logger.warning("Failed to load operation ledger from %s: %s", p, e)

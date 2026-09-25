@@ -491,8 +491,12 @@ class LightningEnableServer:
                             address=arguments.get("address", ""),
                             amount_sats=arguments.get("amount_sats", 0),
                             confirmation_nonce=arguments.get("confirmation_nonce"),
+                            intent_id=arguments.get("intent_id"),
                             wallet=onchain_wallet,
                             budget_service=self.budget_service,
+                            # Durable idempotency: a retry of the same address+amount
+                            # reports status instead of re-sending irreversible funds.
+                            operation_ledger=getattr(self, "operation_ledger", None),
                         )
                     else:
                         result = _unknown_action(

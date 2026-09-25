@@ -265,7 +265,7 @@ async def create_lightning_enable_account(
                             'create_lightning_enable_account(email="...", confirmation_nonce="<code-from-human>").'
                         ),
                         "amount": {"maxSats": max_sats, "maxUsd": float(approval.amount_usd)},
-                        "expiresInSeconds": 120,
+                        "expiresInSeconds": dispatch.expires_in_seconds,
                     })
 
             if approval.level == ApprovalLevel.LOG_AND_APPROVE:

@@ -17,8 +17,11 @@ public static class SendOnChainTool
     /// </summary>
     /// <param name="address">Bitcoin address to send to.</param>
     /// <param name="amountSats">Amount to send in satoshis.</param>
+    /// <param name="confirmationNonce">Out-of-band confirmation code relayed by the human operator.</param>
+    /// <param name="intentId">Optional idempotency scope (see <see cref="IntentIdDescription"/>).</param>
     /// <param name="walletService">Injected wallet service.</param>
     /// <param name="budgetService">Injected budget service for spending limits.</param>
+    /// <param name="operationLedger">Injected durable idempotency ledger (status is reported before any code or budget).</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>Payment result with transaction details.</returns>
     [McpServerTool(Name = "send_onchain", Title = "Send on-chain (deprecated)", ReadOnly = false, Destructive = true), Description("Send an on-chain Bitcoin payment to a Bitcoin address. Currently only available with Strike wallet.")]
@@ -26,8 +29,10 @@ public static class SendOnChainTool
         [Description("Bitcoin address to send to (e.g., bc1q...)")] string address,
         [Description("Amount to send in satoshis")] long amountSats,
         [Description("Confirmation code the human operator read from the server console. Required to actually send — on-chain payments are irreversible and ALWAYS require confirmation. Omit on the first call to request one.")] string? confirmationNonce = null,
+        [Description(IntentIdDescription)] string? intentId = null,
         IWalletService? walletService = null,
         IBudgetService? budgetService = null,
+        IOperationLedger? operationLedger = null,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(address))
@@ -84,6 +89,24 @@ public static class SendOnChainTool
                 success = false,
                 error = "Wallet not configured. Set STRIKE_API_KEY environment variable for on-chain payments."
             });
+        }
+
+        // FIRST idempotency check — BEFORE the budget check and BEFORE any confirmation code
+        // is minted or consumed. If this operation (address + amount [+ intentId]) is already
+        // Submitted / Pending / Settled / Unknown, report its status (refreshing once from the
+        // provider when a payment id is recorded) and return: no code, no reservation, no send.
+        // The wallet layer repeats the check atomically right after reservation to close races.
+        var operationId = IdempotentWalletService.DeriveOnChainOperationId(address, amountSats, intentId);
+        if (operationLedger != null)
+        {
+            var existing = operationLedger.Lookup(operationId);
+            if (existing != null && OperationLedger.BlocksResubmission(existing.State))
+            {
+                var described = await IdempotentWalletService.DescribeExistingOnChainAsync(
+                    operationLedger, walletService, walletService.ProviderName, operationId, existing,
+                    amountSats, cancellationToken);
+                return BlockedResponse(described, walletService.ProviderName);
+            }
         }
 
         // C-2b: on-chain sends are IRREVERSIBLE, so they ALWAYS require explicit human
@@ -172,7 +195,7 @@ public static class SendOnChainTool
                               "Ask the human to read that code and give it to you.",
                     howToConfirm = "Ask the human operator for the confirmation code shown in the server console, then call " +
                                    "send_onchain(address=\"...\", amountSats=..., confirmationNonce=\"<code-from-human>\").",
-                    expiresInSeconds = 120,
+                    expiresInSeconds = dispatch.ExpiresInSeconds,
                     amount = new { sats = amountSats, usd = Math.Round(approval.AmountUsd, 2) }
                 });
             }
@@ -203,32 +226,57 @@ public static class SendOnChainTool
         }
         var reservationId = reservation.ReservationId!;
 
+        OnChainPaymentResult? result;
         try
         {
-            var result = await walletService.SendOnChainAsync(address, amountSats, cancellationToken);
-
-            if (!result.Success)
+            using (IdempotentWalletService.BeginOnChainIntent(intentId))
             {
-                // Send failed — no funds moved, release the reservation and its headroom.
-                budgetService.ReleaseReservation(reservationId);
-                return JsonSerializer.Serialize(new
-                {
-                    success = false,
-                    error = result.ErrorMessage,
-                    errorCode = result.ErrorCode,
-                    hint = result.ErrorCode == "NOT_SUPPORTED"
-                        ? $"{walletService.ProviderName} does not support on-chain payments. Use Strike wallet."
-                        : null
-                });
+                result = await walletService.SendOnChainAsync(address, amountSats, cancellationToken);
             }
+        }
+        catch (Exception ex)
+        {
+            // A throw (including OperationCanceledException) carries no proof of WHERE the
+            // send stopped: it may have been after the provider executed it. On-chain funds
+            // are irreversible, so treat it as AMBIGUOUS — retain the budget (principal +
+            // headroom), never release it — and tell the agent not to re-send. The idempotency
+            // ledger has recorded the operation as Unknown, so a retry reports status.
+            budgetService.CommitReservation(reservationId, amountSats + feeHeadroomSats);
+            Console.Error.WriteLine($"[Lightning Enable] On-chain send ended with {ex.GetType().Name}; outcome unknown, budget retained.");
+            return AmbiguousResponse(walletService, receiptScope, amountSats,
+                paymentId: null, quoteId: null, txId: null,
+                error: ex is OperationCanceledException
+                    ? "The on-chain send was cancelled or timed out before its outcome was known."
+                    : $"The on-chain send failed with an unexpected {ex.GetType().Name} before its outcome was known.");
+        }
 
+        if (result is null)
+        {
+            budgetService.CommitReservation(reservationId, amountSats + feeHeadroomSats);
+            return AmbiguousResponse(walletService, receiptScope, amountSats,
+                null, null, null, "The wallet returned no on-chain result.");
+        }
+
+        if (result.Duplicate)
+        {
+            // Refused as a duplicate: THIS call sent nothing. The original attempt already
+            // retained its budget, so this call's fresh reservation is released.
+            budgetService.ReleaseReservation(reservationId);
+            return BlockedResponse(result, walletService.ProviderName);
+        }
+
+        if (result.Success)
+        {
             // Commit the ACTUAL debit (principal + network fee). Committing less than the
             // reserved maximum automatically releases the unused fee headroom.
             budgetService.CommitReservation(reservationId, amountSats + result.FeeSats);
 
+            var completed = string.Equals(result.State, "COMPLETED", StringComparison.OrdinalIgnoreCase);
             return JsonSerializer.Serialize(new
             {
                 success = true,
+                state = result.State,
+                paymentId = result.PaymentId,
                 provider = walletService.ProviderName,
                 receipt_written = receiptScope.ReceiptWritten ?? false,
                 payment = new
@@ -239,22 +287,111 @@ public static class SendOnChainTool
                     amountSats = result.AmountSats,
                     feeSats = result.FeeSats
                 },
-                message = result.State == "COMPLETED"
+                message = completed
                     ? $"On-chain payment of {amountSats} sats sent to {address}"
-                    : $"On-chain payment initiated (status: {result.State})"
+                    : $"On-chain payment initiated (status: {result.State})",
+                note = completed
+                    ? null
+                    : PendingNote
             });
         }
-        catch (Exception ex)
+
+        if (result.IsAmbiguous)
         {
-            // Release on an unexpected throw. NOTE: an on-chain broadcast that threw AFTER
-            // submission is ambiguous — the durable operation ledger (follow-up PR) is what
-            // resolves that; here we preserve the prior behavior of recording no spend.
-            budgetService.ReleaseReservation(reservationId);
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                error = ex.Message
-            });
+            // Submitted but the outcome is unknown (timeout / cancellation / transport error
+            // after the execute call was issued). Funds may have moved: RETAIN the budget —
+            // principal + known fee, else principal + headroom — never release it.
+            var debit = amountSats + (result.FeeSats > 0 ? result.FeeSats : feeHeadroomSats);
+            budgetService.CommitReservation(reservationId, debit);
+            return AmbiguousResponse(walletService, receiptScope, amountSats,
+                result.PaymentId, result.QuoteId, result.TxId,
+                result.ErrorMessage is null ? null : $"{result.ErrorMessage} ({result.ErrorCode})");
         }
+
+        // Proven failure: either the send never reached the provider's money-moving call
+        // (Submitted = false) or the provider reported the payment terminally FAILED. No
+        // funds moved — release the reservation and its headroom.
+        budgetService.ReleaseReservation(reservationId);
+        return JsonSerializer.Serialize(new
+        {
+            success = false,
+            error = result.ErrorMessage,
+            errorCode = result.ErrorCode,
+            state = result.State,
+            paymentId = result.PaymentId,
+            receipt_written = receiptScope.ReceiptWritten,
+            hint = result.ErrorCode == "NOT_SUPPORTED"
+                ? $"{walletService.ProviderName} does not support on-chain payments. Use Strike wallet."
+                : null,
+            warning = FailureWarning
+        });
     }
+
+    /// <summary>Shared with the Python port — keep the text aligned.</summary>
+    internal const string IntentIdDescription =
+        "Optional idempotency scope. Omit for normal use. Supply a NEW value only when you intentionally need to " +
+        "pay the same address the same amount again; a repeat with the same address, amount and intentId is " +
+        "reported as status, never re-sent.";
+
+    /// <summary>Shared with the Python port — keep the text aligned.</summary>
+    internal const string FailureWarning =
+        "If this failure was a network/timeout error, the send may still have executed at the provider. " +
+        "Check the provider dashboard / get_balance BEFORE retrying — on-chain payments are irreversible.";
+
+    /// <summary>Shared with the Python port — keep the text aligned.</summary>
+    internal const string PendingNote =
+        "On-chain payments normally stay PENDING for ~10 minutes until confirmed. Do NOT send again: calling " +
+        "send_onchain again with the same address and amount will report this payment's status rather than re-send.";
+
+    /// <summary>Shared with the Python port — keep the text aligned.</summary>
+    internal const string AmbiguousWarning =
+        "The send may have executed at the provider even though this call could not confirm it. The budget for " +
+        "it has been retained (not released). Calling send_onchain again with the same address and amount will " +
+        "report this payment's status rather than re-send. Check the provider dashboard / get_balance BEFORE " +
+        "retrying with any other parameters \u2014 on-chain payments are irreversible.";
+
+    /// <summary>Shared with the Python port — keep the text aligned.</summary>
+    internal static string BlockedMessage(string? paymentId, string provider) =>
+        "Nothing was sent by this call: an on-chain send for the same address and amount was already submitted " +
+        $"(payment id {(string.IsNullOrEmpty(paymentId) ? "not recorded" : paymentId)}). On-chain payments are " +
+        "irreversible, so it will not be sent again while that payment may have moved funds. Verify its status at " +
+        $"the provider ({provider}) before doing anything else. To intentionally pay this address this amount " +
+        "again, supply a new intentId.";
+
+    /// <summary>A blocked retry (<c>ALREADY_SUBMITTED</c>): nothing was sent, reserved, or confirmed by this call.</summary>
+    private static string BlockedResponse(OnChainPaymentResult result, string provider) =>
+        JsonSerializer.Serialize(new
+        {
+            success = false,
+            errorCode = "ALREADY_SUBMITTED",
+            duplicate = true,
+            state = result.State,
+            paymentId = result.PaymentId,
+            quoteId = result.QuoteId,
+            txId = result.TxId,
+            provider,
+            statusLookup = new { attempted = result.StatusLookupAttempted, succeeded = result.StatusLookupSucceeded },
+            receipt_written = false,
+            error = result.ErrorMessage,
+            message = BlockedMessage(result.PaymentId, provider)
+        });
+
+    /// <summary>Submitted, outcome unknown (<c>OUTCOME_UNKNOWN</c>): funds may have moved; budget retained.</summary>
+    private static string AmbiguousResponse(
+        IWalletService walletService, PaymentReceiptScope receiptScope, long amountSats,
+        string? paymentId, string? quoteId, string? txId, string? error) =>
+        JsonSerializer.Serialize(new
+        {
+            success = false,
+            errorCode = "OUTCOME_UNKNOWN",
+            state = "UNKNOWN",
+            paymentId,
+            quoteId,
+            txId,
+            provider = walletService.ProviderName,
+            error = error ?? "The on-chain send's outcome is unknown.",
+            receipt_written = receiptScope.ReceiptWritten ?? false,
+            amountSats,
+            warning = AmbiguousWarning
+        });
 }

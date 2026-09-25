@@ -248,6 +248,19 @@ Get the connected wallet's balance. Supersedes `check_wallet_balance` and `get_a
 
 **Returns:** A single superset shape — the sats balance (`balance_sats` / `balance_btc`), an optional `wallet_info` block (NWC `get_info`), a `balances[]` array (multi-currency for Strike, a single BTC entry otherwise), and the session spend summary.
 
+### send_onchain
+
+Send an on-chain Bitcoin payment (Strike or LND). On-chain sends are irreversible, so every send requires a human-relayed confirmation code. A repeat call with the same address and amount reports the prior payment's status (`errorCode: "ALREADY_SUBMITTED"`, `duplicate: true`) instead of sending again.
+
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `address` | string | Yes | - | Mainnet Bitcoin address to send to |
+| `amount_sats` | integer | Yes | - | Amount to send in satoshis |
+| `confirmation_nonce` | string | No | - | Human-relayed confirmation code |
+| `intent_id` | string | No | - | Optional idempotency scope. Omit for normal use. Supply a new value only when you intentionally need to pay the same address the same amount again; a repeat with the same address, amount, and `intent_id` is reported as status, never re-sent. |
+
+**Returns:** JSON with `success`, `state`, `paymentId`, `provider`, and `payment` details. A `PENDING` send is a success and includes a `note`; an ambiguous outcome returns `errorCode: "OUTCOME_UNKNOWN"` with a `warning`.
+
 ### get_payment_history
 
 List recent payments made during this session.
@@ -387,8 +400,11 @@ This MCP server handles steps 2-5 automatically when you use `access_l402_resour
   The agent must ask the **human** for the code, then re-call the original payment tool with
   its `confirmation_nonce` parameter to proceed. (The separate `verify_confirmation_code` tool only
   *verifies* a code — it does not execute the payment.) This closes a self-approval hole: a prompt-injected
-  agent cannot read or generate its own confirmation code. Codes are bound to the exact
-  amount **and** tool approved, so they can't be reused across a different payment. Applies to
+  agent cannot read or generate its own confirmation code from a tool result. It is an operator
+  confirmation aid on a trusted local host, not an independent approval boundary. Codes are bound
+  to the exact amount, tool, and destination approved, so they can't be reused across a different
+  payment. At most 3 codes can be outstanding, 5 invalid attempts in a row revoke every pending
+  code, and codes live 120 seconds by default (`confirmation.ttlSeconds`, clamped to 30-900). Applies to
   `pay_invoice`, `access_l402_resource`, `pay_l402_challenge`, and `settle_agent_service`.
   `send_onchain` always requires confirmation because it is irreversible, and fails closed if
   no budget service is configured.

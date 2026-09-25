@@ -60,4 +60,12 @@ public class ConfirmationSettings
     /// </summary>
     [JsonPropertyName("filePath")]
     public string? FilePath { get; set; }
+
+    /// <summary>
+    /// Seconds a confirmation code stays valid. Default 120 (right for <c>stderr</c>); 300-600
+    /// is recommended for <c>webhook</c>/<c>file</c>, where a human relays asynchronously.
+    /// Clamped to 30..900. Env: <c>LIGHTNING_ENABLE_CONFIRMATION_TTL_SECONDS</c>.
+    /// </summary>
+    [JsonPropertyName("ttlSeconds")]
+    public int? TtlSeconds { get; set; }
 }

@@ -30,7 +30,7 @@ public class IdempotentWalletServiceTests
 
         first.Success.Should().BeTrue();
         second.Success.Should().BeFalse();
-        second.ErrorCode.Should().Be("DUPLICATE_SUBMISSION");
+        second.ErrorCode.Should().Be("ALREADY_SUBMITTED");
         inner.PayCount.Should().Be(1, "the invoice must only ever reach the wallet once");
     }
 
@@ -46,7 +46,7 @@ public class IdempotentWalletServiceTests
         var afterRestart = await new IdempotentWalletService(inner2, new OperationLedger(path)).PayInvoiceAsync(Invoice);
 
         afterRestart.Success.Should().BeFalse();
-        afterRestart.ErrorCode.Should().Be("DUPLICATE_SUBMISSION");
+        afterRestart.ErrorCode.Should().Be("ALREADY_SUBMITTED");
         inner2.PayCount.Should().Be(0, "a settled invoice from a prior session must not be paid again after restart");
     }
 
@@ -90,7 +90,7 @@ public class IdempotentWalletServiceTests
         var result = await new IdempotentWalletService(again, new OperationLedger(path)).PayInvoiceAsync(Invoice);
 
         result.Success.Should().BeFalse();
-        result.ErrorCode.Should().Be("DUPLICATE_SUBMISSION");
+        result.ErrorCode.Should().Be("ALREADY_SUBMITTED");
         again.PayCount.Should().Be(0);
     }
 

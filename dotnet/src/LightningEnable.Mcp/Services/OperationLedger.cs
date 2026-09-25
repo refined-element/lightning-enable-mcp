@@ -13,10 +13,20 @@ public enum OperationState
     Settled,
     /// <summary>Proven no funds moved. Does NOT block a retry.</summary>
     FailedNoFunds,
+    /// <summary>Submitted, then the outcome was lost (timeout, cancellation, transport
+    /// error after the money-moving call was issued). Funds MAY have moved. Blocks a re-send.</summary>
+    Unknown,
 }
 
 /// <summary>A single durable operation record (the latest known state for an operation id).</summary>
-public sealed record OperationRecord(string OperationId, OperationState State, long AmountSats, string? PaymentHash);
+public sealed record OperationRecord(
+    string OperationId,
+    OperationState State,
+    long AmountSats,
+    string? PaymentHash,
+    string? PaymentId = null,
+    string? QuoteId = null,
+    string? TxId = null);
 
 /// <summary>
 /// Durable, append-only idempotency ledger at <c>~/.lightning-enable/operations.jsonl</c>.
@@ -39,8 +49,19 @@ public interface IOperationLedger
     /// call — so a crash immediately after submission still leaves a durable record.</summary>
     void RecordSubmitted(string operationId, long amountSats, string provider);
 
-    /// <summary>Records the resolved outcome of an operation.</summary>
-    void RecordOutcome(string operationId, OperationState state, string? paymentHash);
+    /// <summary>
+    /// ATOMIC check-and-record: if the operation is already in a money-moving state
+    /// (Submitted, Pending, Unknown, Settled) returns false with that record in
+    /// <paramref name="existing"/> and writes nothing; otherwise records Submitted and returns
+    /// true. Two concurrent callers for the same id can never both get true.
+    /// </summary>
+    bool TryBeginSubmission(string operationId, long amountSats, string provider, out OperationRecord? existing);
+
+    /// <summary>Records the resolved outcome of an operation. Provider ids (payment id, quote
+    /// id, txid) are public references, never credentials; a null id keeps the one already
+    /// recorded.</summary>
+    void RecordOutcome(string operationId, OperationState state, string? paymentHash,
+        string? paymentId = null, string? quoteId = null, string? txId = null);
 }
 
 public sealed class OperationLedger : IOperationLedger
@@ -85,21 +106,52 @@ public sealed class OperationLedger : IOperationLedger
     public void RecordSubmitted(string operationId, long amountSats, string provider)
         => Write(operationId, OperationState.Submitted, amountSats, paymentHash: null, provider);
 
-    public void RecordOutcome(string operationId, OperationState state, string? paymentHash)
+    public bool TryBeginSubmission(string operationId, long amountSats, string provider, out OperationRecord? existing)
     {
-        // Preserve the amount already recorded for this operation (the outcome line need
-        // not repeat it); default to 0 if this is the first line we've seen.
-        long amount = Lookup(operationId)?.AmountSats ?? 0;
-        Write(operationId, state, amount, paymentHash, provider: null);
+        existing = null;
+        if (string.IsNullOrEmpty(operationId)) return false;
+        // Check and record under ONE lock hold so two concurrent callers for the same id can
+        // never both observe "not in flight" (the lock is re-entrant for the nested Write).
+        lock (_lock)
+        {
+            EnsureLoaded();
+            if (_index!.TryGetValue(operationId, out var rec) && BlocksResubmission(rec.State))
+            {
+                existing = rec;
+                return false;
+            }
+            Write(operationId, OperationState.Submitted, amountSats, paymentHash: null, provider);
+            return true;
+        }
     }
 
-    private void Write(string operationId, OperationState state, long amountSats, string? paymentHash, string? provider)
+    /// <summary>Whether a recorded state means funds may have moved (so a re-send is refused).
+    /// Only a proven <see cref="OperationState.FailedNoFunds"/> allows a fresh submission.</summary>
+    public static bool BlocksResubmission(OperationState state) =>
+        state is OperationState.Submitted or OperationState.Pending
+            or OperationState.Settled or OperationState.Unknown;
+
+    public void RecordOutcome(string operationId, OperationState state, string? paymentHash,
+        string? paymentId = null, string? quoteId = null, string? txId = null)
+    {
+        lock (_lock)
+        {
+            // Preserve what is already recorded for this operation (the outcome line need not
+            // repeat it): amount, and any provider id the new outcome does not supply.
+            var prior = Lookup(operationId);
+            Write(operationId, state, prior?.AmountSats ?? 0, paymentHash ?? prior?.PaymentHash, provider: null,
+                paymentId ?? prior?.PaymentId, quoteId ?? prior?.QuoteId, txId ?? prior?.TxId);
+        }
+    }
+
+    private void Write(string operationId, OperationState state, long amountSats, string? paymentHash, string? provider,
+        string? paymentId = null, string? quoteId = null, string? txId = null)
     {
         if (string.IsNullOrEmpty(operationId)) return;
         lock (_lock)
         {
             EnsureLoaded();
-            var record = new OperationRecord(operationId, state, amountSats, paymentHash);
+            var record = new OperationRecord(operationId, state, amountSats, paymentHash, paymentId, quoteId, txId);
             _index![operationId] = record;
 
             try
@@ -116,6 +168,11 @@ public sealed class OperationLedger : IOperationLedger
                 // Payment hash is public routing data (safe to persist); it links the
                 // operation to its receipt. Secrets are never written.
                 if (!string.IsNullOrEmpty(paymentHash)) line["paymentHash"] = paymentHash;
+                // Provider references (Strike payment/quote id, on-chain txid) are public
+                // lookup handles, not credentials — they let a retry refresh status.
+                if (!string.IsNullOrEmpty(paymentId)) line["paymentId"] = paymentId;
+                if (!string.IsNullOrEmpty(quoteId)) line["quoteId"] = quoteId;
+                if (!string.IsNullOrEmpty(txId)) line["txId"] = txId;
                 Append(line.ToJsonString());
             }
             catch (Exception ex)
@@ -149,8 +206,11 @@ public sealed class OperationLedger : IOperationLedger
                             continue;
                         var amount = obj["amountSats"]?.GetValue<long>() ?? 0;
                         var hash = obj["paymentHash"]?.GetValue<string>();
+                        var paymentId = obj["paymentId"]?.GetValue<string>();
+                        var quoteId = obj["quoteId"]?.GetValue<string>();
+                        var txId = obj["txId"]?.GetValue<string>();
                         // Last line wins — the file is append-only in chronological order.
-                        _index[id] = new OperationRecord(id, state, amount, hash);
+                        _index[id] = new OperationRecord(id, state, amount, hash, paymentId, quoteId, txId);
                     }
                     catch { /* skip a torn/partial line rather than fail the whole load */ }
                 }

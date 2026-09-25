@@ -751,19 +751,49 @@ public class LndWalletService : IWalletService, IDisposable
             return OnChainPaymentResult.Failed("NOT_CONFIGURED", "LND not configured");
         }
 
+        Console.Error.WriteLine($"[LND] Sending {amountSats} sats on-chain to {address}...");
+
+        var request = new
+        {
+            addr = address,
+            amount = amountSats,
+            target_conf = 6 // Target 6 confirmations (~1 hour)
+        };
+
+        // LND's SendCoins is a single call that signs AND broadcasts. Once it has been issued,
+        // a lost response (timeout, cancellation, transport error, unreadable body) is
+        // AMBIGUOUS — the transaction may be on the network — so it is reported as
+        // Submitted = true / UNKNOWN, never as a plain failure. LND answers a rejected send
+        // (insufficient funds, bad address) synchronously with an error status before
+        // broadcasting, so a non-2xx stays a proven failure.
+        static OnChainPaymentResult Ambiguous(long sats, string code, string message) => new()
+        {
+            Success = false,
+            Submitted = true,
+            State = "UNKNOWN",
+            AmountSats = sats,
+            ErrorCode = code,
+            ErrorMessage = message
+        };
+
+        HttpResponseMessage response;
         try
         {
-            Console.Error.WriteLine($"[LND] Sending {amountSats} sats on-chain to {address}...");
+            response = await _httpClient.PostAsJsonAsync("transactions", request, JsonOptions, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            return Ambiguous(amountSats, "TIMEOUT",
+                "The LND on-chain send timed out or was cancelled after it was issued; the transaction may have been broadcast.");
+        }
+        catch (Exception ex)
+        {
+            return Ambiguous(amountSats, "HTTP_ERROR",
+                $"Transport error during the LND on-chain send ({ex.GetType().Name}); the transaction may have been broadcast.");
+        }
 
-            var request = new
-            {
-                addr = address,
-                amount = amountSats,
-                target_conf = 6 // Target 6 confirmations (~1 hour)
-            };
-
-            var response = await _httpClient.PostAsJsonAsync("transactions", request, JsonOptions, cancellationToken);
-
+        try
+        {
             if (!response.IsSuccessStatusCode)
             {
                 var errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -777,16 +807,29 @@ public class LndWalletService : IWalletService, IDisposable
 
             Console.Error.WriteLine($"[LND] On-chain tx sent: {txid}");
 
-            return OnChainPaymentResult.Succeeded(
-                txid ?? "",
-                txid,
-                "PENDING",
-                amountSats,
-                0); // Fee will be in the tx details
+            if (string.IsNullOrEmpty(txid))
+            {
+                return Ambiguous(amountSats, "INVALID_RESPONSE",
+                    "LND accepted the on-chain send but returned no txid; the transaction may have been broadcast.");
+            }
+
+            return new OnChainPaymentResult
+            {
+                Success = true,
+                Submitted = true,
+                PaymentId = txid,
+                TxId = txid,
+                State = "PENDING",
+                AmountSats = amountSats,
+                FeeSats = 0 // Fee will be in the tx details
+            };
         }
         catch (Exception ex)
         {
-            return OnChainPaymentResult.Failed("EXCEPTION", ex.Message);
+            return response.IsSuccessStatusCode
+                ? Ambiguous(amountSats, "INVALID_RESPONSE",
+                    $"LND accepted the on-chain send but its response could not be read ({ex.GetType().Name}); the transaction may have been broadcast.")
+                : OnChainPaymentResult.Failed("EXCEPTION", ex.Message);
         }
     }
 

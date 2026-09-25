@@ -10,9 +10,10 @@ paying tools handle on their existing ``except`` path by releasing the budget re
 (no double count) and reporting "already submitted — check status, do not retry".
 
 Sits OUTSIDE the receipt seam in the decorator chain, so a refused duplicate never reaches
-the wallet and never writes a receipt. On-chain sends pass straight through (via
-``__getattr__``): they carry no payment hash and each one already requires a fresh
-out-of-band human confirmation, so a blind restart re-send cannot happen silently.
+the wallet and never writes a receipt. On-chain sends pass straight through this
+decorator (via ``__getattr__``); their idempotency is enforced by the ``send_onchain`` tool
+against the SAME ledger, keyed by ``onchain_operation_id(address, amount_sats)``, because
+only the tool holds the budget reservation and can refresh provider status on a retry.
 
 The operation id is ``SHA256(normalized bolt11)`` — a stable, non-secret key. The raw
 invoice, preimage, macaroon, and connection string are never persisted. Mirrors the .NET

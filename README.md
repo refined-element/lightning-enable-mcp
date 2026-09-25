@@ -152,7 +152,11 @@ Config file locations:
 A payment above your auto-approve threshold needs a human's approval: the server mints a
 short confirmation code, sends it to **you**, and the agent can only proceed once you read it
 back. The code never appears in a tool result, so a prompt-injected agent can't approve its
-own spending.
+own spending by reading the result.
+
+Treat this as an operator confirmation aid on a trusted local host, not as an independent
+approval boundary: if the agent's host can read the server's console, log stream, approval
+file, or webhook destination, it can read the code too.
 
 That only works if the code reaches a human. On your laptop it goes to the server's console
 (stderr) and you read it there. On a hosted server — a claude.ai connector, a Docker
@@ -170,6 +174,12 @@ Whatever the channel, two rules hold: the code is never returned to the agent, a
 is never approved because its notification failed to send — a delivery failure refuses the
 payment and withdraws the code.
 
+Codes are 6 characters, one-time use, and bound to the exact amount, tool, and destination.
+At most 3 codes can be outstanding at once, and 5 invalid code attempts in a row revoke every
+pending code. A code lives 120 seconds by default; set `confirmation.ttlSeconds` (or
+`LIGHTNING_ENABLE_CONFIRMATION_TTL_SECONDS`) to change it, clamped to 30-900. For the
+asynchronous `webhook` and `file` channels, 300-600 is a practical value.
+
 ### Choosing a channel
 
 Precedence: environment variable, then config file, then automatic.
@@ -180,7 +190,8 @@ Precedence: environment variable, then config file, then automatic.
     "channel": "webhook",
     "webhookUrl": "https://ops.example.com/lightning-approvals",
     "webhookSecret": "<shared secret>",
-    "filePath": "/var/log/lightning-enable/confirmations.jsonl"
+    "filePath": "/var/log/lightning-enable/confirmations.jsonl",
+    "ttlSeconds": 600
   }
 }
 ```
@@ -317,7 +328,7 @@ Five of these are *action* tools: pass `action` (or `source` for `receipts`) to 
 | `get_balance` | Free | Wallet balance: sats, all currencies (Strike), and wallet info |
 | `budget` | Free | `action`: `status` (read limits and session spend) or `tighten` (lower the runtime caps) |
 | `receipts` | Free | `source`: `durable` (the append-only receipt log) or `session` (this session's payments) |
-| `wallet_ops` | Free | `action`: `price`, `exchange`, or `send_onchain` (Strike; `send_onchain` also LND) |
+| `wallet_ops` | Free | `action`: `price`, `exchange`, or `send_onchain` (Strike; `send_onchain` also LND). `send_onchain` takes `address`, `amountSats`, `confirmationNonce`, and an optional `intentId` (supply a new one only to pay the same address the same amount again; a repeat is reported as status, never re-sent) |
 | `verify_confirmation_code` | Free | Verify an out-of-band payment confirmation code (verification only — never pays) |
 | `create_lightning_enable_account` | Free | Self-bootstrap signup: pay ~100 sats, get a merchant API key |
 | `l402_producer` | Agentic Commerce | `action`: `configure_receive`, `status`, `create_proxy`, `add_endpoint`, `publish`, `list_challenges`, `create`, `verify` — the whole seller side |

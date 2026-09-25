@@ -46,7 +46,7 @@ public record PendingConfirmation
     public DateTime CreatedAt { get; init; }
 
     /// <summary>
-    /// When this confirmation expires (2 minutes from creation).
+    /// When this confirmation expires (the configured TTL after creation; 120s by default).
     /// </summary>
     public DateTime ExpiresAt { get; init; }
 

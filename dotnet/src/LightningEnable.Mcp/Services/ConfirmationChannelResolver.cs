@@ -98,6 +98,41 @@ public static class ConfirmationChannelResolver
             + $"({ValidChannels}), or {HostedEnvironmentVariable}=1 to refuse such payments instead.");
     }
 
+    /// <summary>Env var override for <c>confirmation.ttlSeconds</c>.</summary>
+    public const string TtlEnvironmentVariable = "LIGHTNING_ENABLE_CONFIRMATION_TTL_SECONDS";
+
+    /// <summary>Default code lifetime: right for stderr, where the human is at the console.</summary>
+    public const int DefaultTtlSeconds = 120;
+
+    /// <summary>Shortest allowed code lifetime.</summary>
+    public const int MinTtlSeconds = 30;
+
+    /// <summary>Longest allowed code lifetime (15 minutes).</summary>
+    public const int MaxTtlSeconds = 900;
+
+    /// <summary>
+    /// Code lifetime in seconds: env &gt; config &gt; <see cref="DefaultTtlSeconds"/>, clamped to
+    /// <see cref="MinTtlSeconds"/>..<see cref="MaxTtlSeconds"/>. An unparseable env value is
+    /// ignored. For the asynchronous webhook and file channels, 300-600 is a sensible value.
+    /// Kept in sync with <c>resolve_confirmation_ttl_seconds</c> in Python.
+    /// </summary>
+    public static int ResolveTtlSeconds(string? envTtl, int? configTtl)
+    {
+        var ttl = DefaultTtlSeconds;
+        if (!string.IsNullOrWhiteSpace(envTtl)
+            && int.TryParse(envTtl.Trim(), System.Globalization.NumberStyles.Integer,
+                System.Globalization.CultureInfo.InvariantCulture, out var envValue))
+        {
+            ttl = envValue;
+        }
+        else if (configTtl.HasValue)
+        {
+            ttl = configTtl.Value;
+        }
+
+        return Math.Clamp(ttl, MinTtlSeconds, MaxTtlSeconds);
+    }
+
     /// <summary>Parse a channel name, case- and whitespace-insensitively.</summary>
     public static bool TryParse(string? value, out ConfirmationChannelKind kind)
     {

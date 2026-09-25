@@ -3,6 +3,67 @@
 All notable changes to the Lightning Enable MCP server are documented here.
 Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-enable-mcp`).
 
+## [Unreleased]
+
+### Security
+
+- .NET `send_onchain` no longer treats a lost response as "no funds moved". Previously a
+  timeout, cancellation, or transport error after the Strike quote was executed released the
+  budget, wrote no receipt, and let a retry (with a fresh confirmation code) create and execute
+  a second quote — a double send of irreversible funds. Now:
+  - The wallet result carries `Submitted` (the money-moving call was issued) and keeps the
+    payment and quote ids. A lost response after execute is `Submitted`, `state: UNKNOWN`. A
+    poll that runs out of time after a successful execute is `state: PENDING`, not a failure.
+    Only an error before execute (or a provider-reported `FAILED`) proves no funds moved. LND
+    on-chain sends follow the same rule.
+  - `send_onchain` is keyed in the durable operation ledger by
+    `SHA256("onchain:" + address + ":" + amountSats [+ ":" + intentId])`. While an earlier send
+    for the same key is submitted, pending, unknown, or settled, the wallet's send is never
+    called again, even after a restart or with a new confirmation code. The ledger is checked
+    before the budget check and the confirmation gate, so a blocked retry mints and consumes no
+    code and reserves no budget. It refreshes the provider status once (Strike
+    `GET /v1/payments/{id}`) and returns `errorCode: "ALREADY_SUBMITTED"` with the recorded
+    payment id and `statusLookup`. The wallet layer repeats the check atomically after
+    reservation to close races. A new optional `intentId` parameter lets an agent
+    intentionally pay the same address the same amount again; a blank `intentId` is the same
+    as omitting it. The duplicate error code `DUPLICATE_SUBMISSION` is now `ALREADY_SUBMITTED`
+    (Lightning invoice duplicates too), and an ambiguous outcome is `OUTCOME_UNKNOWN`.
+  - Pending and ambiguous sends retain the budget (principal plus known fee, else fee headroom)
+    and write a pending receipt. The response includes `state`, `paymentId`, `receipt_written`,
+    and a `warning` that the send may have executed and must not be retried blindly. Plain
+    failures now carry the same check-before-retrying warning as the Python port.
+- Python: `send_onchain` is now idempotent and pending-aware after submission. Previously,
+  any failure or exception, including a timeout or cancellation after the Strike quote was
+  executed, was treated as "no funds moved": the budget reservation was released, no receipt
+  was written, and a retry with a fresh confirmation code created a new quote and executed
+  again, which could double-send irreversible funds.
+  - On-chain wallet results carry `submitted` (true once the execute call was issued) and
+    keep `payment_id` / `quote_id` whenever known. A timeout, transport error, or 5xx after
+    execute returns `state="UNKNOWN"`. A poll that times out after a successful execute
+    returns `state="PENDING"` as a success, not a failure. LND reports a read timeout after
+    the send was issued as `UNKNOWN`; a connection failure is still a pre-submit failure.
+  - The operation ledger now covers on-chain sends, keyed by
+    `sha256("onchain:" + normalized_address + ":" + amount_sats)`, and adds an `unknown`
+    state. A second send for the same address and amount while the prior one is
+    `submitted`, `pending`, `unknown`, or `settled` never calls the wallet. It refreshes the
+    status through the new `StrikeWallet.get_onchain_payment_status` (`GET /v1/payments/{id}`)
+    or refuses and names the recorded payment ID. Only a recorded `failed` state allows a
+    fresh send. The ledger survives restarts.
+  - `send_onchain` takes an optional `intent_id`. It scopes the operation ID
+    (`... + ":" + intent_id.strip()`; blank is the same as omitted), so you can pay the same
+    address the same amount again on purpose with a new `intent_id`. A repeat with the same
+    `intent_id` is blocked. Every real send still needs a fresh confirmation code.
+  - A blocked retry returns `errorCode: "ALREADY_SUBMITTED"`, `duplicate: true`, `provider`,
+    `statusLookup`, and `receipt_written: false`. It never mints or consumes a confirmation
+    code, never reserves budget, and never calls the wallet. An ambiguous outcome always
+    returns `errorCode: "OUTCOME_UNKNOWN"` with `provider`, `quoteId`, `txId`, and
+    `amountSats`. A `PENDING` success adds a `note` not to send again. Response texts match
+    the .NET port.
+  - For submitted outcomes, including a cancellation after submission, the tool now commits
+    the budget reservation (principal plus the known fee, or plus the fee headroom when the
+    fee is unknown) and writes a pending receipt. It releases the reservation only when
+    failure before submission is proven.
+
 ## [2.0.3] — 2026-09-25
 
 ### Security

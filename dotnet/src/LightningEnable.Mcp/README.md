@@ -322,6 +322,14 @@ Convert between USD and BTC within your Strike wallet.
 
 Send an on-chain Bitcoin payment to a Bitcoin address.
 
+**Parameters:**
+- `address` (required): Mainnet Bitcoin address
+- `amountSats` (required): Amount in satoshis
+- `confirmationNonce`: Human-relayed confirmation code. Always required to send; omit on the first call to request one.
+- `intentId`: Optional idempotency scope. Omit for normal use. Supply a new value only when you intentionally need to pay the same address the same amount again; a repeat with the same address, amount, and `intentId` is reported as status, never re-sent.
+
+A repeat of a send that is already submitted, pending, settled, or unknown returns `errorCode: "ALREADY_SUBMITTED"` with the recorded status before any confirmation code is requested or consumed. A send whose outcome could not be confirmed returns `errorCode: "OUTCOME_UNKNOWN"` and keeps its budget reserved.
+
 ### create_l402_challenge (Agentic Commerce)
 
 Create an L402 payment challenge to charge another agent or user for accessing a resource. Returns a Lightning invoice and macaroon that the payer must pay before you grant access.

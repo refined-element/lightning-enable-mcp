@@ -25,6 +25,7 @@ from typing import Optional
 from bolt11 import decode as decode_bolt11
 
 from .receipt_service import ReceiptService, unwrap_wallet, wallet_label_from
+from .wallet_errors import onchain_signal
 from .wallet_errors import (
     PaymentPendingError,
     PaymentProofUnavailableError,
@@ -156,39 +157,75 @@ class ReceiptRecordingWallet:
         return preimage
 
     async def send_onchain(self, address: str, amount_sats: int, *args, **kwargs):
-        result = await self._inner.send_onchain(address, amount_sats, *args, **kwargs)
-
-        if getattr(result, "success", False):
-            written = False
-            try:
-                sent_sats = getattr(result, "amount_sats", 0) or amount_sats
-                fee_sats = getattr(result, "fee_sats", 0) or 0
-                state = getattr(result, "state", None)
-                scope = PaymentReceiptScope.current()
-                written = self._receipts.log_payment(
-                    kind="onchain",
-                    amount_sats=sent_sats,
-                    # A broadcast-but-unconfirmed send has still left the wallet; only
-                    # a provider-confirmed COMPLETED state reads as settled.
-                    status="settled" if str(state).upper() == "COMPLETED" else "pending",
-                    context=scope.context if scope else None,
-                    policy=scope.policy if scope else None,
-                    # Project from the REQUESTED amount + fee: the tool records budget
-                    # spend from those same figures, and the projection must match
-                    # what the budget will actually hold.
-                    session_spent_sats=self._project_session_spent(amount_sats + fee_sats),
-                    fee_sats=fee_sats,
-                    tx_id=getattr(result, "txid", None),
-                    wallet_label=wallet_label_from(self._inner),
+        try:
+            result = await self._inner.send_onchain(address, amount_sats, *args, **kwargs)
+        except BaseException as e:
+            # Mirrors the tool's budget rule exactly: a throw is ambiguous (funds may have
+            # moved, budget is committed) UNLESS the wallet proved it happened before the
+            # execute call (onchain_submitted is False). Only that proven case gets no
+            # receipt. Read through __cause__ for Python 3.10's re-wrapped CancelledError.
+            if onchain_signal(e, "onchain_submitted") is not False:
+                self._write_onchain_receipt(
+                    amount_sats, fee_sats=onchain_signal(e, "onchain_fee_sats") or 0,
+                    state="UNKNOWN", txid=None,
                 )
-            except Exception as e:
-                logger.warning("Failed to write on-chain payment receipt: %s", e)
-                written = False
-            scope = PaymentReceiptScope.current()
-            if scope is not None:
-                scope.record_write(written)
+            raise
+
+        success = getattr(result, "success", False) is True
+        # Submitted-but-not-proven outcomes (UNKNOWN) have possibly moved funds and the
+        # tool retains budget for them, so they are receipted as pending. A provider-
+        # confirmed FAILED moved nothing.
+        submitted_ambiguous = (
+            getattr(result, "submitted", False) is True
+            and str(getattr(result, "state", "") or "").upper() != "FAILED"
+        )
+        if success or submitted_ambiguous:
+            self._write_onchain_receipt(
+                getattr(result, "amount_sats", None) or amount_sats,
+                fee_sats=getattr(result, "fee_sats", 0) or 0,
+                state=getattr(result, "state", None),
+                txid=getattr(result, "txid", None),
+                requested_sats=amount_sats,
+            )
 
         return result
+
+    def _write_onchain_receipt(
+        self,
+        sent_sats: int,
+        *,
+        fee_sats: int,
+        state: Optional[str],
+        txid: Optional[str],
+        requested_sats: Optional[int] = None,
+    ) -> None:
+        # Project from the REQUESTED amount + fee: the tool records budget spend from
+        # those same figures, and the projection must match what the budget will hold.
+        requested = requested_sats if requested_sats is not None else sent_sats
+        if not isinstance(fee_sats, int):
+            fee_sats = 0
+        written = False
+        try:
+            scope = PaymentReceiptScope.current()
+            written = self._receipts.log_payment(
+                kind="onchain",
+                amount_sats=sent_sats,
+                # A broadcast-but-unconfirmed (or ambiguous) send may have left the
+                # wallet; only a provider-confirmed COMPLETED state reads as settled.
+                status="settled" if str(state).upper() == "COMPLETED" else "pending",
+                context=scope.context if scope else None,
+                policy=scope.policy if scope else None,
+                session_spent_sats=self._project_session_spent(requested + fee_sats),
+                fee_sats=fee_sats,
+                tx_id=txid,
+                wallet_label=wallet_label_from(self._inner),
+            )
+        except Exception as e:
+            logger.warning("Failed to write on-chain payment receipt: %s", e)
+            written = False
+        scope = PaymentReceiptScope.current()
+        if scope is not None:
+            scope.record_write(written)
 
     # ---- internals ----
 

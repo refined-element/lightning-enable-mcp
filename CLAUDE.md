@@ -24,6 +24,14 @@ Over-threshold payments require a human-relayed confirmation code. The code is t
 a payment is never approved because its notification could not be delivered (a delivery
 failure REFUSES the payment and withdraws the minted code).
 
+This is an operator confirmation aid on a trusted local host, **not** an independent approval
+boundary: an agent whose host can read the server's console, logs, approval file, or webhook
+sink can read the code. Guards: at most 3 outstanding codes (`MaxPendingConfirmations`); 5
+consecutive invalid verify/consume attempts revoke every pending code
+(`MaxFailedConfirmationAttempts`); TTL `confirmation.ttlSeconds` /
+`LIGHTNING_ENABLE_CONFIRMATION_TTL_SECONDS`, default 120, clamped 30-900 (300-600 suits
+`webhook`/`file`). `verify_confirmation_code` never echoes the code or destination.
+
 Where the code goes is configurable, because stderr is only out-of-band when a human is
 watching the console:
 

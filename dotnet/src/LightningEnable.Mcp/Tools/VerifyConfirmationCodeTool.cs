@@ -21,8 +21,8 @@ public static class VerifyConfirmationCodeTool
     /// The payment-request tools (pay_invoice, send_onchain, ...) never return the code —
     /// the model must obtain it from the human — which is what stops a prompt-injected
     /// agent from self-approving. To execute, call the original payment tool again with
-    /// confirmation_nonce set to the code. (This tool does echo the code back once you
-    /// supply it.)
+    /// confirmation_nonce set to the code. It never echoes the code or the destination, and
+    /// invalid attempts count toward the guess limit (see BudgetService.MaxFailedConfirmationAttempts).
     /// </summary>
     [McpServerTool(
         Name = "verify_confirmation_code",
@@ -63,8 +63,8 @@ public static class VerifyConfirmationCodeTool
             {
                 success = false,
                 error = "Invalid, expired, or already-used confirmation nonce",
-                message = "The nonce may have expired (2 minute limit) or was already used. " +
-                          "Request a new confirmation by calling the original payment tool again."
+                message = "The nonce may have expired or was already used. Repeated invalid codes revoke every " +
+                          "pending confirmation. Request a new confirmation by calling the original payment tool again."
             });
         }
 
@@ -76,15 +76,15 @@ public static class VerifyConfirmationCodeTool
             confirmed = true,
             amount_sats = confirmation.AmountSats,
             tool = confirmation.ToolName,
+            // Neither the code nor the destination is echoed back: a correct guess must not
+            // reveal what it unlocks, and the code belongs only on the operator channel.
             message = $"Code verified — NOTHING HAS BEEN PAID. To execute, call " +
-                      $"{confirmation.ToolName} again with confirmation_nonce={confirmation.Nonce}.",
+                      $"{confirmation.ToolName} again with the same code as confirmation_nonce.",
             confirmation = new
             {
-                nonce = confirmation.Nonce,
                 amountSats = confirmation.AmountSats,
                 amountUsd = Math.Round(confirmation.AmountUsd, 2),
-                toolName = confirmation.ToolName,
-                description = confirmation.Description
+                toolName = confirmation.ToolName
             }
         });
     }

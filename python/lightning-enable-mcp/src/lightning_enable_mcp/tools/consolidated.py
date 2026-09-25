@@ -131,6 +131,15 @@ WALLET_OPS_TOOL = Tool(
                 "type": "string",
                 "description": CONFIRMATION_NONCE_DESCRIPTION,
             },
+            "intent_id": {
+                "type": "string",
+                "description": (
+                    "send_onchain: optional idempotency scope. Omit for normal use. Supply a "
+                    "NEW value only when you intentionally need to pay the same address the "
+                    "same amount again; a repeat with the same address, amount and intent_id "
+                    "is reported as status, never re-sent."
+                ),
+            },
         },
         "required": ["action"],
     },

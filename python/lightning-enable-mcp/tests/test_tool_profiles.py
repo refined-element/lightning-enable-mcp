@@ -566,3 +566,13 @@ class TestSchemaSize:
     def test_full_profile_is_roughly_the_old_surface(self):
         """`full` is an escape hatch, not a recommendation: it is not smaller."""
         assert schema_bytes(tools_for_profile("full")) > schema_bytes(STANDARD_TOOLS)
+
+
+def test_wallet_ops_schema_exposes_intent_id_for_send_onchain():
+    """Parity with .NET WalletOpsTool: the consolidated wallet_ops tool must advertise the
+    send_onchain intent_id parameter, or agents on the default profile cannot use it."""
+    from lightning_enable_mcp.tools.consolidated import WALLET_OPS_TOOL
+    props = WALLET_OPS_TOOL.inputSchema["properties"]
+    assert "intent_id" in props
+    assert props["intent_id"]["type"] == "string"
+    assert "intentionally" in props["intent_id"]["description"]

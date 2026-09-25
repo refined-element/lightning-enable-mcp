@@ -35,8 +35,15 @@ BASE_URL = "https://api.strike.me/v1"
 
 
 class StrikeError(Exception):
-    """Exception for Strike-related errors."""
-    pass
+    """Exception for Strike-related errors.
+
+    ``status_code`` is the HTTP status when Strike answered; ``None`` for a transport
+    failure (timeout, connection reset) where the request may or may not have landed.
+    """
+
+    def __init__(self, message: str = "", status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class StrikePaymentError(StrikeError):
@@ -139,7 +146,20 @@ class ExchangeResult:
 
 @dataclass
 class OnChainResult:
-    """On-chain payment result."""
+    """On-chain payment result.
+
+    ``submitted`` is True once the execute call was ISSUED to the provider. From that
+    point funds may have moved, so a failure is not proof that nothing was sent:
+
+    - ``submitted=False`` -> proven pre-submission failure; no funds moved.
+    - ``submitted=True, success=True, state=COMPLETED|PENDING`` -> accepted.
+    - ``submitted=True, success=False, state=UNKNOWN`` -> ambiguous (timeout, transport
+      error, 5xx after execute). Treat as money-moving until verified.
+    - ``submitted=True, success=False, state=FAILED`` -> the provider definitively
+      rejected / failed the payment; no funds moved.
+
+    ``payment_id`` / ``quote_id`` are populated whenever known.
+    """
     success: bool
     payment_id: str | None = None
     txid: str | None = None
@@ -148,6 +168,8 @@ class OnChainResult:
     fee_sats: int | None = None
     error_code: str | None = None
     error_message: str | None = None
+    submitted: bool = False
+    quote_id: str | None = None
 
     @classmethod
     def succeeded(
@@ -157,6 +179,7 @@ class OnChainResult:
         amount_sats: int,
         fee_sats: int = 0,
         txid: str | None = None,
+        quote_id: str | None = None,
     ) -> "OnChainResult":
         return cls(
             success=True,
@@ -165,11 +188,58 @@ class OnChainResult:
             state=state,
             amount_sats=amount_sats,
             fee_sats=fee_sats,
+            submitted=True,
+            quote_id=quote_id,
         )
 
     @classmethod
     def failed(cls, code: str, message: str) -> "OnChainResult":
+        """Proven pre-submission failure (``submitted=False``)."""
         return cls(success=False, error_code=code, error_message=message)
+
+    @classmethod
+    def unknown(
+        cls,
+        message: str,
+        *,
+        payment_id: str | None,
+        quote_id: str | None,
+        amount_sats: int,
+        fee_sats: int | None = None,
+    ) -> "OnChainResult":
+        """Execute was issued but the outcome is unknown — funds may have moved."""
+        return cls(
+            success=False,
+            submitted=True,
+            state="UNKNOWN",
+            payment_id=payment_id,
+            quote_id=quote_id,
+            amount_sats=amount_sats,
+            fee_sats=fee_sats,
+            error_code="OUTCOME_UNKNOWN",
+            error_message=message,
+        )
+
+    @classmethod
+    def provider_failed(
+        cls,
+        message: str,
+        *,
+        payment_id: str | None,
+        quote_id: str | None,
+        amount_sats: int,
+    ) -> "OnChainResult":
+        """Execute was issued and the provider definitively failed/rejected it."""
+        return cls(
+            success=False,
+            submitted=True,
+            state="FAILED",
+            payment_id=payment_id,
+            quote_id=quote_id,
+            amount_sats=amount_sats,
+            error_code="PAYMENT_FAILED",
+            error_message=message,
+        )
 
 
 class StrikeWallet:
@@ -200,6 +270,10 @@ class StrikeWallet:
         self.config = StrikeConfig(api_key=api_key)
         self._client: httpx.AsyncClient | None = None
         self._connected = False
+        # How long send_onchain polls a PENDING on-chain payment before returning it as
+        # PENDING (normal: confirmations take ~10+ minutes). Tunable for tests.
+        self.onchain_poll_timeout_secs: float = 120
+        self.onchain_poll_interval_secs: float = 2.0
 
     async def connect(self) -> None:
         """Initialize the HTTP client."""
@@ -253,7 +327,10 @@ class StrikeWallet:
 
             if response.status_code >= 400:
                 error_text = response.text
-                raise StrikeError(f"API error ({response.status_code}): {error_text}")
+                raise StrikeError(
+                    f"API error ({response.status_code}): {error_text}",
+                    status_code=response.status_code,
+                )
 
             if response.status_code == 204:  # No content
                 return {}
@@ -350,11 +427,10 @@ class StrikeWallet:
             raise StrikePaymentError(f"Payment failed: {e!s}") from e
 
     async def _wait_for_payment(
-        self, payment_id: str, timeout_secs: int = 60
+        self, payment_id: str, timeout_secs: float = 60, poll_interval: float = 2.0
     ) -> dict[str, Any]:
         """Poll for payment completion."""
         end_time = asyncio.get_event_loop().time() + timeout_secs
-        poll_interval = 2.0
 
         while asyncio.get_event_loop().time() < end_time:
             try:
@@ -557,6 +633,15 @@ class StrikeWallet:
         """
         Send an on-chain Bitcoin payment.
 
+        Distinguishes pre-submission failure (``submitted=False``: nothing was sent) from
+        post-submission ambiguity (``submitted=True``). Once the execute call has been
+        issued, a timeout / transport error / 5xx returns ``state="UNKNOWN"`` with the ids,
+        and a poll that times out returns ``state="PENDING"`` (success) — never a plain
+        failure, because funds may have moved. A cancellation re-raises with
+        ``onchain_submitted`` / ``onchain_payment_id`` / ``onchain_quote_id`` /
+        ``onchain_fee_sats`` attributes set on the ``CancelledError`` so the caller can
+        account for it.
+
         Args:
             address: Bitcoin address (e.g., bc1q...)
             amount_sats: Amount in satoshis
@@ -570,6 +655,10 @@ class StrikeWallet:
         if amount_sats <= 0:
             return OnChainResult.failed("INVALID_AMOUNT", "Amount must be positive")
 
+        quote_id: str | None = None
+        payment_id: str | None = None
+        fee_sats: int | None = None
+        submitted = False
         try:
             # Convert sats to BTC
             amount_btc = Decimal(amount_sats) / Decimal("100000000")
@@ -588,35 +677,131 @@ class StrikeWallet:
             if not quote_id:
                 return OnChainResult.failed("INVALID_QUOTE", "No quote ID returned")
 
-            # Execute payment
-            payment = await self._request("PATCH", f"/payment-quotes/{quote_id}/execute")
-            payment_id = payment.get("paymentId", quote_id)
-            state = payment.get("state", "UNKNOWN")
+            fee_sats = _onchain_fee_sats(quote)
 
-            # Poll for completion if pending
+            # From here on the send may execute provider-side: every outcome that is not a
+            # definitive rejection is reported as submitted.
+            submitted = True
+            try:
+                payment = await self._request("PATCH", f"/payment-quotes/{quote_id}/execute")
+            except StrikeError as e:
+                code = e.status_code
+                if code is not None and 400 <= code < 500 and code not in (408, 409):
+                    # Strike answered with a definitive rejection (e.g. insufficient
+                    # balance, expired quote): the payment was not executed.
+                    return OnChainResult.provider_failed(
+                        f"Strike rejected the on-chain payment: {e}",
+                        payment_id=None, quote_id=quote_id, amount_sats=amount_sats,
+                    )
+                raise
+
+            payment_id = payment.get("paymentId") or quote_id
+            state = str(payment.get("state") or "UNKNOWN").upper()
+
+            # Poll for completion if pending. On-chain confirmation normally takes
+            # ~10+ minutes, so a poll that runs out is PENDING, not a failure.
             if state == "PENDING":
-                payment = await self._wait_for_payment(payment_id, timeout_secs=120)
-                state = payment.get("state", "UNKNOWN")
+                polled = await self._wait_for_payment(
+                    payment_id,
+                    timeout_secs=self.onchain_poll_timeout_secs,
+                    poll_interval=self.onchain_poll_interval_secs,
+                )
+                polled_state = str(polled.get("state") or "").upper()
+                if polled_state and polled_state not in ("TIMEOUT", "PENDING"):
+                    payment = polled
+                    state = polled_state
 
-            # Get fee from quote
-            fee_sats = 0
-            if quote.get("onchainFee", {}).get("amount"):
-                fee_btc = Decimal(str(quote["onchainFee"]["amount"]))
-                fee_currency = quote.get("onchainFee", {}).get("currency", "BTC")
-                if fee_currency.upper() == "BTC":
-                    fee_sats = int(fee_btc * 100_000_000)
-
+            txid = _onchain_txid(payment)
             logger.info(f"On-chain payment: {payment_id}, state: {state}")
+
+            if state == "FAILED":
+                return OnChainResult.provider_failed(
+                    "Strike reported the on-chain payment as FAILED",
+                    payment_id=payment_id, quote_id=quote_id, amount_sats=amount_sats,
+                )
+            if state not in ("COMPLETED", "PENDING"):
+                return OnChainResult.unknown(
+                    f"Strike returned an unrecognized payment state: {state}",
+                    payment_id=payment_id, quote_id=quote_id,
+                    amount_sats=amount_sats, fee_sats=fee_sats,
+                )
 
             return OnChainResult.succeeded(
                 payment_id=payment_id,
                 state=state,
                 amount_sats=amount_sats,
+                fee_sats=fee_sats or 0,
+                txid=txid,
+                quote_id=quote_id,
+            )
+
+        except asyncio.CancelledError as e:
+            # Tell the caller whether execute had been issued; never swallow a cancel.
+            e.onchain_submitted = submitted  # type: ignore[attr-defined]
+            e.onchain_payment_id = payment_id or (quote_id if submitted else None)  # type: ignore[attr-defined]
+            e.onchain_quote_id = quote_id  # type: ignore[attr-defined]
+            e.onchain_fee_sats = fee_sats  # type: ignore[attr-defined]
+            raise
+        except Exception as e:
+            if not submitted:
+                return OnChainResult.failed("API_ERROR", str(e))
+            logger.warning(
+                "On-chain send outcome unknown after execute was issued (quote %s)", quote_id
+            )
+            return OnChainResult.unknown(
+                f"On-chain send outcome unknown after submission: {e}",
+                payment_id=payment_id or quote_id,
+                quote_id=quote_id,
+                amount_sats=amount_sats,
                 fee_sats=fee_sats,
             )
 
-        except StrikeError as e:
-            return OnChainResult.failed("API_ERROR", str(e))
+    async def get_onchain_payment_status(self, payment_id: str) -> OnChainResult:
+        """Look up an on-chain payment's current state (Strike ``GET /v1/payments/{id}``).
+
+        ``success`` here means the LOOKUP succeeded; ``state`` / ``txid`` carry the
+        provider's answer. A failed lookup returns ``success=False`` with the id.
+        """
+        if not payment_id:
+            return OnChainResult.failed("INVALID_PAYMENT_ID", "Payment id is required")
+        try:
+            payment = await self._request("GET", f"/payments/{payment_id}")
+        except Exception as e:
+            result = OnChainResult.failed("LOOKUP_FAILED", f"Status lookup failed: {e}")
+            result.submitted = True
+            result.payment_id = payment_id
+            return result
+        return OnChainResult(
+            success=True,
+            submitted=True,
+            payment_id=payment.get("paymentId") or payment_id,
+            state=str(payment.get("state") or "UNKNOWN").upper(),
+            txid=_onchain_txid(payment),
+        )
+
+
+def _onchain_fee_sats(quote: dict[str, Any]) -> int | None:
+    """Network fee from a Strike on-chain quote, in sats, or None if not stated in BTC."""
+    fee = quote.get("onchainFee") or {}
+    try:
+        if fee.get("amount") and str(fee.get("currency", "BTC")).upper() == "BTC":
+            return int(Decimal(str(fee["amount"])) * 100_000_000)
+    except Exception:
+        return None
+    return None
+
+
+def _onchain_txid(payment: dict[str, Any]) -> str | None:
+    """Best-effort on-chain transaction id from a Strike payment object."""
+    onchain = payment.get("onchain") or {}
+    if isinstance(onchain, dict):
+        for key in ("txnId", "txId", "txid"):
+            if onchain.get(key):
+                return str(onchain[key])
+    for key in ("txnId", "txId", "txid"):
+        if payment.get(key):
+            return str(payment[key])
+    return None
 
 
 def create_wallet_from_env() -> StrikeWallet | None:

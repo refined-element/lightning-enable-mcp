@@ -242,6 +242,22 @@ class TestPayInvoice:
         assert "insufficient funds" in data["error"] or "Payment failed" in data["error"]
 
     @pytest.mark.asyncio
+    async def test_duplicate_invoice_reports_already_submitted_code(self):
+        """Parity with .NET: a ledger-refused re-pay carries errorCode ALREADY_SUBMITTED and
+        never releases budget for a payment that may have moved funds."""
+        from lightning_enable_mcp.idempotent_wallet import DuplicateSubmissionError
+        wallet = AsyncMock()
+        wallet.pay_invoice = AsyncMock(side_effect=DuplicateSubmissionError(
+            "This invoice was already submitted in a prior attempt (state: submitted)."))
+        result = await pay_invoice(
+            invoice="lnbc100n1...", wallet=wallet, budget_service=_approving_budget())
+        data = json.loads(result)
+        assert data["success"] is False
+        assert data["errorCode"] == "ALREADY_SUBMITTED"
+        assert data["duplicate"] is True
+        assert "already submitted" in data["error"].lower()
+
+    @pytest.mark.asyncio
     async def test_no_preimage_returns_error(self):
         wallet = AsyncMock()
         wallet.pay_invoice = AsyncMock(return_value=None)

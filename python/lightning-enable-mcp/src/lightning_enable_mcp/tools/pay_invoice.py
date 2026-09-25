@@ -22,6 +22,7 @@ from mcp.types import Tool
 from ..config import ApprovalLevel
 from ..confirmation_channel import ConfirmationRequest
 from ..receipt_seam import PaymentReceiptScope, policy_label
+from ..idempotent_wallet import DuplicateSubmissionError
 from ..wallet_errors import PaymentPendingError, PreimageUnavailableError
 from ..wallet_messages import WALLET_NOT_CONFIGURED_FOR_PAYMENT
 from . import sanitize_error
@@ -386,6 +387,18 @@ async def pay_invoice(
         if budget_service and reservation_id:
             budget_service.release_reservation(reservation_id)
         raise
+
+    except DuplicateSubmissionError as e:
+        # The operation ledger refused a re-pay of an invoice that may already have moved
+        # funds. Nothing was sent, but the ORIGINAL attempt's budget stays committed, so do
+        # not release anything here. Parity with .NET's ALREADY_SUBMITTED result.
+        return json.dumps({
+            "success": False,
+            "errorCode": "ALREADY_SUBMITTED",
+            "duplicate": True,
+            "error": str(e),
+            "receipt_written": False,
+        })
 
     except Exception as e:
         logger.exception("Error paying invoice")

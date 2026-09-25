@@ -6,10 +6,14 @@ Part of **Lightning Enable — infrastructure for agent commerce over Lightning.
 
 Open-source (MIT) MCP server for AI agent Lightning payments. See the main repo at `F:\lightning-enable` for full context.
 
-**Publishing:** Bump the version in ALL THREE files in the SAME commit, then push to main:
+**Publishing:** Bump the version in ALL FIVE files in the SAME commit, then push to main:
 1. `dotnet/src/LightningEnable.Mcp/LightningEnable.Mcp.csproj` — `<Version>`
 2. `python/lightning-enable-mcp/pyproject.toml` — `version`
 3. `server.json` — `.version`, **both** `.packages[].version` (nuget + pypi), **and** the Docker image pin in `.packages[2].identifier` (`docker.io/refinedelement/lightning-enable-mcp:<version>`)
+4. `mcpb/manifest.json` — `.version`
+5. `mcpb/pyproject.toml` — `version` **and** the `lightning-enable-mcp==<version>` dependency pin
+
+`publish-mcp.yml`'s verify-versions job checks all five and fails the whole publish on any drift (2.0.3 was caught this way).
 
 `server.json` is committed source-of-truth for the MCP Registry entry — it is NOT rewritten at publish time. `publish-mcp.yml` **verifies** it matches the release version and **fails the registry publish on any drift**, so a partial bump (e.g. csproj/pyproject bumped but `server.json` left stale) is caught before it strands registry.modelcontextprotocol.io on an old version. `server.json`'s `description` must be ≤100 chars (also enforced by MCP Registry and CI validation).
 

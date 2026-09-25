@@ -82,4 +82,39 @@ public class OperationLedgerTests
         contents.Should().NotContain("macaroon");
         contents.Should().NotContain("lnbc");
     }
+
+    [Fact]
+    public void OnChainOutcome_PersistsStateAndProviderIds_AcrossRestart()
+    {
+        var path = TempPath();
+        var ledger = new OperationLedger(path);
+        ledger.RecordSubmitted("onchain:abc", 5000, "Strike");
+        ledger.RecordOutcome("onchain:abc", OperationState.Unknown, null, paymentId: null, quoteId: "q-1");
+        ledger.RecordOutcome("onchain:abc", OperationState.Pending, null, paymentId: "pay-1");
+
+        var reloaded = new OperationLedger(path).Lookup("onchain:abc");
+
+        reloaded.Should().NotBeNull();
+        reloaded!.State.Should().Be(OperationState.Pending);
+        reloaded.AmountSats.Should().Be(5000);
+        reloaded.PaymentId.Should().Be("pay-1");
+        reloaded.QuoteId.Should().Be("q-1", "a later outcome without a quote id keeps the recorded one");
+    }
+
+    [Fact]
+    public void TryBeginSubmission_RefusesWhileMoneyMoving_AllowsAfterFailed()
+    {
+        var ledger = new OperationLedger(TempPath());
+
+        ledger.TryBeginSubmission("onchain:x", 5000, "Strike", out var none).Should().BeTrue();
+        none.Should().BeNull();
+        ledger.TryBeginSubmission("onchain:x", 5000, "Strike", out var existing).Should().BeFalse();
+        existing!.State.Should().Be(OperationState.Submitted);
+
+        ledger.RecordOutcome("onchain:x", OperationState.Unknown, null);
+        ledger.TryBeginSubmission("onchain:x", 5000, "Strike", out _).Should().BeFalse("Unknown may have moved funds");
+
+        ledger.RecordOutcome("onchain:x", OperationState.FailedNoFunds, null);
+        ledger.TryBeginSubmission("onchain:x", 5000, "Strike", out _).Should().BeTrue("only a proven failure allows a fresh send");
+    }
 }

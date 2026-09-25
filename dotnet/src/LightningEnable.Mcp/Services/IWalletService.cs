@@ -80,6 +80,16 @@ public interface IWalletService
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Looks up the provider status of a previously submitted on-chain payment (if supported).
+    /// Returns <c>State</c> (PENDING, COMPLETED, FAILED) and <c>TxId</c> when known. Moves no
+    /// value. The default implementation reports NOT_SUPPORTED.
+    /// </summary>
+    Task<OnChainPaymentResult> GetOnChainPaymentStatusAsync(
+        string paymentId,
+        CancellationToken cancellationToken = default)
+        => Task.FromResult(OnChainPaymentResult.NotSupported());
+
+    /// <summary>
     /// Exchanges currency (e.g., USD to BTC or BTC to USD).
     /// </summary>
     /// <param name="sourceCurrency">Currency to convert from (e.g., "USD", "BTC").</param>

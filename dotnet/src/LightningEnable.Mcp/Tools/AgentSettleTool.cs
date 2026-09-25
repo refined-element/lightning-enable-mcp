@@ -61,15 +61,24 @@ public static class AgentSettleTool
                 });
             }
 
-            // Security: reject plain HTTP except for localhost (dev use)
-            if (uri.Scheme == "http" &&
-                uri.Host != "localhost" && uri.Host != "127.0.0.1" && uri.Host != "::1")
+            // Security (A1, parity with the Python port): HTTPS only — no localhost / plain-HTTP
+            // carve-out, because the endpoint is caller-chosen and a dev exception is a
+            // model-reachable SSRF path. Local testing injects a fake IL402HttpClient instead.
+            if (uri.Scheme != "https")
             {
                 return JsonSerializer.Serialize(new
                 {
                     success = false,
-                    error = "L402 settlement requires HTTPS. Plain HTTP is only allowed for localhost during development."
+                    error = "L402 settlement requires HTTPS. Plain HTTP endpoints are not accepted."
                 });
+            }
+
+            // Cheap SSRF pre-check (private/loopback/metadata/internal hosts) before any
+            // budget or network work. Error text never echoes the resolved address.
+            var ssrfError = SsrfUrlGuard.Validate(l402Endpoint);
+            if (ssrfError != null)
+            {
+                return JsonSerializer.Serialize(new { success = false, error = ssrfError });
             }
 
             // A3: the settlement endpoint is caller-chosen, so this is a generic paid fetch

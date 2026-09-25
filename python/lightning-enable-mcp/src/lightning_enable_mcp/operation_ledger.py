@@ -16,6 +16,7 @@ governs execution/idempotency.
 """
 
 import json
+import re
 import logging
 import os
 from dataclasses import dataclass
@@ -45,6 +46,27 @@ class OperationState(str, Enum):
     # value), so existing ledgers keep loading.
     FAILED = "failed_no_funds"
 
+
+
+def parse_state(raw) -> "OperationState | None":
+    """Parse a persisted state from EITHER port. This file is shared with the .NET port,
+    which writes enum names (``Submitted``, ``FailedNoFunds``) where Python writes
+    ``submitted`` / ``failed_no_funds``. A line the other flavor wrote must never be
+    dropped, or a submitted send becomes re-sendable."""
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        return OperationState(raw)
+    except ValueError:
+        pass
+    # CamelCase -> snake_case, then lower-case; also accept the bare "failed" alias.
+    snake = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", raw.strip()).lower()
+    if snake == "failed":
+        snake = "failed_no_funds"
+    try:
+        return OperationState(snake)
+    except ValueError:
+        return None
 
 # The states in which re-submitting an operation could cause a double-payment.
 MONEY_MOVING_STATES = frozenset(
@@ -189,9 +211,8 @@ class OperationLedger:
                         state_str = obj.get("state")
                         if not op_id or state_str is None:
                             continue
-                        try:
-                            state = OperationState(state_str)
-                        except ValueError:
+                        state = parse_state(state_str)
+                        if state is None:
                             continue
                         # Last line wins — append-only file is in chronological order.
                         self._index[op_id] = OperationRecord(

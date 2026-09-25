@@ -71,3 +71,28 @@ def test_never_persists_secrets(tmp_path):
     assert "preimage" not in contents
     assert "macaroon" not in contents
     assert "lnbc" not in contents
+
+
+def test_loads_dotnet_state_spellings(tmp_path):
+    """Both ports share ~/.lightning-enable/operations.jsonl. The .NET port writes enum
+    names (Submitted, Pending, Settled, Unknown, FailedNoFunds); Python must read them, or a
+    send submitted from the .NET flavor is invisible here and could be re-sent."""
+    import json
+    path = _temp_path(tmp_path)
+    rows = [
+        ("onchain:a", "Submitted", OperationState.SUBMITTED),
+        ("onchain:b", "Pending", OperationState.PENDING),
+        ("onchain:c", "Settled", OperationState.SETTLED),
+        ("onchain:d", "Unknown", OperationState.UNKNOWN),
+        ("onchain:e", "FailedNoFunds", OperationState.FAILED_NO_FUNDS),
+        ("onchain:f", "SUBMITTED", OperationState.SUBMITTED),
+    ]
+    with open(path, "w", encoding="utf-8") as f:
+        for op, spelling, _ in rows:
+            f.write(json.dumps({"type": "operation", "operationId": op, "state": spelling,
+                                "amountSats": 1, "kind": "onchain"}) + "\n")
+    ledger = OperationLedger(path)
+    for op, _, expected in rows:
+        rec = ledger.lookup(op)
+        assert rec is not None, f"{op} was dropped"
+        assert rec.state is expected

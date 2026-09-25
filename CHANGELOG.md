@@ -49,6 +49,16 @@ Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-ena
     status through the new `StrikeWallet.get_onchain_payment_status` (`GET /v1/payments/{id}`)
     or refuses and names the recorded payment ID. Only a recorded `failed` state allows a
     fresh send. The ledger survives restarts.
+  - `send_onchain` takes an optional `intent_id`. It scopes the operation ID
+    (`... + ":" + intent_id.strip()`; blank is the same as omitted), so you can pay the same
+    address the same amount again on purpose with a new `intent_id`. A repeat with the same
+    `intent_id` is blocked. Every real send still needs a fresh confirmation code.
+  - A blocked retry returns `errorCode: "ALREADY_SUBMITTED"`, `duplicate: true`, `provider`,
+    `statusLookup`, and `receipt_written: false`. It never mints or consumes a confirmation
+    code, never reserves budget, and never calls the wallet. An ambiguous outcome always
+    returns `errorCode: "OUTCOME_UNKNOWN"` with `provider`, `quoteId`, `txId`, and
+    `amountSats`. A `PENDING` success adds a `note` not to send again. Response texts match
+    the .NET port.
   - For submitted outcomes, including a cancellation after submission, the tool now commits
     the budget reservation (principal plus the known fee, or plus the fee headroom when the
     fee is unknown) and writes a pending receipt. It releases the reservation only when

@@ -256,7 +256,7 @@ async def pay_l402_challenge(
                             'call pay_l402_challenge(invoice="...", confirmation_nonce="<code-from-human>").'
                         ),
                         "amount": {"sats": amount_sats, "usd": float(approval.amount_usd)},
-                        "expiresInSeconds": 120,
+                        "expiresInSeconds": dispatch.expires_in_seconds,
                     })
 
             # Atomically reserve against the session cap BEFORE paying — closes the

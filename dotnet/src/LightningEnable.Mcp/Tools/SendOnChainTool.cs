@@ -172,7 +172,7 @@ public static class SendOnChainTool
                               "Ask the human to read that code and give it to you.",
                     howToConfirm = "Ask the human operator for the confirmation code shown in the server console, then call " +
                                    "send_onchain(address=\"...\", amountSats=..., confirmationNonce=\"<code-from-human>\").",
-                    expiresInSeconds = 120,
+                    expiresInSeconds = dispatch.ExpiresInSeconds,
                     amount = new { sats = amountSats, usd = Math.Round(approval.AmountUsd, 2) }
                 });
             }

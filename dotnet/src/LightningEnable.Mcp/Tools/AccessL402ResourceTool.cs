@@ -149,12 +149,12 @@ public static class AccessL402ResourceTool
                             error = "Confirmation code is invalid, expired, already used, or does not match THIS " +
                                     "request's amount, tool, and URL. Codes are bound to the exact amount, tool, and " +
                                     "destination approved — a code cannot be redirected to a different URL.",
-                            message = "The code may have expired (2-minute limit), been used already, or been issued for a " +
+                            message = "The code may have expired (codes are short-lived), been used already, or been issued for a " +
                                       "different amount/tool/URL. Request a new confirmation by calling access_l402_resource without a confirmationNonce."
                         });
                     }
 
-                    Console.Error.WriteLine($"[Lightning Enable] L402 payment of up to {approvalResult.AmountUsd:C} confirmed via nonce {confirmation.Nonce} for {RedactUrl(url)}");
+                    Console.Error.WriteLine($"[Lightning Enable] L402 payment of up to {approvalResult.AmountUsd:C} confirmed by the operator's code for {RedactUrl(url)}");
                 }
                 else
                 {
@@ -215,7 +215,7 @@ public static class AccessL402ResourceTool
                                       "Ask the human to read that code and give it to you.",
                             howToConfirm = "Ask the human operator for the confirmation code shown in the server console, then call " +
                                            "access_l402_resource(url=\"...\", confirmationNonce=\"<code-from-human>\").",
-                            expiresInSeconds = 120,
+                            expiresInSeconds = dispatch.ExpiresInSeconds,
                             amount = new
                             {
                                 maxSats,

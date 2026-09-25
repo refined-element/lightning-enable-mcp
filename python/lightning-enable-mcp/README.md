@@ -387,8 +387,11 @@ This MCP server handles steps 2-5 automatically when you use `access_l402_resour
   The agent must ask the **human** for the code, then re-call the original payment tool with
   its `confirmation_nonce` parameter to proceed. (The separate `verify_confirmation_code` tool only
   *verifies* a code — it does not execute the payment.) This closes a self-approval hole: a prompt-injected
-  agent cannot read or generate its own confirmation code. Codes are bound to the exact
-  amount **and** tool approved, so they can't be reused across a different payment. Applies to
+  agent cannot read or generate its own confirmation code from a tool result. It is an operator
+  confirmation aid on a trusted local host, not an independent approval boundary. Codes are bound
+  to the exact amount, tool, and destination approved, so they can't be reused across a different
+  payment. At most 3 codes can be outstanding, 5 invalid attempts in a row revoke every pending
+  code, and codes live 120 seconds by default (`confirmation.ttlSeconds`, clamped to 30-900). Applies to
   `pay_invoice`, `access_l402_resource`, `pay_l402_challenge`, and `settle_agent_service`.
   `send_onchain` always requires confirmation because it is irreversible, and fails closed if
   no budget service is configured.

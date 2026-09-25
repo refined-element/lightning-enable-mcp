@@ -217,7 +217,7 @@ async def pay_invoice(
                             'call pay_invoice(invoice="...", confirmation_nonce="<code-from-human>").'
                         ),
                         "amount": {"sats": amount_sats, "usd": float(result.amount_usd)},
-                        "expiresInSeconds": 120,
+                        "expiresInSeconds": dispatch.expires_in_seconds,
                         "budget": {"remainingSessionUsd": float(result.remaining_session_budget_usd)},
                     })
 

@@ -180,7 +180,7 @@ async def send_onchain(
             "howToConfirm": "Ask the human operator for the confirmation code, then call "
                             'send_onchain(address="...", amount_sats=..., confirmation_nonce="<code-from-human>").',
             "amount": {"sats": amount_sats, "usd": float(budget_result.amount_usd)},
-            "expiresInSeconds": 120,
+            "expiresInSeconds": dispatch.expires_in_seconds,
         })
 
     # Reserve principal + a fee headroom BEFORE broadcasting. On-chain fees are added by the

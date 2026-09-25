@@ -53,6 +53,11 @@ public record ConfirmationDispatchResult
     public ConfirmationChannelKind Channel { get; init; }
 
     /// <summary>Lower-case channel name for tool results and logs.</summary>
+    /// <summary>Seconds the delivered code stays valid (0 on a refusal).</summary>
+    public int ExpiresInSeconds => Pending == null
+        ? 0
+        : (int)Math.Max(0, Math.Round((Pending.ExpiresAt - Pending.CreatedAt).TotalSeconds));
+
     public string ChannelName => Channel.ToString().ToLowerInvariant();
 
     /// <summary>

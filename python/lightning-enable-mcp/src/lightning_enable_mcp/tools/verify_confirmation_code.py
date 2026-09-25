@@ -31,8 +31,8 @@ async def verify_confirmation_code(
     For payments above the auto-approve threshold, the server prints a code to its
     console/stderr (never in a tool result). The human reads it and gives it to you. This
     tool only VERIFIES the code (it does not consume it or pay) — to actually pay, call the
-    original payment tool again with confirmation_nonce set to the code. Codes expire after
-    2 minutes and are one-time use (consumed by the payment tool, bound to its amount+tool).
+    original payment tool again with confirmation_nonce set to the code. Codes are short-lived
+    (120s by default) and one-time use; invalid attempts count toward a guess limit (consumed by the payment tool, bound to its amount+tool).
 
     Args:
         nonce: The confirmation code the human read from the server console
@@ -60,8 +60,8 @@ async def verify_confirmation_code(
             return json.dumps({
                 "success": False,
                 "error": "Invalid, expired, or already-used confirmation nonce",
-                "message": "The nonce may have expired (2 minute limit) or was already used. "
-                           "Request a new confirmation by calling the original payment tool again."
+                "message": "The nonce may have expired or was already used. Repeated invalid "
+                           "codes revoke every pending confirmation. Request a new confirmation by calling the original payment tool again."
             })
 
         return json.dumps({
@@ -71,16 +71,16 @@ async def verify_confirmation_code(
             "confirmed": True,
             "amount_sats": confirmation.amount_sats,
             "tool": confirmation.tool_name,
+            # Neither the code nor the destination is echoed back: a correct guess must not
+            # reveal what it unlocks, and the code belongs only on the operator channel.
             "message": (
                 f"Code verified — NOTHING HAS BEEN PAID. To execute, call "
-                f"{confirmation.tool_name} again with confirmation_nonce={confirmation.nonce}."
+                f"{confirmation.tool_name} again with the same code as confirmation_nonce."
             ),
             "confirmation": {
-                "nonce": confirmation.nonce,
                 "amountSats": confirmation.amount_sats,
                 "amountUsd": round(float(confirmation.amount_usd), 2),
                 "toolName": confirmation.tool_name,
-                "description": confirmation.description,
             }
         }, indent=2)
 

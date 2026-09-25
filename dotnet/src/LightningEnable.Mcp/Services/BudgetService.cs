@@ -10,6 +10,23 @@ namespace LightningEnable.Mcp.Services;
 public class BudgetService : IBudgetService
 {
     private readonly object _lock = new();
+
+    /// <summary>
+    /// Most confirmation codes that may be outstanding at once. Beyond this a payment tool is
+    /// refused instead of minting another code, so a looping agent cannot spam the operator
+    /// channel or grow the pending set without bound.
+    /// </summary>
+    public const int MaxPendingConfirmations = 3;
+
+    /// <summary>
+    /// Consecutive invalid code attempts (verify or consume) after which EVERY pending code is
+    /// revoked. A 6-char code over 36 symbols has ~31 bits; without a limit it can be guessed
+    /// at tool-call speed. With it, each minted code (which notifies the operator) buys at most
+    /// this many guesses.
+    /// </summary>
+    public const int MaxFailedConfirmationAttempts = 5;
+
+    private int _failedConfirmationAttempts;
     private readonly SemaphoreSlim _semaphore = new(1, 1);
     private readonly IBudgetConfigurationService _configService;
     private readonly IPriceService _priceService;
@@ -827,7 +844,16 @@ public class BudgetService : IBudgetService
             // Clean expired entries first
             CleanExpiredConfirmationsLocked();
 
+            if (_pendingConfirmations.Count >= MaxPendingConfirmations)
+            {
+                throw new InvalidOperationException(
+                    $"{MaxPendingConfirmations} confirmation codes are already outstanding, so no new code was issued. "
+                    + "Use a code the operator already has, or wait for the outstanding codes to expire, then retry.");
+            }
+
             var nonce = GenerateNonce();
+            while (_pendingConfirmations.ContainsKey(nonce))
+                nonce = GenerateNonce();
             var confirmation = new PendingConfirmation
             {
                 Nonce = nonce,
@@ -837,7 +863,7 @@ public class BudgetService : IBudgetService
                 Description = description,
                 Destination = (destination ?? string.Empty).Trim(),
                 CreatedAt = DateTime.UtcNow,
-                ExpiresAt = DateTime.UtcNow.AddMinutes(2)
+                ExpiresAt = DateTime.UtcNow.AddSeconds(ConfirmationTtlSeconds)
             };
 
             _pendingConfirmations[nonce] = confirmation;
@@ -859,8 +885,19 @@ public class BudgetService : IBudgetService
                 channel.RefusalReason ?? RefusingConfirmationChannel.Configured().RefusalReason!);
         }
 
-        var pending = CreatePendingConfirmation(
-            request.AmountSats, request.AmountUsd, request.ToolName, request.Description, request.Destination);
+        PendingConfirmation pending;
+        try
+        {
+            pending = CreatePendingConfirmation(
+                request.AmountSats, request.AmountUsd, request.ToolName, request.Description, request.Destination);
+        }
+        catch (InvalidOperationException ex)
+        {
+            // Pending cap reached: refuse WITHOUT notifying the operator again.
+            return ConfirmationDispatchResult.Refused(
+                channel.Kind,
+                $"This payment needs human approval, but {ex.Message} The payment was REFUSED, not approved.");
+        }
 
         ConfirmationDeliveryResult delivery;
         try
@@ -909,12 +946,12 @@ public class BudgetService : IBudgetService
         lock (_lock)
         {
             if (!_pendingConfirmations.TryGetValue(nonce, out var confirmation))
-                return null;
+                return RecordFailedAttemptLocked();
 
             if (confirmation.IsExpired)
             {
                 _pendingConfirmations.Remove(nonce);
-                return null;
+                return RecordFailedAttemptLocked();
             }
 
             return confirmation;
@@ -929,12 +966,12 @@ public class BudgetService : IBudgetService
         lock (_lock)
         {
             if (!_pendingConfirmations.TryGetValue(nonce, out var confirmation))
-                return null;
+                return RecordFailedAttemptLocked();
 
             if (confirmation.IsExpired)
             {
                 _pendingConfirmations.Remove(nonce);
-                return null;
+                return RecordFailedAttemptLocked();
             }
 
             // C-3: bind the approval to the EXACT amount AND tool it was created for.
@@ -943,20 +980,48 @@ public class BudgetService : IBudgetService
             // On mismatch we do NOT consume — the nonce stays valid so the correct
             // (amount, tool) retry still works, but this request is refused.
             if (confirmation.AmountSats != expectedAmountSats)
-                return null;
+                return RecordFailedAttemptLocked();
             if (!string.Equals(confirmation.ToolName, expectedToolName, StringComparison.Ordinal))
-                return null;
+                return RecordFailedAttemptLocked();
             // #21 anti-redirect: bind to the EXACT destination too. A code approved to pay
             // invoice/URL/address X must never authorize paying a different one (compared
             // after trimming, mirroring how the destination was stored).
             if (!string.Equals(confirmation.Destination, (expectedDestination ?? string.Empty).Trim(), StringComparison.Ordinal))
-                return null;
+                return RecordFailedAttemptLocked();
 
             // Amount + tool + destination match — consume (one-time use).
             _pendingConfirmations.Remove(nonce);
+            _failedConfirmationAttempts = 0;
             return confirmation;
         }
     }
+
+    /// <summary>
+    /// Count an invalid code attempt; at <see cref="MaxFailedConfirmationAttempts"/> revoke every
+    /// pending code (fail closed) so guessing cannot continue against them. Caller holds _lock.
+    /// </summary>
+    private PendingConfirmation? RecordFailedAttemptLocked()
+    {
+        _failedConfirmationAttempts++;
+        if (_failedConfirmationAttempts >= MaxFailedConfirmationAttempts)
+        {
+            _pendingConfirmations.Clear();
+            _failedConfirmationAttempts = 0;
+            Console.Error.WriteLine(
+                $"[Lightning Enable] {MaxFailedConfirmationAttempts} invalid confirmation code attempts: all pending "
+                + "confirmation codes were revoked. The agent must request a fresh confirmation.");
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Lifetime of a new confirmation code: <c>LIGHTNING_ENABLE_CONFIRMATION_TTL_SECONDS</c> &gt;
+    /// <c>confirmation.ttlSeconds</c> &gt; 120, clamped to 30..900.
+    /// </summary>
+    private int ConfirmationTtlSeconds => ConfirmationChannelResolver.ResolveTtlSeconds(
+        Environment.GetEnvironmentVariable(ConfirmationChannelResolver.TtlEnvironmentVariable),
+        _configService.Configuration?.Confirmation?.TtlSeconds);
 
     public void CleanExpiredConfirmations()
     {

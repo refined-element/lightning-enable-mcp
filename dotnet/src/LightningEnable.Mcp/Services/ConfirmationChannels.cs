@@ -117,7 +117,7 @@ public sealed class StderrConfirmationChannel : IConfirmationChannel
             $"[Lightning Enable] *** {request.Title} ***\n" +
             $"  {request.Summary}\n" +
             $"  Confirmation code: {pending.Nonce}\n" +
-            "  To approve, give this code to the agent. Expires in 120s.");
+            $"  To approve, give this code to the agent. Expires in {(int)Math.Round((pending.ExpiresAt - pending.CreatedAt).TotalSeconds)}s.");
         return Task.FromResult(ConfirmationDeliveryResult.Ok());
     }
 }

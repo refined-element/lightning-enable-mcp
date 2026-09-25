@@ -67,6 +67,34 @@ WEBHOOK_URL_ENV_VAR = "LIGHTNING_ENABLE_CONFIRMATION_WEBHOOK_URL"
 WEBHOOK_SECRET_ENV_VAR = "LIGHTNING_ENABLE_CONFIRMATION_WEBHOOK_SECRET"
 FILE_PATH_ENV_VAR = "LIGHTNING_ENABLE_CONFIRMATION_FILE"
 
+TTL_ENV_VAR = "LIGHTNING_ENABLE_CONFIRMATION_TTL_SECONDS"
+"""Env var override for ``confirmation.ttlSeconds``."""
+
+DEFAULT_TTL_SECONDS = 120
+MIN_TTL_SECONDS = 30
+MAX_TTL_SECONDS = 900
+
+
+def resolve_confirmation_ttl_seconds(env_ttl: str | None, config_ttl: object) -> int:
+    """Code lifetime in seconds: env > config > 120, clamped to 30..900.
+
+    An unparseable env value (or a non-integer config value) is ignored. For the
+    asynchronous webhook and file channels, 300-600 is a sensible value. Mirrors the .NET
+    ``ConfirmationChannelResolver.ResolveTtlSeconds``.
+    """
+    ttl = DEFAULT_TTL_SECONDS
+    parsed_env = None
+    if env_ttl is not None and str(env_ttl).strip():
+        try:
+            parsed_env = int(str(env_ttl).strip())
+        except ValueError:
+            parsed_env = None
+    if parsed_env is not None:
+        ttl = parsed_env
+    elif isinstance(config_ttl, int) and not isinstance(config_ttl, bool):
+        ttl = config_ttl
+    return max(MIN_TTL_SECONDS, min(MAX_TTL_SECONDS, ttl))
+
 VALID_CHANNELS = "stderr | refuse | webhook | file"
 
 DESTINATION_SUMMARY_LENGTH = 40
@@ -137,6 +165,13 @@ class ConfirmationDispatchResult:
     pending: PendingConfirmation | None = None
     operator_hint: str | None = None
     refusal_reason: str | None = None
+
+    @property
+    def expires_in_seconds(self) -> int:
+        """Seconds the delivered code stays valid (0 on a refusal)."""
+        if self.pending is None:
+            return 0
+        return max(0, round((self.pending.expires_at - self.pending.created_at).total_seconds()))
 
     @property
     def channel_name(self) -> str:
@@ -261,7 +296,8 @@ class StderrConfirmationChannel:
             f"[Lightning Enable] *** {request.title} ***\n"
             f"  {request.summary}\n"
             f"  Confirmation code: {pending.nonce}\n"
-            "  To approve, give this code to the agent. Expires in 120s.",
+            "  To approve, give this code to the agent. Expires in "
+            f"{round((pending.expires_at - pending.created_at).total_seconds())}s.",
             file=self._stream or sys.stderr,
             flush=True,
         )

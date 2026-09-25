@@ -227,7 +227,7 @@ async def settle_agent_service(
                             'settle_agent_service(l402_endpoint="...", confirmation_nonce="<code-from-human>").'
                         ),
                         "amount": {"maxSats": max_sats, "maxUsd": float(result.amount_usd)},
-                        "expiresInSeconds": 120,
+                        "expiresInSeconds": dispatch.expires_in_seconds,
                         "agreementId": agreement_id,
                     })
 

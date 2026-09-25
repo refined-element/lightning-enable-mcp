@@ -184,12 +184,12 @@ public static class PayL402ChallengeTool
                                 error = "Confirmation code is invalid, expired, already used, or does not match THIS " +
                                         "payment's amount, tool, and invoice. Codes are bound to the exact amount, tool, and " +
                                         "destination approved — a code cannot be redirected to a different invoice.",
-                                message = "The code may have expired (2-minute limit), been used already, or been issued for a " +
+                                message = "The code may have expired (codes are short-lived), been used already, or been issued for a " +
                                           "different amount/tool/invoice. Request a new confirmation by calling pay_l402_challenge without a confirmationNonce."
                             });
                         }
 
-                        Console.Error.WriteLine($"[Lightning Enable] L402 challenge payment of {approvalResult.AmountUsd:C} confirmed via nonce {confirmation.Nonce}");
+                        Console.Error.WriteLine($"[Lightning Enable] L402 challenge payment of {approvalResult.AmountUsd:C} confirmed by the operator's code");
                     }
                     else
                     {
@@ -250,7 +250,7 @@ public static class PayL402ChallengeTool
                                           "Ask the human to read that code and give it to you.",
                                 howToConfirm = "Ask the human operator for the confirmation code shown in the server console, then call " +
                                                "pay_l402_challenge(invoice=\"...\", macaroon=\"...\", confirmationNonce=\"<code-from-human>\").",
-                                expiresInSeconds = 120,
+                                expiresInSeconds = dispatch.ExpiresInSeconds,
                                 amount = new
                                 {
                                     sats = budgetCheckAmount,

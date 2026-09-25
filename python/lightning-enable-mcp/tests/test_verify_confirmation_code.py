@@ -66,7 +66,9 @@ class TestVerifyConfirmationCode:
         assert parsed["valid"] is True
         assert parsed["amount_sats"] == 5000
         assert parsed["tool"] == "pay_invoice"
-        assert parsed["confirmation"]["nonce"] == "ABC123"
+        # The code is never echoed back (it belongs only on the operator channel).
+        assert "nonce" not in parsed["confirmation"]
+        assert "ABC123" not in result
         assert parsed["confirmation"]["amountSats"] == 5000
         assert parsed["confirmation"]["amountUsd"] == 5.0
         # The verdict must say nothing was paid and how to execute.

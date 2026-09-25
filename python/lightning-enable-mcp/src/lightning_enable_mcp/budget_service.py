@@ -13,6 +13,7 @@ This module provides the BudgetService class that combines:
 
 import asyncio
 import logging
+import os
 import secrets
 import sys
 import threading
@@ -37,6 +38,8 @@ from .confirmation_channel import (
     DEFAULT_REFUSAL,
     StderrConfirmationChannel,
     create_confirmation_channel,
+    TTL_ENV_VAR,
+    resolve_confirmation_ttl_seconds,
 )
 from .price_service import PriceService, PriceUnavailableError, get_price_service
 
@@ -238,6 +241,7 @@ class BudgetService:
         # consume are atomic even under a thread pool / multi-worker (hosted) server — and
         # so create_pending_confirmation can call _clean_expired_confirmations while held.
         self._confirmation_lock = threading.RLock()
+        self._failed_confirmation_attempts = 0
 
         # Cached sats thresholds (updated when price changes significantly)
         self._auto_approve_sats: int = 0
@@ -967,6 +971,17 @@ class BudgetService:
     # =========================================================================
 
     _CONFIRMATION_CODE_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+    # Most codes outstanding at once. Beyond this a payment tool is refused instead of
+    # minting another, so a looping agent cannot spam the operator channel or grow memory.
+    MAX_PENDING_CONFIRMATIONS = 3
+    # Consecutive invalid attempts (verify or consume) after which EVERY pending code is
+    # revoked. A 6-char code over 36 symbols has ~31 bits; without a limit it can be guessed
+    # at tool-call speed. With it, each minted code (which notifies the operator) buys at
+    # most this many guesses.
+    MAX_FAILED_CONFIRMATION_ATTEMPTS = 5
+
+    class PendingConfirmationCapError(RuntimeError):
+        """Raised by create_pending_confirmation when the outstanding-code cap is reached."""
 
     def create_pending_confirmation(
         self,
@@ -988,6 +1003,12 @@ class BudgetService:
         """
         with self._confirmation_lock:
             self._clean_expired_confirmations()
+            if len(self._pending_confirmations) >= self.MAX_PENDING_CONFIRMATIONS:
+                raise BudgetService.PendingConfirmationCapError(
+                    f"{self.MAX_PENDING_CONFIRMATIONS} confirmation codes are already outstanding, "
+                    "so no new code was issued. Use a code the operator already has, or wait for "
+                    "the outstanding codes to expire, then retry."
+                )
             # Regenerate on the (astronomically unlikely) chance of a collision with a
             # still-live confirmation, so a new code can never overwrite — and thereby
             # silently re-bind — an outstanding human-approved one.
@@ -1003,7 +1024,7 @@ class BudgetService:
                 description=description,
                 destination=(destination or "").strip(),
                 created_at=now,
-                expires_at=now + timedelta(minutes=2),
+                expires_at=now + timedelta(seconds=self._confirmation_ttl_seconds()),
             )
             self._pending_confirmations[code] = pc
             return pc
@@ -1033,13 +1054,20 @@ class BudgetService:
                 channel.kind, channel.refusal_reason or DEFAULT_REFUSAL
             )
 
-        pending = self.create_pending_confirmation(
-            request.amount_sats,
-            request.amount_usd,
-            request.tool_name,
-            request.description,
-            destination=request.destination,
-        )
+        try:
+            pending = self.create_pending_confirmation(
+                request.amount_sats,
+                request.amount_usd,
+                request.tool_name,
+                request.description,
+                destination=request.destination,
+            )
+        except BudgetService.PendingConfirmationCapError as ex:
+            # Pending cap reached: refuse WITHOUT notifying the operator again.
+            return ConfirmationDispatchResult.refused(
+                channel.kind,
+                f"This payment needs human approval, but {ex} The payment was REFUSED, not approved.",
+            )
 
         try:
             delivery = await channel.deliver(pending, request)
@@ -1091,10 +1119,10 @@ class BudgetService:
         with self._confirmation_lock:
             pc = self._pending_confirmations.get(nonce)
             if pc is None:
-                return None
+                return self._record_failed_attempt()
             if pc.is_expired:
                 self._pending_confirmations.pop(nonce, None)
-                return None
+                return self._record_failed_attempt()
             return pc
 
     def validate_and_consume_confirmation(
@@ -1116,22 +1144,49 @@ class BudgetService:
         with self._confirmation_lock:
             pc = self._pending_confirmations.get(nonce)
             if pc is None:
-                return None
+                return self._record_failed_attempt()
             if pc.is_expired:
                 self._pending_confirmations.pop(nonce, None)
-                return None
+                return self._record_failed_attempt()
             # C-3: bind to the EXACT amount AND tool the code was approved for.
             if pc.amount_sats != expected_amount_sats:
-                return None
+                return self._record_failed_attempt()
             if pc.tool_name != expected_tool_name:
-                return None
+                return self._record_failed_attempt()
             # #21 anti-redirect: bind to the EXACT destination too. A code approved to pay
             # invoice/URL/address X must never authorize paying a different one.
             if pc.destination != (expected_destination or "").strip():
-                return None
+                return self._record_failed_attempt()
             # Amount + tool + destination match -> consume (one-time use).
             self._pending_confirmations.pop(nonce, None)
+            self._failed_confirmation_attempts = 0
             return pc
+
+    def _record_failed_attempt(self) -> None:
+        """Count an invalid code attempt; at the limit revoke EVERY pending code (fail
+        closed) so guessing cannot continue against them. Caller holds the lock."""
+        with self._confirmation_lock:
+            self._failed_confirmation_attempts += 1
+            if self._failed_confirmation_attempts >= self.MAX_FAILED_CONFIRMATION_ATTEMPTS:
+                self._pending_confirmations.clear()
+                self._failed_confirmation_attempts = 0
+                print(
+                    f"[Lightning Enable] {self.MAX_FAILED_CONFIRMATION_ATTEMPTS} invalid confirmation "
+                    "code attempts: all pending confirmation codes were revoked. The agent must "
+                    "request a fresh confirmation.",
+                    file=sys.stderr,
+                    flush=True,
+                )
+        return None
+
+    def _confirmation_ttl_seconds(self) -> int:
+        """Env LIGHTNING_ENABLE_CONFIRMATION_TTL_SECONDS > confirmation.ttlSeconds > 120,
+        clamped to 30..900."""
+        try:
+            config_ttl = self._config_service.configuration.confirmation.ttl_seconds
+        except Exception:  # noqa: BLE001 — a missing section means "use the default"
+            config_ttl = None
+        return resolve_confirmation_ttl_seconds(os.environ.get(TTL_ENV_VAR), config_ttl)
 
     def _clean_expired_confirmations(self) -> None:
         # Re-entrant: create_pending_confirmation calls this while holding the lock.

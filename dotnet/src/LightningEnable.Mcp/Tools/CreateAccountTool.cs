@@ -137,13 +137,13 @@ public static class CreateAccountTool
                                 error = "Confirmation code is invalid, expired, already used, or does not match THIS " +
                                         "activation's amount, tool, and destination. Codes are bound to the exact amount, " +
                                         "tool, and destination approved — a code cannot be redirected.",
-                                message = "The code may have expired (2-minute limit), been used already, or been issued " +
+                                message = "The code may have expired (codes are short-lived), been used already, or been issued " +
                                           "for a different amount/tool. Request a new one by calling " +
                                           "create_lightning_enable_account without a confirmationNonce."
                             });
                         }
 
-                        Console.Error.WriteLine($"[Lightning Enable] Account activation of {approval.AmountUsd:C} confirmed via nonce {confirmation.Nonce}");
+                        Console.Error.WriteLine($"[Lightning Enable] Account activation of {approval.AmountUsd:C} confirmed by the operator's code");
                     }
                     else
                     {
@@ -195,7 +195,7 @@ public static class CreateAccountTool
                                           "visible to the human operator, NOT to you. Ask the human to read that code and give it to you.",
                                 howToConfirm = "Ask the human operator for the confirmation code shown in the server console, then call " +
                                                "create_lightning_enable_account(email=\"...\", confirmationNonce=\"<code-from-human>\").",
-                                expiresInSeconds = 120,
+                                expiresInSeconds = dispatch.ExpiresInSeconds,
                                 amount = new
                                 {
                                     maxSats,

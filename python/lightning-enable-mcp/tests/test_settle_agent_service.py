@@ -80,15 +80,15 @@ class TestSettleAgentServiceValidation:
         assert "requires HTTPS" in parsed["error"]
 
     @pytest.mark.asyncio
-    async def test_plain_http_localhost_allowed_through_validation(self):
-        """localhost http passes URL validation (reaches the client check)."""
+    async def test_plain_http_localhost_rejected(self):
+        """A1: the localhost plain-HTTP dev carve-out is gone — HTTPS is always required.
+        Full SSRF coverage lives in test_settle_agent_service_ssrf.py."""
         result = await settle_agent_service(
             l402_endpoint="http://localhost:5096/l402", l402_client=None
         )
         parsed = json.loads(result)
-        # Not rejected for HTTPS; rejected later for missing client.
         assert parsed["success"] is False
-        assert "client not available" in parsed["error"]
+        assert "requires HTTPS" in parsed["error"]
 
     @pytest.mark.asyncio
     async def test_invalid_method_rejected(self):

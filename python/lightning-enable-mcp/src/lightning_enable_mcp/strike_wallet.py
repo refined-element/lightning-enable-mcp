@@ -686,7 +686,7 @@ class StrikeWallet:
                 payment = await self._request("PATCH", f"/payment-quotes/{quote_id}/execute")
             except StrikeError as e:
                 code = e.status_code
-                if code is not None and 400 <= code < 500 and code not in (408, 409):
+                if code is not None and 400 <= code < 500 and code not in (408, 409, 429):
                     # Strike answered with a definitive rejection (e.g. insufficient
                     # balance, expired quote): the payment was not executed.
                     return OnChainResult.provider_failed(
@@ -695,7 +695,9 @@ class StrikeWallet:
                     )
                 raise
 
-            payment_id = payment.get("paymentId") or quote_id
+            # NEVER fall back to the quote id: a quote id is not a payment id, and a
+            # status lookup on it would 404. Missing payment id => None (ambiguous).
+            payment_id = payment.get("paymentId") or None
             state = str(payment.get("state") or "UNKNOWN").upper()
 
             # Poll for completion if pending. On-chain confirmation normally takes
@@ -738,7 +740,7 @@ class StrikeWallet:
         except asyncio.CancelledError as e:
             # Tell the caller whether execute had been issued; never swallow a cancel.
             e.onchain_submitted = submitted  # type: ignore[attr-defined]
-            e.onchain_payment_id = payment_id or (quote_id if submitted else None)  # type: ignore[attr-defined]
+            e.onchain_payment_id = payment_id  # type: ignore[attr-defined]
             e.onchain_quote_id = quote_id  # type: ignore[attr-defined]
             e.onchain_fee_sats = fee_sats  # type: ignore[attr-defined]
             raise
@@ -750,7 +752,7 @@ class StrikeWallet:
             )
             return OnChainResult.unknown(
                 f"On-chain send outcome unknown after submission: {e}",
-                payment_id=payment_id or quote_id,
+                payment_id=payment_id,
                 quote_id=quote_id,
                 amount_sats=amount_sats,
                 fee_sats=fee_sats,

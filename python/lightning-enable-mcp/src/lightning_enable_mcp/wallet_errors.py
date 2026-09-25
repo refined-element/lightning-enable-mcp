@@ -108,3 +108,18 @@ class PaymentPendingError(PaymentProofUnavailableError):
     nor as a hard failure (the agent would retry and risk paying twice). Report
     it as pending, with the tracking ID to poll.
     """
+
+
+def onchain_signal(exc: BaseException, name: str, default=None):
+    """Read an on-chain cancel/throw signal attribute (``onchain_submitted``,
+    ``onchain_payment_id``, ``onchain_quote_id``, ``onchain_fee_sats``) from ``exc``.
+
+    Python 3.10's Task machinery re-wraps a CancelledError crossing a task boundary in a
+    NEW CancelledError and chains the original as ``__cause__`` (3.11+ returns the original
+    object), so the attributes may live one link down. Checks the exception, then its
+    ``__cause__``, then ``__context__``.
+    """
+    for e in (exc, getattr(exc, "__cause__", None), getattr(exc, "__context__", None)):
+        if e is not None and hasattr(e, name):
+            return getattr(e, name)
+    return default

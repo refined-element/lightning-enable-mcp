@@ -25,6 +25,7 @@ from typing import Optional
 from bolt11 import decode as decode_bolt11
 
 from .receipt_service import ReceiptService, unwrap_wallet, wallet_label_from
+from .wallet_errors import onchain_signal
 from .wallet_errors import (
     PaymentPendingError,
     PaymentProofUnavailableError,
@@ -159,12 +160,13 @@ class ReceiptRecordingWallet:
         try:
             result = await self._inner.send_onchain(address, amount_sats, *args, **kwargs)
         except BaseException as e:
-            # A cancellation (or throw) AFTER the wallet issued the execute call may have
-            # moved funds: the tool commits budget for it, so the durable log records it as
-            # pending too. Pre-submission throws move nothing and get no receipt.
-            if getattr(e, "onchain_submitted", None) is True:
+            # Mirrors the tool's budget rule exactly: a throw is ambiguous (funds may have
+            # moved, budget is committed) UNLESS the wallet proved it happened before the
+            # execute call (onchain_submitted is False). Only that proven case gets no
+            # receipt. Read through __cause__ for Python 3.10's re-wrapped CancelledError.
+            if onchain_signal(e, "onchain_submitted") is not False:
                 self._write_onchain_receipt(
-                    amount_sats, fee_sats=getattr(e, "onchain_fee_sats", None) or 0,
+                    amount_sats, fee_sats=onchain_signal(e, "onchain_fee_sats") or 0,
                     state="UNKNOWN", txid=None,
                 )
             raise

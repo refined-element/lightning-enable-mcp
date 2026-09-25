@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Optional, Union
 from mcp.types import Tool
 
 from ..confirmation_channel import ConfirmationRequest
+from ..wallet_errors import onchain_signal
 from ..operation_ledger import MONEY_MOVING_STATES, OperationLedger, OperationState
 from . import sanitize_error
 
@@ -286,21 +287,21 @@ async def send_onchain(
         # If the wallet PROVED the cancel landed before the execute call, nothing moved:
         # release. Otherwise (execute issued, or unknown) funds may have moved: commit the
         # reservation and record UNKNOWN so a retry reports status instead of re-sending.
-        if getattr(e, "onchain_submitted", None) is False:
+        if onchain_signal(e, "onchain_submitted") is False:
             budget_service.release_reservation(reservation_id)
             _record(OperationState.FAILED)
         else:
-            _commit(_ambiguous_debit(getattr(e, "onchain_fee_sats", None)))
+            _commit(_ambiguous_debit(onchain_signal(e, "onchain_fee_sats")))
             _record(
                 OperationState.UNKNOWN,
-                payment_id=getattr(e, "onchain_payment_id", None),
-                quote_id=getattr(e, "onchain_quote_id", None),
+                payment_id=onchain_signal(e, "onchain_payment_id"),
+                quote_id=onchain_signal(e, "onchain_quote_id"),
             )
         raise
 
     except Exception as e:
         logger.exception("Error sending on-chain payment")
-        if getattr(e, "onchain_submitted", None) is False:
+        if onchain_signal(e, "onchain_submitted") is False:
             budget_service.release_reservation(reservation_id)
             _record(OperationState.FAILED)
             return json.dumps({
@@ -311,17 +312,17 @@ async def send_onchain(
             })
         # The wallet threw without proving the send was never submitted: treat it as
         # ambiguous. Retain the budget and block a blind re-send.
-        payment_id = getattr(e, "onchain_payment_id", None)
-        _commit(_ambiguous_debit(getattr(e, "onchain_fee_sats", None)))
+        payment_id = onchain_signal(e, "onchain_payment_id")
+        _commit(_ambiguous_debit(onchain_signal(e, "onchain_fee_sats")))
         _record(OperationState.UNKNOWN, payment_id=payment_id,
-                quote_id=getattr(e, "onchain_quote_id", None))
+                quote_id=onchain_signal(e, "onchain_quote_id"))
         return json.dumps({
             "success": False,
             "error": sanitize_error(str(e)),
             "errorCode": "OUTCOME_UNKNOWN",
             "state": "UNKNOWN",
             "paymentId": payment_id,
-            "quoteId": getattr(e, "onchain_quote_id", None),
+            "quoteId": onchain_signal(e, "onchain_quote_id"),
             "txId": None,
             "provider": provider_name,
             "receipt_written": receipt_scope.receipt_written,

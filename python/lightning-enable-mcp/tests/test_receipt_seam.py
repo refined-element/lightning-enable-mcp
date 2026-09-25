@@ -1,3 +1,4 @@
+import asyncio
 """
 Coverage for the wallet-seam receipt writer (parity with the .NET
 ReceiptRecordingWalletService): EVERY payment that moves value through a
@@ -412,3 +413,55 @@ async def test_access_resource_paid_then_error_still_reports_receipt(tmp_path):
     assert result["alreadyPaid"] is True
     assert result["receipt_written"] is True
     assert len(_read(tmp_path)) == 1
+
+
+@pytest.mark.asyncio
+async def test_send_onchain_plain_throw_is_receipted_as_ambiguous(tmp_path):
+    """The tool commits budget for ANY throw not proven pre-submit (attr is not False), so
+    the durable receipt must record it as pending too — otherwise budget and receipts
+    disagree about a send that may have moved funds."""
+    async def onchain(self, address, amount_sats, *a, **k):
+        raise RuntimeError("connection reset mid-call")
+
+    seam = ReceiptRecordingWallet(
+        _make_wallet("StrikeWallet", onchain=onchain), _svc(tmp_path), _budget(spent=100))
+    with pytest.raises(RuntimeError):
+        await seam.send_onchain("bc1qtestaddr", 5000)
+    rows = _read(tmp_path)
+    assert len(rows) == 1
+    assert rows[0]["kind"] == "onchain"
+    assert rows[0]["status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_send_onchain_proven_presubmit_throw_writes_no_receipt(tmp_path):
+    async def onchain(self, address, amount_sats, *a, **k):
+        e = RuntimeError("quote failed")
+        e.onchain_submitted = False
+        raise e
+
+    seam = ReceiptRecordingWallet(
+        _make_wallet("StrikeWallet", onchain=onchain), _svc(tmp_path), _budget(spent=100))
+    with pytest.raises(RuntimeError):
+        await seam.send_onchain("bc1qtestaddr", 5000)
+    assert _read(tmp_path) == []
+
+
+@pytest.mark.asyncio
+async def test_send_onchain_cancel_signal_is_read_through_cause(tmp_path):
+    """Python 3.10 re-wraps a CancelledError at a Task boundary and chains the original as
+    __cause__; the seam must still see onchain_submitted there."""
+    async def onchain(self, address, amount_sats, *a, **k):
+        inner = asyncio.CancelledError()
+        inner.onchain_submitted = True
+        inner.onchain_fee_sats = 10
+        outer = asyncio.CancelledError()
+        outer.__cause__ = inner
+        raise outer
+
+    seam = ReceiptRecordingWallet(
+        _make_wallet("StrikeWallet", onchain=onchain), _svc(tmp_path), _budget(spent=100))
+    with pytest.raises(asyncio.CancelledError):
+        await seam.send_onchain("bc1qtestaddr", 5000)
+    rows = _read(tmp_path)
+    assert len(rows) == 1 and rows[0]["status"] == "pending"

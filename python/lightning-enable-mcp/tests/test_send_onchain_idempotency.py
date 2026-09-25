@@ -46,6 +46,31 @@ QUOTE_BODY = {"paymentQuoteId": QUOTE_ID, "onchainFee": {"amount": "0.00000300",
 # ---------------------------------------------------------------------------
 
 
+
+class _TwoPartyBarrier:
+    """Minimal 2-party barrier (asyncio.Barrier needs Python 3.11)."""
+
+    def __init__(self):
+        self._arrived = 0
+        self._event = asyncio.Event()
+
+    async def wait(self):
+        self._arrived += 1
+        if self._arrived >= 2:
+            self._event.set()
+        await self._event.wait()
+
+
+def _onchain_attr(exc, name):
+    """Read a cancel-signal attribute the way the tool must: on the exception itself, or on
+    its __cause__/__context__ — Python 3.10's Task re-wraps a CancelledError and chains the
+    original (as __context__ on 3.10)."""
+    for e in (exc, getattr(exc, "__cause__", None), getattr(exc, "__context__", None)):
+        if e is not None and hasattr(e, name):
+            return getattr(e, name)
+    return None
+
+
 class StrikeFake:
     """Scriptable Strike API over httpx.MockTransport. Counts calls per step."""
 
@@ -75,6 +100,10 @@ class StrikeFake:
                 await asyncio.Event().wait()  # never returns; the test cancels it
             if b == "reject":
                 return httpx.Response(422, json={"data": {"code": "INSUFFICIENT_BALANCE"}})
+            if b == "rate_limited":
+                return httpx.Response(429, json={"data": {"code": "RATE_LIMITED"}})
+            if b == "no_payment_id":
+                return httpx.Response(200, json={"state": "PENDING"})
             state = "COMPLETED" if b == "completed" else "PENDING"
             return httpx.Response(200, json={"paymentId": PAYMENT_ID, "state": state})
         if request.method == "GET" and path.endswith(f"/payments/{PAYMENT_ID}"):
@@ -193,7 +222,7 @@ class TestStrikeWalletSubmissionSignal:
         assert result.success is False
         assert result.state == "UNKNOWN"
         assert result.quote_id == QUOTE_ID
-        assert result.payment_id == QUOTE_ID  # best known id when execute's response was lost
+        assert result.payment_id is None  # the quote id is NOT a payment id (lookup would 404)
         assert result.fee_sats == 300
 
     @pytest.mark.asyncio
@@ -223,8 +252,31 @@ class TestStrikeWalletSubmissionSignal:
         task.cancel()
         with pytest.raises(asyncio.CancelledError) as ei:
             await task
-        assert getattr(ei.value, "onchain_submitted", None) is True
-        assert getattr(ei.value, "onchain_quote_id", None) == QUOTE_ID
+        assert _onchain_attr(ei.value, "onchain_submitted") is True
+        assert _onchain_attr(ei.value, "onchain_quote_id") == QUOTE_ID
+        # A quote id must never masquerade as a payment id (status lookup would 404).
+        assert _onchain_attr(ei.value, "onchain_payment_id") is None
+
+    @pytest.mark.asyncio
+    async def test_execute_429_is_ambiguous_not_rejected(self):
+        """Parity with .NET: 408/409/429 on execute are NOT proof of rejection."""
+        fake = StrikeFake()
+        fake.execute_behaviour = "rate_limited"
+        result = await make_strike(fake).send_onchain(ADDR, AMOUNT)
+        assert result.success is False
+        assert result.submitted is True
+        assert result.state == "UNKNOWN"
+        assert result.quote_id == QUOTE_ID
+
+    @pytest.mark.asyncio
+    async def test_execute_without_payment_id_keeps_payment_id_none(self):
+        fake = StrikeFake()
+        fake.execute_behaviour = "no_payment_id"
+        result = await make_strike(fake).send_onchain(ADDR, AMOUNT)
+        assert result.submitted is True
+        assert result.quote_id == QUOTE_ID
+        assert result.payment_id is None, "quote id must not be reported as a payment id"
+        assert fake.status_calls == 0, "must not poll /payments/{quote_id}"
 
     @pytest.mark.asyncio
     async def test_get_onchain_payment_status(self):
@@ -299,7 +351,8 @@ class TestSendOnchainTool:
 
         assert parsed["success"] is False
         assert parsed["state"] == "UNKNOWN"
-        assert parsed["paymentId"] == QUOTE_ID
+        assert parsed["paymentId"] is None
+        assert parsed["quoteId"] == QUOTE_ID
         assert parsed["receipt_written"] is True
         warning = parsed["warning"].lower()
         assert "may have executed" in warning
@@ -358,9 +411,15 @@ class TestSendOnchainTool:
         assert parsed["errorCode"] == "ALREADY_SUBMITTED"
         assert parsed["paymentId"] == recorded.payment_id
         budget2.try_reserve.assert_not_called()
-        # Status lookup is attempted exactly once against the recorded id.
-        assert fake.status_calls == (1 if execute_behaviour == "pending" else 0)
-        assert parsed["statusLookup"]["attempted"] is True
+        # Status lookup is attempted exactly once when a payment id was recorded; with no
+        # payment id (execute response lost) there is nothing to look up and the message
+        # says so rather than probing /payments/{quote_id}.
+        has_payment_id = recorded.payment_id is not None
+        assert has_payment_id == (execute_behaviour == "pending")
+        assert fake.status_calls == (1 if has_payment_id else 0)
+        assert parsed["statusLookup"]["attempted"] is has_payment_id
+        if not has_payment_id:
+            assert "not recorded" in parsed["message"]
 
     @pytest.mark.asyncio
     async def test_retry_status_lookup_updates_ledger(self, ledger_path):
@@ -476,7 +535,7 @@ class TestSendOnchainTool:
         fake.execute_behaviour = "completed"
         wallet, _ = wrap(fake)
         ledger = OperationLedger(ledger_path)
-        barrier = asyncio.Barrier(2)
+        barrier = _TwoPartyBarrier()  # asyncio.Barrier is 3.11+; CI runs 3.10 too
 
         def budget_with_barrier():
             b = make_budget()

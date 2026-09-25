@@ -24,7 +24,7 @@ from mcp.types import Tool
 from .._url_redact import redact_url_for_display as _redact_url_for_display
 from ..config import ApprovalLevel
 from ..confirmation_channel import ConfirmationRequest
-from ..l402_client import L402RedirectError
+from ..l402_client import L402MethodNotAllowedError, L402RedirectError, enforce_paid_http_method
 from ..receipt_seam import PaymentReceiptScope, policy_label
 from . import sanitize_error
 from ._ssrf_guard import SsrfError, validate_url_allowed
@@ -37,7 +37,6 @@ logger = logging.getLogger("lightning-enable-mcp.tools.settle_agent_service")
 
 # HTTP method whitelist (mirrors .NET AgentSettleTool)
 # Policy restriction to what the L402 settlement client (L402Client.fetch) supports.
-_ALLOWED_METHODS = {"GET", "POST", "PUT", "DELETE"}
 
 
 async def settle_agent_service(
@@ -55,8 +54,8 @@ async def settle_agent_service(
 
     Args:
         l402_endpoint: L402 endpoint URL from the service agreement
-        method: HTTP method (GET, POST, ...). Defaults to GET
-        body: Optional request body for POST requests (e.g., service params as JSON)
+        method: HTTP method, GET or HEAD only. Defaults to GET
+        body: Optional request body (rarely needed; write methods are refused)
         agreement_id: Optional agreement event ID for tracking
         max_sats: Maximum satoshis to pay (default 1000)
         confirmation_nonce: The code the human read from the server console (for settlements
@@ -118,11 +117,16 @@ async def settle_agent_service(
                 "agreementId": agreement_id,
             })
 
-        method = method.upper()
-        if method not in _ALLOWED_METHODS:
+        # A3: the settlement endpoint is caller-chosen, so this is a generic paid fetch —
+        # GET/HEAD only, refused before any budget or client call. Shares the gate with
+        # L402Client.fetch so the two layers can never disagree.
+        try:
+            method = enforce_paid_http_method(method)
+        except L402MethodNotAllowedError as exc:
             return json.dumps({
                 "success": False,
-                "error": f"Invalid HTTP method '{method}'. Allowed methods: {', '.join(sorted(_ALLOWED_METHODS))}.",
+                "error": f"Invalid HTTP method: {exc}",
+                "allowedMethods": ["GET", "HEAD"],
             })
 
         if l402_client is None:
@@ -385,12 +389,12 @@ SETTLE_AGENT_SERVICE_TOOL = Tool(
             },
             "method": {
                 "type": "string",
-                "description": "HTTP method (GET, POST, PUT, DELETE). Defaults to GET",
+                "description": "HTTP method, GET or HEAD only (paid HTTP is read-only). Defaults to GET", "enum": ["GET", "HEAD"],
                 "default": "GET",
             },
             "body": {
                 "type": "string",
-                "description": "Optional request body for POST requests (e.g., service parameters as JSON)",
+                "description": "Optional request body (rarely needed; write methods are refused)",
             },
             "agreement_id": {
                 "type": "string",

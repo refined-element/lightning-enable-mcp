@@ -59,8 +59,11 @@ public static class WalletOpsTool
         [Description("send_onchain: satoshis to send")] long amountSats = 0,
         [Description("Code the human reads off the server console (never returned to you). Omit to request one.")]
         string? confirmationNonce = null,
+        [Description("send_onchain: " + SendOnChainTool.IntentIdDescription)]
+        string? intentId = null,
         IWalletService? walletService = null,
         IBudgetService? budgetService = null,
+        IOperationLedger? operationLedger = null,
         CancellationToken cancellationToken = default)
         => action switch
         {
@@ -70,8 +73,8 @@ public static class WalletOpsTool
                 sourceCurrency ?? string.Empty, targetCurrency ?? string.Empty, amount,
                 walletService, cancellationToken),
             WalletOpsAction.send_onchain => await SendOnChainTool.SendOnChain(
-                address ?? string.Empty, amountSats, confirmationNonce,
-                walletService, budgetService, cancellationToken),
+                address ?? string.Empty, amountSats, confirmationNonce, intentId,
+                walletService, budgetService, operationLedger, cancellationToken),
             _ => ActionErrors.Unknown(
                 "wallet_ops", "action", action,
                 WalletOpsAction.price, WalletOpsAction.exchange, WalletOpsAction.send_onchain),

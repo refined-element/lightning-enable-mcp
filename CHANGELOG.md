@@ -17,10 +17,17 @@ Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-ena
     Only an error before execute (or a provider-reported `FAILED`) proves no funds moved. LND
     on-chain sends follow the same rule.
   - `send_onchain` is keyed in the durable operation ledger by
-    `SHA256("onchain:" + address + ":" + amountSats)`. While an earlier send for the same
-    address and amount is submitted, pending, unknown, or settled, the wallet's send is never
-    called again, even after a restart or with a new confirmation code. The retry refreshes the
-    provider status (Strike `GET /v1/payments/{id}`) and reports it with the recorded payment id.
+    `SHA256("onchain:" + address + ":" + amountSats [+ ":" + intentId])`. While an earlier send
+    for the same key is submitted, pending, unknown, or settled, the wallet's send is never
+    called again, even after a restart or with a new confirmation code. The ledger is checked
+    before the budget check and the confirmation gate, so a blocked retry mints and consumes no
+    code and reserves no budget. It refreshes the provider status once (Strike
+    `GET /v1/payments/{id}`) and returns `errorCode: "ALREADY_SUBMITTED"` with the recorded
+    payment id and `statusLookup`. The wallet layer repeats the check atomically after
+    reservation to close races. A new optional `intentId` parameter lets an agent
+    intentionally pay the same address the same amount again; a blank `intentId` is the same
+    as omitting it. The duplicate error code `DUPLICATE_SUBMISSION` is now `ALREADY_SUBMITTED`
+    (Lightning invoice duplicates too), and an ambiguous outcome is `OUTCOME_UNKNOWN`.
   - Pending and ambiguous sends retain the budget (principal plus known fee, else fee headroom)
     and write a pending receipt. The response includes `state`, `paymentId`, `receipt_written`,
     and a `warning` that the send may have executed and must not be retried blindly. Plain

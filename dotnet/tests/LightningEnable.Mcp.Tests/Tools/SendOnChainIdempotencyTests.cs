@@ -33,9 +33,19 @@ public class SendOnChainIdempotencyTests
         System.IO.Path.Combine(System.IO.Path.GetTempPath(), "onchain-idem-" + Guid.NewGuid().ToString("N") + ".jsonl");
 
     /// <summary>The shared contract: "onchain:" + hex(SHA256("onchain:" + address + ":" + amountSats)).</summary>
-    private static string OperationId(string address, long amountSats) =>
+    private static string OperationId(string address, long amountSats, string? intentId = null) =>
         "onchain:" + Convert.ToHexString(
-            SHA256.HashData(Encoding.UTF8.GetBytes("onchain:" + address + ":" + amountSats))).ToLowerInvariant();
+            SHA256.HashData(Encoding.UTF8.GetBytes("onchain:" + address + ":" + amountSats
+                + (string.IsNullOrWhiteSpace(intentId) ? "" : ":" + intentId.Trim())))).ToLowerInvariant();
+
+    private const string AmbiguousWarningText =
+        "The send may have executed at the provider even though this call could not confirm it. The budget for it has been retained (not released). Calling send_onchain again with the same address and amount will report this payment's status rather than re-send. Check the provider dashboard / get_balance BEFORE retrying with any other parameters — on-chain payments are irreversible.";
+
+    private const string PendingNoteText =
+        "On-chain payments normally stay PENDING for ~10 minutes until confirmed. Do NOT send again: calling send_onchain again with the same address and amount will report this payment's status rather than re-send.";
+
+    private static string BlockedMessage(string? id, string provider) =>
+        $"Nothing was sent by this call: an on-chain send for the same address and amount was already submitted (payment id {id ?? "not recorded"}). On-chain payments are irreversible, so it will not be sent again while that payment may have moved funds. Verify its status at the provider ({provider}) before doing anything else. To intentionally pay this address this amount again, supply a new intentId.";
 
     private sealed class Harness
     {
@@ -78,14 +88,16 @@ public class SendOnChainIdempotencyTests
                 Ledger);
         }
 
-        public Task<string> Send() => SendOnChainTool.SendOnChain(
+        public Task<string> Send(string? nonce = Code, string? intentId = null) => SendOnChainTool.SendOnChain(
             address: Address,
             amountSats: Amount,
-            confirmationNonce: Code,
+            confirmationNonce: nonce,
+            intentId: intentId,
             walletService: Chain,
-            budgetService: Budget.Object);
+            budgetService: Budget.Object,
+            operationLedger: Ledger);
 
-        public OperationRecord? Record() => Ledger.Lookup(OperationId(Address, Amount));
+        public OperationRecord? Record(string? intentId = null) => Ledger.Lookup(OperationId(Address, Amount, intentId));
     }
 
     private static JsonElement Parse(string json) => JsonDocument.Parse(json).RootElement;
@@ -198,9 +210,9 @@ public class SendOnChainIdempotencyTests
         retry.GetProperty("paymentId").GetString().Should().Be("pay-9");
         retry.GetProperty("state").GetString().Should().Be("COMPLETED");
         retry.GetProperty("txId").GetString().Should().Be("txabc");
-        // The duplicate call moved nothing — its fresh reservation is released, not committed twice.
-        h.Budget.Verify(b => b.ReleaseReservation("res-2"), Times.Once);
-        h.Budget.Verify(b => b.CommitReservation("res-2", It.IsAny<long>()), Times.Never);
+        // The blocked retry moved nothing and reserved nothing (status is reported before the budget).
+        h.Budget.Verify(b => b.TryReserveAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()), Times.Once);
+        retry.GetProperty("errorCode").GetString().Should().Be("ALREADY_SUBMITTED");
         // The refreshed status updates the ledger.
         h.Record()!.State.Should().Be(OperationState.Settled);
         h.Record()!.TxId.Should().Be("txabc");
@@ -226,7 +238,9 @@ public class SendOnChainIdempotencyTests
         wallet2.SendCount.Should().Be(0, "a pending send from a prior process must not be re-sent after restart");
         json.GetProperty("success").GetBoolean().Should().BeFalse();
         json.GetProperty("paymentId").GetString().Should().Be("pay-r");
-        json.GetProperty("warning").GetString().Should().Contain("provider");
+        json.GetProperty("message").GetString().Should().Be(BlockedMessage("pay-r", "FakeChain"));
+        json.GetProperty("statusLookup").GetProperty("attempted").GetBoolean().Should().BeTrue();
+        json.GetProperty("statusLookup").GetProperty("succeeded").GetBoolean().Should().BeFalse();
     }
 
     [Fact]
@@ -295,6 +309,194 @@ public class SendOnChainIdempotencyTests
     }
 
     // ---------------------------------------------------------------------------------
+    // Reconciled cross-port contract: status before code, intentId, error codes, texts.
+
+    private static ScriptedWallet PendingWallet(string paymentId = "pay-p") => new(_ => Task.FromResult(new OnChainPaymentResult
+    {
+        Success = true, Submitted = true, State = "PENDING", PaymentId = paymentId, QuoteId = "q-p", AmountSats = Amount, FeeSats = 100
+    }));
+
+    [Fact]
+    public async Task BlockedRetry_WithoutNonce_ReportsStatus_BeforeAnyCodeBudgetOrSend()
+    {
+        var wallet = PendingWallet();
+        wallet.Status = _ => Task.FromResult(new OnChainPaymentResult { Success = true, Submitted = true, PaymentId = "pay-p", State = "PENDING" });
+        var h = new Harness(wallet);
+        await h.Send();
+        h.Budget.Invocations.Clear();
+
+        var json = Parse(await h.Send(nonce: null));
+
+        h.Budget.Verify(b => b.RequestConfirmationAsync(It.IsAny<ConfirmationRequest>(), It.IsAny<CancellationToken>()), Times.Never);
+        h.Budget.Verify(b => b.ValidateAndConsumeConfirmation(It.IsAny<string>(), It.IsAny<long>(), It.IsAny<string>(), It.IsAny<string>()), Times.Never);
+        h.Budget.Verify(b => b.TryReserveAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()), Times.Never);
+        h.Budget.Verify(b => b.CheckApprovalLevelAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()), Times.Never);
+        wallet.SendCount.Should().Be(1);
+        wallet.StatusCount.Should().Be(1);
+
+        json.GetProperty("success").GetBoolean().Should().BeFalse();
+        json.GetProperty("errorCode").GetString().Should().Be("ALREADY_SUBMITTED");
+        json.GetProperty("duplicate").GetBoolean().Should().BeTrue();
+        json.GetProperty("state").GetString().Should().Be("PENDING");
+        json.GetProperty("paymentId").GetString().Should().Be("pay-p");
+        json.GetProperty("quoteId").GetString().Should().Be("q-p");
+        json.TryGetProperty("txId", out _).Should().BeTrue();
+        json.GetProperty("provider").GetString().Should().Be("FakeChain");
+        json.GetProperty("statusLookup").GetProperty("attempted").GetBoolean().Should().BeTrue();
+        json.GetProperty("statusLookup").GetProperty("succeeded").GetBoolean().Should().BeTrue();
+        json.GetProperty("receipt_written").GetBoolean().Should().BeFalse();
+        json.GetProperty("message").GetString().Should().Be(BlockedMessage("pay-p", "FakeChain"));
+        json.TryGetProperty("requiresConfirmation", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task BlockedRetry_WithNonce_DoesNotConsumeTheCode()
+    {
+        var h = new Harness(PendingWallet());
+        await h.Send();
+        h.Budget.Invocations.Clear();
+
+        var json = Parse(await h.Send());
+
+        json.GetProperty("errorCode").GetString().Should().Be("ALREADY_SUBMITTED");
+        h.Budget.Verify(b => b.ValidateAndConsumeConfirmation(It.IsAny<string>(), It.IsAny<long>(), It.IsAny<string>(), It.IsAny<string>()), Times.Never);
+        h.Budget.Verify(b => b.TryReserveAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task BlockedRetry_NoPaymentIdRecorded_DoesNotLookUpStatus_SaysNotRecorded()
+    {
+        var wallet = new ScriptedWallet(_ => Task.FromResult(new OnChainPaymentResult
+        {
+            Success = false, Submitted = true, State = "UNKNOWN", ErrorCode = "TIMEOUT", ErrorMessage = "timed out"
+        }));
+        var h = new Harness(wallet);
+        await h.Send();
+
+        var json = Parse(await h.Send(nonce: null));
+
+        wallet.StatusCount.Should().Be(0);
+        json.GetProperty("statusLookup").GetProperty("attempted").GetBoolean().Should().BeFalse();
+        json.GetProperty("statusLookup").GetProperty("succeeded").GetBoolean().Should().BeFalse();
+        json.GetProperty("state").GetString().Should().Be("UNKNOWN");
+        json.GetProperty("message").GetString().Should().Be(BlockedMessage(null, "FakeChain"));
+    }
+
+    [Fact]
+    public async Task NewIntentId_SameAddressAndAmount_SendsOnceMore()
+    {
+        var wallet = PendingWallet();
+        var h = new Harness(wallet);
+
+        Parse(await h.Send()).GetProperty("success").GetBoolean().Should().BeTrue();
+        var second = Parse(await h.Send(intentId: "rent-october"));
+
+        second.GetProperty("success").GetBoolean().Should().BeTrue();
+        wallet.SendCount.Should().Be(2);
+        h.Record("rent-october")!.State.Should().Be(OperationState.Pending);
+        h.Record()!.State.Should().Be(OperationState.Pending);
+    }
+
+    [Fact]
+    public async Task SameIntentIdTwice_IsBlocked()
+    {
+        var wallet = PendingWallet();
+        var h = new Harness(wallet);
+
+        await h.Send(intentId: "inv-7");
+        var second = Parse(await h.Send(intentId: " inv-7 "));
+
+        second.GetProperty("errorCode").GetString().Should().Be("ALREADY_SUBMITTED");
+        wallet.SendCount.Should().Be(1);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task BlankIntentId_EqualsOmitted(string blank)
+    {
+        var wallet = PendingWallet();
+        var h = new Harness(wallet);
+
+        await h.Send();
+        var second = Parse(await h.Send(intentId: blank));
+
+        second.GetProperty("errorCode").GetString().Should().Be("ALREADY_SUBMITTED");
+        wallet.SendCount.Should().Be(1);
+    }
+
+    [Fact]
+    public void OperationId_IncludesTrimmedIntentId()
+    {
+        IdempotentWalletService.DeriveOnChainOperationId(Address, Amount, " x ").Should().Be(OperationId(Address, Amount, "x"));
+        IdempotentWalletService.DeriveOnChainOperationId(Address, Amount, " ").Should().Be(OperationId(Address, Amount));
+        IdempotentWalletService.DeriveOnChainOperationId(Address, Amount, null).Should().Be(OperationId(Address, Amount));
+    }
+
+    [Fact]
+    public async Task Ambiguous_UsesOutcomeUnknown_AndCanonicalWarning()
+    {
+        var h = new Harness(new ScriptedWallet(_ => Task.FromResult(new OnChainPaymentResult
+        {
+            Success = false, Submitted = true, State = "UNKNOWN", PaymentId = "pay-u", QuoteId = "q-u",
+            ErrorCode = "TIMEOUT", ErrorMessage = "Execute request timed out"
+        })));
+
+        var json = Parse(await h.Send());
+
+        json.GetProperty("success").GetBoolean().Should().BeFalse();
+        json.GetProperty("errorCode").GetString().Should().Be("OUTCOME_UNKNOWN");
+        json.GetProperty("state").GetString().Should().Be("UNKNOWN");
+        json.GetProperty("paymentId").GetString().Should().Be("pay-u");
+        json.GetProperty("quoteId").GetString().Should().Be("q-u");
+        json.TryGetProperty("txId", out _).Should().BeTrue();
+        json.GetProperty("provider").GetString().Should().Be("FakeChain");
+        json.GetProperty("amountSats").GetInt64().Should().Be(Amount);
+        json.TryGetProperty("receipt_written", out _).Should().BeTrue();
+        json.GetProperty("warning").GetString().Should().Be(AmbiguousWarningText);
+    }
+
+    [Fact]
+    public async Task Exception_IsOutcomeUnknown()
+    {
+        var h = new Harness(new ScriptedWallet(_ => throw new HttpRequestException("reset")));
+        var json = Parse(await h.Send());
+        json.GetProperty("errorCode").GetString().Should().Be("OUTCOME_UNKNOWN");
+        json.GetProperty("state").GetString().Should().Be("UNKNOWN");
+    }
+
+    [Fact]
+    public async Task PendingSuccess_HasTopLevelStateAndPaymentId_AndCanonicalNote()
+    {
+        var h = new Harness(PendingWallet("pay-top"));
+
+        var json = Parse(await h.Send());
+
+        json.GetProperty("success").GetBoolean().Should().BeTrue();
+        json.GetProperty("state").GetString().Should().Be("PENDING");
+        json.GetProperty("paymentId").GetString().Should().Be("pay-top");
+        json.GetProperty("note").GetString().Should().Be(PendingNoteText);
+    }
+
+    [Fact]
+    public async Task WalletLayerGuard_StillBlocks_WithAlreadySubmitted_WhenToolHasNoLedger()
+    {
+        var wallet = PendingWallet();
+        var h = new Harness(wallet);
+        await h.Send();
+
+        // No ledger injected into the tool: the wallet-layer (race-closing) guard must still hold.
+        var json = Parse(await SendOnChainTool.SendOnChain(address: Address, amountSats: Amount, confirmationNonce: Code,
+            walletService: h.Chain, budgetService: h.Budget.Object));
+
+        wallet.SendCount.Should().Be(1);
+        json.GetProperty("errorCode").GetString().Should().Be("ALREADY_SUBMITTED");
+        json.GetProperty("message").GetString().Should().Be(BlockedMessage("pay-p", "FakeChain"));
+        h.Budget.Verify(b => b.ReleaseReservation("res-2"), Times.Once);
+    }
+
+
+    // ---------------------------------------------------------------------------------
 
     /// <summary>Fake on-chain wallet: scripted send, optional status lookup, entry signalling.</summary>
     private sealed class ScriptedWallet : IWalletService
@@ -307,7 +509,7 @@ public class SendOnChainIdempotencyTests
         public ScriptedWallet(Func<CancellationToken, Task<OnChainPaymentResult>> send) => _send = send;
 
         /// <summary>Status lookup; null means "not supported" (the interface default).</summary>
-        public Func<string, Task<OnChainPaymentResult>>? Status { get; init; }
+        public Func<string, Task<OnChainPaymentResult>>? Status { get; set; }
 
         public int SendCount => Volatile.Read(ref _sendCount);
         public int StatusCount => Volatile.Read(ref _statusCount);

@@ -252,7 +252,7 @@ public class ConfirmationHardeningTests
         try
         {
             // 1. First call: confirmation required, no code in the result.
-            var first = await SendOnChainTool.SendOnChain(Address, 5000, null, wallet.Object, service);
+            var first = await SendOnChainTool.SendOnChain(Address, 5000, null, walletService: wallet.Object, budgetService: service);
             JsonDocument.Parse(first).RootElement.GetProperty("requiresConfirmation").GetBoolean().Should().BeTrue();
 
             // 2. Capture the code from the operator channel.
@@ -281,12 +281,12 @@ public class ConfirmationHardeningTests
             first.Should().NotContain(code);
 
             // 3. Second call with the code: wallet called exactly once.
-            var second = await SendOnChainTool.SendOnChain(Address, 5000, code, wallet.Object, service);
+            var second = await SendOnChainTool.SendOnChain(Address, 5000, code, walletService: wallet.Object, budgetService: service);
             JsonDocument.Parse(second).RootElement.GetProperty("success").GetBoolean().Should().BeTrue(second);
             wallet.Verify(w => w.SendOnChainAsync(It.IsAny<string>(), It.IsAny<long>(), It.IsAny<CancellationToken>()), Times.Once);
 
             // 4. Replay: refused, wallet not called again.
-            var third = await SendOnChainTool.SendOnChain(Address, 5000, code, wallet.Object, service);
+            var third = await SendOnChainTool.SendOnChain(Address, 5000, code, walletService: wallet.Object, budgetService: service);
             JsonDocument.Parse(third).RootElement.GetProperty("success").GetBoolean().Should().BeFalse();
             wallet.Verify(w => w.SendOnChainAsync(It.IsAny<string>(), It.IsAny<long>(), It.IsAny<CancellationToken>()), Times.Once);
         }

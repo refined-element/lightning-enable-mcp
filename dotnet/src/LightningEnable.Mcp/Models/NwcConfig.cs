@@ -621,9 +621,15 @@ public record OnChainPaymentResult
     /// <summary>
     /// True when this call was REFUSED because the same operation (address + amount) was
     /// already submitted: nothing was sent by THIS call, and the fields describe the earlier
-    /// send. Set only by the idempotency guard (<c>ErrorCode = DUPLICATE_SUBMISSION</c>).
+    /// send. Set only by the idempotency guard (<c>ErrorCode = ALREADY_SUBMITTED</c>).
     /// </summary>
     public bool Duplicate { get; init; }
+
+    /// <summary>Duplicate only: a provider status lookup was attempted (a payment id was recorded).</summary>
+    public bool StatusLookupAttempted { get; init; }
+
+    /// <summary>Duplicate only: the provider status lookup returned a usable state.</summary>
+    public bool StatusLookupSucceeded { get; init; }
 
     /// <summary>
     /// True when funds may have moved but the outcome is not confirmed: the send was

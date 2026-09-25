@@ -328,7 +328,7 @@ Five of these are *action* tools: pass `action` (or `source` for `receipts`) to 
 | `get_balance` | Free | Wallet balance: sats, all currencies (Strike), and wallet info |
 | `budget` | Free | `action`: `status` (read limits and session spend) or `tighten` (lower the runtime caps) |
 | `receipts` | Free | `source`: `durable` (the append-only receipt log) or `session` (this session's payments) |
-| `wallet_ops` | Free | `action`: `price`, `exchange`, or `send_onchain` (Strike; `send_onchain` also LND) |
+| `wallet_ops` | Free | `action`: `price`, `exchange`, or `send_onchain` (Strike; `send_onchain` also LND). `send_onchain` takes `address`, `amountSats`, `confirmationNonce`, and an optional `intentId` (supply a new one only to pay the same address the same amount again; a repeat is reported as status, never re-sent) |
 | `verify_confirmation_code` | Free | Verify an out-of-band payment confirmation code (verification only — never pays) |
 | `create_lightning_enable_account` | Free | Self-bootstrap signup: pay ~100 sats, get a merchant API key |
 | `l402_producer` | Agentic Commerce | `action`: `configure_receive`, `status`, `create_proxy`, `add_endpoint`, `publish`, `list_challenges`, `create`, `verify` — the whole seller side |

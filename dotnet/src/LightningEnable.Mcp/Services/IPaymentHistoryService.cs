@@ -9,6 +9,12 @@ public interface IPaymentHistoryService
 {
     /// <summary>
     /// Records a payment. Defaults to a settled (successful) payment.
+    ///
+    /// <para><paramref name="invoice"/>, <paramref name="preimageHex"/> and
+    /// <paramref name="l402Token"/> are accepted so callers can hand over what they have,
+    /// but they are NEVER stored: the implementation keeps only a redacted
+    /// <paramref name="url"/> and a truncated hash-derived
+    /// <see cref="PaymentRecord.PaymentReference"/>. See <see cref="PaymentRecord"/>.</para>
     /// </summary>
     /// <param name="status">
     /// The outcome. Pass <see cref="PaymentStatus.Pending"/> for an in-flight payment —
@@ -27,7 +33,8 @@ public interface IPaymentHistoryService
         string? errorMessage = null);
 
     /// <summary>
-    /// Records a failed payment attempt.
+    /// Records a failed payment attempt. <paramref name="invoice"/> is reduced to a
+    /// truncated commitment and never stored; <paramref name="url"/> is redacted.
     /// </summary>
     void RecordFailedPayment(
         string url,

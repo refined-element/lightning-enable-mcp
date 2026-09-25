@@ -67,34 +67,60 @@ public sealed class ReceiptRecordingWalletService : IWalletService
         long amountSats,
         CancellationToken cancellationToken = default)
     {
-        var result = await _inner.SendOnChainAsync(address, amountSats, cancellationToken);
-
-        if (result.Success)
+        OnChainPaymentResult result;
+        try
         {
+            result = await _inner.SendOnChainAsync(address, amountSats, cancellationToken);
+        }
+        catch
+        {
+            // A throw (e.g. cancellation) gives no proof the send did not execute, and
+            // SendOnChainTool retains budget for it — so the durable log records it as
+            // pending rather than under-reporting what the budget holds. Then rethrow.
+            WriteOnChainReceipt(amountSats, "pending", feeSats: 0, txId: null);
+            throw;
+        }
+
+        if (result is null) return result!;
+
+        // Receipt on settled, pending, AND ambiguous (submitted, outcome unknown): in every
+        // one of those the budget retains the spend. A proven pre-submit failure, a
+        // provider-confirmed FAILED, and a refused duplicate move no money — no receipt.
+        if (result.Success || result.IsAmbiguous)
+        {
+            // A broadcast-but-unconfirmed send has still left the wallet; only a
+            // provider-confirmed COMPLETED state reads as settled.
+            var status = result.Success && string.Equals(result.State, "COMPLETED", StringComparison.OrdinalIgnoreCase)
+                ? "settled"
+                : "pending";
             var sentSats = result.AmountSats > 0 ? result.AmountSats : amountSats;
-            var scope = PaymentReceiptScope.Current;
-            WriteReceipt(scope, new PaymentReceiptEntry
-            {
-                Kind = "onchain",
-                Wallet = SafeProviderName(),
-                AmountSats = sentSats,
-                // A broadcast-but-unconfirmed send has still left the wallet; only a
-                // provider-confirmed COMPLETED state reads as settled.
-                Status = string.Equals(result.State, "COMPLETED", StringComparison.OrdinalIgnoreCase)
-                    ? "settled"
-                    : "pending",
-                Context = scope?.Context,
-                Policy = scope?.Policy,
-                // Project from the REQUESTED amount, not the provider-reported one:
-                // SendOnChainTool records budget spend as requested + fee, and the
-                // projection must match what the budget will actually hold.
-                SessionSpentSats = ProjectSessionSpent(amountSats + result.FeeSats),
-                FeeSats = result.FeeSats,
-                TxId = result.TxId,
-            });
+            WriteOnChainReceipt(sentSats, status, result.FeeSats, result.TxId, projectFrom: amountSats);
         }
 
         return result;
+    }
+
+    public Task<OnChainPaymentResult> GetOnChainPaymentStatusAsync(string paymentId, CancellationToken cancellationToken = default)
+        => _inner.GetOnChainPaymentStatusAsync(paymentId, cancellationToken);
+
+    private void WriteOnChainReceipt(long sentSats, string status, long feeSats, string? txId, long? projectFrom = null)
+    {
+        var scope = PaymentReceiptScope.Current;
+        WriteReceipt(scope, new PaymentReceiptEntry
+        {
+            Kind = "onchain",
+            Wallet = SafeProviderName(),
+            AmountSats = sentSats,
+            Status = status,
+            Context = scope?.Context,
+            Policy = scope?.Policy,
+            // Project from the REQUESTED amount, not the provider-reported one:
+            // SendOnChainTool records budget spend as requested + fee, and the
+            // projection must match what the budget will actually hold.
+            SessionSpentSats = ProjectSessionSpent((projectFrom ?? sentSats) + feeSats),
+            FeeSats = feeSats,
+            TxId = txId,
+        });
     }
 
     // ----- pass-throughs (no value movement, no receipt) -----

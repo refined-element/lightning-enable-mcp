@@ -607,6 +607,31 @@ public record OnChainPaymentResult
     /// </summary>
     public string? ErrorMessage { get; init; }
 
+    /// <summary>
+    /// True once the provider's money-moving call (Strike quote execute, LND broadcast) was
+    /// ISSUED. A result with <c>Submitted = true</c> and <c>Success = false</c> is AMBIGUOUS:
+    /// funds may have moved, so callers must retain budget and must not re-send. Only
+    /// <c>Submitted = false</c> proves no funds moved.
+    /// </summary>
+    public bool Submitted { get; init; }
+
+    /// <summary>Provider quote id (Strike), when known. Not a secret.</summary>
+    public string? QuoteId { get; init; }
+
+    /// <summary>
+    /// True when this call was REFUSED because the same operation (address + amount) was
+    /// already submitted: nothing was sent by THIS call, and the fields describe the earlier
+    /// send. Set only by the idempotency guard (<c>ErrorCode = DUPLICATE_SUBMISSION</c>).
+    /// </summary>
+    public bool Duplicate { get; init; }
+
+    /// <summary>
+    /// True when funds may have moved but the outcome is not confirmed: the send was
+    /// submitted, did not succeed, and the provider has not reported it FAILED.
+    /// </summary>
+    public bool IsAmbiguous => Submitted && !Success && !Duplicate
+        && !string.Equals(State, "FAILED", StringComparison.OrdinalIgnoreCase);
+
     public static OnChainPaymentResult Succeeded(string paymentId, string? txId, string state, long amountSats, long feeSats = 0) =>
         new() { Success = true, PaymentId = paymentId, TxId = txId, State = state, AmountSats = amountSats, FeeSats = feeSats };
 

@@ -3,6 +3,29 @@
 All notable changes to the Lightning Enable MCP server are documented here.
 Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-enable-mcp`).
 
+## [Unreleased]
+
+### Security
+
+- .NET `send_onchain` no longer treats a lost response as "no funds moved". Previously a
+  timeout, cancellation, or transport error after the Strike quote was executed released the
+  budget, wrote no receipt, and let a retry (with a fresh confirmation code) create and execute
+  a second quote — a double send of irreversible funds. Now:
+  - The wallet result carries `Submitted` (the money-moving call was issued) and keeps the
+    payment and quote ids. A lost response after execute is `Submitted`, `state: UNKNOWN`. A
+    poll that runs out of time after a successful execute is `state: PENDING`, not a failure.
+    Only an error before execute (or a provider-reported `FAILED`) proves no funds moved. LND
+    on-chain sends follow the same rule.
+  - `send_onchain` is keyed in the durable operation ledger by
+    `SHA256("onchain:" + address + ":" + amountSats)`. While an earlier send for the same
+    address and amount is submitted, pending, unknown, or settled, the wallet's send is never
+    called again, even after a restart or with a new confirmation code. The retry refreshes the
+    provider status (Strike `GET /v1/payments/{id}`) and reports it with the recorded payment id.
+  - Pending and ambiguous sends retain the budget (principal plus known fee, else fee headroom)
+    and write a pending receipt. The response includes `state`, `paymentId`, `receipt_written`,
+    and a `warning` that the send may have executed and must not be retried blindly. Plain
+    failures now carry the same check-before-retrying warning as the Python port.
+
 ## [2.0.3] — 2026-09-25
 
 ### Security

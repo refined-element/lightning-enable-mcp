@@ -31,6 +31,20 @@ public class StrikeWalletService : IWalletService, IDisposable
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
 
+    // On-chain completion polling window. Production: 120 s at 2 s intervals.
+    private readonly TimeSpan _onChainPollTimeout = TimeSpan.FromSeconds(120);
+    private readonly TimeSpan _onChainPollInterval = TimeSpan.FromSeconds(2);
+
+    // Test-only: explicit API key (no env lookup) and a short polling window.
+    internal StrikeWalletService(HttpClient httpClient, string apiKey, TimeSpan onChainPollTimeout, TimeSpan onChainPollInterval)
+    {
+        _httpClient = httpClient;
+        _apiKey = apiKey;
+        _onChainPollTimeout = onChainPollTimeout;
+        _onChainPollInterval = onChainPollInterval;
+        _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _apiKey);
+    }
+
     public StrikeWalletService(HttpClient httpClient, IBudgetConfigurationService? budgetConfigService = null)
     {
         _httpClient = httpClient;
@@ -470,6 +484,9 @@ public class StrikeWalletService : IWalletService, IDisposable
             return OnChainPaymentResult.Failed("INVALID_AMOUNT", "Amount must be greater than 0");
         }
 
+        // Phase 1 — quote. Nothing has been executed yet, so ANY failure here (timeout,
+        // cancellation, transport, bad JSON) proves no funds moved: Submitted = false.
+        StrikeOnChainQuote? quote;
         try
         {
             // Convert sats to BTC for Strike API
@@ -499,64 +516,243 @@ public class StrikeWalletService : IWalletService, IDisposable
                     $"Failed to create on-chain quote: {errorBody}");
             }
 
-            var quote = await quoteResponse.Content.ReadFromJsonAsync<StrikeOnChainQuote>(
+            quote = await quoteResponse.Content.ReadFromJsonAsync<StrikeOnChainQuote>(
                 JsonOptions, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            return OnChainPaymentResult.Failed("TIMEOUT", "On-chain quote request timed out before anything was executed");
+        }
+        catch (HttpRequestException ex)
+        {
+            return OnChainPaymentResult.Failed("HTTP_ERROR", ex.Message);
+        }
+        catch (JsonException ex)
+        {
+            return OnChainPaymentResult.Failed("JSON_ERROR", ex.Message);
+        }
 
-            if (quote == null || string.IsNullOrEmpty(quote.PaymentQuoteId))
-            {
-                return OnChainPaymentResult.Failed("INVALID_QUOTE", "No payment quote ID returned");
-            }
+        if (quote == null || string.IsNullOrEmpty(quote.PaymentQuoteId))
+        {
+            return OnChainPaymentResult.Failed("INVALID_QUOTE", "No payment quote ID returned");
+        }
 
-            Console.Error.WriteLine($"[Strike] On-chain quote created: {quote.PaymentQuoteId}");
+        var quoteId = quote.PaymentQuoteId;
+        Console.Error.WriteLine($"[Strike] On-chain quote created: {quoteId}");
 
-            // Execute the payment quote
+        long feeSats = 0;
+        if (quote.OnchainFee?.Amount != null)
+        {
+            feeSats = ConvertToSats(quote.OnchainFee.Amount, quote.OnchainFee.Currency);
+        }
+
+        // Phase 2 — execute. From the moment this call is ISSUED, funds may move: a lost
+        // response (timeout, cancellation, transport error, 5xx, unreadable body) is
+        // AMBIGUOUS, never "failed". Report Submitted = true / UNKNOWN with the ids we have.
+        StrikePayment? payment;
+        try
+        {
             var executeResponse = await _httpClient.PatchAsync(
-                $"{BaseUrl}/payment-quotes/{quote.PaymentQuoteId}/execute",
+                $"{BaseUrl}/payment-quotes/{quoteId}/execute",
                 null,
                 cancellationToken);
 
             if (!executeResponse.IsSuccessStatusCode)
             {
-                var errorBody = await executeResponse.Content.ReadAsStringAsync(cancellationToken);
-                Console.Error.WriteLine($"[Strike] On-chain execute failed: {errorBody}");
-                return OnChainPaymentResult.Failed(
-                    $"HTTP_{(int)executeResponse.StatusCode}",
-                    $"Failed to execute on-chain payment: {errorBody}");
+                var errorBody = await SafeReadAsync(executeResponse);
+                var code = (int)executeResponse.StatusCode;
+                Console.Error.WriteLine($"[Strike] On-chain execute failed: HTTP {code}");
+                // A definitive 4xx rejection (bad request, auth, insufficient funds, expired
+                // quote) means Strike did not execute. 408/409/429 and every 5xx do NOT prove
+                // that, so they stay ambiguous.
+                if (code >= 400 && code < 500 && code is not 408 and not 409 and not 429)
+                {
+                    return new OnChainPaymentResult
+                    {
+                        Success = false,
+                        Submitted = false,
+                        QuoteId = quoteId,
+                        State = "FAILED",
+                        ErrorCode = $"HTTP_{code}",
+                        ErrorMessage = $"Strike rejected the on-chain payment execution: {errorBody}"
+                    };
+                }
+                return Ambiguous(quoteId, null, amountSats, feeSats, $"HTTP_{code}",
+                    $"Strike returned HTTP {code} to the on-chain execute call; the payment may still have executed.");
             }
 
-            var payment = await executeResponse.Content.ReadFromJsonAsync<StrikePayment>(
-                JsonOptions, cancellationToken);
-
-            if (payment == null)
-            {
-                return OnChainPaymentResult.Failed("INVALID_PAYMENT", "No payment returned");
-            }
-
-            Console.Error.WriteLine($"[Strike] On-chain payment executed: {payment.PaymentId}, state: {payment.State}");
-
-            // Poll for completion
-            if (payment.State == "PENDING")
-            {
-                payment = await WaitForPaymentCompletion(payment.PaymentId, 120, cancellationToken);
-            }
-
-            // Parse fee from quote if available
-            long feeSats = 0;
-            if (quote.OnchainFee?.Amount != null)
-            {
-                feeSats = ConvertToSats(quote.OnchainFee.Amount, quote.OnchainFee.Currency);
-            }
-
-            return OnChainPaymentResult.Succeeded(
-                payment.PaymentId,
-                null, // Strike doesn't return txid immediately
-                payment.State ?? "UNKNOWN",
-                amountSats,
-                feeSats);
+            payment = await executeResponse.Content.ReadFromJsonAsync<StrikePayment>(JsonOptions, cancellationToken);
         }
-        catch (TaskCanceledException)
+        catch (OperationCanceledException)
         {
-            return OnChainPaymentResult.Failed("TIMEOUT", "Payment request timed out");
+            return Ambiguous(quoteId, null, amountSats, feeSats, "TIMEOUT",
+                "The on-chain execute call timed out or was cancelled after it was sent; the payment may have executed.");
+        }
+        catch (HttpRequestException ex)
+        {
+            return Ambiguous(quoteId, null, amountSats, feeSats, "HTTP_ERROR",
+                $"Transport error during the on-chain execute call ({ex.Message}); the payment may have executed.");
+        }
+        catch (JsonException)
+        {
+            return Ambiguous(quoteId, null, amountSats, feeSats, "JSON_ERROR",
+                "Strike accepted the on-chain execute call but its response could not be read; the payment may have executed.");
+        }
+
+        if (payment == null || string.IsNullOrEmpty(payment.PaymentId))
+        {
+            return Ambiguous(quoteId, null, amountSats, feeSats, "INVALID_PAYMENT",
+                "Strike accepted the on-chain execute call but returned no payment id; the payment may have executed.");
+        }
+
+        Console.Error.WriteLine($"[Strike] On-chain payment executed: {payment.PaymentId}, state: {payment.State}");
+
+        // Phase 3 — poll. Execute succeeded, so the payment exists at Strike. Running out of
+        // polling time (or being cancelled / losing the connection while polling) leaves it
+        // PENDING — the normal on-chain state for ~10 minutes — not failed.
+        var state = string.IsNullOrEmpty(payment.State) ? "PENDING" : payment.State;
+        string? txId = payment.Onchain?.TxId;
+        if (state == "PENDING")
+        {
+            try
+            {
+                var polled = await WaitForOnChainCompletion(payment.PaymentId, _onChainPollTimeout, _onChainPollInterval, cancellationToken);
+                if (polled != null)
+                {
+                    state = polled.State ?? "PENDING";
+                    txId = polled.Onchain?.TxId ?? txId;
+                }
+            }
+            catch (Exception ex) when (ex is OperationCanceledException or HttpRequestException or JsonException)
+            {
+                Console.Error.WriteLine($"[Strike] Stopped polling on-chain payment {payment.PaymentId}; it remains PENDING.");
+            }
+        }
+
+        if (state == "FAILED")
+        {
+            // Strike reports the executed payment as terminally FAILED: no funds left the account.
+            return new OnChainPaymentResult
+            {
+                Success = false,
+                Submitted = true,
+                PaymentId = payment.PaymentId,
+                QuoteId = quoteId,
+                State = "FAILED",
+                AmountSats = amountSats,
+                ErrorCode = "PAYMENT_FAILED",
+                ErrorMessage = "Strike reported the on-chain payment as FAILED."
+            };
+        }
+
+        return new OnChainPaymentResult
+        {
+            Success = true,
+            Submitted = true,
+            PaymentId = payment.PaymentId,
+            QuoteId = quoteId,
+            TxId = txId,
+            State = state,
+            AmountSats = amountSats,
+            FeeSats = feeSats
+        };
+    }
+
+    private static OnChainPaymentResult Ambiguous(string quoteId, string? paymentId, long amountSats, long feeSats, string errorCode, string message) =>
+        new()
+        {
+            Success = false,
+            Submitted = true,
+            State = "UNKNOWN",
+            QuoteId = quoteId,
+            PaymentId = paymentId,
+            AmountSats = amountSats,
+            FeeSats = feeSats,
+            ErrorCode = errorCode,
+            ErrorMessage = message
+        };
+
+    private static async Task<string> SafeReadAsync(HttpResponseMessage response)
+    {
+        try { return await response.Content.ReadAsStringAsync(); }
+        catch { return "(no response body)"; }
+    }
+
+    /// <summary>
+    /// On-chain polling: returns the first non-PENDING payment, or null when the window runs
+    /// out (the payment is still PENDING — not a failure).
+    /// </summary>
+    private async Task<StrikePayment?> WaitForOnChainCompletion(
+        string paymentId,
+        TimeSpan timeout,
+        TimeSpan pollInterval,
+        CancellationToken cancellationToken)
+    {
+        var endTime = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < endTime)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var response = await _httpClient.GetAsync(
+                $"{BaseUrl}/payments/{Uri.EscapeDataString(paymentId)}", cancellationToken);
+            if (response.IsSuccessStatusCode)
+            {
+                var polled = await response.Content.ReadFromJsonAsync<StrikePayment>(JsonOptions, cancellationToken);
+                if (polled != null && !string.IsNullOrEmpty(polled.State) && polled.State != "PENDING")
+                {
+                    return polled;
+                }
+            }
+
+            await Task.Delay(pollInterval, cancellationToken);
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Looks up an on-chain payment by id (<c>GET /v1/payments/{id}</c>). Moves no value.
+    /// </summary>
+    public async Task<OnChainPaymentResult> GetOnChainPaymentStatusAsync(
+        string paymentId,
+        CancellationToken cancellationToken = default)
+    {
+        if (!IsConfigured)
+        {
+            return OnChainPaymentResult.Failed("NOT_CONFIGURED", "Strike not configured. Set STRIKE_API_KEY environment variable.");
+        }
+        if (string.IsNullOrWhiteSpace(paymentId))
+        {
+            return OnChainPaymentResult.Failed("INVALID_PAYMENT_ID", "Payment id is required");
+        }
+
+        try
+        {
+            var response = await _httpClient.GetAsync(
+                $"{BaseUrl}/payments/{Uri.EscapeDataString(paymentId)}", cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return OnChainPaymentResult.Failed($"HTTP_{(int)response.StatusCode}",
+                    $"Strike status lookup for payment {paymentId} returned HTTP {(int)response.StatusCode}");
+            }
+
+            var payment = await response.Content.ReadFromJsonAsync<StrikePayment>(JsonOptions, cancellationToken);
+            if (payment == null || string.IsNullOrEmpty(payment.State))
+            {
+                return OnChainPaymentResult.Failed("INVALID_PAYMENT", "Strike returned no payment state");
+            }
+
+            return new OnChainPaymentResult
+            {
+                Success = true,
+                Submitted = true,
+                PaymentId = string.IsNullOrEmpty(payment.PaymentId) ? paymentId : payment.PaymentId,
+                State = payment.State,
+                TxId = payment.Onchain?.TxId
+            };
+        }
+        catch (OperationCanceledException)
+        {
+            return OnChainPaymentResult.Failed("TIMEOUT", "Strike status lookup timed out");
         }
         catch (HttpRequestException ex)
         {
@@ -866,6 +1062,21 @@ public class StrikeWalletService : IWalletService, IDisposable
 
         [JsonPropertyName("lightning")]
         public StrikeLightningDetails? Lightning { get; set; }
+
+        [JsonPropertyName("onchain")]
+        public StrikeOnchainDetails? Onchain { get; set; }
+    }
+
+    private class StrikeOnchainDetails
+    {
+        [JsonPropertyName("txnId")]
+        public string? TxnId { get; set; }
+
+        [JsonPropertyName("txId")]
+        public string? TxIdAlt { get; set; }
+
+        [JsonIgnore]
+        public string? TxId => !string.IsNullOrEmpty(TxnId) ? TxnId : TxIdAlt;
     }
 
     private class StrikeLightningDetails

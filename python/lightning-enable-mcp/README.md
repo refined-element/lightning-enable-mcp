@@ -248,6 +248,19 @@ Get the connected wallet's balance. Supersedes `check_wallet_balance` and `get_a
 
 **Returns:** A single superset shape — the sats balance (`balance_sats` / `balance_btc`), an optional `wallet_info` block (NWC `get_info`), a `balances[]` array (multi-currency for Strike, a single BTC entry otherwise), and the session spend summary.
 
+### send_onchain
+
+Send an on-chain Bitcoin payment (Strike or LND). On-chain sends are irreversible, so every send requires a human-relayed confirmation code. A repeat call with the same address and amount reports the prior payment's status (`errorCode: "ALREADY_SUBMITTED"`, `duplicate: true`) instead of sending again.
+
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `address` | string | Yes | - | Mainnet Bitcoin address to send to |
+| `amount_sats` | integer | Yes | - | Amount to send in satoshis |
+| `confirmation_nonce` | string | No | - | Human-relayed confirmation code |
+| `intent_id` | string | No | - | Optional idempotency scope. Omit for normal use. Supply a new value only when you intentionally need to pay the same address the same amount again; a repeat with the same address, amount, and `intent_id` is reported as status, never re-sent. |
+
+**Returns:** JSON with `success`, `state`, `paymentId`, `provider`, and `payment` details. A `PENDING` send is a success and includes a `note`; an ambiguous outcome returns `errorCode: "OUTCOME_UNKNOWN"` with a `warning`.
+
 ### get_payment_history
 
 List recent payments made during this session.

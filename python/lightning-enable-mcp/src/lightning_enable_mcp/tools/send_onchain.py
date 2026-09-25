@@ -31,11 +31,15 @@ def _normalize_address(address: str) -> str:
     return a.lower() if a.lower().startswith("bc1") else a
 
 
-def onchain_operation_id(address: str, amount_sats: int) -> str:
+def onchain_operation_id(address: str, amount_sats: int, intent_id: Optional[str] = None) -> str:
     """Stable, non-secret idempotency key for an on-chain send:
-    ``"onchain:" + sha256("onchain:" + normalized_address + ":" + amount_sats)``.
+    ``"onchain:" + sha256("onchain:" + normalized_address + ":" + amount_sats
+    [+ ":" + intent_id.strip()])``. A None / blank intent_id is the same as omitting it.
     Mirrors the .NET port."""
     raw = f"onchain:{_normalize_address(address)}:{int(amount_sats)}"
+    scope = intent_id.strip() if isinstance(intent_id, str) else ""
+    if scope:
+        raw += ":" + scope
     return "onchain:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -46,6 +50,7 @@ async def send_onchain(
     wallet: "Union[StrikeWallet, LndWallet, None]" = None,
     budget_service: "BudgetService | None" = None,
     operation_ledger: "OperationLedger | None" = None,
+    intent_id: "Optional[str]" = None,
 ) -> str:
     """
     Send an on-chain Bitcoin payment to a Bitcoin address.
@@ -67,6 +72,10 @@ async def send_onchain(
             address+amount while a prior one may have moved money (SUBMITTED / PENDING /
             UNKNOWN / SETTLED) reports that payment's status instead of re-sending. Only a
             recorded FAILED (proven no funds moved) allows a fresh send.
+        intent_id: Optional idempotency scope. Omit for normal use. Supply a NEW value only
+            to intentionally pay the same address the same amount again; a blank value is
+            the same as omitting it. The confirmation code binding (amount, tool, address)
+            is unchanged, so a fresh code is still required for any real send.
 
     Returns:
         JSON with payment result including transaction details
@@ -132,12 +141,13 @@ async def send_onchain(
     # is reported (with a provider status refresh when available), never re-sent. This runs
     # BEFORE the confirmation gate: reporting status moves no funds and needs no code.
     address = address.strip()
-    operation_id = onchain_operation_id(address, amount_sats)
+    operation_id = onchain_operation_id(address, amount_sats, intent_id)
+    provider_name = "LND" if isinstance(inner_wallet, LndWallet) else "Strike"
     if operation_ledger is not None:
         existing = operation_ledger.lookup(operation_id)
         if existing is not None and existing.state in MONEY_MOVING_STATES:
             return await _already_submitted_response(
-                operation_ledger, operation_id, existing, inner_wallet, amount_sats, address
+                operation_ledger, operation_id, existing, inner_wallet, provider_name
             )
 
     # Budget check — FAIL CLOSED. A budget-check error (e.g. price feed down) REFUSES the
@@ -231,8 +241,6 @@ async def send_onchain(
         })
     reservation_id = reservation.reservation_id
 
-    provider_name = "LND" if isinstance(inner_wallet, LndWallet) else "Strike"
-
     # Claim the operation in the durable ledger. The lookup + SUBMITTED write below run
     # with NO await between them, so under the single asyncio loop two concurrent calls
     # for the same address+amount cannot both claim it: the loser sees SUBMITTED.
@@ -241,7 +249,7 @@ async def send_onchain(
         if existing is not None and existing.state in MONEY_MOVING_STATES:
             budget_service.release_reservation(reservation_id)
             return await _already_submitted_response(
-                operation_ledger, operation_id, existing, inner_wallet, amount_sats, address
+                operation_ledger, operation_id, existing, inner_wallet, provider_name
             )
         operation_ledger.record_submitted(
             operation_id, amount_sats, provider_name.lower(), kind="onchain"
@@ -313,7 +321,11 @@ async def send_onchain(
             "errorCode": "OUTCOME_UNKNOWN",
             "state": "UNKNOWN",
             "paymentId": payment_id,
+            "quoteId": getattr(e, "onchain_quote_id", None),
+            "txId": None,
+            "provider": provider_name,
             "receipt_written": receipt_scope.receipt_written,
+            "amountSats": amount_sats,
             "warning": AMBIGUOUS_SEND_WARNING,
         })
 
@@ -361,12 +373,14 @@ async def send_onchain(
         return json.dumps({
             "success": False,
             "error": result.error_message,
-            "errorCode": result.error_code or "OUTCOME_UNKNOWN",
+            "errorCode": "OUTCOME_UNKNOWN",
             "provider": provider_name,
             "state": "UNKNOWN",
             "paymentId": ids["payment_id"],
             "quoteId": ids["quote_id"],
+            "txId": ids["tx_id"],
             "receipt_written": receipt_scope.receipt_written,
+            "amountSats": amount_sats,
             "warning": AMBIGUOUS_SEND_WARNING,
         })
 
@@ -385,7 +399,7 @@ async def send_onchain(
             "and amount will report this payment's status rather than re-send."
         )
 
-    return json.dumps({
+    response = {
         "success": True,
         "provider": provider_name,
         "receipt_written": receipt_scope.receipt_written or False,
@@ -399,7 +413,10 @@ async def send_onchain(
             "feeSats": result.fee_sats,
         },
         "message": message,
-    }, indent=2)
+    }
+    if state == "PENDING":
+        response["note"] = PENDING_NOTE
+    return json.dumps(response, indent=2)
 
 
 AMBIGUOUS_SEND_WARNING = (
@@ -410,6 +427,29 @@ AMBIGUOUS_SEND_WARNING = (
     "parameters — on-chain payments are irreversible."
 )
 
+PENDING_NOTE = (
+    "On-chain payments normally stay PENDING for ~10 minutes until confirmed. Do NOT send "
+    "again: calling send_onchain again with the same address and amount will report this "
+    "payment's status rather than re-send."
+)
+
+PLAIN_FAILURE_WARNING = (
+    "If this failure was a network/timeout error, the send may still have executed at "
+    "the provider. Check the provider dashboard / get_balance BEFORE retrying — on-chain "
+    "payments are irreversible."
+)
+
+
+def _blocked_retry_message(payment_id: Optional[str], provider: str) -> str:
+    return (
+        "Nothing was sent by this call: an on-chain send for the same address and amount was "
+        f"already submitted (payment id {payment_id or 'not recorded'}). On-chain payments are "
+        "irreversible, so it will not be sent again while that payment may have moved funds. "
+        f"Verify its status at the provider ({provider}) before doing anything else. To "
+        "intentionally pay this address this amount again, supply a new intent_id."
+    )
+
+
 _PROVIDER_STATE_TO_LEDGER = {
     "COMPLETED": OperationState.SETTLED,
     "PENDING": OperationState.PENDING,
@@ -418,7 +458,7 @@ _PROVIDER_STATE_TO_LEDGER = {
 
 
 async def _already_submitted_response(
-    ledger, operation_id: str, record, inner_wallet, amount_sats: int, address: str
+    ledger, operation_id: str, record, inner_wallet, provider_name: str
 ) -> str:
     """A prior attempt for this exact address+amount may have moved money. Never send
     again: refresh the provider status when the wallet supports it, else refuse, naming
@@ -446,37 +486,20 @@ async def _already_submitted_response(
                 ledger.record_outcome(operation_id, ledger_state, None, tx_id=new_tx)
             state, tx_id = provider_state, new_tx
 
-    pid_text = payment_id or "none recorded (the provider returned no id before the outcome became ambiguous)"
-    if refreshed:
-        message = (
-            f"This on-chain send ({amount_sats:,} sats to {address}) was already submitted in "
-            f"a prior attempt and was NOT sent again. Provider status for payment {payment_id}: "
-            f"{state}."
-        )
-        if state == "FAILED":
-            message += (
-                " The provider reports it FAILED, so no funds moved; the ledger now allows a "
-                "fresh send (a new confirmation code is required)."
-            )
-    else:
-        message = (
-            f"This on-chain send ({amount_sats:,} sats to {address}) was already submitted in "
-            f"a prior attempt (recorded state: {state}) and was NOT sent again, to avoid a "
-            f"double-payment. Recorded payment id: {pid_text}. Verify this payment at the "
-            "provider (dashboard / get_balance) before taking any other action — on-chain "
-            "payments are irreversible."
-        )
-
+    # No confirmation code minted or consumed, no budget reserved, no wallet send.
     return json.dumps({
         "success": False,
         "errorCode": "ALREADY_SUBMITTED",
+        "duplicate": True,
         "error": "This on-chain send was already submitted; it was not sent again.",
         "state": state,
         "paymentId": payment_id,
         "quoteId": record.quote_id,
         "txId": tx_id,
+        "provider": provider_name,
         "statusLookup": {"attempted": attempted, "succeeded": refreshed},
-        "message": message,
+        "receipt_written": False,
+        "message": _blocked_retry_message(payment_id, provider_name),
     })
 
 
@@ -505,6 +528,15 @@ SEND_ONCHAIN_TOOL = Tool(
                     "On-chain sends always require it: the first call prints a code to the "
                     "console (never in the result) and returns requiresConfirmation; ask the "
                     "human and call again with confirmation_nonce set to it."
+                ),
+            },
+            "intent_id": {
+                "type": "string",
+                "description": (
+                    "Optional idempotency scope. Omit for normal use. Supply a NEW value only "
+                    "when you intentionally need to pay the same address the same amount "
+                    "again; a repeat with the same address, amount and intent_id is reported "
+                    "as status, never re-sent."
                 ),
             },
         },

@@ -44,10 +44,9 @@ public class CreateAccountToolTests : IDisposable
     private void SetupSuccessfulFetch(long paidSats = 100, string body = AccountJson)
     {
         _l402ClientMock
-            .Setup(c => c.FetchWithL402Async(
-                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(),
-                It.IsAny<string?>(), It.IsAny<long>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync((string url, string _, string? __, string? ___, long ____, CancellationToken _____) =>
+            .Setup(c => c.PostFirstPartyAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((string url, string _, long __, CancellationToken ___) =>
                 L402FetchResult.Succeeded(url, body, 200, "application/json", paidAmountSats: paidSats,
                     l402Token: "macaroon:preimage", protocol: "L402"));
     }
@@ -73,9 +72,8 @@ public class CreateAccountToolTests : IDisposable
         var json = JsonDocument.Parse(result);
         json.RootElement.GetProperty("success").GetBoolean().Should().BeFalse();
         json.RootElement.GetProperty("error").GetString().Should().Contain("Email is required");
-        _l402ClientMock.Verify(c => c.FetchWithL402Async(
-            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(),
-            It.IsAny<string?>(), It.IsAny<long>(), It.IsAny<CancellationToken>()), Times.Never);
+        _l402ClientMock.Verify(c => c.PostFirstPartyAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Theory]
@@ -118,9 +116,8 @@ public class CreateAccountToolTests : IDisposable
         var json = JsonDocument.Parse(result);
         json.RootElement.GetProperty("success").GetBoolean().Should().BeFalse();
         json.RootElement.GetProperty("error").GetString().Should().Contain("denied by budget policy");
-        _l402ClientMock.Verify(c => c.FetchWithL402Async(
-            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(),
-            It.IsAny<string?>(), It.IsAny<long>(), It.IsAny<CancellationToken>()), Times.Never);
+        _l402ClientMock.Verify(c => c.PostFirstPartyAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Theory]
@@ -148,9 +145,8 @@ public class CreateAccountToolTests : IDisposable
         result.Should().NotContain("ABC123", "the confirmation code must not leak into the model-visible result");
         json.RootElement.GetProperty("expiresInSeconds").GetInt32().Should().Be(120);
 
-        _l402ClientMock.Verify(c => c.FetchWithL402Async(
-            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(),
-            It.IsAny<string?>(), It.IsAny<long>(), It.IsAny<CancellationToken>()), Times.Never);
+        _l402ClientMock.Verify(c => c.PostFirstPartyAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -168,9 +164,8 @@ public class CreateAccountToolTests : IDisposable
         json.RootElement.GetProperty("success").GetBoolean().Should().BeFalse();
         json.RootElement.GetProperty("requiresConfirmation").GetBoolean().Should().BeFalse();
         json.RootElement.GetProperty("confirmationChannel").GetString().Should().Be("refuse");
-        _l402ClientMock.Verify(c => c.FetchWithL402Async(
-            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(),
-            It.IsAny<string?>(), It.IsAny<long>(), It.IsAny<CancellationToken>()), Times.Never);
+        _l402ClientMock.Verify(c => c.PostFirstPartyAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -196,9 +191,8 @@ public class CreateAccountToolTests : IDisposable
         _budgetServiceMock.Verify(b => b.ValidateAndConsumeConfirmation(
             "ABC123", 500, "create_lightning_enable_account",
             It.Is<string>(u => u.EndsWith("/api/signup/l402"))), Times.Once);
-        _l402ClientMock.Verify(c => c.FetchWithL402Async(
-            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(),
-            It.IsAny<string?>(), It.IsAny<long>(), It.IsAny<CancellationToken>()), Times.Once);
+        _l402ClientMock.Verify(c => c.PostFirstPartyAsync(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
     // ----- Signup flow -----
@@ -211,13 +205,16 @@ public class CreateAccountToolTests : IDisposable
         await CreateAccountTool.CreateLightningEnableAccount(
             email: TestEmail, l402Client: _l402ClientMock.Object, configService: _configServiceMock.Object);
 
-        _l402ClientMock.Verify(c => c.FetchWithL402Async(
+        _l402ClientMock.Verify(c => c.PostFirstPartyAsync(
             It.Is<string>(u => u.EndsWith("/api/signup/l402")),
-            "POST",
-            null,
             It.Is<string>(b => b.Contains(TestEmail)),
             1000L,
             It.IsAny<CancellationToken>()), Times.Once);
+
+        // A3: bootstrap must NOT go through the generic GET/HEAD-only path.
+        _l402ClientMock.Verify(c => c.FetchWithL402Async(
+            It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(),
+            It.IsAny<string?>(), It.IsAny<long>(), It.IsAny<CancellationToken>()), Times.Never);
     }
 
     [Fact]
@@ -291,9 +288,8 @@ public class CreateAccountToolTests : IDisposable
     public async Task CreateAccount_PaidButDuplicateEmail_SurfacesPaidSignal_AndSaysDoNotRetry()
     {
         _l402ClientMock
-            .Setup(c => c.FetchWithL402Async(
-                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(),
-                It.IsAny<string?>(), It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .Setup(c => c.PostFirstPartyAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(L402FetchResult.Failed(
                 "https://x/api/signup/l402",
                 "Request failed after payment: HTTP 409: {\"error\":\"merchant_exists\",\"message\":\"email already registered\"}",
@@ -327,9 +323,8 @@ public class CreateAccountToolTests : IDisposable
     public async Task CreateAccount_PaidButPending_SurfacesPaidSignal_AndDoesNotBlameWallet()
     {
         _l402ClientMock
-            .Setup(c => c.FetchWithL402Async(
-                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(),
-                It.IsAny<string?>(), It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .Setup(c => c.PostFirstPartyAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(L402FetchResult.Failed(
                 "https://x/api/signup/l402",
                 "Payment has not settled yet (tracking ID: strike-123) — it may still succeed or fail. " +
@@ -359,9 +354,8 @@ public class CreateAccountToolTests : IDisposable
     public async Task CreateAccount_PaidButNoPreimage_SurfacesPaidSignal()
     {
         _l402ClientMock
-            .Setup(c => c.FetchWithL402Async(
-                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(),
-                It.IsAny<string?>(), It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .Setup(c => c.PostFirstPartyAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(L402FetchResult.Failed(
                 "https://x/api/signup/l402",
                 "Payment succeeded (tracking ID: strike-456) but wallet did not return a usable preimage. " +
@@ -387,9 +381,8 @@ public class CreateAccountToolTests : IDisposable
     public async Task CreateAccount_UnpaidFailure_DoesNotClaimPaid()
     {
         _l402ClientMock
-            .Setup(c => c.FetchWithL402Async(
-                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(),
-                It.IsAny<string?>(), It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .Setup(c => c.PostFirstPartyAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(L402FetchResult.Failed(
                 "https://x/api/signup/l402",
                 "402 Payment Required but NWC wallet not configured. Set NWC_CONNECTION_STRING environment variable.",
@@ -549,9 +542,8 @@ public class CreateAccountToolTests : IDisposable
         // Key appears early so we prove redaction runs BEFORE truncation.
         var leaky = "le_live_leakedkey :: " + new string('y', 400);
         _l402ClientMock
-            .Setup(c => c.FetchWithL402Async(
-                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(),
-                It.IsAny<string?>(), It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .Setup(c => c.PostFirstPartyAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(), It.IsAny<CancellationToken>()))
             .ReturnsAsync(L402FetchResult.Failed("https://x/api/signup/l402", leaky, 500));
 
         var result = await CreateAccountTool.CreateLightningEnableAccount(

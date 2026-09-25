@@ -3,6 +3,19 @@
 All notable changes to the Lightning Enable MCP server are documented here.
 Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-enable-mcp`).
 
+## [2.0.5] — 2026-09-25
+
+### Security
+
+- The durable operation ledger (`~/.lightning-enable/operations.jsonl`) is shared by both
+  ports, but each port persisted state names in its own spelling (`Submitted` vs
+  `submitted`, `FailedNoFunds` vs `failed_no_funds`) and silently skipped the other's lines.
+  A send submitted from one flavor was therefore invisible to the other and could be
+  re-sent by it. Both parsers now accept both spellings; writes are unchanged so older
+  releases keep reading their own lines.
+- Python: the consolidated `wallet_ops` tool now exposes `send_onchain`'s `intent_id`
+  parameter (already exposed by .NET).
+
 ## [2.0.4] — 2026-09-25
 
 ### Security

@@ -35,9 +35,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("lightning-enable-mcp.tools.settle_agent_service")
 
-# HTTP method whitelist (mirrors .NET AgentSettleTool)
-# Policy restriction to what the L402 settlement client (L402Client.fetch) supports.
-
 
 async def settle_agent_service(
     l402_endpoint: str,

@@ -3,18 +3,28 @@
 All notable changes to the Lightning Enable MCP server are documented here.
 Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-enable-mcp`).
 
-## [Unreleased]
+## [2.0.3] — 2026-09-25
 
 ### Security
 
-- Python `settle_agent_service` no longer accepts plain `http://` to localhost "for
-  development". HTTPS is required for every settlement endpoint, and the tool now runs the
-  same SSRF preflight as `access_l402_resource` (loopback, RFC 1918, link-local and cloud
-  metadata, CGNAT, IPv4-mapped IPv6, `*.internal` / `*.localhost`, and inet_aton-style
-  numeric hosts such as `2130706433` or `0x7f000001` are refused before any request, budget
-  check, or wallet call). The connect-time pin in `ssrf_transport` remains the authoritative
-  gate against DNS rebinding. There is no allowlist or environment escape hatch; tests that
-  need loopback use the injectable seams in `ssrf_transport`.
+- Generic paid HTTP (`access_l402_resource`, `settle_agent_service`) is now GET/HEAD only in
+  both ports. The 402 → pay → retry flow replays the request against a caller-chosen URL, so
+  state-changing methods (POST/PUT/PATCH/DELETE) are refused before any request, budget
+  reservation, or wallet call. The rule is enforced inside the shared L402 client as well as
+  at the tool layer; method casing and whitespace cannot bypass it. The first-party account
+  bootstrap POST uses an explicit internal path pinned to the configured API origin.
+- .NET payment history no longer retains the BOLT11 invoice, preimage, or L402 token, and
+  stores URLs with userinfo, query and fragment stripped. A truncated payment-hash reference
+  replaces raw proofs. The immediate payment result still returns the preimage where the
+  protocol requires it.
+- `settle_agent_service` in both ports no longer accepts plain `http://` to localhost "for
+  development". HTTPS is required for every settlement endpoint, and the tool runs the same
+  SSRF preflight as `access_l402_resource` (loopback, RFC 1918, link-local and cloud
+  metadata, CGNAT, IPv4-mapped IPv6, `*.internal` / `*.localhost`, trailing-dot hosts, and
+  inet_aton-style numeric hosts such as `2130706433` or `0x7f000001` are refused before any
+  request, budget check, or wallet call). The Python connect-time pin in `ssrf_transport`
+  remains the authoritative gate against DNS rebinding. There is no allowlist or environment
+  escape hatch.
 
 ## [2.0.2] — 2026-09-23
 

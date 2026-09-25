@@ -3,6 +3,19 @@
 All notable changes to the Lightning Enable MCP server are documented here.
 Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-enable-mcp`).
 
+## [Unreleased]
+
+### Security
+
+- Python `settle_agent_service` no longer accepts plain `http://` to localhost "for
+  development". HTTPS is required for every settlement endpoint, and the tool now runs the
+  same SSRF preflight as `access_l402_resource` (loopback, RFC 1918, link-local and cloud
+  metadata, CGNAT, IPv4-mapped IPv6, `*.internal` / `*.localhost`, and inet_aton-style
+  numeric hosts such as `2130706433` or `0x7f000001` are refused before any request, budget
+  check, or wallet call). The connect-time pin in `ssrf_transport` remains the authoritative
+  gate against DNS rebinding. There is no allowlist or environment escape hatch; tests that
+  need loopback use the injectable seams in `ssrf_transport`.
+
 ## [2.0.2] — 2026-09-23
 
 ### Security

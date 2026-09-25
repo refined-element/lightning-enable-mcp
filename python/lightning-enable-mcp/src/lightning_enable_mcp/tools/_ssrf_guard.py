@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import re
 import socket
 from collections.abc import Awaitable, Callable
 from urllib.parse import urlsplit
@@ -79,6 +80,11 @@ _BLOCKED_HOSTNAMES = frozenset(
 # a legitimate SSRF pivot, so block it explicitly. The .NET PrivateIpAddressDetector
 # blocks the same range — the two ports must stay consistent.
 _CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
+
+# A host made only of digits, dots and hex prefixes that did NOT parse as an IP literal
+# is an inet_aton-style shorthand (decimal/octal/hex, short dotted forms). Never a real
+# DNS name, so it is refused rather than resolved.
+_NUMERIC_HOST_RE = re.compile(r"(?:0x[0-9a-f]+|[0-9]+)(?:\.(?:0x[0-9a-f]+|[0-9]+))*\.?")
 
 
 class SsrfError(Exception):
@@ -147,7 +153,9 @@ async def validate_url_allowed(url: str, *, resolver: Resolver | None = None) ->
     if not host:
         raise SsrfError("URL has no host.")
 
-    lowered = host.lower()
+    # Normalise: case-fold and drop a trailing dot (FQDN form) so "LOCALHOST." and
+    # "metadata.google.internal." cannot bypass the name checks below.
+    lowered = host.lower().rstrip(".")
     if (
         lowered in _BLOCKED_HOSTNAMES
         or lowered.endswith(".internal")
@@ -164,6 +172,13 @@ async def validate_url_allowed(url: str, *, resolver: Resolver | None = None) ->
         if is_blocked_ip(literal):
             raise SsrfError()
         return
+
+    # Non-canonical numeric hosts ("2130706433", "0x7f000001", "0177.0.0.1", "127.1")
+    # are NOT valid IP literals to ``ipaddress`` but ARE accepted by libc ``inet_aton``
+    # semantics in most resolvers — where they all mean 127.0.0.1. Refuse them outright
+    # rather than trusting the platform resolver to expose the private address.
+    if _NUMERIC_HOST_RE.fullmatch(lowered):
+        raise SsrfError()
 
     # Hostname → resolve and validate every answer (fail closed on any private).
     resolve = resolver or _default_resolver

@@ -305,4 +305,74 @@ public class AgentSettleToolTests
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
             It.IsAny<long>(), It.IsAny<CancellationToken>()), Times.Never);
     }
+    // A3: the settlement endpoint is caller-chosen, so settle is a generic paid fetch and
+    // is GET/HEAD only. Any other method is refused before budget, network and payment.
+    [Theory]
+    [InlineData("POST")]
+    [InlineData("PUT")]
+    [InlineData("PATCH")]
+    [InlineData("DELETE")]
+    [InlineData("OPTIONS")]
+    [InlineData(" post ")]
+    [InlineData("Post")]
+    public async Task SettleAgentService_UnsafeMethod_IsRefusedBeforeBudgetAndClient(string method)
+    {
+        var result = await AgentSettleTool.SettleAgentService(
+            TestEndpoint, method, "{\"text\":\"hi\"}", null, 1000,
+            _l402ClientMock.Object, _budgetServiceMock.Object, _paymentHistoryMock.Object);
+
+        var json = JsonDocument.Parse(result).RootElement;
+        json.GetProperty("success").GetBoolean().Should().BeFalse();
+        var error = json.GetProperty("error").GetString();
+        error.Should().NotBeNullOrWhiteSpace().And.Contain("GET").And.Contain("HEAD");
+
+        _budgetServiceMock.Verify(b => b.CheckBudget(It.IsAny<long>()), Times.Never);
+        _l402ClientMock.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task SettleAgentService_Head_IsNormalisedAndForwarded()
+    {
+        _budgetServiceMock.Setup(b => b.CheckBudget(It.IsAny<long>()))
+            .Returns(BudgetCheckResult.Allow(8000, 1000));
+        _l402ClientMock.Setup(c => c.FetchWithL402Async(
+                TestEndpoint, "HEAD", null, null, 1000, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(L402FetchResult.Succeeded(TestEndpoint, "", 200, null));
+
+        var result = await AgentSettleTool.SettleAgentService(
+            TestEndpoint, " head ", null, null, 1000,
+            _l402ClientMock.Object, _budgetServiceMock.Object, _paymentHistoryMock.Object);
+
+        JsonDocument.Parse(result).RootElement.GetProperty("success").GetBoolean().Should().BeTrue();
+        _l402ClientMock.Verify(c => c.FetchWithL402Async(
+            TestEndpoint, "HEAD", null, null, 1000, It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    // A1 parity with the Python port: no production localhost / plain-HTTP carve-out, and the
+    // shared SSRF pre-check runs before budget or client. Would fail if the carve-out returns.
+    [Theory]
+    [InlineData("http://localhost:8080/l402/settle")]
+    [InlineData("http://127.0.0.1/l402/settle")]
+    [InlineData("http://[::1]/l402/settle")]
+    [InlineData("https://localhost/l402/settle")]
+    [InlineData("https://10.0.0.5/l402/settle")]
+    [InlineData("https://169.254.169.254/latest/meta-data")]
+    [InlineData("https://user@127.0.0.1/l402/settle")]
+    [InlineData("https://metadata.google.internal/computeMetadata")]
+    public async Task SettleAgentService_PrivateOrPlainHttpEndpoint_IsRefusedBeforeBudgetAndClient(string endpoint)
+    {
+        var result = await AgentSettleTool.SettleAgentService(
+            endpoint, "GET", null, null, 1000,
+            _l402ClientMock.Object, _budgetServiceMock.Object, _paymentHistoryMock.Object);
+
+        var json = JsonDocument.Parse(result).RootElement;
+        json.GetProperty("success").GetBoolean().Should().BeFalse();
+        var error = json.GetProperty("error").GetString();
+        error.Should().NotBeNullOrWhiteSpace();
+        error.Should().NotContain("localhost during development");
+        error.Should().NotContain("10.0.0.5").And.NotContain("169.254");
+
+        _budgetServiceMock.Verify(b => b.CheckBudget(It.IsAny<long>()), Times.Never);
+        _l402ClientMock.VerifyNoOtherCalls();
+    }
 }

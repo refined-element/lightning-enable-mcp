@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using LightningEnable.Mcp.Models;
 
 namespace LightningEnable.Mcp.Services;
@@ -5,6 +7,13 @@ namespace LightningEnable.Mcp.Services;
 /// <summary>
 /// Service for tracking payment history during a session.
 /// Thread-safe for concurrent access.
+///
+/// <para><b>This is the minimizing boundary.</b> Callers hand over what they have (the
+/// invoice, the preimage, the token, the raw URL) and this service keeps only what is
+/// safe: a redacted URL and a truncated hash-derived <see cref="PaymentRecord.PaymentReference"/>.
+/// The secrets are consumed to derive the reference and are never stored, so no reader —
+/// the history tool, JSON, <c>ToString()</c>, a log line — can leak them, whatever a
+/// caller passed in. Mirrors the Python port's preimage-free <c>PaymentRecord</c>.</para>
 /// </summary>
 public class PaymentHistoryService : IPaymentHistoryService
 {
@@ -31,17 +40,19 @@ public class PaymentHistoryService : IPaymentHistoryService
                 _payments.RemoveRange(0, _payments.Count - MaxPaymentRecords + 1);
             }
 
+            // invoice / preimageHex / l402Token are consumed here and only here: they
+            // feed the reference and are dropped. The token is never even hashed — it
+            // embeds the preimage, which the payment hash already commits to.
+            _ = l402Token;
             _payments.Add(new PaymentRecord
             {
                 Id = Guid.NewGuid().ToString("N"),
-                Url = url,
+                Url = UrlRedaction.RedactUrl(url),
                 Method = method.ToUpperInvariant(),
                 AmountSats = amountSats,
                 Timestamp = DateTime.UtcNow,
                 Status = status,
-                Invoice = invoice,
-                PreimageHex = preimageHex,
-                L402Token = l402Token,
+                PaymentReference = DerivePaymentReference(preimageHex, invoice),
                 ResponseStatusCode = statusCode,
                 ErrorMessage = errorMessage
             });
@@ -65,12 +76,12 @@ public class PaymentHistoryService : IPaymentHistoryService
             _payments.Add(new PaymentRecord
             {
                 Id = Guid.NewGuid().ToString("N"),
-                Url = url,
+                Url = UrlRedaction.RedactUrl(url),
                 Method = method.ToUpperInvariant(),
                 AmountSats = amountSats,
                 Timestamp = DateTime.UtcNow,
                 Status = PaymentStatus.Failed,
-                Invoice = invoice,
+                PaymentReference = DerivePaymentReference(null, invoice),
                 ErrorMessage = errorMessage
             });
         }
@@ -119,4 +130,38 @@ public class PaymentHistoryService : IPaymentHistoryService
             _payments.Clear();
         }
     }
+
+    /// <summary>
+    /// Derives the short non-secret reference stored on a record. Prefers the payment
+    /// hash (SHA-256 of a valid preimage — the value the wallet and the durable receipt
+    /// already carry, so the two logs correlate); falls back to a SHA-256 commitment to
+    /// the invoice string; <c>null</c> when neither is available. Never throws — a
+    /// malformed preimage simply falls through to the invoice commitment.
+    /// </summary>
+    internal static string? DerivePaymentReference(string? preimageHex, string? invoice)
+    {
+        if (Preimage.IsValid(preimageHex))
+        {
+            try
+            {
+                var hash = SHA256.HashData(Convert.FromHexString(preimageHex!));
+                return Truncate(hash);
+            }
+            catch (FormatException)
+            {
+                // fall through to the invoice commitment
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(invoice))
+        {
+            var hash = SHA256.HashData(Encoding.UTF8.GetBytes(invoice.Trim().ToLowerInvariant()));
+            return Truncate(hash);
+        }
+
+        return null;
+    }
+
+    private static string Truncate(byte[] hash) =>
+        Convert.ToHexString(hash).ToLowerInvariant()[..PaymentRecord.PaymentReferenceLength];
 }

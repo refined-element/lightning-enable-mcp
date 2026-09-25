@@ -80,15 +80,15 @@ class TestSettleAgentServiceValidation:
         assert "requires HTTPS" in parsed["error"]
 
     @pytest.mark.asyncio
-    async def test_plain_http_localhost_allowed_through_validation(self):
-        """localhost http passes URL validation (reaches the client check)."""
+    async def test_plain_http_localhost_rejected(self):
+        """A1: the localhost plain-HTTP dev carve-out is gone — HTTPS is always required.
+        Full SSRF coverage lives in test_settle_agent_service_ssrf.py."""
         result = await settle_agent_service(
             l402_endpoint="http://localhost:5096/l402", l402_client=None
         )
         parsed = json.loads(result)
-        # Not rejected for HTTPS; rejected later for missing client.
         assert parsed["success"] is False
-        assert "client not available" in parsed["error"]
+        assert "requires HTTPS" in parsed["error"]
 
     @pytest.mark.asyncio
     async def test_invalid_method_rejected(self):
@@ -101,16 +101,35 @@ class TestSettleAgentServiceValidation:
         assert "Invalid HTTP method" in parsed["error"]
 
     @pytest.mark.asyncio
-    async def test_unsupported_method_rejected(self):
-        """HEAD (and OPTIONS/PATCH) are not in the whitelist — the L402 client can't settle them."""
+    @pytest.mark.parametrize("method", ["POST", "PUT", "PATCH", "DELETE", " post ", "Delete"])
+    async def test_write_methods_rejected_before_client(self, method):
+        """A3: settlement is a generic paid fetch to a caller-chosen URL — GET/HEAD only,
+        refused before any budget or client call. Would fail if POST returns to the allowlist."""
+        client = MagicMock()
+        client.fetch = AsyncMock()
         result = await settle_agent_service(
-            l402_endpoint="https://example.com/l402", method="HEAD",
-            l402_client=MagicMock(),
+            l402_endpoint="https://example.com/l402", method=method, body="{}",
+            l402_client=client,
         )
         parsed = json.loads(result)
         assert parsed["success"] is False
-        assert "Invalid HTTP method" in parsed["error"]
-        assert "HEAD" in parsed["error"]
+        assert "GET" in parsed["error"] and "HEAD" in parsed["error"]
+        client.fetch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_head_is_normalised_and_forwarded(self):
+        client = MagicMock()
+        client.fetch = AsyncMock(return_value=("", 0, None))
+        budget = MagicMock()
+        budget.check_budget.return_value = MagicMock(allowed=True, remaining_sats=8000)
+        budget.check_approval_level = AsyncMock(return_value=MagicMock(allowed=True, requires_confirmation=False))
+        result = await settle_agent_service(
+            l402_endpoint="https://example.com/l402", method=" head ",
+            l402_client=client, budget_service=budget,
+        )
+        parsed = json.loads(result)
+        assert parsed["success"] is True, parsed
+        assert client.fetch.call_args.kwargs["method"] == "HEAD"
 
     @pytest.mark.asyncio
     async def test_no_client_returns_error(self):

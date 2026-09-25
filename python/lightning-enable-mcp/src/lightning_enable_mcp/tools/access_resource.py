@@ -19,7 +19,13 @@ from mcp.types import Tool
 from .._url_redact import redact_url_for_display as _redact_url_for_display
 from ..config import ApprovalLevel
 from ..confirmation_channel import ConfirmationRequest
-from ..l402_client import L402RedirectError
+from ..l402_client import (
+    GENERIC_PAID_HTTP_METHODS,
+    L402MethodNotAllowedError,
+    L402RedirectError,
+    enforce_paid_http_method,
+    normalize_http_method,
+)
 from ..receipt_seam import PaymentReceiptScope, policy_label
 from . import sanitize_error
 from ._ssrf_guard import SsrfError, validate_url_allowed
@@ -52,9 +58,11 @@ async def access_l402_resource(
 
     Args:
         url: The URL to fetch
-        method: HTTP method (GET, POST, PUT, DELETE)
+        method: HTTP method — GET or HEAD only. Paid HTTP is read-only: the request is
+            replayed after payment against a caller-chosen URL, so state-changing
+            methods are refused before any request or payment.
         headers: Optional additional request headers
-        body: Optional request body for POST/PUT requests
+        body: Optional request body (rarely needed for GET/HEAD)
         max_sats: Maximum satoshis to pay for this request
         confirmation_nonce: The code the human read from the server console (for payments
             above the auto-approve threshold). Omit on the first call to request one.
@@ -69,11 +77,21 @@ async def access_l402_resource(
         return "Error: L402 client not initialized. Check NWC connection."
 
     headers = headers or {}
-    method = method.upper()
 
-    # Validate method
-    if method not in ("GET", "POST", "PUT", "DELETE"):
-        return f"Error: Invalid HTTP method: {method}"
+    # Method gate (A3): generic paid HTTP is READ-ONLY — GET and HEAD only. Checked
+    # first, before the SSRF pre-check, the budget check and any network/wallet
+    # activity. The same allowlist is enforced again inside L402Client.fetch, so this
+    # layer only exists to give the agent a clear, structured error.
+    try:
+        method = enforce_paid_http_method(method)
+    except L402MethodNotAllowedError as e:
+        return json.dumps({
+            "success": False,
+            "url": url,
+            "method": normalize_http_method(method),
+            "error": str(e),
+            "allowedMethods": sorted(GENERIC_PAID_HTTP_METHODS),
+        }, indent=2)
 
     # SSRF guard (F-10e): refuse targets that resolve to a private/internal/reserved
     # address (loopback, RFC1918, link-local incl. 169.254.169.254 cloud metadata,
@@ -316,7 +334,8 @@ async def access_l402_resource(
 ACCESS_L402_RESOURCE_TOOL = Tool(
     name="access_l402_resource",
     description=(
-        "Fetch a URL, automatically paying any L402 challenge and retrying. "
+        "Fetch a URL with GET or HEAD, automatically paying any L402 challenge and "
+        "retrying. Read-only: other HTTP methods are refused. "
         "Returns the response plus what was paid."
     ),
     inputSchema={
@@ -326,14 +345,15 @@ ACCESS_L402_RESOURCE_TOOL = Tool(
             "method": {
                 "type": "string",
                 "default": "GET",
-                "enum": ["GET", "POST", "PUT", "DELETE"],
+                "enum": ["GET", "HEAD"],
+                "description": "GET or HEAD only (paid HTTP is read-only)",
             },
             "headers": {
                 "type": "object",
                 "description": "Extra headers",
                 "additionalProperties": {"type": "string"},
             },
-            "body": {"type": "string", "description": "Body for POST/PUT"},
+            "body": {"type": "string", "description": "Optional request body (rarely needed)"},
             "max_sats": {
                 "type": "integer",
                 "description": "Max sats to pay",

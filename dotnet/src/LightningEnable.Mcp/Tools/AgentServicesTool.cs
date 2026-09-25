@@ -70,7 +70,7 @@ public static class AgentServicesTool
         [Description("request: max sats")] int budgetSats = 0,
         [Description("request: extra params, JSON string")] string? parameters = null,
         [Description("settle/publish: L402 endpoint")] string? l402Endpoint = null,
-        [Description("settle: HTTP method")] string method = "GET",
+        [Description("settle: HTTP method, GET or HEAD only")] string method = "GET",
         [Description("settle: request body")] string? body = null,
         [Description("settle/attest: agreement id")] string? agreementId = null,
         [Description("settle: max sats")] int maxSats = 1000,

@@ -281,13 +281,15 @@ Check if a previously created invoice has been paid.
 
 ### access_l402_resource
 
-Fetches a URL, automatically paying any L402 challenge. Requires a wallet that returns preimage (Strike, LND, CoinOS, CLINK, Alby Hub).
+Fetches a URL with `GET` or `HEAD`, automatically paying any L402 challenge. Requires a wallet that returns preimage (Strike, LND, CoinOS, CLINK, Alby Hub).
+
+This tool is read-only by design: the URL and method are chosen by the agent, so state-changing methods (`POST`, `PUT`, `PATCH`, `DELETE`) are refused before any request is sent and before any payment is made. The same rule is enforced inside the shared L402 HTTP client, so no tool can bypass it. Method matching ignores case and surrounding whitespace, so `" post "` is refused the same way as `POST`.
 
 **Parameters:**
 - `url` (required): The URL to fetch
-- `method`: HTTP method (GET, POST, PUT, DELETE). Default: GET
+- `method`: HTTP method, `GET` or `HEAD` only. Default: GET
 - `headers`: Optional headers as JSON object
-- `body`: Optional request body
+- `body`: Optional request body (usually omit; only GET/HEAD are allowed)
 - `maxSats`: Maximum sats to pay. Default: 1000
 
 ### test_l402_payment

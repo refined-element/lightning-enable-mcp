@@ -1,0 +1,4 @@
+# Fingerprints of known-false-positive findings. Format: <commit>:<path>:<rule>:<line>
+# PaymentHistoryRedactionTests.cs seeds a fake macaroon/preimage sentinel and asserts it is
+# never retained in history. Not a credential.
+f33a18634f667278fd69d06e7b675dc62c1d675f:dotnet/tests/LightningEnable.Mcp.Tests/Services/PaymentHistoryRedactionTests.cs:generic-api-key:313

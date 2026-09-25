@@ -27,8 +27,8 @@ public static class AgentSettleTool
         "l402_producer action=verify to confirm payment before delivering the service.")]
     public static async Task<string> SettleAgentService(
         [Description("L402 endpoint URL from the service agreement")] string l402Endpoint,
-        [Description("HTTP method (GET, POST). Defaults to GET")] string method = "GET",
-        [Description("Optional request body for POST requests (e.g., service parameters as JSON)")] string? body = null,
+        [Description("HTTP method: GET or HEAD only. Defaults to GET")] string method = "GET",
+        [Description("Optional request body (GET/HEAD only; usually omit)")] string? body = null,
         [Description("Agreement event ID for tracking")] string? agreementId = null,
         [Description("Maximum satoshis to pay (default: 1000)")] int maxSats = 1000,
         IL402HttpClient? l402Client = null,
@@ -61,28 +61,39 @@ public static class AgentSettleTool
                 });
             }
 
-            // Security: reject plain HTTP except for localhost (dev use)
-            if (uri.Scheme == "http" &&
-                uri.Host != "localhost" && uri.Host != "127.0.0.1" && uri.Host != "::1")
+            // Security (A1, parity with the Python port): HTTPS only — no localhost / plain-HTTP
+            // carve-out, because the endpoint is caller-chosen and a dev exception is a
+            // model-reachable SSRF path. Local testing injects a fake IL402HttpClient instead.
+            if (uri.Scheme != "https")
             {
                 return JsonSerializer.Serialize(new
                 {
                     success = false,
-                    error = "L402 settlement requires HTTPS. Plain HTTP is only allowed for localhost during development."
+                    error = "L402 settlement requires HTTPS. Plain HTTP endpoints are not accepted."
                 });
             }
 
-            // Validate HTTP method against whitelist
-            var allowedMethods = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-                { "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS" };
-            if (!allowedMethods.Contains(method))
+            // Cheap SSRF pre-check (private/loopback/metadata/internal hosts) before any
+            // budget or network work. Error text never echoes the resolved address.
+            var ssrfError = SsrfUrlGuard.Validate(l402Endpoint);
+            if (ssrfError != null)
+            {
+                return JsonSerializer.Serialize(new { success = false, error = ssrfError });
+            }
+
+            // A3: the settlement endpoint is caller-chosen, so this is a generic paid fetch
+            // — GET/HEAD only, refused before any request or payment. The shared client
+            // enforces the same rule, so it cannot be bypassed here either.
+            if (!PaidHttpMethodGuard.TryNormalize(method, "settle_agent_service", out var safeMethod, out var methodError))
             {
                 return JsonSerializer.Serialize(new
                 {
                     success = false,
-                    error = $"Invalid HTTP method '{method}'. Allowed methods: {string.Join(", ", allowedMethods)}."
+                    error = methodError,
+                    allowedMethods = PaidHttpMethodGuard.AllowedMethods
                 });
             }
+            method = safeMethod;
 
             if (l402Client == null)
             {

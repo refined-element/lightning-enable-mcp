@@ -289,6 +289,10 @@ async def create_lightning_enable_account(
                 headers={"Content-Type": "application/json"},
                 body=body,
                 max_sats=max_sats,
+                # Generic paid HTTP is GET/HEAD only (A3). This is the one first-party
+                # write — a fixed signup origin, never a model-chosen URL — so it uses
+                # the internal keyword-only allowance instead of widening the rule.
+                first_party_write=True,
             )
 
         # PASSIVE: the client (l402_client.fetch) already recorded the spend +

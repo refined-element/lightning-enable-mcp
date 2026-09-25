@@ -30,7 +30,6 @@ namespace LightningEnable.Mcp.Tools;
 public static class CreateAccountTool
 {
     private const string SignupPath = "/api/signup/l402";
-    private const string DefaultBaseUrl = "https://api.lightningenable.com";
     private const string ConfigKey = "lightningEnableApiKey";
     private const string ToolName = "create_lightning_enable_account";
 
@@ -222,12 +221,13 @@ public static class CreateAccountTool
             // Spend + payment history are recorded inside FetchWithL402Async (the client),
             // so the tool does NOT record again (avoids double-counting — same delegation
             // pattern as pay_l402_challenge).
+            // This is the ONE POST in the paid-HTTP surface. It goes through the explicit,
+            // internal first-party path (fixed operator-configured origin, never a tool
+            // argument) — NOT the generic FetchWithL402Async, which is GET/HEAD only (A3).
             var body = JsonSerializer.Serialize(new { email });
-            var fetch = await l402Client.FetchWithL402Async(
+            var fetch = await l402Client.PostFirstPartyAsync(
                 signupUrl,
-                "POST",
-                null, // headers — L402HttpClient defaults body content-type to application/json
-                body,
+                body, // L402HttpClient sends it as application/json
                 maxSats,
                 cancellationToken);
 
@@ -421,13 +421,8 @@ public static class CreateAccountTool
         return scrubbed;
     }
 
-    private static string BuildSignupUrl()
-    {
-        var baseUrl = Environment.GetEnvironmentVariable("LIGHTNING_ENABLE_API_URL")?.TrimEnd('/');
-        if (string.IsNullOrEmpty(baseUrl) || baseUrl.StartsWith("${"))
-            baseUrl = DefaultBaseUrl;
-        return $"{baseUrl}{SignupPath}";
-    }
+    // Same operator-configured origin the client's first-party POST path validates against.
+    private static string BuildSignupUrl() => $"{FirstPartyOrigin.ResolveApiBaseUrl()}{SignupPath}";
 
     private static string DefaultConfigPath() => Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),

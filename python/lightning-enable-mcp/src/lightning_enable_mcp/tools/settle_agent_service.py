@@ -24,20 +24,16 @@ from mcp.types import Tool
 from .._url_redact import redact_url_for_display as _redact_url_for_display
 from ..config import ApprovalLevel
 from ..confirmation_channel import ConfirmationRequest
-from ..l402_client import L402RedirectError
+from ..l402_client import L402MethodNotAllowedError, L402RedirectError, enforce_paid_http_method
 from ..receipt_seam import PaymentReceiptScope, policy_label
 from . import sanitize_error
+from ._ssrf_guard import SsrfError, validate_url_allowed
 
 if TYPE_CHECKING:
     from ..budget_service import BudgetService
     from ..l402_client import L402Client
 
 logger = logging.getLogger("lightning-enable-mcp.tools.settle_agent_service")
-
-# HTTP method whitelist (mirrors .NET AgentSettleTool)
-# Policy restriction to what the L402 settlement client (L402Client.fetch) supports.
-_ALLOWED_METHODS = {"GET", "POST", "PUT", "DELETE"}
-_LOCALHOST_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
 
 async def settle_agent_service(
@@ -55,8 +51,8 @@ async def settle_agent_service(
 
     Args:
         l402_endpoint: L402 endpoint URL from the service agreement
-        method: HTTP method (GET, POST, ...). Defaults to GET
-        body: Optional request body for POST requests (e.g., service params as JSON)
+        method: HTTP method, GET or HEAD only. Defaults to GET
+        body: Optional request body (rarely needed; write methods are refused)
         agreement_id: Optional agreement event ID for tracking
         max_sats: Maximum satoshis to pay (default 1000)
         confirmation_nonce: The code the human read from the server console (for settlements
@@ -85,24 +81,49 @@ async def settle_agent_service(
             })
 
         parsed = urlparse(l402_endpoint)
-        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc:
             return json.dumps({
                 "success": False,
-                "error": "Invalid L402 endpoint URL. Must be an HTTP or HTTPS URL.",
+                "error": "Invalid L402 endpoint URL. Must be an HTTPS URL.",
             })
 
-        # Security: reject plain HTTP except for localhost (dev use)
-        if parsed.scheme == "http" and parsed.hostname not in _LOCALHOST_HOSTS:
+        # Security (A1): settlement is a money-moving request to an agent-supplied URL.
+        # HTTPS is REQUIRED — there is no localhost / plain-HTTP carve-out. The former
+        # "dev" exception was an SSRF foothold (loopback is exactly where internal
+        # services live) and there is deliberately no allowlist or env-var escape hatch
+        # the model could set; tests that need loopback use the injectable seams in
+        # ssrf_transport.
+        if parsed.scheme.lower() != "https":
             return json.dumps({
                 "success": False,
-                "error": "L402 settlement requires HTTPS. Plain HTTP is only allowed for localhost during development.",
+                "error": "L402 settlement requires HTTPS. Plain HTTP endpoints are not accepted.",
             })
 
-        method = method.upper()
-        if method not in _ALLOWED_METHODS:
+        # SSRF preflight (same guard as access_l402_resource / discover_api): refuse
+        # targets that are, or resolve to, a private / loopback / link-local / metadata /
+        # reserved address BEFORE any request, budget check, or wallet call. The message
+        # is generic — it never echoes the resolved internal host or IP. The connect-time
+        # pin in ssrf_transport (wired into L402Client) remains the authoritative gate and
+        # closes the DNS-rebind window this resolve-then-validate check cannot.
+        try:
+            await validate_url_allowed(l402_endpoint)
+        except SsrfError as ssrf_error:
             return json.dumps({
                 "success": False,
-                "error": f"Invalid HTTP method '{method}'. Allowed methods: {', '.join(sorted(_ALLOWED_METHODS))}.",
+                "error": str(ssrf_error),
+                "agreementId": agreement_id,
+            })
+
+        # A3: the settlement endpoint is caller-chosen, so this is a generic paid fetch —
+        # GET/HEAD only, refused before any budget or client call. Shares the gate with
+        # L402Client.fetch so the two layers can never disagree.
+        try:
+            method = enforce_paid_http_method(method)
+        except L402MethodNotAllowedError as exc:
+            return json.dumps({
+                "success": False,
+                "error": f"Invalid HTTP method: {exc}",
+                "allowedMethods": ["GET", "HEAD"],
             })
 
         if l402_client is None:
@@ -365,12 +386,12 @@ SETTLE_AGENT_SERVICE_TOOL = Tool(
             },
             "method": {
                 "type": "string",
-                "description": "HTTP method (GET, POST, PUT, DELETE). Defaults to GET",
+                "description": "HTTP method, GET or HEAD only (paid HTTP is read-only). Defaults to GET", "enum": ["GET", "HEAD"],
                 "default": "GET",
             },
             "body": {
                 "type": "string",
-                "description": "Optional request body for POST requests (e.g., service parameters as JSON)",
+                "description": "Optional request body (rarely needed; write methods are refused)",
             },
             "agreement_id": {
                 "type": "string",

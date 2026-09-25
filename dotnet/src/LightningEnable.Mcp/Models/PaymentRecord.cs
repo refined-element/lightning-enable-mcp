@@ -27,7 +27,15 @@ public enum PaymentStatus
 }
 
 /// <summary>
-/// Record of an L402 payment made during this session.
+/// Record of a payment made during this session.
+///
+/// <para><b>Holds only safe correlation material.</b> There is deliberately no slot for the
+/// BOLT11 invoice, the preimage, or the L402 token: the preimage IS the proof of payment
+/// and the token is a bearer credential, so anything that renders this record (the
+/// history tool, JSON, <c>ToString()</c>, logs) would otherwise leak them. Mirrors the
+/// Python port's <c>PaymentRecord</c>, which has no preimage field at all. The immediate
+/// tool result of a payment may still carry the token — that is the protocol's need —
+/// but it is never copied here.</para>
 /// </summary>
 public record PaymentRecord
 {
@@ -37,7 +45,10 @@ public record PaymentRecord
     public required string Id { get; init; }
 
     /// <summary>
-    /// The URL that was accessed.
+    /// The URL that was accessed, REDACTED: userinfo, query string, and fragment are
+    /// stripped (see <c>UrlRedaction.RedactUrl</c>), so a <c>?api_key=</c> or
+    /// <c>user:pass@</c> never reaches the audit trail. Non-URL identifiers such as
+    /// <c>direct-invoice</c> pass through unchanged.
     /// </summary>
     public required string Url { get; init; }
 
@@ -73,19 +84,17 @@ public record PaymentRecord
     public bool Success => Status == PaymentStatus.Success;
 
     /// <summary>
-    /// The BOLT11 invoice that was paid.
+    /// Short, non-secret payment reference for correlating this record with the wallet
+    /// and the durable receipt log: the first <see cref="PaymentReferenceLength"/> hex
+    /// characters of the payment hash (SHA-256 of the preimage) when the payment settled
+    /// with a preimage, otherwise of a SHA-256 commitment to the invoice. Never the
+    /// preimage, the invoice, or a token — a truncated hash cannot be inverted into any of
+    /// them. <c>null</c> when nothing was available to derive it from.
     /// </summary>
-    public string? Invoice { get; init; }
+    public string? PaymentReference { get; init; }
 
-    /// <summary>
-    /// The preimage proving payment (hex).
-    /// </summary>
-    public string? PreimageHex { get; init; }
-
-    /// <summary>
-    /// The L402 token received (macaroon:preimage).
-    /// </summary>
-    public string? L402Token { get; init; }
+    /// <summary>How many hex characters <see cref="PaymentReference"/> keeps.</summary>
+    public const int PaymentReferenceLength = 8;
 
     /// <summary>
     /// HTTP status code of the final response.

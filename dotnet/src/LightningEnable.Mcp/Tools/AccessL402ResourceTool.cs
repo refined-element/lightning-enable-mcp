@@ -19,9 +19,9 @@ public static class AccessL402ResourceTool
     /// Fetches a URL, automatically paying any L402 challenge.
     /// </summary>
     /// <param name="url">The URL to fetch.</param>
-    /// <param name="method">HTTP method (GET, POST, PUT, DELETE). Defaults to GET.</param>
+    /// <param name="method">HTTP method: GET or HEAD only. Defaults to GET. Any other method is refused before any request or payment.</param>
     /// <param name="headers">Optional headers as JSON object (e.g., {"Authorization": "Bearer token"}).</param>
-    /// <param name="body">Optional request body for POST/PUT requests.</param>
+    /// <param name="body">Optional request body. Rarely useful because only GET/HEAD are allowed.</param>
     /// <param name="maxSats">Maximum satoshis to pay for L402 challenge. Defaults to 1000.</param>
     /// <param name="server">MCP server for elicitation.</param>
     /// <param name="l402Client">Injected L402 HTTP client.</param>
@@ -35,12 +35,13 @@ public static class AccessL402ResourceTool
         Title = "Fetch paid resource",
         ReadOnly = false,
         Destructive = true)]
-    [Description("Fetch a URL, automatically paying any L402 challenge and retrying.")]
+    [Description("Fetch a URL with GET or HEAD, automatically paying any L402 challenge and retrying. " +
+                 "Read-only: POST, PUT, PATCH and DELETE are refused before any request or payment.")]
     public static async Task<string> AccessL402Resource(
         [Description("The URL to fetch")] string url,
-        [Description("HTTP method")] string method = "GET",
+        [Description("HTTP method: GET or HEAD only (default GET)")] string method = "GET",
         [Description("Extra headers as a JSON object")] string? headers = null,
-        [Description("Body for POST/PUT")] string? body = null,
+        [Description("Optional request body (GET/HEAD only; usually omit)")] string? body = null,
         [Description("Max sats to pay")] int maxSats = 1000,
         [Description("Code the human reads off the server console (never returned to you). Omit to request one.")] string? confirmationNonce = null,
         McpServer? server = null,
@@ -85,6 +86,19 @@ public static class AccessL402ResourceTool
                 error = urlValidationError
             });
         }
+
+        // A3: generic paid fetch => GET/HEAD only. Refused BEFORE the budget/approval check,
+        // BEFORE any request and BEFORE any payment. The client re-checks (defence in depth).
+        if (!PaidHttpMethodGuard.TryNormalize(method, "access_l402_resource", out var safeMethod, out var methodError))
+        {
+            return JsonSerializer.Serialize(new
+            {
+                success = false,
+                error = methodError,
+                allowedMethods = PaidHttpMethodGuard.AllowedMethods
+            });
+        }
+        method = safeMethod;
 
         if (l402Client == null)
         {
@@ -404,53 +418,7 @@ public static class AccessL402ResourceTool
     /// reach console/log history (engineering standard #5). The full URL is still returned
     /// in tool results — the caller already supplied it.
     /// </summary>
-    internal static string RedactUrl(string url)
-    {
-        const int maxLen = 80;
-        var (safe, dropped) = BuildRedactedUrl(url);
-        if (safe.Length > maxLen)
-            safe = safe.Substring(0, maxLen) + "...";  // cap the URL part; marker added after
-        return dropped ? safe + " (redacted)" : safe;
-    }
-
-    private static (string safe, bool dropped) BuildRedactedUrl(string url)
-    {
-        try
-        {
-            if (Uri.TryCreate(url, UriKind.Absolute, out var uri))
-            {
-                // uri.Host already brackets IPv6 literals (e.g. "[2001:db8::1]"), so
-                // scheme://host:port stays unambiguous without extra handling.
-                var port = uri.IsDefaultPort ? string.Empty : $":{uri.Port}";
-                var safe = $"{uri.Scheme}://{uri.Host}{port}{uri.AbsolutePath}";
-                var dropped = !string.IsNullOrEmpty(uri.Query)
-                    || !string.IsNullOrEmpty(uri.Fragment)
-                    || !string.IsNullOrEmpty(uri.UserInfo);
-                return (safe, dropped);
-            }
-        }
-        catch
-        {
-            // fall through to the hand-rolled fallback below
-        }
-
-        // Parse failed: strip query, fragment, AND userinfo by hand so we never leave
-        // `user:pass@host`, and report whether anything was removed.
-        var s = url.Split('?')[0].Split('#')[0];
-        var strippedQueryOrFragment = s.Length != url.Length;
-        var schemeIdx = s.IndexOf("//", StringComparison.Ordinal);
-        var strippedUserInfo = false;
-        if (schemeIdx >= 0)
-        {
-            var atIdx = s.IndexOf('@', schemeIdx + 2);
-            if (atIdx >= 0)
-            {
-                s = s.Substring(0, schemeIdx + 2) + s.Substring(atIdx + 1);
-                strippedUserInfo = true;
-            }
-        }
-        return (s, strippedQueryOrFragment || strippedUserInfo);
-    }
+    internal static string RedactUrl(string url) => UrlRedaction.RedactUrl(url);
 
     /// <summary>
     /// Validates URL to prevent SSRF attacks.

@@ -32,13 +32,52 @@ public class L402HttpClient : IL402HttpClient
         _historyService = historyService;
     }
 
-    public async Task<L402FetchResult> FetchWithL402Async(
+    public Task<L402FetchResult> FetchWithL402Async(
         string url,
         string method = "GET",
         string? headers = null,
         string? body = null,
         long maxSats = 1000,
         CancellationToken cancellationToken = default)
+    {
+        // SHARED BOUNDARY (A3): every generic paid fetch goes through here, so the
+        // GET/HEAD restriction is enforced at the client too — a tool that forgets (or
+        // skips) its own check still cannot send a model-chosen POST/PUT/PATCH/DELETE.
+        // Refused BEFORE any request and BEFORE any payment.
+        if (!PaidHttpMethodGuard.TryNormalize(method, "the paid HTTP client", out var safeMethod, out var methodError))
+        {
+            return Task.FromResult(L402FetchResult.Failed(url, methodError));
+        }
+
+        return FetchCoreAsync(url, safeMethod, headers, body, maxSats, cancellationToken);
+    }
+
+    public Task<L402FetchResult> PostFirstPartyAsync(
+        string url,
+        string jsonBody,
+        long maxSats = 1000,
+        CancellationToken cancellationToken = default)
+    {
+        // Explicit, internal-only POST path. The origin check is the whole point: the
+        // generic rule above is NOT widened — only the operator-configured first-party API
+        // origin may receive a POST, and nothing about that origin comes from a tool argument.
+        if (!FirstPartyOrigin.IsFirstParty(url))
+        {
+            return Task.FromResult(L402FetchResult.Failed(url,
+                "Refused: POST is only permitted to the configured Lightning Enable API origin " +
+                $"({FirstPartyOrigin.ResolveApiBaseUrl()}). No request was sent and nothing was paid."));
+        }
+
+        return FetchCoreAsync(url, "POST", null, jsonBody, maxSats, cancellationToken);
+    }
+
+    private async Task<L402FetchResult> FetchCoreAsync(
+        string url,
+        string method,
+        string? headers,
+        string? body,
+        long maxSats,
+        CancellationToken cancellationToken)
     {
         try
         {
@@ -464,7 +503,9 @@ public class L402HttpClient : IL402HttpClient
 
     private static HttpRequestMessage CreateRequest(string url, string method, string? headers, string? body)
     {
-        var request = new HttpRequestMessage(new HttpMethod(method.ToUpperInvariant()), url);
+        // method is already canonical here (GET/HEAD via PaidHttpMethodGuard, or the
+        // fixed first-party POST) — never a raw caller string.
+        var request = new HttpRequestMessage(new HttpMethod(method), url);
 
         // Add custom headers
         if (!string.IsNullOrEmpty(headers))

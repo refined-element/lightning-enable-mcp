@@ -48,10 +48,13 @@ public static class GetPaymentHistoryTool
                     failedPayments = summary.FailedPayments,
                     pendingPayments = summary.PendingPayments
                 },
+                // Records hold only safe correlation material (redacted url + truncated
+                // paymentReference) — see PaymentRecord. Nothing here can leak a secret.
                 payments = recentPayments.Select(p => new
                 {
                     id = p.Id,
                     url = p.Url,
+                    paymentReference = p.PaymentReference,
                     method = p.Method,
                     amountSats = p.AmountSats,
                     timestamp = p.Timestamp,

@@ -208,7 +208,8 @@ class LndConfig:
 
 @dataclass
 class LndOnChainResult:
-    """On-chain payment result from LND."""
+    """On-chain payment result from LND. ``submitted`` has the same contract as the
+    Strike ``OnChainResult``: True once the send was issued (funds may have moved)."""
     success: bool
     payment_id: str | None = None
     txid: str | None = None
@@ -217,6 +218,8 @@ class LndOnChainResult:
     fee_sats: int | None = None
     error_code: str | None = None
     error_message: str | None = None
+    submitted: bool = False
+    quote_id: str | None = None
 
     @classmethod
     def succeeded(
@@ -234,6 +237,19 @@ class LndOnChainResult:
             state=state,
             amount_sats=amount_sats,
             fee_sats=fee_sats,
+            submitted=True,
+        )
+
+    @classmethod
+    def unknown(cls, message: str, *, amount_sats: int) -> "LndOnChainResult":
+        """The send was issued but its outcome is unknown — funds may have moved."""
+        return cls(
+            success=False,
+            submitted=True,
+            state="UNKNOWN",
+            amount_sats=amount_sats,
+            error_code="OUTCOME_UNKNOWN",
+            error_message=message,
         )
 
     @classmethod
@@ -862,9 +878,26 @@ class LndWallet:
             )
 
         except LndError as e:
+            cause = e.__cause__
+            if isinstance(cause, httpx.RequestError) and not isinstance(
+                cause, (httpx.ConnectError, httpx.ConnectTimeout)
+            ):
+                # The request reached (or may have reached) LND and the response was
+                # lost (read timeout, reset): the transaction may have been broadcast.
+                return LndOnChainResult.unknown(
+                    f"On-chain send outcome unknown after submission: {e}",
+                    amount_sats=amount_sats,
+                )
+            # Could not connect (never submitted) or LND answered with an error status
+            # (rejected): no funds moved.
             return LndOnChainResult.failed("API_ERROR", str(e))
         except Exception as e:
-            return LndOnChainResult.failed("EXCEPTION", str(e))
+            # Unexpected error after the send was issued (e.g. an unparseable 200 body):
+            # the broadcast may have happened, so this is ambiguous, not a failure.
+            return LndOnChainResult.unknown(
+                f"On-chain send outcome unknown after submission: {e}",
+                amount_sats=amount_sats,
+            )
 
     async def get_all_balances(self) -> dict[str, Any]:
         """

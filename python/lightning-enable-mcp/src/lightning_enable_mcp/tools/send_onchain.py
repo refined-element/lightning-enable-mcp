@@ -6,6 +6,7 @@ Supports Strike and LND wallets.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 from typing import TYPE_CHECKING, Optional, Union
@@ -13,6 +14,7 @@ from typing import TYPE_CHECKING, Optional, Union
 from mcp.types import Tool
 
 from ..confirmation_channel import ConfirmationRequest
+from ..operation_ledger import MONEY_MOVING_STATES, OperationLedger, OperationState
 from . import sanitize_error
 
 if TYPE_CHECKING:
@@ -23,12 +25,27 @@ if TYPE_CHECKING:
 logger = logging.getLogger("lightning-enable-mcp.tools.send_onchain")
 
 
+def _normalize_address(address: str) -> str:
+    """bech32 (bc1...) is case-insensitive; base58 (1.../3...) is case-sensitive."""
+    a = (address or "").strip()
+    return a.lower() if a.lower().startswith("bc1") else a
+
+
+def onchain_operation_id(address: str, amount_sats: int) -> str:
+    """Stable, non-secret idempotency key for an on-chain send:
+    ``"onchain:" + sha256("onchain:" + normalized_address + ":" + amount_sats)``.
+    Mirrors the .NET port."""
+    raw = f"onchain:{_normalize_address(address)}:{int(amount_sats)}"
+    return "onchain:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 async def send_onchain(
     address: str,
     amount_sats: int,
     confirmation_nonce: "Optional[str]" = None,
     wallet: "Union[StrikeWallet, LndWallet, None]" = None,
     budget_service: "BudgetService | None" = None,
+    operation_ledger: "OperationLedger | None" = None,
 ) -> str:
     """
     Send an on-chain Bitcoin payment to a Bitcoin address.
@@ -45,6 +62,11 @@ async def send_onchain(
             ask the human for the code and call again with confirmation_nonce set to it.
         wallet: Strike or LND wallet instance
         budget_service: BudgetService for spending limits
+        operation_ledger: Durable idempotency ledger. When set, the send is keyed by
+            ``onchain_operation_id(address, amount_sats)``; a second call for the same
+            address+amount while a prior one may have moved money (SUBMITTED / PENDING /
+            UNKNOWN / SETTLED) reports that payment's status instead of re-sending. Only a
+            recorded FAILED (proven no funds moved) allows a fresh send.
 
     Returns:
         JSON with payment result including transaction details
@@ -105,6 +127,18 @@ async def send_onchain(
                      "(fail-closed). On-chain payments are irreversible and must go through the "
                      "confirmation gate.",
         })
+
+    # Idempotency: a prior attempt for this exact address+amount that may have moved money
+    # is reported (with a provider status refresh when available), never re-sent. This runs
+    # BEFORE the confirmation gate: reporting status moves no funds and needs no code.
+    address = address.strip()
+    operation_id = onchain_operation_id(address, amount_sats)
+    if operation_ledger is not None:
+        existing = operation_ledger.lookup(operation_id)
+        if existing is not None and existing.state in MONEY_MOVING_STATES:
+            return await _already_submitted_response(
+                operation_ledger, operation_id, existing, inner_wallet, amount_sats, address
+            )
 
     # Budget check — FAIL CLOSED. A budget-check error (e.g. price feed down) REFUSES the
     # send rather than proceeding with no enforcement.
@@ -197,92 +231,253 @@ async def send_onchain(
         })
     reservation_id = reservation.reservation_id
 
+    provider_name = "LND" if isinstance(inner_wallet, LndWallet) else "Strike"
+
+    # Claim the operation in the durable ledger. The lookup + SUBMITTED write below run
+    # with NO await between them, so under the single asyncio loop two concurrent calls
+    # for the same address+amount cannot both claim it: the loser sees SUBMITTED.
+    if operation_ledger is not None:
+        existing = operation_ledger.lookup(operation_id)
+        if existing is not None and existing.state in MONEY_MOVING_STATES:
+            budget_service.release_reservation(reservation_id)
+            return await _already_submitted_response(
+                operation_ledger, operation_id, existing, inner_wallet, amount_sats, address
+            )
+        operation_ledger.record_submitted(
+            operation_id, amount_sats, provider_name.lower(), kind="onchain"
+        )
+
+    def _commit(debit_sats: int) -> None:
+        try:
+            budget_service.commit_reservation(reservation_id, debit_sats)
+            budget_service.record_payment_time()
+        except Exception:
+            logger.warning("Failed to commit on-chain budget reservation", exc_info=True)
+
+    def _record(state, **ids) -> None:
+        if operation_ledger is not None:
+            operation_ledger.record_outcome(operation_id, state, None, **ids)
+
+    def _ambiguous_debit(fee) -> int:
+        # Principal + known fee, else principal + the reserved headroom (worst case).
+        return amount_sats + (fee if isinstance(fee, int) and not isinstance(fee, bool) else fee_headroom_sats)
+
     # Ambient payment intent: the durable receipt is written at the wallet seam
-    # (ReceiptRecordingWallet) when the send succeeds. The destination address
-    # is public chain data, so it is safe as receipt context; reaching this
-    # point requires the human confirmation code, so policy is always "confirm".
+    # (ReceiptRecordingWallet) when the send succeeds or may have executed. The destination
+    # address is public chain data, so it is safe as receipt context; reaching this point
+    # requires the human confirmation code, so policy is always "confirm".
     receipt_scope = PaymentReceiptScope(
         "onchain", context=address, policy=POLICY_HUMAN_CONFIRMED
     )
     try:
         with receipt_scope:
-            result = await wallet.send_onchain(address.strip(), amount_sats)
+            result = await wallet.send_onchain(address, amount_sats)
 
-        if not result.success:
-            # Send failed — no funds moved, so release the reservation and its headroom.
+    except asyncio.CancelledError as e:
+        # CancelledError is a BaseException, so the `except Exception` below never sees it.
+        # If the wallet PROVED the cancel landed before the execute call, nothing moved:
+        # release. Otherwise (execute issued, or unknown) funds may have moved: commit the
+        # reservation and record UNKNOWN so a retry reports status instead of re-sending.
+        if getattr(e, "onchain_submitted", None) is False:
             budget_service.release_reservation(reservation_id)
-            # KNOWN LIMITATION: a failed-looking result can hide a send that DID
-            # execute provider-side (e.g. the execute succeeded but its HTTP
-            # response was lost) — the wallet reports failure, so no receipt is
-            # written. Surface the (null) receipt signal and an explicit
-            # check-before-retrying warning rather than a bare failure, since
-            # on-chain sends are irreversible.
-            return json.dumps({
-                "success": False,
-                "error": result.error_message,
-                "errorCode": result.error_code,
-                "receipt_written": receipt_scope.receipt_written,
-                "warning": (
-                    "If this failure was a network/timeout error, the send may still have "
-                    "executed at the provider. Check the provider dashboard / get_balance "
-                    "BEFORE retrying — on-chain payments are irreversible."
-                ),
-            })
-
-        # Commit the ACTUAL debit (principal + network fee). Committing less than the
-        # reserved maximum automatically releases the unused fee headroom.
-        if budget_service:
-            try:
-                total_sats = amount_sats + (result.fee_sats or 0)
-                budget_service.commit_reservation(reservation_id, total_sats)
-                budget_service.record_payment_time()
-            except Exception:
-                pass
-
-        provider_name = "LND" if isinstance(inner_wallet, LndWallet) else "Strike"
-
-        if result.state == "COMPLETED":
-            message = f"On-chain payment of {amount_sats} sats sent to {address}"
+            _record(OperationState.FAILED)
         else:
-            message = f"On-chain payment initiated (status: {result.state})"
-
-        return json.dumps({
-            "success": True,
-            "provider": provider_name,
-            "receipt_written": receipt_scope.receipt_written or False,
-            "payment": {
-                "id": result.payment_id,
-                "txId": result.txid,
-                "state": result.state,
-                "amountSats": result.amount_sats,
-                "feeSats": result.fee_sats,
-            },
-            "message": message,
-        }, indent=2)
-
-    except asyncio.CancelledError:
-        # CancelledError is a BaseException, so the `except Exception` below never sees it —
-        # a cancelled/timed-out send would otherwise strand the reservation (principal + fee
-        # headroom). Release it (same call as the Exception branch), then re-raise untouched.
-        budget_service.release_reservation(reservation_id)
+            _commit(_ambiguous_debit(getattr(e, "onchain_fee_sats", None)))
+            _record(
+                OperationState.UNKNOWN,
+                payment_id=getattr(e, "onchain_payment_id", None),
+                quote_id=getattr(e, "onchain_quote_id", None),
+            )
         raise
 
     except Exception as e:
         logger.exception("Error sending on-chain payment")
-        # Release on an unexpected throw. NOTE: an on-chain broadcast that threw AFTER
-        # submission is ambiguous — funds may have moved; the durable operation ledger
-        # resolves that later. Here we preserve the prior behavior of recording no spend.
-        budget_service.release_reservation(reservation_id)
+        if getattr(e, "onchain_submitted", None) is False:
+            budget_service.release_reservation(reservation_id)
+            _record(OperationState.FAILED)
+            return json.dumps({
+                "success": False,
+                "error": sanitize_error(str(e)),
+                "receipt_written": receipt_scope.receipt_written,
+                "message": "The send failed before it was submitted to the provider; no funds moved.",
+            })
+        # The wallet threw without proving the send was never submitted: treat it as
+        # ambiguous. Retain the budget and block a blind re-send.
+        payment_id = getattr(e, "onchain_payment_id", None)
+        _commit(_ambiguous_debit(getattr(e, "onchain_fee_sats", None)))
+        _record(OperationState.UNKNOWN, payment_id=payment_id,
+                quote_id=getattr(e, "onchain_quote_id", None))
         return json.dumps({
             "success": False,
             "error": sanitize_error(str(e)),
+            "errorCode": "OUTCOME_UNKNOWN",
+            "state": "UNKNOWN",
+            "paymentId": payment_id,
             "receipt_written": receipt_scope.receipt_written,
-            "warning": (
-                "If this failure was a network/timeout error, the send may still have "
-                "executed at the provider. Check the provider dashboard / get_balance "
-                "BEFORE retrying — on-chain payments are irreversible."
+            "warning": AMBIGUOUS_SEND_WARNING,
+        })
+
+    success = getattr(result, "success", False) is True
+    submitted = getattr(result, "submitted", None)
+    if not isinstance(submitted, bool):
+        # Legacy result without the signal: only a success proves submission.
+        submitted = success
+    state = getattr(result, "state", None)
+    state = state.upper() if isinstance(state, str) else ""
+    payment_id = getattr(result, "payment_id", None)
+    quote_id = getattr(result, "quote_id", None)
+    txid = getattr(result, "txid", None)
+    ids = {
+        "payment_id": payment_id if isinstance(payment_id, str) else None,
+        "quote_id": quote_id if isinstance(quote_id, str) else None,
+        "tx_id": txid if isinstance(txid, str) else None,
+    }
+
+    if not success and (not submitted or state == "FAILED"):
+        # Proven no funds moved: never submitted, or the provider definitively
+        # rejected/failed it. Release the reservation and allow a genuine retry.
+        budget_service.release_reservation(reservation_id)
+        _record(OperationState.FAILED, **ids)
+        return json.dumps({
+            "success": False,
+            "error": result.error_message,
+            "errorCode": result.error_code,
+            "state": state or None,
+            "receipt_written": receipt_scope.receipt_written,
+            "message": (
+                "The provider did not execute this send; no funds moved and the budget "
+                "reservation was released. It is safe to retry."
+                if submitted else
+                "The send failed before it was submitted to the provider; no funds moved "
+                "and the budget reservation was released."
             ),
         })
+
+    if not success:
+        # Submitted, outcome UNKNOWN (timeout / transport error / cancel after execute).
+        fee = getattr(result, "fee_sats", None)
+        _commit(_ambiguous_debit(fee))
+        _record(OperationState.UNKNOWN, **ids)
+        return json.dumps({
+            "success": False,
+            "error": result.error_message,
+            "errorCode": result.error_code or "OUTCOME_UNKNOWN",
+            "provider": provider_name,
+            "state": "UNKNOWN",
+            "paymentId": ids["payment_id"],
+            "quoteId": ids["quote_id"],
+            "receipt_written": receipt_scope.receipt_written,
+            "warning": AMBIGUOUS_SEND_WARNING,
+        })
+
+    # Accepted by the provider. Commit the ACTUAL debit (principal + network fee).
+    # Committing less than the reserved maximum automatically releases the unused headroom.
+    fee = getattr(result, "fee_sats", None)
+    _commit(amount_sats + (fee if isinstance(fee, int) else 0))
+    _record(OperationState.SETTLED if state == "COMPLETED" else OperationState.PENDING, **ids)
+
+    if state == "COMPLETED":
+        message = f"On-chain payment of {amount_sats} sats sent to {address}"
+    else:
+        message = (
+            f"On-chain payment initiated (status: {result.state}). On-chain confirmation "
+            "normally takes ~10+ minutes. Calling send_onchain again with the same address "
+            "and amount will report this payment's status rather than re-send."
+        )
+
+    return json.dumps({
+        "success": True,
+        "provider": provider_name,
+        "receipt_written": receipt_scope.receipt_written or False,
+        "state": result.state,
+        "paymentId": result.payment_id,
+        "payment": {
+            "id": result.payment_id,
+            "txId": result.txid,
+            "state": result.state,
+            "amountSats": result.amount_sats,
+            "feeSats": result.fee_sats,
+        },
+        "message": message,
+    }, indent=2)
+
+
+AMBIGUOUS_SEND_WARNING = (
+    "The send may have executed at the provider even though this call could not confirm "
+    "it. The budget for it has been retained (not released). Calling send_onchain again "
+    "with the same address and amount will report this payment's status rather than "
+    "re-send. Check the provider dashboard / get_balance BEFORE retrying with any other "
+    "parameters — on-chain payments are irreversible."
+)
+
+_PROVIDER_STATE_TO_LEDGER = {
+    "COMPLETED": OperationState.SETTLED,
+    "PENDING": OperationState.PENDING,
+    "FAILED": OperationState.FAILED,
+}
+
+
+async def _already_submitted_response(
+    ledger, operation_id: str, record, inner_wallet, amount_sats: int, address: str
+) -> str:
+    """A prior attempt for this exact address+amount may have moved money. Never send
+    again: refresh the provider status when the wallet supports it, else refuse, naming
+    the recorded payment id so the agent/operator can verify at the provider."""
+    payment_id = record.payment_id
+    state = record.state.value.upper()
+    tx_id = record.tx_id
+    lookup = getattr(inner_wallet, "get_onchain_payment_status", None)
+    attempted = False
+    refreshed = False
+
+    if payment_id and callable(lookup):
+        attempted = True
+        try:
+            status = await lookup(payment_id)
+        except Exception:
+            logger.warning("On-chain status lookup failed for a recorded operation", exc_info=True)
+            status = None
+        if status is not None and getattr(status, "success", False) is True:
+            refreshed = True
+            provider_state = str(getattr(status, "state", "") or "UNKNOWN").upper()
+            new_tx = getattr(status, "txid", None) or tx_id
+            ledger_state = _PROVIDER_STATE_TO_LEDGER.get(provider_state, record.state)
+            if ledger_state != record.state or new_tx != tx_id:
+                ledger.record_outcome(operation_id, ledger_state, None, tx_id=new_tx)
+            state, tx_id = provider_state, new_tx
+
+    pid_text = payment_id or "none recorded (the provider returned no id before the outcome became ambiguous)"
+    if refreshed:
+        message = (
+            f"This on-chain send ({amount_sats:,} sats to {address}) was already submitted in "
+            f"a prior attempt and was NOT sent again. Provider status for payment {payment_id}: "
+            f"{state}."
+        )
+        if state == "FAILED":
+            message += (
+                " The provider reports it FAILED, so no funds moved; the ledger now allows a "
+                "fresh send (a new confirmation code is required)."
+            )
+    else:
+        message = (
+            f"This on-chain send ({amount_sats:,} sats to {address}) was already submitted in "
+            f"a prior attempt (recorded state: {state}) and was NOT sent again, to avoid a "
+            f"double-payment. Recorded payment id: {pid_text}. Verify this payment at the "
+            "provider (dashboard / get_balance) before taking any other action — on-chain "
+            "payments are irreversible."
+        )
+
+    return json.dumps({
+        "success": False,
+        "errorCode": "ALREADY_SUBMITTED",
+        "error": "This on-chain send was already submitted; it was not sent again.",
+        "state": state,
+        "paymentId": payment_id,
+        "quoteId": record.quote_id,
+        "txId": tx_id,
+        "statusLookup": {"attempted": attempted, "succeeded": refreshed},
+        "message": message,
+    })
 
 
 # MCP tool schema (lives beside its handler; registered in tools/registry.py).

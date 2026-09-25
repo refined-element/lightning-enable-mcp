@@ -25,6 +25,27 @@ Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-ena
     and write a pending receipt. The response includes `state`, `paymentId`, `receipt_written`,
     and a `warning` that the send may have executed and must not be retried blindly. Plain
     failures now carry the same check-before-retrying warning as the Python port.
+- Python: `send_onchain` is now idempotent and pending-aware after submission. Previously,
+  any failure or exception, including a timeout or cancellation after the Strike quote was
+  executed, was treated as "no funds moved": the budget reservation was released, no receipt
+  was written, and a retry with a fresh confirmation code created a new quote and executed
+  again, which could double-send irreversible funds.
+  - On-chain wallet results carry `submitted` (true once the execute call was issued) and
+    keep `payment_id` / `quote_id` whenever known. A timeout, transport error, or 5xx after
+    execute returns `state="UNKNOWN"`. A poll that times out after a successful execute
+    returns `state="PENDING"` as a success, not a failure. LND reports a read timeout after
+    the send was issued as `UNKNOWN`; a connection failure is still a pre-submit failure.
+  - The operation ledger now covers on-chain sends, keyed by
+    `sha256("onchain:" + normalized_address + ":" + amount_sats)`, and adds an `unknown`
+    state. A second send for the same address and amount while the prior one is
+    `submitted`, `pending`, `unknown`, or `settled` never calls the wallet. It refreshes the
+    status through the new `StrikeWallet.get_onchain_payment_status` (`GET /v1/payments/{id}`)
+    or refuses and names the recorded payment ID. Only a recorded `failed` state allows a
+    fresh send. The ledger survives restarts.
+  - For submitted outcomes, including a cancellation after submission, the tool now commits
+    the budget reservation (principal plus the known fee, or plus the fee headroom when the
+    fee is unknown) and writes a pending receipt. It releases the reservation only when
+    failure before submission is proven.
 
 ## [2.0.3] — 2026-09-25
 

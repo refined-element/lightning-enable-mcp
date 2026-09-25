@@ -117,4 +117,26 @@ public class OperationLedgerTests
         ledger.RecordOutcome("onchain:x", OperationState.FailedNoFunds, null);
         ledger.TryBeginSubmission("onchain:x", 5000, "Strike", out _).Should().BeTrue("only a proven failure allows a fresh send");
     }
+
+    // Both ports share ~/.lightning-enable/operations.jsonl. The Python port writes
+    // lower-case values (submitted, pending, settled, unknown, failed_no_funds); .NET must
+    // read them, or a send submitted from the Python flavor is invisible here and could be
+    // re-sent.
+    [Theory]
+    [InlineData("submitted", OperationState.Submitted)]
+    [InlineData("pending", OperationState.Pending)]
+    [InlineData("settled", OperationState.Settled)]
+    [InlineData("unknown", OperationState.Unknown)]
+    [InlineData("failed_no_funds", OperationState.FailedNoFunds)]
+    [InlineData("SUBMITTED", OperationState.Submitted)]
+    public void Loads_PythonStateSpellings(string spelling, OperationState expected)
+    {
+        var path = TempPath();
+        File.WriteAllText(path,
+            "{\"type\":\"operation\",\"operationId\":\"onchain:x\",\"state\":\"" + spelling +
+            "\",\"amountSats\":1,\"kind\":\"onchain\"}" + Environment.NewLine);
+        var rec = new OperationLedger(path).Lookup("onchain:x");
+        rec.Should().NotBeNull($"a '{spelling}' line must not be dropped");
+        rec!.State.Should().Be(expected);
+    }
 }

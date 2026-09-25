@@ -144,6 +144,23 @@ public sealed class OperationLedger : IOperationLedger
         }
     }
 
+
+    /// <summary>
+    /// Parses a persisted state name from EITHER port. This file is shared with the Python
+    /// port, which writes lower-case values (<c>submitted</c>, <c>failed_no_funds</c>) where
+    /// .NET writes enum names (<c>Submitted</c>, <c>FailedNoFunds</c>). A line the other
+    /// flavor wrote must never be dropped, or a submitted send becomes re-sendable.
+    /// </summary>
+    internal static bool TryParseState(string? raw, out OperationState state)
+    {
+        state = default;
+        if (string.IsNullOrWhiteSpace(raw)) return false;
+        var s = raw.Trim().Replace("_", string.Empty);
+        if (Enum.TryParse<OperationState>(s, ignoreCase: true, out state)) return true;
+        if (s.Equals("failed", StringComparison.OrdinalIgnoreCase)) { state = OperationState.FailedNoFunds; return true; }
+        return false;
+    }
+
     private void Write(string operationId, OperationState state, long amountSats, string? paymentHash, string? provider,
         string? paymentId = null, string? quoteId = null, string? txId = null)
     {
@@ -202,7 +219,7 @@ public sealed class OperationLedger : IOperationLedger
                         if (JsonNode.Parse(l) is not JsonObject obj) continue;
                         var id = obj["operationId"]?.GetValue<string>();
                         var stateStr = obj["state"]?.GetValue<string>();
-                        if (string.IsNullOrEmpty(id) || !Enum.TryParse<OperationState>(stateStr, out var state))
+                        if (string.IsNullOrEmpty(id) || !TryParseState(stateStr, out var state))
                             continue;
                         var amount = obj["amountSats"]?.GetValue<long>() ?? 0;
                         var hash = obj["paymentHash"]?.GetValue<string>();

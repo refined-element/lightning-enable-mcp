@@ -310,7 +310,7 @@ public class PaymentHistoryRedactionTests
             amountSats: 5,
             invoice: SentinelInvoice,
             preimageHex: SentinelPreimage,
-            l402Token: SentinelMacaroonB64 + ":" + SentinelPreimage,
+            l402Token: SentinelMacaroonB64 + ":" + SentinelPreimage, // gitleaks:allow — fake test sentinel
             statusCode: 200);
         history.RecordFailedPayment(SentinelUrl, "get", 7, "boom", SentinelInvoice);
         history.RecordPayment(SentinelUrl, "get", 9, SentinelInvoice, null, null, null,

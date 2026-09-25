@@ -31,8 +31,4 @@ regexes = [
   '''71a8c14c1407c113601079c4302dab36460f0ccd0ad506f1f2dc73b5100e4f3c''',
   # test_nwc_wallet.py — second dummy NWC secret
   '''fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210''',
-  # PaymentHistoryRedactionTests.cs — conspicuous fake preimage/token sentinel that the
-  # test asserts is NEVER retained in history. Not a credential.
-  '''feedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedfacefeedface''',
-  '''SentinelMacaroonB64 \+ ":" \+ SentinelPreimage''',
 ]

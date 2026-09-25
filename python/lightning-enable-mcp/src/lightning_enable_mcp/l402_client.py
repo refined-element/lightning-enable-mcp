@@ -73,6 +73,20 @@ class L402RedirectError(L402Error):
             )
 
 
+class L402MethodNotAllowedError(L402Error):
+    """Raised BEFORE any network request or payment when a fetch asks for an HTTP method
+    outside the generic paid-HTTP allowlist (GET and HEAD).
+
+    Generic paid HTTP replays the request after paying (402 -> pay -> retry) against a
+    caller-chosen URL, so a state-changing method (POST/PUT/PATCH/DELETE) would let a
+    prompt-injected agent pay to mutate arbitrary third-party resources. Reads are the
+    only generic verbs; first-party writes go through an explicit internal allowance
+    (see ``L402Client.fetch``'s ``first_party_write``), never a tool argument.
+    """
+
+    pass
+
+
 class L402PaymentError(L402Error):
     """Exception for payment failures."""
 
@@ -389,6 +403,41 @@ def _parse_modern_mpp_challenge(
     )
 
 
+# Generic paid HTTP is read-only: these are the only methods a caller-chosen URL may be
+# fetched (and paid for) with. See L402MethodNotAllowedError for the rationale.
+GENERIC_PAID_HTTP_METHODS: frozenset[str] = frozenset({"GET", "HEAD"})
+
+# The single write verb the first-party bootstrap (create_account -> fixed signup origin)
+# is allowed to use, and only via ``fetch(..., first_party_write=True)``.
+_FIRST_PARTY_WRITE_METHODS: frozenset[str] = frozenset({"POST"})
+
+
+def normalize_http_method(method: object) -> str:
+    """Canonical HTTP method token: stripped of surrounding whitespace and upper-cased,
+    so ``" post "`` / ``"Post"`` can never slip past an allowlist comparison."""
+    return str(method if method is not None else "").strip().upper()
+
+
+def enforce_paid_http_method(method: object, *, first_party_write: bool = False) -> str:
+    """Validate ``method`` against the paid-HTTP allowlist and return its canonical form.
+
+    Raises L402MethodNotAllowedError (an L402Error) for anything outside GET/HEAD — or
+    outside GET/HEAD/POST when ``first_party_write`` is set by trusted internal code.
+    Shared by the L402Client boundary and the tool layer so the two can never disagree.
+    """
+    normalized = normalize_http_method(method)
+    allowed = GENERIC_PAID_HTTP_METHODS | (_FIRST_PARTY_WRITE_METHODS if first_party_write else frozenset())
+    if normalized not in allowed:
+        shown = normalized or "<empty>"
+        raise L402MethodNotAllowedError(
+            f"HTTP method {shown} is not allowed for paid requests. Paid HTTP is read-only: "
+            "only GET and HEAD are supported, because the request is replayed after payment "
+            "against a caller-chosen URL and a state-changing method could pay to mutate a "
+            "third-party resource."
+        )
+    return normalized
+
+
 class L402Client:
     """HTTP client with L402 payment support."""
 
@@ -674,25 +723,39 @@ class L402Client:
         headers: dict[str, str] | None = None,
         body: str | None = None,
         max_sats: int = 1000,
+        *,
+        first_party_write: bool = False,
     ) -> tuple[str, int | None, dict | None]:
         """
         Fetch a URL with automatic L402 payment handling.
 
         Args:
             url: URL to fetch
-            method: HTTP method
+            method: HTTP method. Generic paid HTTP is READ-ONLY: only GET and HEAD are
+                accepted (case/whitespace-normalised); anything else raises
+                L402MethodNotAllowedError before any request or payment.
             headers: Additional request headers
             body: Request body
             max_sats: Maximum satoshis to pay
+            first_party_write: INTERNAL, keyword-only. Set by trusted first-party code
+                (the create_account bootstrap against the fixed signup origin) to permit
+                POST. It is never derived from a tool argument — tools must not expose
+                it — so a model cannot widen the generic GET/HEAD rule.
 
         Returns:
             Tuple of (response text, amount paid in sats or None, Payment-Receipt dict
             or None — the draft-00 receipt from the paid retry, parsed tolerantly)
 
         Raises:
+            L402MethodNotAllowedError: If the method is outside the paid-HTTP allowlist
             L402Error: If L402 flow fails
             L402BudgetExceededError: If invoice exceeds max_sats
         """
+        # Method gate FIRST — before the initial request, before any 402 parsing and
+        # before any wallet call. This is the boundary every paid-HTTP tool goes through,
+        # so a tool-layer bypass cannot reach the network or the wallet with a write verb.
+        method = enforce_paid_http_method(method, first_party_write=first_party_write)
+
         headers = headers or {}
         content = body.encode() if body else None
 

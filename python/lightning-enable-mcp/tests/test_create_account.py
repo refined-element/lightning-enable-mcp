@@ -157,6 +157,8 @@ class TestCreateAccountSignupFlow:
         kwargs = client.fetch.call_args.kwargs
         assert kwargs["url"].endswith("/api/signup/l402")
         assert kwargs["method"] == "POST"
+        # A3: POST is only reachable through the internal first-party allowance.
+        assert kwargs["first_party_write"] is True
         assert json.loads(kwargs["body"]) == {"email": TEST_EMAIL}
 
     @pytest.mark.asyncio
@@ -303,7 +305,7 @@ class TestCreateAccountReceipts:
 
         seam = ReceiptRecordingWallet(NWCWallet(), receipts, None)
 
-        async def fetch(url, method, headers, body, max_sats):
+        async def fetch(url, method, headers, body, max_sats, *, first_party_write=False):
             # Simulate the client's payment leg: pays via the seam-wrapped wallet.
             await seam.pay_invoice("lnbc-placeholder")
             return (_ACCOUNT_PAYLOAD, 100, None)

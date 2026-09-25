@@ -221,9 +221,9 @@ Fetch a URL with automatic L402 payment handling. Requires a wallet that returns
 | Name | Type | Required | Default | Description |
 |------|------|----------|---------|-------------|
 | `url` | string | Yes | - | The URL to fetch |
-| `method` | string | No | GET | HTTP method (GET, POST, PUT, DELETE) |
+| `method` | string | No | GET | HTTP method: `GET` or `HEAD` only. Paid HTTP is read-only; other methods are refused before any request or payment |
 | `headers` | object | No | {} | Additional request headers |
-| `body` | string | No | - | Request body for POST/PUT |
+| `body` | string | No | - | Optional request body (rarely needed for GET/HEAD) |
 | `max_sats` | integer | No | 1000 | Maximum sats to pay for this request |
 
 **Returns:** Response body text or error message

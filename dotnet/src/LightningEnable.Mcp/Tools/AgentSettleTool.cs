@@ -27,8 +27,8 @@ public static class AgentSettleTool
         "l402_producer action=verify to confirm payment before delivering the service.")]
     public static async Task<string> SettleAgentService(
         [Description("L402 endpoint URL from the service agreement")] string l402Endpoint,
-        [Description("HTTP method (GET, POST). Defaults to GET")] string method = "GET",
-        [Description("Optional request body for POST requests (e.g., service parameters as JSON)")] string? body = null,
+        [Description("HTTP method: GET or HEAD only. Defaults to GET")] string method = "GET",
+        [Description("Optional request body (GET/HEAD only; usually omit)")] string? body = null,
         [Description("Agreement event ID for tracking")] string? agreementId = null,
         [Description("Maximum satoshis to pay (default: 1000)")] int maxSats = 1000,
         IL402HttpClient? l402Client = null,
@@ -72,17 +72,19 @@ public static class AgentSettleTool
                 });
             }
 
-            // Validate HTTP method against whitelist
-            var allowedMethods = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-                { "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS" };
-            if (!allowedMethods.Contains(method))
+            // A3: the settlement endpoint is caller-chosen, so this is a generic paid fetch
+            // — GET/HEAD only, refused before any request or payment. The shared client
+            // enforces the same rule, so it cannot be bypassed here either.
+            if (!PaidHttpMethodGuard.TryNormalize(method, "settle_agent_service", out var safeMethod, out var methodError))
             {
                 return JsonSerializer.Serialize(new
                 {
                     success = false,
-                    error = $"Invalid HTTP method '{method}'. Allowed methods: {string.Join(", ", allowedMethods)}."
+                    error = methodError,
+                    allowedMethods = PaidHttpMethodGuard.AllowedMethods
                 });
             }
+            method = safeMethod;
 
             if (l402Client == null)
             {

@@ -305,4 +305,46 @@ public class AgentSettleToolTests
             It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string?>(), It.IsAny<string?>(),
             It.IsAny<long>(), It.IsAny<CancellationToken>()), Times.Never);
     }
+    // A3: the settlement endpoint is caller-chosen, so settle is a generic paid fetch and
+    // is GET/HEAD only. Any other method is refused before budget, network and payment.
+    [Theory]
+    [InlineData("POST")]
+    [InlineData("PUT")]
+    [InlineData("PATCH")]
+    [InlineData("DELETE")]
+    [InlineData("OPTIONS")]
+    [InlineData(" post ")]
+    [InlineData("Post")]
+    public async Task SettleAgentService_UnsafeMethod_IsRefusedBeforeBudgetAndClient(string method)
+    {
+        var result = await AgentSettleTool.SettleAgentService(
+            TestEndpoint, method, "{\"text\":\"hi\"}", null, 1000,
+            _l402ClientMock.Object, _budgetServiceMock.Object, _paymentHistoryMock.Object);
+
+        var json = JsonDocument.Parse(result).RootElement;
+        json.GetProperty("success").GetBoolean().Should().BeFalse();
+        var error = json.GetProperty("error").GetString();
+        error.Should().NotBeNullOrWhiteSpace().And.Contain("GET").And.Contain("HEAD");
+
+        _budgetServiceMock.Verify(b => b.CheckBudget(It.IsAny<long>()), Times.Never);
+        _l402ClientMock.VerifyNoOtherCalls();
+    }
+
+    [Fact]
+    public async Task SettleAgentService_Head_IsNormalisedAndForwarded()
+    {
+        _budgetServiceMock.Setup(b => b.CheckBudget(It.IsAny<long>()))
+            .Returns(BudgetCheckResult.Allow(8000, 1000));
+        _l402ClientMock.Setup(c => c.FetchWithL402Async(
+                TestEndpoint, "HEAD", null, null, 1000, It.IsAny<CancellationToken>()))
+            .ReturnsAsync(L402FetchResult.Succeeded(TestEndpoint, "", 200, null));
+
+        var result = await AgentSettleTool.SettleAgentService(
+            TestEndpoint, " head ", null, null, 1000,
+            _l402ClientMock.Object, _budgetServiceMock.Object, _paymentHistoryMock.Object);
+
+        JsonDocument.Parse(result).RootElement.GetProperty("success").GetBoolean().Should().BeTrue();
+        _l402ClientMock.Verify(c => c.FetchWithL402Async(
+            TestEndpoint, "HEAD", null, null, 1000, It.IsAny<CancellationToken>()), Times.Once);
+    }
 }

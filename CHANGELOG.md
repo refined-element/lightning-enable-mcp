@@ -3,6 +3,68 @@
 All notable changes to the Lightning Enable MCP server are documented here.
 Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-enable-mcp`).
 
+## [2.1.0] — 2026-10-11
+
+### Added
+
+- **`renew_lightning_enable_subscription` tool, both ports.** Pays the L402 challenge from
+  `POST /api/merchant/subscription/renew` to buy or extend 30 days of the Agentic Commerce
+  plan for the merchant account behind the configured API key. It needs
+  `LIGHTNING_ENABLE_API_KEY` and a wallet that returns a preimage, and it refuses a missing
+  or blank key before any invoice is minted. The server sets the price and the period; the
+  tool only caps what it will pay (`maxSats` / `max_sats`). Above the auto-approve threshold
+  the payment needs a human confirmation code, delivered out of band and bound to this tool
+  and the renew URL; the code never appears in a tool result. If a payment was taken but
+  the call then failed, the result reports `activation.paid`, the payment hash (never the
+  preimage), and a warning not to re-run the tool and to contact
+  support@lightningenable.com. The configured key is redacted from every error, log line,
+  and result.
+- .NET: `IL402HttpClient.PostFirstPartyAuthenticatedAsync`, a first-party POST with the same
+  origin gate as `PostFirstPartyAsync` that sends the merchant API key as `X-Api-Key` on
+  both the initial request and the paid L402 retry (a blank key is refused before anything
+  is sent), and `ILightningEnableApiService.ApiKey` (null when unconfigured).
+- Python: a read-only `LightningEnableApiClient.api_key` property.
+- Python server now performs the same best-effort startup version check as the .NET server
+  (stderr only).
+
+### Changed
+
+- The `standard` profile now advertises 17 tools: 14 that need no Lightning Enable API key
+  and 3 gated on `LIGHTNING_ENABLE_API_KEY`. The `full` profile advertises 33.
+- .NET: `create_lightning_enable_account` and `renew_lightning_enable_subscription` share an
+  internal `FirstPartyPaymentGate` (approval check, confirmation nonce, MCP elicitation, and
+  confirmation-channel dispatch). `create_lightning_enable_account` results are unchanged
+  apart from the fixes below.
+- User-Agent now carries the package version (`LightningEnable-MCP/<version>`), so
+  server-side analytics can attribute traffic. The Python port sends
+  `LightningEnable-MCP-Python/<version>` to the Lightning Enable API. Both ports' L402
+  clients now send it too, on the initial request and on the paid retry; a `User-Agent`
+  passed in the caller's custom headers still takes precedence.
+
+### Fixed
+
+- Pin `bitstring<5`: bitstring 5.0 removed `ConstBitStream`, which `bolt11` still imports,
+  breaking fresh installs on Python 3.11+.
+- .NET: when `create_lightning_enable_account` or `renew_lightning_enable_subscription`
+  throws after the wallet recorded a payment, the result now reports `activation.paid` with
+  a warning not to re-run the tool and to contact support@lightningenable.com, instead of a
+  plain error that invited a second payment.
+- .NET: the L402 client no longer loses a settled payment when the paid retry fails in
+  transport (timeout, connection reset, or cancellation). It used to return a result with
+  no paid amount, so `create_lightning_enable_account` and
+  `renew_lightning_enable_subscription` said nothing was charged. The client now returns
+  the paid amount and credential with a "do not pay again" error, which also covers
+  `access_l402_resource` and `settle_agent_service`. Both first-party tools also count a
+  recorded wallet receipt as a payment when no amount came back, word a failure with no
+  HTTP status as a transport or wallet error instead of a refusal, and replace the
+  paid-redirect advice to retry with the token (these tools never return it) with a
+  do-not-pay-again message.
+- Python: when `create_lightning_enable_account` raises after the wallet recorded a payment
+  but the error carries no paid amount, the result now reports `activation.paid` with a
+  warning not to re-run the tool, as `renew_lightning_enable_subscription` already did.
+  Both tools also replace the paid-redirect "call this tool again with that URL" advice with
+  a do-not-pay-again message.
+
 ## [2.0.5] — 2026-09-25
 
 ### Security

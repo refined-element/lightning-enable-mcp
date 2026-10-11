@@ -132,9 +132,11 @@ public class L402ProducerSurfaceTests
     [Fact]
     public async Task TheToolCountIsUnchanged()
     {
-        // New actions, not new tools — the advertised inventory must not grow.
+        // New actions, not new tools — the producer actions must not grow the advertised
+        // inventory beyond the declared standard set (whose absolute count is pinned once,
+        // in ToolInventoryTests).
         await using var host = await McpToolHost.StartAsync(ToolProfile.Standard);
-        (await host.AdvertisedNamesAsync()).Should().HaveCount(16);
+        (await host.AdvertisedNamesAsync()).Should().HaveCount(ToolProfiles.StandardToolNames.Count);
     }
 
     [Fact]
@@ -213,6 +215,7 @@ public class L402ProducerSurfaceTests
     private sealed class ConfiguredStub : LightningEnable.Mcp.Services.ILightningEnableApiService
     {
         public bool IsConfigured => true;
+        public string? ApiKey => "fixture-string-stub-credential";
         public string BaseUrl => "https://api.example.test";
 
         private static Task<T> Unreachable<T>() =>

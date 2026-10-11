@@ -61,7 +61,7 @@ public class ToolProfileResolutionTests
     public void FullIsStandardPlusEveryLegacyName()
     {
         var full = ToolProfiles.AdvertisedNames(ToolProfile.Full);
-        full.Should().HaveCount(32);
+        full.Should().HaveCount(33);
         full.Should().Contain(ToolProfiles.StandardToolNames);
         full.Should().Contain(ToolProfiles.LegacyToolNames);
     }
@@ -94,8 +94,8 @@ public class ToolProfileListingTests
 {
     [Theory]
     [InlineData(ToolProfile.Lite, 6)]
-    [InlineData(ToolProfile.Standard, 16)]
-    [InlineData(ToolProfile.Full, 32)]
+    [InlineData(ToolProfile.Standard, 17)]
+    [InlineData(ToolProfile.Full, 33)]
     public async Task ProfileSelectsTheAdvertisedToolCount(ToolProfile profile, int expected)
     {
         await using var host = await McpToolHost.StartAsync(profile);

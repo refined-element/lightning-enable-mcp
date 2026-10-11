@@ -47,6 +47,7 @@ from .tools.budget_status import get_budget_status
 from .tools.check_invoice_status import check_invoice_status
 from .tools.consolidated import ACTION_TOOLS
 from .tools.create_account import create_lightning_enable_account
+from .tools.renew_subscription import renew_lightning_enable_subscription
 from .tools.create_invoice import create_invoice
 from .tools.create_l402_challenge import create_l402_challenge
 from .tools.discover_agent_services import discover_agent_services
@@ -78,6 +79,7 @@ from .tools.test_l402_payment import test_l402_payment
 from .tools.unpublish_agent_capability import unpublish_agent_capability
 from .tools.verify_confirmation_code import verify_confirmation_code
 from .tools.verify_l402_payment import verify_l402_payment
+from .version_check import check_for_updates
 
 # Configure logging
 logging.basicConfig(
@@ -412,6 +414,15 @@ class LightningEnableServer:
                         l402_client=self.l402_client,
                         budget_service=self.budget_service,
                         payment_history_service=self.payment_history_service,
+                    )
+
+                elif name == "renew_lightning_enable_subscription":
+                    result = await renew_lightning_enable_subscription(
+                        max_sats=arguments.get("max_sats", 50000),
+                        confirmation_nonce=arguments.get("confirmation_nonce"),
+                        l402_client=self.l402_client,
+                        budget_service=self.budget_service,
+                        api_client=self.api_client,
                     )
 
                 elif name == "get_balance":
@@ -931,13 +942,28 @@ class LightningEnableServer:
     async def run(self) -> None:
         """Run the MCP server."""
         logger.info("Starting Lightning Enable MCP server...")
+        # Version banner for debugging. stderr only: stdout is the MCP stdio transport.
+        print(
+            f"[Lightning Enable MCP] Version {__version__} starting...",
+            file=sys.stderr,
+            flush=True,
+        )
 
-        async with stdio_server() as (read_stream, write_stream):
-            await self.server.run(
-                read_stream,
-                write_stream,
-                self.server.create_initialization_options(),
-            )
+        # Best-effort update check, same as the .NET server: a background task with its own
+        # 5-second timeout that swallows every failure, so it never delays or breaks serving.
+        # Hold a reference so the task is not garbage-collected mid-flight.
+        self._version_check_task: asyncio.Task[None] = asyncio.create_task(check_for_updates())
+
+        try:
+            async with stdio_server() as (read_stream, write_stream):
+                await self.server.run(
+                    read_stream,
+                    write_stream,
+                    self.server.create_initialization_options(),
+                )
+        finally:
+            if not self._version_check_task.done():
+                self._version_check_task.cancel()
 
 
 def main() -> None:

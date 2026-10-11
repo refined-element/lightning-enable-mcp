@@ -54,3 +54,6 @@ mcp-publisher.tar.gz
 mcpb/*.mcpb
 mcpb/.venv/
 mcpb/uv.lock
+
+# Local agent worktrees
+.claude/worktrees/

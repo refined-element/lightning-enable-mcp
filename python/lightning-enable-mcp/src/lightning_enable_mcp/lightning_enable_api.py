@@ -13,6 +13,7 @@ from urllib.parse import quote
 
 import httpx
 
+from ._version import USER_AGENT_PYTHON
 from .config import get_config_service
 
 logger = logging.getLogger("lightning-enable-mcp.api")
@@ -64,7 +65,7 @@ class LightningEnableApiClient:
         headers: dict[str, str] = {
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "User-Agent": "LightningEnable-MCP-Python/1.0",
+            "User-Agent": USER_AGENT_PYTHON,
         }
         if self._api_key:
             headers["X-Api-Key"] = self._api_key
@@ -83,6 +84,15 @@ class LightningEnableApiClient:
     def is_configured(self) -> bool:
         """Whether the client has an API key configured."""
         return bool(self._api_key)
+
+    @property
+    def api_key(self) -> str | None:
+        """The configured merchant API key (read-only).
+
+        For first-party tools that send it on their own request
+        (renew_lightning_enable_subscription). Never log it or put it in a tool result.
+        """
+        return self._api_key
 
     async def create_challenge(
         self,

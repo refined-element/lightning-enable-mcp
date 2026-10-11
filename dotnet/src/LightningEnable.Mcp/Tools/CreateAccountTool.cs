@@ -4,7 +4,6 @@ using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using LightningEnable.Mcp.Models;
 using LightningEnable.Mcp.Services;
-using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
 namespace LightningEnable.Mcp.Tools;
@@ -102,114 +101,31 @@ public static class CreateAccountTool
             // We gate on maxSats (the ceiling) because the exact fee isn't known until the 402
             // challenge is minted inside FetchWithL402Async; the confirmation is bound to maxSats,
             // this tool, and the signup URL, so a code can't be redirected or reused.
-            string? activationPolicy = null;
-            if (budgetService != null)
+            var (blocked, activationPolicy) = await FirstPartyPaymentGate.CheckAsync(
+                new FirstPartyPaymentGateOptions
+                {
+                    ToolName = ToolName,
+                    Destination = signupUrl,
+                    MaxSats = maxSats,
+                    Label = "Account activation",
+                    Noun = "activation",
+                    ConfirmationTitle = "ACCOUNT ACTIVATION CONFIRMATION REQUIRED",
+                    ConfirmationDescription = $"activation for {email}",
+                    ConfirmationSummary = approval =>
+                        $"{ToolName} — {approval.AmountUsd:C} ({maxSats:N0} sats), email {email}",
+                    HowToConfirm = "Ask the human operator for the confirmation code shown in the server console, then call " +
+                                   "create_lightning_enable_account(email=\"...\", confirmationNonce=\"<code-from-human>\").",
+                    ElicitationMessage = approval =>
+                        "Lightning Enable Account Activation\n\n" +
+                        $"Email: {email}\n" +
+                        $"Fee: up to {approval.AmountUsd:C} ({approval.AmountSats:N0} sats)\n\n" +
+                        "Authorize this activation payment?",
+                    AutoApproveLogSuffix = $" for {email}"
+                },
+                confirmationNonce, server, budgetService, cancellationToken);
+            if (blocked != null)
             {
-                var approval = await budgetService.CheckApprovalLevelAsync(maxSats, cancellationToken);
-                activationPolicy = PaymentPolicy.Label(approval.Level);
-
-                if (approval.Level == ApprovalLevel.Deny)
-                {
-                    return JsonSerializer.Serialize(new
-                    {
-                        success = false,
-                        error = $"Account activation denied by budget policy: {approval.DenialReason}",
-                        budget = new
-                        {
-                            amountSats = maxSats,
-                            amountUsd = approval.AmountUsd,
-                            remainingSessionUsd = approval.RemainingSessionBudgetUsd
-                        }
-                    });
-                }
-
-                if (approval.RequiresConfirmation)
-                {
-                    if (!string.IsNullOrWhiteSpace(confirmationNonce))
-                    {
-                        var confirmation = budgetService.ValidateAndConsumeConfirmation(
-                            confirmationNonce.Trim().ToUpperInvariant(), maxSats, ToolName, signupUrl);
-                        if (confirmation == null)
-                        {
-                            return JsonSerializer.Serialize(new
-                            {
-                                success = false,
-                                error = "Confirmation code is invalid, expired, already used, or does not match THIS " +
-                                        "activation's amount, tool, and destination. Codes are bound to the exact amount, " +
-                                        "tool, and destination approved — a code cannot be redirected.",
-                                message = "The code may have expired (codes are short-lived), been used already, or been issued " +
-                                          "for a different amount/tool. Request a new one by calling " +
-                                          "create_lightning_enable_account without a confirmationNonce."
-                            });
-                        }
-
-                        Console.Error.WriteLine($"[Lightning Enable] Account activation of {approval.AmountUsd:C} confirmed by the operator's code");
-                    }
-                    else
-                    {
-                        var elicitationConfirmed = await RequestActivationConfirmationAsync(
-                            server, approval, email, cancellationToken);
-
-                        if (!elicitationConfirmed)
-                        {
-                            // OUT-OF-BAND CONFIRMATION: the code goes to the human on the CONFIGURED
-                            // approval channel (stderr locally; webhook/file/refuse when hosted) and
-                            // never into this result, so an injected agent can't self-approve.
-                            var dispatch = await budgetService.RequestConfirmationAsync(new ConfirmationRequest
-                            {
-                                AmountSats = maxSats,
-                                AmountUsd = approval.AmountUsd,
-                                ToolName = ToolName,
-                                Description = $"activation for {email}",
-                                Destination = signupUrl,
-                                Title = "ACCOUNT ACTIVATION CONFIRMATION REQUIRED",
-                                Summary = $"{ToolName} — {approval.AmountUsd:C} ({maxSats:N0} sats), email {email}"
-                            }, cancellationToken);
-
-                            if (!dispatch.Delivered)
-                            {
-                                return JsonSerializer.Serialize(new
-                                {
-                                    success = false,
-                                    requiresConfirmation = false,
-                                    confirmationChannel = dispatch.ChannelName,
-                                    error = dispatch.RefusalReason,
-                                    message = "The activation was REFUSED, not queued for approval — no human can be asked for a " +
-                                              "code on this server. Retrying will not help until the operator changes the configuration.",
-                                    amount = new
-                                    {
-                                        maxSats,
-                                        usd = Math.Round(approval.AmountUsd, 2)
-                                    }
-                                });
-                            }
-
-                            return JsonSerializer.Serialize(new
-                            {
-                                success = false,
-                                requiresConfirmation = true,
-                                confirmationChannel = dispatch.ChannelName,
-                                error = "Account activation requires human confirmation",
-                                message = $"This activation may cost up to {approval.AmountUsd:C} ({maxSats:N0} sats), above the " +
-                                          $"auto-approve threshold. A confirmation code was {dispatch.OperatorHint} — " +
-                                          "visible to the human operator, NOT to you. Ask the human to read that code and give it to you.",
-                                howToConfirm = "Ask the human operator for the confirmation code shown in the server console, then call " +
-                                               "create_lightning_enable_account(email=\"...\", confirmationNonce=\"<code-from-human>\").",
-                                expiresInSeconds = dispatch.ExpiresInSeconds,
-                                amount = new
-                                {
-                                    maxSats,
-                                    usd = Math.Round(approval.AmountUsd, 2)
-                                }
-                            });
-                        }
-                    }
-                }
-
-                if (approval.Level == ApprovalLevel.LogAndApprove)
-                {
-                    Console.Error.WriteLine($"[Lightning Enable] Auto-approved account activation: {approval.AmountUsd:C} ({maxSats} sats) for {email}");
-                }
+                return blocked;
             }
 
             // Ambient payment intent: the durable receipt is written at the wallet seam
@@ -250,34 +166,53 @@ public static class CreateAccountTool
                 // This fires for EVERY failure status, not just 409: a duplicate email (409),
                 // a pending payment, and a settled-without-preimage payment (both 402) all
                 // spend real sats.
-                if (fetch.PaidAmountSats > 0)
+                //
+                // Belt-and-braces: the wallet seam's receipt write is independent evidence of a
+                // payment, so it counts even when the client reported no amount — then no amount
+                // is claimed, only that a payment may have been taken.
+                if (fetch.PaidAmountSats > 0 || receiptScope.ReceiptWritten != null)
                 {
+                    var amountKnown = fetch.PaidAmountSats > 0;
+                    var paidRedirect = fetch.RedirectLocation != null;
                     return JsonSerializer.Serialize(new
                     {
                         success = false,
-                        error = scrubbedError,
+                        // The client's paid-redirect text tells the caller to retry with the
+                        // returned token — this tool never returns the token, so replace it.
+                        error = paidRedirect
+                            ? "The account activation was paid, but the server answered with a redirect instead of " +
+                              "returning the account. Do NOT pay again; contact support@lightningenable.com with the " +
+                              "payment hash from your wallet's payment record."
+                            : scrubbedError,
                         statusCode = fetch.StatusCode,
                         receipt_written = receiptScope.ReceiptWritten ?? false,
-                        activation = new
+                        activation = amountKnown
+                            ? (object)new { paid = true, amountSats = fetch.PaidAmountSats }
+                            : new { paid = true },
+                        warning = (amountKnown
+                                      ? $"A payment of {fetch.PaidAmountSats:N0} sats was taken from your wallet"
+                                      : "A payment may have been taken from your wallet") +
+                                  " but account activation did not complete. Do NOT re-run this tool or you may pay the " +
+                                  $"activation fee again — contact support@lightningenable.com with this email ({email}) to recover the account.",
+                        hint = fetch.StatusCode switch
                         {
-                            paid = true,
-                            amountSats = fetch.PaidAmountSats
-                        },
-                        warning = $"A payment of {fetch.PaidAmountSats:N0} sats was taken from your wallet but account " +
-                                  "activation did not complete. Do NOT re-run this tool or you may pay the activation " +
-                                  $"fee again — contact support@lightningenable.com with this email ({email}) to recover the account.",
-                        hint = fetch.StatusCode == 409
                             // Do NOT offer "service is unavailable" here — we know money moved and
                             // the server told us why. Suggesting an outage invites the retry loop.
-                            ? "This email already has a Lightning Enable account. The activation fee is charged before " +
-                              "the server checks for an existing account (it mints the challenge without a pre-check so " +
-                              "signup cannot be used to probe which emails are registered). Retrying with this email will " +
-                              "pay again and fail again. Sign in with the existing account, or use a different email."
+                            409 => "This email already has a Lightning Enable account. The activation fee is charged before " +
+                                   "the server checks for an existing account (it mints the challenge without a pre-check so " +
+                                   "signup cannot be used to probe which emails are registered). Retrying with this email will " +
+                                   "pay again and fail again. Sign in with the existing account, or use a different email.",
+                            0 => "The payment went out, but the connection failed before the server's answer arrived, so the " +
+                                 "account may or may not have been created. Do not re-pay; contact support with this email.",
+                            _ when paidRedirect =>
+                                "The activation fee was paid but the server redirected instead of returning the account. " +
+                                "Do not re-pay; contact support with this email.",
                             // Do NOT say "check wallet balance" here — the wallet did its job and paid.
                             // That hint contradicts the client's own "do not retry it" guidance.
-                            : "The activation fee was paid but the account did not activate — the payment may still be in " +
-                              "flight, or the wallet settled it without returning a preimage (L402 needs one to prove " +
-                              "payment). Check the payment status with your wallet provider; do not re-pay."
+                            _ => "The activation fee was paid but the account did not activate — the payment may still be in " +
+                                 "flight, or the wallet settled it without returning a preimage (L402 needs one to prove " +
+                                 "payment). Check the payment status with your wallet provider; do not re-pay."
+                        }
                     }, new JsonSerializerOptions { WriteIndented = true });
                 }
 
@@ -294,11 +229,16 @@ public static class CreateAccountTool
                         paid = false,
                         amountSats = 0
                     },
-                    hint = fetch.StatusCode == 402
-                        ? "The L402 activation challenge could not be completed and no payment was made. Check wallet " +
-                          "balance and configuration."
-                        : "The signup endpoint returned an error before any payment was made. The email may already have " +
-                          "an account, or the service is unavailable."
+                    hint = fetch.StatusCode switch
+                    {
+                        402 => "The L402 activation challenge could not be completed and no payment was made. Check wallet " +
+                               "balance and configuration.",
+                        // No HTTP status: a transport or wallet error, not a server refusal. A
+                        // wallet that timed out may still settle, so never say "no payment was made".
+                        0 => FirstPartyPaymentGate.TransportErrorHint,
+                        _ => "The signup endpoint returned an error before any payment was made. The email may already have " +
+                             "an account, or the service is unavailable."
+                    }
                 });
             }
 
@@ -322,7 +262,7 @@ public static class CreateAccountTool
                 });
             }
 
-            var apiKey = GetString(account, "apiKey");
+            var apiKey = FirstPartyPaymentGate.GetString(account,"apiKey");
             if (string.IsNullOrEmpty(apiKey))
             {
                 return JsonSerializer.Serialize(new
@@ -345,12 +285,12 @@ public static class CreateAccountTool
                 // Top level for consistency with every other payment tool's result shape.
                 receipt_written = fetch.PaidAmountSats > 0 ? (bool?)(receiptScope.ReceiptWritten ?? false) : null,
                 apiKey,
-                merchantId = GetString(account, "merchantId"),
-                email = GetString(account, "email") ?? email,
-                planTier = GetString(account, "planTier"),
-                subscriptionStatus = GetString(account, "subscriptionStatus"),
-                trialEndsAt = GetString(account, "trialEndsAt"),
-                dashboardUrl = GetString(account, "dashboardUrl"),
+                merchantId = FirstPartyPaymentGate.GetString(account,"merchantId"),
+                email = FirstPartyPaymentGate.GetString(account,"email") ?? email,
+                planTier = FirstPartyPaymentGate.GetString(account,"planTier"),
+                subscriptionStatus = FirstPartyPaymentGate.GetString(account,"subscriptionStatus"),
+                trialEndsAt = FirstPartyPaymentGate.GetString(account,"trialEndsAt"),
+                dashboardUrl = FirstPartyPaymentGate.GetString(account,"dashboardUrl"),
                 activation = new
                 {
                     paid = fetch.PaidAmountSats > 0,
@@ -377,13 +317,12 @@ public static class CreateAccountTool
             // Scrub credential-shaped tokens from the exception message before it
             // reaches the model — never let a key/secret leak into an error string.
             // receipt_written: null = nothing was paid; true/false = the activation fee
-            // moved (the client can throw after settlement) and the receipt did/didn't land.
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                receipt_written = receiptScope?.ReceiptWritten,
-                error = $"Error creating Lightning Enable account: {Scrub(ex.Message)}"
-            });
+            // moved (the client can throw after settlement) and the receipt did/didn't land —
+            // and then the result also carries activation.paid + a do-not-re-run warning.
+            return FirstPartyPaymentGate.ExceptionResult(
+                $"Error creating Lightning Enable account: {Scrub(ex.Message)}",
+                receiptScope,
+                $"this email ({email}) and the time of this call");
         }
         finally
         {
@@ -428,13 +367,6 @@ public static class CreateAccountTool
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
         ".lightning-enable",
         "config.json");
-
-    private static string? GetString(JsonElement element, string property) =>
-        element.ValueKind == JsonValueKind.Object &&
-        element.TryGetProperty(property, out var value) &&
-        value.ValueKind == JsonValueKind.String
-            ? value.GetString()
-            : null;
 
     /// <summary>
     /// Merges the API key into the config file without clobbering other keys
@@ -503,60 +435,6 @@ public static class CreateAccountTool
         catch (Exception ex)
         {
             return (false, ex.Message);
-        }
-    }
-
-    /// <summary>
-    /// Requests user confirmation for an above-threshold activation fee via MCP
-    /// elicitation. Returns false when elicitation is unavailable (most clients),
-    /// so the caller falls back to the out-of-band nonce flow.
-    /// </summary>
-    private static async Task<bool> RequestActivationConfirmationAsync(
-        McpServer? server,
-        ApprovalCheckResult approval,
-        string email,
-        CancellationToken cancellationToken)
-    {
-        if (server?.ClientCapabilities?.Elicitation == null)
-        {
-            Console.Error.WriteLine($"[Lightning Enable] Account activation of {approval.AmountUsd:C} requires confirmation but elicitation not supported by client");
-            return false;
-        }
-
-        try
-        {
-            var schema = new ElicitRequestParams.RequestSchema
-            {
-                Properties =
-                {
-                    ["approved"] = new ElicitRequestParams.BooleanSchema
-                    {
-                        Description = "Set to true to approve this Lightning Enable account activation payment"
-                    }
-                }
-            };
-
-            var response = await server.ElicitAsync(new ElicitRequestParams
-            {
-                Message = $"Lightning Enable Account Activation\n\n" +
-                          $"Email: {email}\n" +
-                          $"Fee: up to {approval.AmountUsd:C} ({approval.AmountSats:N0} sats)\n\n" +
-                          $"Authorize this activation payment?",
-                RequestedSchema = schema
-            }, cancellationToken);
-
-            if (response.Action == "accept" &&
-                response.Content?.TryGetValue("approved", out var approvedElement) == true)
-            {
-                return approvedElement.ValueKind == JsonValueKind.True;
-            }
-
-            return false;
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"[Lightning Enable] Account activation elicitation failed: {ex.Message}");
-            return false;
         }
     }
 }

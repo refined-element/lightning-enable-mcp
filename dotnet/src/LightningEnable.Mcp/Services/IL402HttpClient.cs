@@ -47,6 +47,26 @@ public interface IL402HttpClient
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// INTERNAL first-party path for merchant-authenticated endpoints: identical to
+    /// <see cref="PostFirstPartyAsync"/> (same origin check, refused before any request is
+    /// sent), but also carries the merchant API key as <c>X-Api-Key</c> on the initial
+    /// request AND on the paid retry. The key never appears in any error message.
+    /// A separate method rather than an optional parameter on <see cref="PostFirstPartyAsync"/>:
+    /// Moq expression-tree setups of that method cannot take optional arguments (CS0854).
+    /// </summary>
+    /// <param name="url">Absolute URL on the first-party API origin.</param>
+    /// <param name="jsonBody">JSON request body.</param>
+    /// <param name="apiKey">Merchant API key, sent as <c>X-Api-Key</c>.</param>
+    /// <param name="maxSats">Maximum satoshis to pay.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    Task<L402FetchResult> PostFirstPartyAuthenticatedAsync(
+        string url,
+        string jsonBody,
+        string apiKey,
+        long maxSats = 1000,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Manually pays an L402/MPP invoice and returns the token.
     /// </summary>
     /// <param name="macaroonBase64">Base64-encoded macaroon from L402 challenge. Null for MPP (preimage-only).</param>

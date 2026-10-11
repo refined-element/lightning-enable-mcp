@@ -12,8 +12,8 @@ namespace LightningEnable.Mcp.Tests;
 /// plus the free / API-key split. Add or remove a tool and this fails until you update the
 /// ONE list below — which is what every human-facing count is expected to derive from.
 ///
-/// Canonical (the <c>standard</c> profile, which is the default): 16 total = 14
-/// out-of-the-box (free, just a wallet) + 2 that need <c>LIGHTNING_ENABLE_API_KEY</c>.
+/// Canonical (the <c>standard</c> profile, which is the default): 17 total = 14
+/// out-of-the-box (free, just a wallet) + 3 that need <c>LIGHTNING_ENABLE_API_KEY</c>.
 /// The 2026-09 tool-surface consolidation folded 16 single-purpose tools into five
 /// action-style verbs (budget, receipts, wallet_ops, l402_producer, agent_services), taking
 /// the advertised surface from 26 tools to 15; <c>setup_wallet</c> then added the wallet
@@ -37,11 +37,11 @@ public class ToolInventoryTests
         "wallet_ops",
     };
 
-    // 2 verbs that need LIGHTNING_ENABLE_API_KEY: the L402 producer flow and the
-    // agent-marketplace (ASA) flow.
+    // 3 tools that need LIGHTNING_ENABLE_API_KEY: the L402 producer flow, the
+    // agent-marketplace (ASA) flow, and paying for the merchant's own subscription.
     private static readonly IReadOnlySet<string> ApiKeyTools = new HashSet<string>
     {
-        "l402_producer", "agent_services",
+        "l402_producer", "agent_services", "renew_lightning_enable_subscription",
     };
 
     [Fact]
@@ -60,11 +60,12 @@ public class ToolInventoryTests
     }
 
     [Fact]
-    public void ToolCounts_AreCanonical_16_14_2()
+    public void ToolCounts_AreCanonical_17_14_3()
     {
         FreeTools.Count.Should().Be(14, "14 out-of-the-box tools");
-        ApiKeyTools.Count.Should().Be(2, "2 API-key-gated verbs (l402_producer, agent_services)");
-        (FreeTools.Count + ApiKeyTools.Count).Should().Be(16, "16 tools total");
+        ApiKeyTools.Count.Should().Be(3,
+            "3 API-key-gated tools (l402_producer, agent_services, renew_lightning_enable_subscription)");
+        (FreeTools.Count + ApiKeyTools.Count).Should().Be(17, "17 tools total");
         FreeTools.Overlaps(ApiKeyTools).Should().BeFalse("a tool is either free or API-key-gated, never both");
     }
 

@@ -376,14 +376,26 @@ async def create_lightning_enable_account(
         # Best-effort; never mask the original error. Mirrors access_l402_resource.
         amount_paid = getattr(e, "amount_paid", None)
         if amount_paid:
+            from ..l402_client import L402RedirectError
+
             # PASSIVE: the client recorded the spend (+ cooldown) once before raising
             # — recording again here would double-count. The tool only surfaces the
             # settled amount so the human knows money moved and won't re-run.
             # The durable receipt was already written at the wallet seam inside the
             # client's payment leg; surface a definite boolean for the moved money.
+            #
+            # A paid redirect's own text says "call this tool again with that URL" — this
+            # tool never returns the token, so that advice would only buy a second fee.
+            paid_redirect = isinstance(e, L402RedirectError)
             return json.dumps({
                 "success": False,
-                "error": sanitize_error(str(e)),
+                "error": (
+                    "The account activation was paid, but the server answered with a redirect instead "
+                    "of returning the account. Do NOT pay again; contact support@lightningenable.com "
+                    "with the payment hash from your wallet's payment record."
+                    if paid_redirect
+                    else sanitize_error(str(e))
+                ),
                 "receipt_written": (
                     (receipt_scope.receipt_written if receipt_scope else None) or False
                 ),
@@ -395,10 +407,26 @@ async def create_lightning_enable_account(
                 ),
             }, indent=2)
 
-        # null = nothing was paid; true/false = money moved and the receipt did/didn't land.
+        # The wallet seam observed a payment under this call but the exception carries no
+        # amount: still flag it, so the agent does not read a bare error as retryable.
+        receipt_written = receipt_scope.receipt_written if receipt_scope else None
+        if receipt_written is not None:
+            return json.dumps({
+                "success": False,
+                "receipt_written": receipt_written,
+                "error": sanitize_error(str(e)),
+                "activation": {"paid": True},
+                "warning": (
+                    "A payment may have been taken from your wallet before this error. Do NOT re-run "
+                    "this tool or you may pay again — contact support@lightningenable.com with this "
+                    "email and the time of this call."
+                ),
+            }, indent=2)
+
+        # null = nothing was paid.
         return json.dumps({
             "success": False,
-            "receipt_written": receipt_scope.receipt_written if receipt_scope else None,
+            "receipt_written": None,
             "error": sanitize_error(str(e)),
         })
 

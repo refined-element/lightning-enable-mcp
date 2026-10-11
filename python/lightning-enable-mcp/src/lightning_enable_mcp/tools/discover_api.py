@@ -19,6 +19,7 @@ from urllib.parse import quote as url_quote
 from mcp.types import Tool
 
 from .._redirect import resolve_redirect_location
+from .._version import USER_AGENT_MCP
 from ..ssrf_transport import build_ssrf_safe_async_transport
 from . import sanitize_error
 from ._ssrf_guard import SsrfError, validate_url_allowed
@@ -381,7 +382,7 @@ async def _search_registry(
     # connection to a connect-time-validated IP (MCP-03), matching the manifest client.
     async with httpx.AsyncClient(timeout=15.0, follow_redirects=False, headers={
         "Accept": "application/json",
-        "User-Agent": "LightningEnable-MCP/1.0",
+        "User-Agent": USER_AGENT_MCP,
     }, transport=build_ssrf_safe_async_transport()) as client:
         response = await client.get(request_url)
 
@@ -510,7 +511,7 @@ async def _fetch_and_format_manifest(
     # preserved; follow_redirects stays False.
     async with httpx.AsyncClient(timeout=15.0, follow_redirects=False, headers={
         "Accept": "application/json",
-        "User-Agent": "LightningEnable-MCP/1.0",
+        "User-Agent": USER_AGENT_MCP,
     }, transport=build_ssrf_safe_async_transport()) as client:
         manifest_json, manifest_url, redirect_location = await _fetch_manifest(client, url)
 

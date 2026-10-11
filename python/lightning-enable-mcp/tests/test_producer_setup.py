@@ -971,10 +971,13 @@ class TestAdvertisedSurface:
         assert annotations.title == "L402 producer"
 
     def test_the_tool_count_is_unchanged(self):
-        """New actions, not new tools — the advertised inventory must not grow."""
+        """New actions, not new tools — the producer actions must not grow the advertised
+        inventory beyond the declared standard set (whose absolute count is pinned once,
+        in test_server.py / test_tool_profiles.py)."""
+        from lightning_enable_mcp.tools.profiles import STANDARD_TOOL_NAMES
         from lightning_enable_mcp.tools.registry import STANDARD_TOOLS
 
-        assert len(STANDARD_TOOLS) == 16
+        assert len(STANDARD_TOOLS) == len(STANDARD_TOOL_NAMES)
 
     def test_no_new_deprecated_alias_was_introduced(self):
         from lightning_enable_mcp.server import DEPRECATED_ALIASES

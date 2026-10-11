@@ -185,7 +185,7 @@ Or if installed via pip, replace `"command": "uvx", "args": ["lightning-enable-m
 
 ## Available Tools
 
-> **The complete, canonical tool list is the [Tools table in the root README](https://github.com/refined-element/lightning-enable-mcp#tools).** It lists all **16 tools** — **14 free** (out of the box, just a wallet) plus **2 that require `LIGHTNING_ENABLE_API_KEY`** (an [Agentic Commerce subscription](https://lightningenable.com)) — and is pinned to the code by guard tests in both ports, so it never drifts from what the server actually registers. Five of the 16 take an `action` argument; set `LIGHTNING_ENABLE_TOOL_PROFILE=lite` for a 6-tool surface, or `full` to also advertise the pre-consolidation names. The sections below document a **selected subset** in detail; they are not the full inventory.
+> **The complete, canonical tool list is the [Tools table in the root README](https://github.com/refined-element/lightning-enable-mcp#tools).** It lists all **17 tools** — **14 free** (out of the box, just a wallet) plus **3 that require `LIGHTNING_ENABLE_API_KEY`** (an [Agentic Commerce subscription](https://lightningenable.com)) — and is pinned to the code by guard tests in both ports, so it never drifts from what the server actually registers. Five of the 17 take an `action` argument; set `LIGHTNING_ENABLE_TOOL_PROFILE=lite` for a 6-tool surface, or `full` to also advertise the pre-consolidation names. The sections below document a **selected subset** in detail; they are not the full inventory.
 >
 > Some of them still use pre-consolidation tool names (`get_payment_history`, `configure_budget`, `get_btc_price`, …). They all still work as deprecated aliases; the [old name → new call table](https://github.com/refined-element/lightning-enable-mcp#old-name--new-call) gives the replacement for each.
 >
@@ -202,6 +202,17 @@ Self-bootstrapping signup: activate a Lightning Enable account with a tiny Light
 | `confirmation_nonce` | string | No | - | Human-relayed confirmation code (only for an above-threshold fee) |
 
 **Returns:** JSON with `apiKey`, `merchantId`, `planTier`, `subscriptionStatus`, `trialEndsAt`, `dashboardUrl`, and the config-write status.
+
+### renew_lightning_enable_subscription
+
+Pay for your own Agentic Commerce plan over Lightning: buys or extends 30 days for the account behind the configured `LIGHTNING_ENABLE_API_KEY`. The server sets a fixed price in sats and answers with an L402 challenge; the tool pays it and retries with the credential (the API key is sent on both requests and never appears in a tool result). Requires the API key and a preimage-capable wallet. Above-threshold renewals require a human-supplied confirmation code (same out-of-band flow as `pay_l402_challenge`). If a payment is taken but the renewal does not complete, the result carries `activation.paid: true` and a do-not-retry warning with the payment hash for support.
+
+| Name | Type | Required | Default | Description |
+|------|------|----------|---------|-------------|
+| `max_sats` | integer | No | 50000 | Maximum sats to pay; the renewal is refused before payment if the quoted price is higher |
+| `confirmation_nonce` | string | No | - | Human-relayed confirmation code (only for an above-threshold renewal) |
+
+**Returns:** `{ success, receipt_written, currentPeriodEnd, paidSats, paymentHash, alreadyCredited, planTier, activation, message }`. Errors carry `error`, `errorCode` (the server's code, such as `stripe_subscription_active`), `statusCode`, and `activation`.
 
 ### pay_invoice
 

@@ -37,6 +37,7 @@ public class Program
             try
             {
                 using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+                http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", UserAgent.Value);
                 var apiUrl = Environment.GetEnvironmentVariable("LIGHTNING_ENABLE_API_URL")
                     ?? "https://api.lightningenable.com";
                 var response = await http.GetStringAsync($"{apiUrl}/api/mcp/version-check?currentVersion={currentVersion}");
@@ -137,7 +138,7 @@ public class Program
             {
                 client.Timeout = TimeSpan.FromSeconds(15);
                 client.DefaultRequestHeaders.Add("Accept", "application/json");
-                client.DefaultRequestHeaders.Add("User-Agent", "LightningEnable-MCP/1.0");
+                client.DefaultRequestHeaders.Add("User-Agent", UserAgent.Value);
             })
             .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
             {

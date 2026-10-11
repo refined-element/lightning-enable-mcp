@@ -13,9 +13,6 @@ Available tools:
 - pay_l402_challenge - Manual L402 payment
 """
 
-from importlib.metadata import PackageNotFoundError as _PackageNotFoundError
-from importlib.metadata import version as _pkg_version
-
 from .budget_service import (
     BudgetService,
     ConfigureBudgetResult,
@@ -51,15 +48,12 @@ from .price_service import (
     sats_to_usd,
     usd_to_sats,
 )
-# Derive __version__ from installed package metadata so it can never drift from
-# pyproject.toml (which is the single source of truth). Fall back to a sentinel when
-# running directly from an uninstalled source checkout (e.g., without pip install).
-# Defined BEFORE the .server import because server.py reads __version__ at import time
-# (to report it in the MCP serverInfo handshake) — reordering avoids a circular import.
-try:
-    __version__ = _pkg_version("lightning-enable-mcp")
-except _PackageNotFoundError:  # pragma: no cover
-    __version__ = "0.0.0+unknown"
+# __version__ is derived from installed package metadata in the leaf module _version (so it
+# can never drift from pyproject.toml, the single source of truth, and the User-Agent values
+# built from it are importable anywhere without a circular import). Bound BEFORE the .server
+# import because server.py reads __version__ at import time (to report it in the MCP
+# serverInfo handshake).
+from ._version import __version__
 
 from .server import LightningEnableServer, main
 

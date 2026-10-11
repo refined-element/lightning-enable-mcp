@@ -54,6 +54,7 @@ from .pay_challenge import pay_l402_challenge
 from .pay_invoice import pay_invoice
 from .publish_agent_attestation import publish_agent_attestation
 from .publish_agent_capability import publish_agent_capability
+from .renew_subscription import renew_lightning_enable_subscription
 from .request_agent_service import request_agent_service
 from .send_onchain import send_onchain
 from .settle_agent_service import settle_agent_service
@@ -65,6 +66,7 @@ from .verify_l402_payment import verify_l402_payment
 __all__ = [
     "access_l402_resource",
     "create_lightning_enable_account",
+    "renew_lightning_enable_subscription",
     "check_invoice_status",
     "verify_confirmation_code",
     "create_invoice",

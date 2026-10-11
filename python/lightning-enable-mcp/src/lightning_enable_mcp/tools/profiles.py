@@ -54,6 +54,7 @@ STANDARD_TOOL_NAMES: tuple[str, ...] = (
     "wallet_ops",
     "l402_producer",
     "agent_services",
+    "renew_lightning_enable_subscription",
 )
 
 #: The minimal surface: get a wallet, spend, stay inside the budget. ``setup_wallet``

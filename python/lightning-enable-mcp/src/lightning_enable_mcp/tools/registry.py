@@ -37,6 +37,7 @@ from .pay_invoice import PAY_INVOICE_TOOL
 from .profiles import FULL, LITE, LITE_TOOL_NAMES, resolve_profile
 from .publish_agent_attestation import PUBLISH_AGENT_ATTESTATION_TOOL
 from .publish_agent_capability import PUBLISH_AGENT_CAPABILITY_TOOL
+from .renew_subscription import RENEW_LIGHTNING_ENABLE_SUBSCRIPTION_TOOL
 from .request_agent_service import REQUEST_AGENT_SERVICE_TOOL
 from .send_onchain import SEND_ONCHAIN_TOOL
 from .settle_agent_service import SETTLE_AGENT_SERVICE_TOOL
@@ -64,6 +65,7 @@ STANDARD_TOOLS: list[Tool] = [
     WALLET_OPS_TOOL,
     L402_PRODUCER_TOOL,
     AGENT_SERVICES_TOOL,
+    RENEW_LIGHTNING_ENABLE_SUBSCRIPTION_TOOL,
 ]
 
 #: Pre-consolidation names, advertised only by the ``full`` profile. Still callable

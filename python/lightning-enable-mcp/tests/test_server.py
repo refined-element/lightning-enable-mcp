@@ -18,12 +18,14 @@ from lightning_enable_mcp.nwc_wallet import NWCWallet
 # (dotnet/tests/LightningEnable.Mcp.Tests/ToolInventoryTests.cs) and the docs'
 # MCP Complete Guide — the one place that itemizes the tools for humans.
 #
-# Canonical (the ``standard`` profile, which is the default): 15 total = 13
-# out-of-the-box (free, just a wallet) + 2 that need LIGHTNING_ENABLE_API_KEY.
+# Canonical (the ``standard`` profile, which is the default): 17 total = 14
+# out-of-the-box (free, just a wallet) + 3 that need LIGHTNING_ENABLE_API_KEY.
 # The 2026-09 tool-surface consolidation folded 16 single-purpose tools into five
 # action-style verbs (budget, receipts, wallet_ops, l402_producer, agent_services),
 # taking the advertised surface from 26 tools to 15; ``setup_wallet`` then added the
 # wallet onboarding step every other tool depends on — see tools/profiles.py.
+# ``renew_lightning_enable_subscription`` (API-key-gated) pays for the merchant's
+# own Agentic Commerce plan over L402.
 #
 # Every pre-consolidation name still dispatches as an accepted-but-unadvertised
 # forwarding alias (TestDeprecatedAliases in test_tool_profiles.py), and the
@@ -48,6 +50,7 @@ FREE_TOOLS = {
 API_KEY_TOOLS = {
     "l402_producer",
     "agent_services",
+    "renew_lightning_enable_subscription",
 }
 ALL_TOOLS = FREE_TOOLS | API_KEY_TOOLS
 
@@ -95,11 +98,14 @@ class TestLightningEnableServer:
         # Deprecated aliases (every pre-consolidation name) still dispatch but must
         # NOT appear here.
         assert tool_names == ALL_TOOLS
-        assert len(tool_names) == 16
+        assert len(tool_names) == 17
         # Free/paid split is the source of truth every doc count derives from.
         assert FREE_TOOLS.isdisjoint(API_KEY_TOOLS)
         assert len(FREE_TOOLS) == 14, "14 out-of-the-box tools"
-        assert len(API_KEY_TOOLS) == 2, "2 API-key-gated verbs (l402_producer, agent_services)"
+        assert len(API_KEY_TOOLS) == 3, (
+            "3 API-key-gated tools (l402_producer, agent_services, "
+            "renew_lightning_enable_subscription)"
+        )
         assert tool_names >= FREE_TOOLS
         assert tool_names >= API_KEY_TOOLS
 

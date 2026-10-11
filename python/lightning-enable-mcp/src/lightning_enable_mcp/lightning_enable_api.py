@@ -84,6 +84,15 @@ class LightningEnableApiClient:
         """Whether the client has an API key configured."""
         return bool(self._api_key)
 
+    @property
+    def api_key(self) -> str | None:
+        """The configured merchant API key (read-only).
+
+        For first-party tools that send it on their own request
+        (renew_lightning_enable_subscription). Never log it or put it in a tool result.
+        """
+        return self._api_key
+
     async def create_challenge(
         self,
         resource: str,

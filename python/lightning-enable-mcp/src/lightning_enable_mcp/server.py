@@ -47,6 +47,7 @@ from .tools.budget_status import get_budget_status
 from .tools.check_invoice_status import check_invoice_status
 from .tools.consolidated import ACTION_TOOLS
 from .tools.create_account import create_lightning_enable_account
+from .tools.renew_subscription import renew_lightning_enable_subscription
 from .tools.create_invoice import create_invoice
 from .tools.create_l402_challenge import create_l402_challenge
 from .tools.discover_agent_services import discover_agent_services
@@ -412,6 +413,15 @@ class LightningEnableServer:
                         l402_client=self.l402_client,
                         budget_service=self.budget_service,
                         payment_history_service=self.payment_history_service,
+                    )
+
+                elif name == "renew_lightning_enable_subscription":
+                    result = await renew_lightning_enable_subscription(
+                        max_sats=arguments.get("max_sats", 50000),
+                        confirmation_nonce=arguments.get("confirmation_nonce"),
+                        l402_client=self.l402_client,
+                        budget_service=self.budget_service,
+                        api_client=self.api_client,
                     )
 
                 elif name == "get_balance":

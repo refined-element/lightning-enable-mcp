@@ -83,6 +83,11 @@ TOOL_ANNOTATIONS: dict[str, ToolAnnotations] = {
     "agent_services": ToolAnnotations(
         title="Agent services", readOnlyHint=False, destructiveHint=True
     ),
+    "renew_lightning_enable_subscription": ToolAnnotations(
+        title="Renew Lightning Enable subscription",
+        readOnlyHint=False,
+        destructiveHint=True,
+    ),
     # ── Legacy names (advertised only under the `full` profile) ─────────────
     "get_budget_status": ToolAnnotations(
         title="Budget status (deprecated)", readOnlyHint=True, openWorldHint=False

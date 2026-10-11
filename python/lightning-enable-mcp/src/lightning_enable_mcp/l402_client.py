@@ -18,6 +18,7 @@ from bolt11 import decode as decode_bolt11
 
 from ._redirect import resolve_redirect_location
 from ._url_redact import redact_url_for_display
+from ._version import USER_AGENT_PYTHON
 from .ssrf_transport import build_ssrf_safe_async_transport
 from .wallet_errors import PaymentProofUnavailableError
 
@@ -463,7 +464,10 @@ class L402Client:
         self._payment_history_service = payment_history_service
         self._http_client = httpx.AsyncClient(
             timeout=30.0,
-            headers={"Accept-Encoding": "identity"},
+            # User-Agent identifies the server on the initial request AND the paid retry
+            # (both go through this client). A caller-supplied User-Agent in the per-request
+            # headers still overrides it.
+            headers={"Accept-Encoding": "identity", "User-Agent": USER_AGENT_PYTHON},
             # Do NOT auto-follow redirects (this is httpx's default; pinned explicitly so a
             # future default change can't silently re-enable it). A 3xx is surfaced as an
             # actionable L402RedirectError, never followed — see L402RedirectError for why.

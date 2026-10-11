@@ -137,7 +137,7 @@ public class Program
             {
                 client.Timeout = TimeSpan.FromSeconds(15);
                 client.DefaultRequestHeaders.Add("Accept", "application/json");
-                client.DefaultRequestHeaders.Add("User-Agent", "LightningEnable-MCP/1.0");
+                client.DefaultRequestHeaders.Add("User-Agent", UserAgent.Value);
             })
             .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
             {

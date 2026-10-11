@@ -179,7 +179,7 @@ public class LightningEnableApiService : ILightningEnableApiService
         _httpClient = httpClient;
         _httpClient.Timeout = TimeSpan.FromSeconds(30);
         _httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-        _httpClient.DefaultRequestHeaders.Add("User-Agent", "LightningEnable-MCP/1.0");
+        _httpClient.DefaultRequestHeaders.Add("User-Agent", UserAgent.Value);
 
         // Read API key: env var → config file
         _apiKey = Environment.GetEnvironmentVariable("LIGHTNING_ENABLE_API_KEY");

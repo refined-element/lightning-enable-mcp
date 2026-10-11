@@ -277,7 +277,7 @@ public sealed class WebhookConfirmationChannel : IConfirmationChannel
             message.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
             message.Headers.TryAddWithoutValidation(
                 "X-LightningEnable-Signature", ConfirmationWebhookSignature.Build(_secret, timestamp, body));
-            message.Headers.TryAddWithoutValidation("User-Agent", "LightningEnable-MCP/1.0");
+            message.Headers.TryAddWithoutValidation("User-Agent", UserAgent.Value);
 
             using var timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeoutSource.CancelAfter(_timeout);

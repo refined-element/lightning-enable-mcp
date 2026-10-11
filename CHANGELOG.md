@@ -33,6 +33,11 @@ Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-ena
   internal `FirstPartyPaymentGate` (approval check, confirmation nonce, MCP elicitation, and
   confirmation-channel dispatch). `create_lightning_enable_account` results are unchanged
   apart from the fixes below.
+- User-Agent now carries the package version (`LightningEnable-MCP/<version>`), so
+  server-side analytics can attribute traffic. The Python port sends
+  `LightningEnable-MCP-Python/<version>` to the Lightning Enable API. Both ports' L402
+  clients now send it too, on the initial request and on the paid retry; a `User-Agent`
+  passed in the caller's custom headers still takes precedence.
 
 ### Fixed
 

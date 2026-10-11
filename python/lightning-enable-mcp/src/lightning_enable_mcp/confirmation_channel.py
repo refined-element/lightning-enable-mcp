@@ -49,6 +49,8 @@ from urllib.parse import urlsplit
 
 import httpx
 
+from ._version import USER_AGENT_MCP
+
 if TYPE_CHECKING:  # pragma: no cover - typing only, avoids a runtime import cycle
     from .budget_service import PendingConfirmation
     from .config import ConfirmationSettings
@@ -426,7 +428,7 @@ class WebhookConfirmationChannel:
                 "X-LightningEnable-Signature": build_webhook_signature(
                     self._secret, timestamp, body
                 ),
-                "User-Agent": "LightningEnable-MCP/1.0",
+                "User-Agent": USER_AGENT_MCP,
             }
 
             # Only a client this channel built itself is closed after the call. An injected

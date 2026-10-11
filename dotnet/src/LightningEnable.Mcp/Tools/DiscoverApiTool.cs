@@ -54,7 +54,7 @@ public static class DiscoverApiTool
         DefaultRequestHeaders =
         {
             { "Accept", "application/json" },
-            { "User-Agent", "LightningEnable-MCP/1.0" }
+            { "User-Agent", UserAgent.Value }
         }
     };
 
@@ -87,7 +87,7 @@ public static class DiscoverApiTool
             DefaultRequestHeaders =
             {
                 { "Accept", "application/json" },
-                { "User-Agent", "LightningEnable-MCP/1.0" }
+                { "User-Agent", UserAgent.Value }
             }
         };
 

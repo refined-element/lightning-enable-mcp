@@ -27,6 +27,14 @@ public class L402HttpClient : IL402HttpClient
         // Prevent servers from sending compressed responses that may not decompress correctly
         // across all environments (Docker, bridge CLI, etc.)
         _httpClient.DefaultRequestHeaders.TryAddWithoutValidation("Accept-Encoding", "identity");
+        // Identify the server on every paid fetch: both the initial request and the paid retry
+        // go through this client, so a default header covers both. HttpClient only applies a
+        // default when the request has no header of that name, so a caller-supplied
+        // User-Agent in the custom headers still wins.
+        if (!_httpClient.DefaultRequestHeaders.Contains("User-Agent"))
+        {
+            _httpClient.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", UserAgent.Value);
+        }
         _walletService = walletService;
         _budgetService = budgetService;
         _historyService = historyService;

@@ -63,7 +63,8 @@ def report_version_check(payload: Any, stream: TextIO) -> None:
         latest = _string_field(payload, "latestVersion") or "unknown"
         print(
             f"{_PREFIX} Update available: v{latest}. "
-            "Run: pip install --upgrade lightning-enable-mcp",
+            "Run: pip install --upgrade lightning-enable-mcp "
+            "(or uvx --refresh lightning-enable-mcp)",
             file=stream,
             flush=True,
         )

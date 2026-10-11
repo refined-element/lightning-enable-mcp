@@ -111,6 +111,7 @@ async def test_update_recommended_prints_one_line(capsys):
     assert captured.out == ""
     assert "Update available: v2.2.0" in captured.err
     assert "pip install --upgrade lightning-enable-mcp" in captured.err
+    assert "uvx --refresh lightning-enable-mcp" in captured.err
     assert "CRITICAL" not in captured.err
 
 

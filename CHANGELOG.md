@@ -21,8 +21,8 @@ Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-ena
   and result.
 - .NET: `IL402HttpClient.PostFirstPartyAuthenticatedAsync`, a first-party POST with the same
   origin gate as `PostFirstPartyAsync` that sends the merchant API key as `X-Api-Key` on
-  both the initial request and the paid L402 retry, and `ILightningEnableApiService.ApiKey`
-  (null when unconfigured).
+  both the initial request and the paid L402 retry (a blank key is refused before anything
+  is sent), and `ILightningEnableApiService.ApiKey` (null when unconfigured).
 - Python: a read-only `LightningEnableApiClient.api_key` property.
 
 ### Changed
@@ -31,7 +31,8 @@ Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-ena
   and 3 gated on `LIGHTNING_ENABLE_API_KEY`. The `full` profile advertises 33.
 - .NET: `create_lightning_enable_account` and `renew_lightning_enable_subscription` share an
   internal `FirstPartyPaymentGate` (approval check, confirmation nonce, MCP elicitation, and
-  confirmation-channel dispatch). `create_lightning_enable_account` results are unchanged.
+  confirmation-channel dispatch). `create_lightning_enable_account` results are unchanged
+  apart from the fixes below.
 
 ### Fixed
 
@@ -39,6 +40,21 @@ Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-ena
   throws after the wallet recorded a payment, the result now reports `activation.paid` with
   a warning not to re-run the tool and to contact support@lightningenable.com, instead of a
   plain error that invited a second payment.
+- .NET: the L402 client no longer loses a settled payment when the paid retry fails in
+  transport (timeout, connection reset, or cancellation). It used to return a result with
+  no paid amount, so `create_lightning_enable_account` and
+  `renew_lightning_enable_subscription` said nothing was charged. The client now returns
+  the paid amount and credential with a "do not pay again" error, which also covers
+  `access_l402_resource` and `settle_agent_service`. Both first-party tools also count a
+  recorded wallet receipt as a payment when no amount came back, word a failure with no
+  HTTP status as a transport or wallet error instead of a refusal, and replace the
+  paid-redirect advice to retry with the token (these tools never return it) with a
+  do-not-pay-again message.
+- Python: when `create_lightning_enable_account` raises after the wallet recorded a payment
+  but the error carries no paid amount, the result now reports `activation.paid` with a
+  warning not to re-run the tool, as `renew_lightning_enable_subscription` already did.
+  Both tools also replace the paid-redirect "call this tool again with that URL" advice with
+  a do-not-pay-again message.
 
 ## [2.0.5] — 2026-09-25
 

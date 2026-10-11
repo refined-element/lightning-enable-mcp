@@ -286,6 +286,53 @@ class TestCreateAccountPaidButRetryFailed:
         assert "activation" not in result  # nothing settled
         budget.record_spend.assert_not_called()
 
+    @pytest.mark.asyncio
+    async def test_throw_after_receipt_recorded_but_no_amount_still_flags_paid(self, tmp_path):
+        from types import SimpleNamespace
+        from lightning_enable_mcp.receipt_seam import PaymentReceiptScope
+
+        async def fetch(url, method, headers, body, max_sats, *, first_party_write=False):
+            # The wallet seam recorded a receipt write under this call, then the client blew up
+            # without attaching amount_paid.
+            PaymentReceiptScope.current().record_write(True)
+            raise ConnectionError("connection reset after paying le_live_leakedkey")
+
+        result_str = await create_lightning_enable_account(
+            email=TEST_EMAIL, l402_client=SimpleNamespace(fetch=fetch),
+            config_path=str(tmp_path / "config.json"),
+        )
+        result = json.loads(result_str)
+
+        assert result["success"] is False
+        assert result["receipt_written"] is True
+        assert result["activation"] == {"paid": True}
+        assert "may have been taken" in result["warning"]
+        assert "Do NOT re-run" in result["warning"]
+        assert "support@lightningenable.com" in result["warning"]
+        assert "leakedkey" not in result_str
+
+    @pytest.mark.asyncio
+    async def test_paid_redirect_replaces_the_retry_with_token_advice(self, tmp_path):
+        from lightning_enable_mcp.l402_client import L402RedirectError
+
+        err = L402RedirectError("https://api.example.com/elsewhere", 302)
+        err.amount_paid = 100
+        err.l402_token = "fixture-string-macaroon:fixture-string-preimage"
+        client = AsyncMock()
+        client.fetch = AsyncMock(side_effect=err)
+
+        result_str = await create_lightning_enable_account(
+            email=TEST_EMAIL, l402_client=client, config_path=str(tmp_path / "config.json"),
+        )
+        result = json.loads(result_str)
+
+        assert result["success"] is False
+        assert result["activation"] == {"paid": True, "amountSats": 100}
+        assert "redirect" in result["error"]
+        assert "Do NOT pay again" in result["error"]
+        assert "Call this tool again" not in result_str
+        assert "Do NOT re-run" in result["warning"]
+
 
 class TestCreateAccountReceipts:
     @pytest.mark.asyncio

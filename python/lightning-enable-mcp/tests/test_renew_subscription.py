@@ -360,7 +360,6 @@ class TestPaidButFailed:
             token=f"{FIXTURE_MACAROON}:{FIXTURE_PREIMAGE}",
         )
         budget = _budget_with(ApprovalLevel.AUTO_APPROVE)
-        history = MagicMock()
 
         result_str = await _renew(l402_client=_raising_client(err), budget_service=budget)
         result = json.loads(result_str)
@@ -379,7 +378,6 @@ class TestPaidButFailed:
         assert FIXTURE_KEY not in result_str
         # PASSIVE: the client recorded the spend once before raising.
         budget.record_spend.assert_not_called()
-        history.record_payment.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_paid_but_pending_does_not_blame_the_wallet(self):
@@ -465,6 +463,29 @@ class TestPaidButFailed:
         assert "Do NOT re-run" in result["warning"]
         assert "support@lightningenable.com" in result["warning"]
         assert FIXTURE_KEY not in result_str
+
+    @pytest.mark.asyncio
+    async def test_paid_redirect_replaces_the_retry_with_token_advice(self):
+        from lightning_enable_mcp.l402_client import L402RedirectError
+
+        err = L402RedirectError("https://api.example.com/elsewhere", 302)
+        err.amount_paid = 25000
+        err.l402_token = f"{FIXTURE_MACAROON}:{FIXTURE_PREIMAGE}"
+        result_str = await _renew(l402_client=_raising_client(err))
+        result = json.loads(result_str)
+
+        assert result["success"] is False
+        assert result["activation"] == {"paid": True, "amountSats": 25000}
+        assert result["statusCode"] == 302
+        assert "redirect" in result["error"]
+        assert "Do NOT pay again" in result["error"]
+        assert "Call this tool again" not in result_str
+        # Not the in-flight / no-preimage hint the None status used to select.
+        assert "redirected" in result["hint"]
+        assert "in flight" not in result["hint"]
+        assert "Do NOT re-run" in result["warning"]
+        assert result["paymentHash"] == _expected_hash()
+        assert FIXTURE_PREIMAGE not in result_str
 
     @pytest.mark.asyncio
     async def test_plain_throw_without_payment_keeps_plain_shape(self):

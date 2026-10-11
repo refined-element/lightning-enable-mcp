@@ -395,10 +395,24 @@ async def _renew(
         # signal, or the agent reads a retryable error and pays again.
         amount_paid = getattr(e, "amount_paid", None)
         if amount_paid:
+            from ..l402_client import L402RedirectError
+
             payment_hash = _derive_payment_hash(getattr(e, "l402_token", None))
+            # A paid redirect: the client's text says "call this tool again with that URL",
+            # and its message carries no "HTTP nnn" — so it would otherwise read as an
+            # in-flight payment. This tool never returns the token, so replace both.
+            paid_redirect = isinstance(e, L402RedirectError)
+            if paid_redirect:
+                status_code = e.status_code
             return json.dumps({
                 "success": False,
-                "error": safe_error,
+                "error": (
+                    "The subscription renewal was paid, but the server answered with a redirect instead "
+                    "of confirming it. Do NOT pay again; contact support@lightningenable.com with the "
+                    "payment hash."
+                    if paid_redirect
+                    else safe_error
+                ),
                 "errorCode": error_code,
                 "statusCode": status_code,
                 "receipt_written": (receipt_scope.receipt_written if receipt_scope else None) or False,
@@ -406,9 +420,12 @@ async def _renew(
                 "activation": {"paid": True, "amountSats": amount_paid},
                 "warning": _paid_but_failed_warning(amount_paid, payment_hash),
                 "hint": (
+                    "The renewal was paid but the server redirected instead of confirming it. Do not "
+                    "re-pay; contact support with the payment hash."
+                    if paid_redirect
                     # Do NOT say "check wallet balance" — the wallet paid; that contradicts
                     # the client's own "do not retry it" guidance.
-                    "The renewal invoice was paid but the server did not accept it yet — the payment "
+                    else "The renewal invoice was paid but the server did not accept it yet — the payment "
                     "may still be in flight, or the wallet settled it without returning a preimage "
                     "(L402 needs one to prove payment). Check the payment status with your wallet "
                     "provider; do not re-pay."

@@ -357,8 +357,8 @@ Every advertised tool's JSON schema is loaded into the agent's context at the st
 | Profile | Tools | Use it when |
 |---------|-------|-------------|
 | `lite` | 6 — `setup_wallet`, `pay_invoice`, `access_l402_resource`, `get_balance`, `budget`, `receipts` | The agent only needs to get a wallet, spend, and stay inside its budget |
-| `standard` *(default)* | 16 — the table above | Everything, at about 40% less schema than the old surface |
-| `full` | 32 — `standard` plus every pre-consolidation name | You have prompts or scripts written against the old tool names |
+| `standard` *(default)* | 17 — the table above | Everything, at about 40% less schema than the old surface |
+| `full` | 33 — `standard` plus every pre-consolidation name | You have prompts or scripts written against the old tool names |
 
 ```json
 {

@@ -75,9 +75,10 @@ startCommand:
         enum: [lite, standard, full]
         default: standard
         description: >-
-          Optional. How many tools to advertise. "lite" is 5 tools (pay, fetch a
-          paid resource, balance, budget, receipts); "standard" is the full
-          15-tool set; "full" also advertises the pre-consolidation tool names
+          Optional. How many tools to advertise. "lite" is the basics (wallet
+          setup, pay, fetch a paid resource, balance, budget, receipts);
+          "standard" is the full tool set; "full" also advertises the
+          pre-consolidation tool names
           for prompts written against them. Every tool stays callable in every
           profile — the profile only trims what is listed.
   commandFunction: |-

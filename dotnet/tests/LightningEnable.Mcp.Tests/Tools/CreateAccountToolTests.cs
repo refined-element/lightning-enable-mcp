@@ -555,6 +555,56 @@ public class CreateAccountToolTests : IDisposable
         error.Length.Should().BeLessThanOrEqualTo(203, "the server body must be truncated");
     }
 
+    // ----- Client throws (paid vs unpaid) -----
+
+    /// <summary>
+    /// The client throws AFTER the activation fee settled. The receipt seam
+    /// (ReceiptRecordingWalletService) records its write on the ambient scope during the
+    /// payment — reproduced here through the same internal <c>RecordWrite</c> it calls — so
+    /// the result must carry the paid signal and a do-not-re-run warning, or the agent pays again.
+    /// </summary>
+    [Fact]
+    public async Task CreateAccount_ClientThrowsAfterPayment_SurfacesPaidSignal_AndSaysDoNotRetry()
+    {
+        _l402ClientMock
+            .Setup(c => c.PostFirstPartyAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .Callback(() => PaymentReceiptScope.Current!.RecordWrite(true))
+            .ThrowsAsync(new HttpRequestException("connection reset after paying le_live_leakedkey"));
+
+        var result = await CreateAccountTool.CreateLightningEnableAccount(
+            email: TestEmail, l402Client: _l402ClientMock.Object, configService: _configServiceMock.Object);
+
+        var json = JsonDocument.Parse(result).RootElement;
+        json.GetProperty("success").GetBoolean().Should().BeFalse();
+        json.GetProperty("receipt_written").GetBoolean().Should().BeTrue();
+        json.GetProperty("activation").GetProperty("paid").GetBoolean().Should().BeTrue();
+        json.GetProperty("warning").GetString().Should().Contain("Do NOT re-run")
+            .And.Contain("support@lightningenable.com")
+            .And.Contain(TestEmail);
+        json.GetProperty("error").GetString().Should().StartWith("Error creating Lightning Enable account:")
+            .And.NotContain("leakedkey");
+    }
+
+    [Fact]
+    public async Task CreateAccount_ClientThrowsBeforePayment_KeepsPlainErrorShape()
+    {
+        _l402ClientMock
+            .Setup(c => c.PostFirstPartyAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new HttpRequestException("name resolution failed"));
+
+        var result = await CreateAccountTool.CreateLightningEnableAccount(
+            email: TestEmail, l402Client: _l402ClientMock.Object, configService: _configServiceMock.Object);
+
+        var json = JsonDocument.Parse(result).RootElement;
+        json.GetProperty("success").GetBoolean().Should().BeFalse();
+        json.GetProperty("receipt_written").ValueKind.Should().Be(JsonValueKind.Null);
+        json.GetProperty("error").GetString().Should().Be("Error creating Lightning Enable account: name resolution failed");
+        json.TryGetProperty("activation", out _).Should().BeFalse("nothing was paid, so no paid claim");
+        json.TryGetProperty("warning", out _).Should().BeFalse();
+    }
+
     public void Dispose()
     {
         foreach (var f in _tempFiles)

@@ -2,9 +2,7 @@ using System.ComponentModel;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-using LightningEnable.Mcp.Models;
 using LightningEnable.Mcp.Services;
-using ModelContextProtocol.Protocol;
 using ModelContextProtocol.Server;
 
 namespace LightningEnable.Mcp.Tools;
@@ -17,13 +15,15 @@ namespace LightningEnable.Mcp.Tools;
 /// with the credential — which buys or extends one period of the Agentic Commerce plan.
 /// The price is set by the server; <c>maxSats</c> is only the ceiling this call may pay.
 ///
-/// Mirrors <see cref="CreateAccountTool"/>: the same budget gate, the same out-of-band
-/// confirmation (the code goes to the human on the configured approval channel, never into
-/// this result), the same durable receipt scope, and the same paid-but-failed signalling so
-/// an agent never pays twice by retrying. Differences: it needs the merchant API key (it
-/// pays for an EXISTING account), and that key must never appear in any result — the server
-/// error body and exception messages are redacted for the exact configured key as well as
-/// for credential-shaped tokens.
+/// Shares the budget / out-of-band confirmation gate and the paid-aware exception result
+/// with <see cref="CreateAccountTool"/> through <see cref="FirstPartyPaymentGate"/>: the code
+/// goes to the human on the configured approval channel, never into this result. Adds what a
+/// renewal needs: the merchant API key (it pays for an EXISTING account), and that key must
+/// never appear in any result — the server error body and exception messages are redacted for
+/// the exact configured key as well as for credential-shaped tokens.
+///
+/// Every call starts a fresh challenge: <see cref="L402HttpClient"/> keeps no token cache, so
+/// a second call buys a second period rather than replaying the first credential.
 /// </summary>
 [McpServerToolType]
 public static class RenewSubscriptionTool
@@ -60,8 +60,8 @@ public static class RenewSubscriptionTool
         // catch — can redact it. Never logged, never serialized.
         var apiKey = apiService?.ApiKey;
 
-        // Declared outside the try so the catch can report whether a durable receipt
-        // landed when the client throws AFTER the renewal settled.
+        // Declared outside the try so the catch can report whether a payment was observed
+        // when the client throws AFTER the renewal settled.
         PaymentReceiptScope? receiptScope = null;
         try
         {
@@ -92,114 +92,29 @@ public static class RenewSubscriptionTool
             // Budget gating BEFORE payment. Gated on maxSats (the ceiling) because the exact
             // price isn't known until the 402 is minted inside the client; the confirmation is
             // bound to maxSats, this tool, and the renew URL, so a code can't be redirected.
-            string? renewalPolicy = null;
-            if (budgetService != null)
+            var (blocked, renewalPolicy) = await FirstPartyPaymentGate.CheckAsync(
+                new FirstPartyPaymentGateOptions
+                {
+                    ToolName = ToolName,
+                    Destination = renewUrl,
+                    MaxSats = maxSats,
+                    Label = "Subscription renewal",
+                    Noun = "renewal",
+                    ConfirmationTitle = "SUBSCRIPTION RENEWAL CONFIRMATION REQUIRED",
+                    ConfirmationDescription = "Lightning Enable subscription renewal",
+                    ConfirmationSummary = approval =>
+                        $"{ToolName} — up to {approval.AmountUsd:C} ({maxSats:N0} sats)",
+                    HowToConfirm = "Ask the human operator for the confirmation code, then call " +
+                                   $"{ToolName}(confirmationNonce=\"<code-from-human>\") with the same maxSats.",
+                    ElicitationMessage = approval =>
+                        "Lightning Enable Subscription Renewal\n\n" +
+                        $"Price: up to {approval.AmountUsd:C} ({approval.AmountSats:N0} sats)\n\n" +
+                        "Authorize this renewal payment?"
+                },
+                confirmationNonce, server, budgetService, cancellationToken);
+            if (blocked != null)
             {
-                var approval = await budgetService.CheckApprovalLevelAsync(maxSats, cancellationToken);
-                renewalPolicy = PaymentPolicy.Label(approval.Level);
-
-                if (approval.Level == ApprovalLevel.Deny)
-                {
-                    return JsonSerializer.Serialize(new
-                    {
-                        success = false,
-                        error = $"Subscription renewal denied by budget policy: {approval.DenialReason}",
-                        budget = new
-                        {
-                            amountSats = maxSats,
-                            amountUsd = approval.AmountUsd,
-                            remainingSessionUsd = approval.RemainingSessionBudgetUsd
-                        }
-                    });
-                }
-
-                if (approval.RequiresConfirmation)
-                {
-                    if (!string.IsNullOrWhiteSpace(confirmationNonce))
-                    {
-                        var confirmation = budgetService.ValidateAndConsumeConfirmation(
-                            confirmationNonce.Trim().ToUpperInvariant(), maxSats, ToolName, renewUrl);
-                        if (confirmation == null)
-                        {
-                            return JsonSerializer.Serialize(new
-                            {
-                                success = false,
-                                error = "Confirmation code is invalid, expired, already used, or does not match THIS " +
-                                        "renewal's amount, tool, and destination. Codes are bound to the exact amount, " +
-                                        "tool, and destination approved — a code cannot be redirected.",
-                                message = "The code may have expired (codes are short-lived), been used already, or been issued " +
-                                          "for a different amount/tool. Request a new one by calling " +
-                                          $"{ToolName} without a confirmationNonce."
-                            });
-                        }
-
-                        Console.Error.WriteLine($"[Lightning Enable] Subscription renewal of {approval.AmountUsd:C} confirmed by the operator's code");
-                    }
-                    else
-                    {
-                        var elicitationConfirmed = await RequestRenewalConfirmationAsync(
-                            server, approval, cancellationToken);
-
-                        if (!elicitationConfirmed)
-                        {
-                            // OUT-OF-BAND CONFIRMATION: the code goes to the human on the CONFIGURED
-                            // approval channel (stderr locally; webhook/file/refuse when hosted) and
-                            // never into this result, so an injected agent can't self-approve.
-                            var dispatch = await budgetService.RequestConfirmationAsync(new ConfirmationRequest
-                            {
-                                AmountSats = maxSats,
-                                AmountUsd = approval.AmountUsd,
-                                ToolName = ToolName,
-                                Description = "Lightning Enable subscription renewal",
-                                Destination = renewUrl,
-                                Title = "SUBSCRIPTION RENEWAL CONFIRMATION REQUIRED",
-                                Summary = $"{ToolName} — up to {approval.AmountUsd:C} ({maxSats:N0} sats)"
-                            }, cancellationToken);
-
-                            if (!dispatch.Delivered)
-                            {
-                                return JsonSerializer.Serialize(new
-                                {
-                                    success = false,
-                                    requiresConfirmation = false,
-                                    confirmationChannel = dispatch.ChannelName,
-                                    error = dispatch.RefusalReason,
-                                    message = "The renewal was REFUSED, not queued for approval — no human can be asked for a " +
-                                              "code on this server. Retrying will not help until the operator changes the configuration.",
-                                    amount = new
-                                    {
-                                        maxSats,
-                                        usd = Math.Round(approval.AmountUsd, 2)
-                                    }
-                                });
-                            }
-
-                            return JsonSerializer.Serialize(new
-                            {
-                                success = false,
-                                requiresConfirmation = true,
-                                confirmationChannel = dispatch.ChannelName,
-                                error = "Subscription renewal requires human confirmation",
-                                message = $"This renewal may cost up to {approval.AmountUsd:C} ({maxSats:N0} sats), above the " +
-                                          $"auto-approve threshold. A confirmation code was {dispatch.OperatorHint} — " +
-                                          "visible to the human operator, NOT to you. Ask the human to read that code and give it to you.",
-                                howToConfirm = "Ask the human operator for the confirmation code, then call " +
-                                               $"{ToolName}(confirmationNonce=\"<code-from-human>\") with the same maxSats.",
-                                expiresInSeconds = dispatch.ExpiresInSeconds,
-                                amount = new
-                                {
-                                    maxSats,
-                                    usd = Math.Round(approval.AmountUsd, 2)
-                                }
-                            });
-                        }
-                    }
-                }
-
-                if (approval.Level == ApprovalLevel.LogAndApprove)
-                {
-                    Console.Error.WriteLine($"[Lightning Enable] Auto-approved subscription renewal: up to {approval.AmountUsd:C} ({maxSats} sats)");
-                }
+                return blocked;
             }
 
             // Ambient payment intent: the durable receipt is written at the wallet seam
@@ -288,23 +203,25 @@ public static class RenewSubscriptionTool
             {
                 // The invoice was paid (fetch.Success implies the paid retry landed) — the paid
                 // marker + receipt signal must survive even a garbled response body.
+                var paymentHash = TryDerivePaymentHash(fetch.L402Token);
                 return JsonSerializer.Serialize(new
                 {
                     success = false,
                     error = "Subscription renewal paid but the server response was not valid JSON.",
                     receipt_written = fetch.PaidAmountSats > 0 ? (bool?)(receiptScope.ReceiptWritten ?? false) : null,
-                    paymentHash = TryDerivePaymentHash(fetch.L402Token),
+                    paymentHash,
                     activation = new { paid = fetch.PaidAmountSats > 0, amountSats = fetch.PaidAmountSats },
                     warning = fetch.PaidAmountSats > 0
-                        ? PaidButFailedWarning(fetch.PaidAmountSats, TryDerivePaymentHash(fetch.L402Token))
+                        ? PaidButFailedWarning(fetch.PaidAmountSats, paymentHash)
                         : null
                 });
             }
 
-            var currentPeriodEnd = GetString(renewal, "currentPeriodEnd");
+            var currentPeriodEnd = FirstPartyPaymentGate.GetString(renewal, "currentPeriodEnd");
             if (string.IsNullOrEmpty(currentPeriodEnd))
             {
-                var paymentHash = GetString(renewal, "paymentHash") ?? TryDerivePaymentHash(fetch.L402Token);
+                var paymentHash = FirstPartyPaymentGate.GetString(renewal, "paymentHash")
+                                  ?? TryDerivePaymentHash(fetch.L402Token);
                 return JsonSerializer.Serialize(new
                 {
                     success = false,
@@ -325,9 +242,10 @@ public static class RenewSubscriptionTool
                 receipt_written = fetch.PaidAmountSats > 0 ? (bool?)(receiptScope.ReceiptWritten ?? false) : null,
                 currentPeriodEnd,
                 paidSats = GetLong(renewal, "paidSats") ?? fetch.PaidAmountSats,
-                paymentHash = GetString(renewal, "paymentHash") ?? TryDerivePaymentHash(fetch.L402Token),
+                paymentHash = FirstPartyPaymentGate.GetString(renewal, "paymentHash")
+                              ?? TryDerivePaymentHash(fetch.L402Token),
                 alreadyCredited,
-                planTier = GetString(renewal, "planTier"),
+                planTier = FirstPartyPaymentGate.GetString(renewal, "planTier"),
                 activation = new
                 {
                     paid = fetch.PaidAmountSats > 0,
@@ -341,14 +259,12 @@ public static class RenewSubscriptionTool
         catch (Exception ex)
         {
             // Redact the configured key AND credential-shaped tokens before the message reaches
-            // the model. receipt_written: null = nothing was paid; true/false = the renewal
-            // moved money (the client can throw after settlement) and the receipt did/didn't land.
-            return JsonSerializer.Serialize(new
-            {
-                success = false,
-                receipt_written = receiptScope?.ReceiptWritten,
-                error = $"Error renewing Lightning Enable subscription: {CreateAccountTool.Scrub(RedactKey(ex.Message, apiKey))}"
-            });
+            // the model. If the wallet seam observed a payment under this call, the shared result
+            // carries activation.paid + a do-not-re-run warning; otherwise the plain error shape.
+            return FirstPartyPaymentGate.ExceptionResult(
+                $"Error renewing Lightning Enable subscription: {CreateAccountTool.Scrub(RedactKey(ex.Message, apiKey))}",
+                receiptScope,
+                "the time of this call");
         }
         finally
         {
@@ -385,7 +301,7 @@ public static class RenewSubscriptionTool
         try
         {
             using var doc = JsonDocument.Parse(errorMessage[start..]);
-            var code = GetString(doc.RootElement, "error");
+            var code = FirstPartyPaymentGate.GetString(doc.RootElement, "error");
             return code != null && ErrorCodeShape.IsMatch(code) ? code : null;
         }
         catch
@@ -406,13 +322,6 @@ public static class RenewSubscriptionTool
         return Convert.ToHexString(SHA256.HashData(Convert.FromHexString(preimage))).ToLowerInvariant();
     }
 
-    private static string? GetString(JsonElement element, string property) =>
-        element.ValueKind == JsonValueKind.Object &&
-        element.TryGetProperty(property, out var value) &&
-        value.ValueKind == JsonValueKind.String
-            ? value.GetString()
-            : null;
-
     private static long? GetLong(JsonElement element, string property) =>
         element.ValueKind == JsonValueKind.Object &&
         element.TryGetProperty(property, out var value) &&
@@ -427,56 +336,4 @@ public static class RenewSubscriptionTool
         value.ValueKind is JsonValueKind.True or JsonValueKind.False
             ? value.GetBoolean()
             : null;
-
-    /// <summary>
-    /// Requests confirmation for an above-threshold renewal via MCP elicitation. Returns
-    /// false when elicitation is unavailable (most clients), so the caller falls back to the
-    /// out-of-band code flow.
-    /// </summary>
-    private static async Task<bool> RequestRenewalConfirmationAsync(
-        McpServer? server,
-        ApprovalCheckResult approval,
-        CancellationToken cancellationToken)
-    {
-        if (server?.ClientCapabilities?.Elicitation == null)
-        {
-            Console.Error.WriteLine($"[Lightning Enable] Subscription renewal of {approval.AmountUsd:C} requires confirmation but elicitation not supported by client");
-            return false;
-        }
-
-        try
-        {
-            var schema = new ElicitRequestParams.RequestSchema
-            {
-                Properties =
-                {
-                    ["approved"] = new ElicitRequestParams.BooleanSchema
-                    {
-                        Description = "Set to true to approve this Lightning Enable subscription renewal payment"
-                    }
-                }
-            };
-
-            var response = await server.ElicitAsync(new ElicitRequestParams
-            {
-                Message = "Lightning Enable Subscription Renewal\n\n" +
-                          $"Price: up to {approval.AmountUsd:C} ({approval.AmountSats:N0} sats)\n\n" +
-                          "Authorize this renewal payment?",
-                RequestedSchema = schema
-            }, cancellationToken);
-
-            if (response.Action == "accept" &&
-                response.Content?.TryGetValue("approved", out var approvedElement) == true)
-            {
-                return approvedElement.ValueKind == JsonValueKind.True;
-            }
-
-            return false;
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"[Lightning Enable] Subscription renewal elicitation failed: {ex.Message}");
-            return false;
-        }
-    }
 }

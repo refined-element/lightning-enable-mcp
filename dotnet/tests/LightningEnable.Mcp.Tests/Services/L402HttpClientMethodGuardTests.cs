@@ -204,6 +204,32 @@ public class L402HttpClientMethodGuardTests
         wallet.Verify(w => w.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
     }
 
+    /// <summary>
+    /// Renewal correctness depends on this: a second renew call on the same client must
+    /// mint and pay a NEW challenge. If the client replayed the first credential, the server
+    /// would answer alreadyCredited and no new period would be bought.
+    /// </summary>
+    [Fact]
+    public async Task PostFirstPartyAuthenticated_SecondCall_DoesNotReplayTheFirstCredential()
+    {
+        // 402 for any request without proof; 200 for any request carrying it.
+        var (client, handler, wallet, budget) = Build(req => req.Headers.Authorization == null
+            ? Challenge()
+            : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"status\":\"active\"}") });
+        ArrangeSuccessfulPayment(wallet, budget);
+
+        var first = await client.PostFirstPartyAuthenticatedAsync(RenewUrl(), "{}", FixtureMerchantKey, maxSats: 1000);
+        var second = await client.PostFirstPartyAuthenticatedAsync(RenewUrl(), "{}", FixtureMerchantKey, maxSats: 1000);
+
+        first.Success.Should().BeTrue();
+        second.Success.Should().BeTrue();
+        second.PaidAmountSats.Should().Be(10, "the second call pays its own invoice");
+        handler.Received.Should().HaveCount(4, "each call is unpaid request + paid retry");
+        handler.Received[2].Headers.Authorization.Should().BeNull(
+            "the second call's first request must not carry the first call's credential");
+        wallet.Verify(w => w.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Exactly(2));
+    }
+
     [Theory]
     [InlineData("https://attacker.example.net/api/merchant/subscription/renew")]
     [InlineData("https://api.lightningenable.com.evil.example/api/merchant/subscription/renew")]

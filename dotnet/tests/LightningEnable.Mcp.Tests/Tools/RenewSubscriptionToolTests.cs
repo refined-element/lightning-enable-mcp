@@ -479,5 +479,37 @@ public class RenewSubscriptionToolTests
         json.GetProperty("success").GetBoolean().Should().BeFalse();
         result.Should().NotContain(FixtureApiKey);
         result.Should().NotContain("otherkey");
+
+        // Nothing was paid (no receipt observed) — the plain error shape, no paid claim.
+        json.TryGetProperty("activation", out _).Should().BeFalse();
+        json.TryGetProperty("warning", out _).Should().BeFalse();
+        json.GetProperty("receipt_written").ValueKind.Should().Be(JsonValueKind.Null);
+    }
+
+    /// <summary>
+    /// The client throws AFTER the wallet paid. The receipt seam
+    /// (ReceiptRecordingWalletService) records its write on the ambient scope during the
+    /// payment — reproduced here through the same internal <c>RecordWrite</c> it calls — so
+    /// the tool must report the payment and tell the agent not to pay again.
+    /// </summary>
+    [Fact]
+    public async Task Renew_ClientThrowsAfterPayment_SurfacesPaidSignal_AndSaysDoNotRetry()
+    {
+        _l402ClientMock
+            .Setup(c => c.PostFirstPartyAuthenticatedAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .Callback(() => PaymentReceiptScope.Current!.RecordWrite(true))
+            .ThrowsAsync(new HttpRequestException($"connection reset after paying with {FixtureApiKey}"));
+
+        var result = await Renew();
+
+        var json = JsonDocument.Parse(result).RootElement;
+        json.GetProperty("success").GetBoolean().Should().BeFalse();
+        json.GetProperty("receipt_written").GetBoolean().Should().BeTrue();
+        json.GetProperty("activation").GetProperty("paid").GetBoolean().Should().BeTrue();
+        json.GetProperty("warning").GetString().Should().Contain("Do NOT re-run")
+            .And.Contain("support@lightningenable.com")
+            .And.Contain("time of this call");
+        result.Should().NotContain(FixtureApiKey);
     }
 }

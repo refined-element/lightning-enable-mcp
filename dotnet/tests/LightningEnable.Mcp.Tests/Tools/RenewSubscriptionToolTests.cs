@@ -512,4 +512,95 @@ public class RenewSubscriptionToolTests
             .And.Contain("time of this call");
         result.Should().NotContain(FixtureApiKey);
     }
+
+    // ----- Paid, then the retry failed in transport (the shape L402HttpClient now returns) -----
+
+    [Fact]
+    public async Task Renew_PaidThenRetryTransportFailure_SurfacesPaidSignal_AndSaysDoNotRetry()
+    {
+        SetupFetch(L402FetchResult.Failed(
+            "https://x/api/merchant/subscription/renew",
+            "Payment succeeded (25000 sats) but the request failed after payment: request failed (connection reset). Do NOT pay again.",
+            statusCode: 0, paidAmountSats: 25_000, l402Token: $"{FixtureMacaroon}:{FixturePreimage}", protocol: "L402"));
+
+        var result = await Renew();
+
+        var json = JsonDocument.Parse(result).RootElement;
+        json.GetProperty("success").GetBoolean().Should().BeFalse();
+        json.GetProperty("activation").GetProperty("paid").GetBoolean().Should().BeTrue();
+        json.GetProperty("activation").GetProperty("amountSats").GetInt64().Should().Be(25_000);
+        json.GetProperty("warning").GetString().Should().Contain("Do NOT re-run");
+        json.GetProperty("paymentHash").GetString().Should().Be(ExpectedPaymentHash());
+        result.Should().NotContain("Nothing was charged").And.NotContain("refused");
+        result.Should().NotContain(FixturePreimage);
+    }
+
+    /// <summary>
+    /// The client reported no amount, but the wallet seam recorded a receipt under this call —
+    /// independent evidence of a payment. The tool must flag it paid without inventing an amount.
+    /// </summary>
+    [Fact]
+    public async Task Renew_FailedWithNoAmountButReceiptRecorded_FlagsPaid_WithoutClaimingAnAmount()
+    {
+        _l402ClientMock
+            .Setup(c => c.PostFirstPartyAuthenticatedAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .Callback(() => PaymentReceiptScope.Current!.RecordWrite(true))
+            .ReturnsAsync(L402FetchResult.Failed("https://x/api/merchant/subscription/renew", "Request timed out", 0, paidAmountSats: 0));
+
+        var result = await Renew();
+
+        var json = JsonDocument.Parse(result).RootElement;
+        json.GetProperty("success").GetBoolean().Should().BeFalse();
+        json.GetProperty("receipt_written").GetBoolean().Should().BeTrue();
+        var activation = json.GetProperty("activation");
+        activation.GetProperty("paid").GetBoolean().Should().BeTrue();
+        activation.TryGetProperty("amountSats", out _).Should().BeFalse("the amount is unknown, so none is claimed");
+        json.GetProperty("warning").GetString().Should().Contain("may have been taken").And.Contain("Do NOT re-run");
+        result.Should().NotContain("Nothing was charged");
+    }
+
+    [Fact]
+    public async Task Renew_UnpaidTransportError_HintIsNeutral_NeverSaysNothingWasCharged()
+    {
+        SetupFetch(L402FetchResult.Failed("https://x/api/merchant/subscription/renew", "Request timed out"));
+
+        var result = await Renew();
+
+        var json = JsonDocument.Parse(result).RootElement;
+        json.GetProperty("activation").GetProperty("paid").GetBoolean().Should().BeFalse();
+        json.GetProperty("hint").GetString().Should().Contain("transport or wallet error")
+            .And.Contain("payment history")
+            .And.NotContain("refused")
+            .And.NotContain("Nothing was charged");
+    }
+
+    [Fact]
+    public async Task Renew_PaidRedirect_ReplacesTheRetryWithTokenAdvice()
+    {
+        SetupFetch(new L402FetchResult
+        {
+            Success = false,
+            Url = "https://x/api/merchant/subscription/renew",
+            StatusCode = 302,
+            RedirectLocation = "https://x/elsewhere",
+            PaidAmountSats = 25_000,
+            L402Token = $"{FixtureMacaroon}:{FixturePreimage}",
+            Protocol = "L402",
+            ErrorMessage = "Payment succeeded (25000 sats). The resource redirected to https://x/elsewhere. " +
+                           "You have ALREADY PAID — do NOT pay again. Retry the redirect target with the returned L402 token."
+        });
+
+        var result = await Renew();
+
+        var json = JsonDocument.Parse(result).RootElement;
+        json.GetProperty("activation").GetProperty("paid").GetBoolean().Should().BeTrue();
+        json.GetProperty("error").GetString().Should().Contain("redirect")
+            .And.Contain("Do NOT pay again")
+            .And.Contain("payment hash")
+            .And.NotContain("Retry the redirect target");
+        json.GetProperty("hint").GetString().Should().Contain("redirected").And.Contain("Do not re-pay");
+        json.GetProperty("warning").GetString().Should().Contain("Do NOT re-run");
+        result.Should().NotContain(FixturePreimage);
+    }
 }

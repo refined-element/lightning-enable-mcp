@@ -65,8 +65,8 @@ public static class RenewSubscriptionTool
         PaymentReceiptScope? receiptScope = null;
         try
         {
-            // The client does NOT refuse a blank key (it would send an empty X-Api-Key), so
-            // the gate lives here, before any invoice is minted.
+            // The client also refuses a blank key, but checking here first gives the agent the
+            // actionable "configure your key" message before any invoice is minted.
             if (apiService == null || !apiService.IsConfigured || string.IsNullOrWhiteSpace(apiKey))
             {
                 return JsonSerializer.Serialize(new
@@ -138,31 +138,44 @@ public static class RenewSubscriptionTool
                 // came back. The spend is ALREADY recorded inside the client; do NOT record again.
                 // What matters is the agent-facing signal: without `paid` and an explicit
                 // do-not-retry, the agent reads a retryable error and pays again.
-                if (fetch.PaidAmountSats > 0)
+                //
+                // Belt-and-braces: the wallet seam's receipt write is independent evidence of a
+                // payment, so it counts even when the client reported no amount (a payment that
+                // MAY have settled is never reported as retryable).
+                if (fetch.PaidAmountSats > 0 || receiptScope.ReceiptWritten != null)
                 {
                     var paymentHash = TryDerivePaymentHash(fetch.L402Token);
+                    var paidRedirect = fetch.RedirectLocation != null;
                     return JsonSerializer.Serialize(new
                     {
                         success = false,
-                        error = scrubbedError,
+                        // The client's paid-redirect text tells the caller to retry with the
+                        // returned token — this tool never returns the token, so replace it.
+                        error = paidRedirect
+                            ? "The subscription renewal was paid, but the server answered with a redirect instead of " +
+                              "confirming it. Do NOT pay again; contact support@lightningenable.com with the payment hash."
+                            : scrubbedError,
                         errorCode,
                         statusCode = fetch.StatusCode,
                         receipt_written = receiptScope.ReceiptWritten ?? false,
                         paymentHash,
-                        activation = new
-                        {
-                            paid = true,
-                            amountSats = fetch.PaidAmountSats
-                        },
+                        activation = PaidActivation(fetch.PaidAmountSats),
                         warning = PaidButFailedWarning(fetch.PaidAmountSats, paymentHash),
-                        hint = fetch.StatusCode == 402
+                        hint = fetch.StatusCode switch
+                        {
                             // Do NOT say "check wallet balance" — the wallet paid; that contradicts
                             // the client's own "do not retry it" guidance.
-                            ? "The renewal invoice was paid but the server did not accept it yet — the payment may still be " +
-                              "in flight, or the wallet settled it without returning a preimage (L402 needs one to prove " +
-                              "payment). Check the payment status with your wallet provider; do not re-pay."
-                            : $"The server answered HTTP {fetch.StatusCode} after the payment (see errorCode and error). " +
-                              "Retrying would pay a new invoice; it would not resubmit this one."
+                            402 => "The renewal invoice was paid but the server did not accept it yet — the payment may still be " +
+                                   "in flight, or the wallet settled it without returning a preimage (L402 needs one to prove " +
+                                   "payment). Check the payment status with your wallet provider; do not re-pay.",
+                            0 => "The payment went out, but the connection failed before the server's answer arrived, so the " +
+                                 "renewal may or may not have been credited. Do not re-pay; contact support with the payment hash.",
+                            _ when paidRedirect =>
+                                "The renewal was paid but the server redirected instead of confirming it. Do not re-pay; " +
+                                "contact support with the payment hash.",
+                            _ => $"The server answered HTTP {fetch.StatusCode} after the payment (see errorCode and error). " +
+                                 "Retrying would pay a new invoice; it would not resubmit this one."
+                        }
                     }, new JsonSerializerOptions { WriteIndented = true });
                 }
 
@@ -186,6 +199,9 @@ public static class RenewSubscriptionTool
                                "balance and configuration, and that maxSats covers the quoted price.",
                         401 => "The Lightning Enable API key was rejected and no payment was made. Check " +
                                "LIGHTNING_ENABLE_API_KEY (or lightningEnableApiKey in ~/.lightning-enable/config.json).",
+                        // No HTTP status: a transport or wallet error, not a server refusal. A
+                        // wallet that timed out may still settle, so never say "nothing was charged".
+                        0 => FirstPartyPaymentGate.TransportErrorHint,
                         _ => "The renewal endpoint refused the request before any payment was made (see errorCode and " +
                              "error). Nothing was charged; retrying will get the same answer until that changes."
                     }
@@ -272,8 +288,15 @@ public static class RenewSubscriptionTool
         }
     }
 
+    // Amount unknown (0) when only the receipt seam saw the payment — then no amount is claimed.
+    private static object PaidActivation(long paidSats) =>
+        paidSats > 0 ? (object)new { paid = true, amountSats = paidSats } : new { paid = true };
+
     private static string PaidButFailedWarning(long paidSats, string? paymentHash) =>
-        $"A payment of {paidSats:N0} sats was taken from your wallet but the renewal did not complete. Do NOT re-run " +
+        (paidSats > 0
+            ? $"A payment of {paidSats:N0} sats was taken from your wallet"
+            : "A payment may have been taken from your wallet") +
+        " but the renewal did not complete. Do NOT re-run " +
         "this tool or you may pay again — the server credits each payment once, and this tool cannot resend the same " +
         "credential. Contact support@lightningenable.com with the payment hash" +
         (paymentHash != null ? $" ({paymentHash})." : " from your wallet's payment record.");

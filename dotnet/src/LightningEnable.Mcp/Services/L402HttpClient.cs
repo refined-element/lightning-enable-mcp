@@ -63,9 +63,7 @@ public class L402HttpClient : IL402HttpClient
         // origin may receive a POST, and nothing about that origin comes from a tool argument.
         if (!FirstPartyOrigin.IsFirstParty(url))
         {
-            return Task.FromResult(L402FetchResult.Failed(url,
-                "Refused: POST is only permitted to the configured Lightning Enable API origin " +
-                $"({FirstPartyOrigin.ResolveApiBaseUrl()}). No request was sent and nothing was paid."));
+            return Task.FromResult(NotFirstPartyRefusal(url));
         }
 
         return FetchCoreAsync(url, "POST", null, jsonBody, maxSats, cancellationToken);
@@ -78,14 +76,21 @@ public class L402HttpClient : IL402HttpClient
         long maxSats = 1000,
         CancellationToken cancellationToken = default)
     {
+        // A blank key would go out as an empty X-Api-Key and the server would mint (and the
+        // wallet could pay) a challenge for an unauthenticated caller. Refuse before anything
+        // is sent — ahead of the origin check, since there is nothing to protect yet.
+        if (string.IsNullOrWhiteSpace(apiKey))
+        {
+            return Task.FromResult(L402FetchResult.Failed(url,
+                "No merchant API key configured; nothing was sent."));
+        }
+
         // Same origin gate as PostFirstPartyAsync, checked BEFORE the key is touched: the
         // merchant API key must never leave for any origin other than the operator-configured
         // Lightning Enable API. The refusal text names the origin, never the key.
         if (!FirstPartyOrigin.IsFirstParty(url))
         {
-            return Task.FromResult(L402FetchResult.Failed(url,
-                "Refused: POST is only permitted to the configured Lightning Enable API origin " +
-                $"({FirstPartyOrigin.ResolveApiBaseUrl()}). No request was sent and nothing was paid."));
+            return Task.FromResult(NotFirstPartyRefusal(url));
         }
 
         // CreateRequest applies this headers JSON to the initial request AND the paid retry,
@@ -94,6 +99,12 @@ public class L402HttpClient : IL402HttpClient
         var headers = JsonSerializer.Serialize(new Dictionary<string, string> { ["X-Api-Key"] = apiKey });
         return FetchCoreAsync(url, "POST", headers, jsonBody, maxSats, cancellationToken);
     }
+
+    /// <summary>Shared refusal for a first-party POST aimed at any other origin.</summary>
+    private static L402FetchResult NotFirstPartyRefusal(string url) =>
+        L402FetchResult.Failed(url,
+            "Refused: POST is only permitted to the configured Lightning Enable API origin " +
+            $"({FirstPartyOrigin.ResolveApiBaseUrl()}). No request was sent and nothing was paid.");
 
     private async Task<L402FetchResult> FetchCoreAsync(
         string url,
@@ -454,7 +465,31 @@ public class L402HttpClient : IL402HttpClient
             retryRequest.Headers.Authorization = new AuthenticationHeaderValue(parsed.L402!.Scheme, authToken);
         }
 
-        var retryResponse = await _httpClient.SendAsync(retryRequest, cancellationToken);
+        // PAID, THEN THE RETRY FAILED. The invoice settled above, so an exception from here
+        // on (timeout, connection reset, caller cancellation) must NOT fall through to
+        // FetchCoreAsync's generic catch — that returns PaidAmountSats = 0 and no token, and
+        // every caller would tell the agent nothing was charged and invite a second payment.
+        // A payment that may have settled is never reported as retryable.
+        HttpResponseMessage retryResponse;
+        try
+        {
+            retryResponse = await _httpClient.SendAsync(retryRequest, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            // The money moved: the history entry is recorded here (no status code — no
+            // response arrived) exactly as the normal path below records it.
+            _historyService.RecordPayment(
+                url: url,
+                method: method,
+                amountSats: amountSats.Value,
+                invoice: parsed.Invoice!,
+                preimageHex: paymentResult.PreimageHex,
+                l402Token: authToken,
+                statusCode: null);
+            return PaidRetryFailed(url, amountSats.Value, authToken, protocol,
+                DescribeRetryFailure(ex, cancellationToken), statusCode: 0);
+        }
 
         // Payment-Receipt (draft-00): parsed tolerantly — a missing or malformed receipt
         // must never fail the successful payment. Safe to surface: it carries only the
@@ -514,7 +549,18 @@ public class L402HttpClient : IL402HttpClient
             };
         }
 
-        var content = await retryResponse.Content.ReadAsStringAsync(cancellationToken);
+        // Same rule for the body read: the payment is recorded above, so a read failure
+        // keeps the paid amount and token rather than escaping to the generic catch.
+        string content;
+        try
+        {
+            content = await retryResponse.Content.ReadAsStringAsync(cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            return PaidRetryFailed(url, amountSats.Value, authToken, protocol,
+                DescribeRetryFailure(ex, cancellationToken), (int)retryResponse.StatusCode);
+        }
         var contentType = retryResponse.Content.Headers.ContentType?.MediaType;
 
         if (retryResponse.IsSuccessStatusCode)
@@ -524,6 +570,27 @@ public class L402HttpClient : IL402HttpClient
 
         return L402FetchResult.Failed(url, $"Request failed after payment: HTTP {(int)retryResponse.StatusCode}: {content}", (int)retryResponse.StatusCode, amountSats.Value, authToken, protocol);
     }
+
+    /// <summary>
+    /// The paid retry threw after the invoice settled. Carries the paid amount and the
+    /// credential so every caller reports the payment and warns the agent off a re-pay.
+    /// </summary>
+    private static L402FetchResult PaidRetryFailed(
+        string url, long amountSats, string? authToken, string protocol, string reason, int statusCode) =>
+        L402FetchResult.Failed(url,
+            $"Payment succeeded ({amountSats} sats) but the request failed after payment: {reason}. Do NOT pay again.",
+            statusCode: statusCode,
+            paidAmountSats: amountSats,
+            l402Token: authToken,
+            protocol: protocol);
+
+    private static string DescribeRetryFailure(Exception ex, CancellationToken cancellationToken) => ex switch
+    {
+        OperationCanceledException when cancellationToken.IsCancellationRequested => "the request was cancelled",
+        OperationCanceledException => "the request timed out",
+        HttpRequestException http => $"request failed ({http.Message})",
+        _ => $"unexpected error ({ex.Message})"
+    };
 
     private static HttpRequestMessage CreateRequest(string url, string method, string? headers, string? body)
     {

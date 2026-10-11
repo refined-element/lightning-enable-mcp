@@ -605,6 +605,96 @@ public class CreateAccountToolTests : IDisposable
         json.TryGetProperty("warning", out _).Should().BeFalse();
     }
 
+    // ----- Paid, then the retry failed in transport (the shape L402HttpClient now returns) -----
+
+    private void SetupPostFirstParty(L402FetchResult result) =>
+        _l402ClientMock
+            .Setup(c => c.PostFirstPartyAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(result);
+
+    [Fact]
+    public async Task CreateAccount_PaidThenRetryTransportFailure_SurfacesPaidSignal_AndSaysDoNotRetry()
+    {
+        SetupPostFirstParty(L402FetchResult.Failed(
+            "https://x/api/signup/l402",
+            "Payment succeeded (100 sats) but the request failed after payment: request failed (connection reset). Do NOT pay again.",
+            statusCode: 0, paidAmountSats: 100, l402Token: "macaroon:preimage", protocol: "L402"));
+
+        var result = await CreateAccountTool.CreateLightningEnableAccount(
+            email: TestEmail, l402Client: _l402ClientMock.Object, configService: _configServiceMock.Object);
+
+        var json = JsonDocument.Parse(result).RootElement;
+        json.GetProperty("success").GetBoolean().Should().BeFalse();
+        json.GetProperty("activation").GetProperty("paid").GetBoolean().Should().BeTrue();
+        json.GetProperty("activation").GetProperty("amountSats").GetInt64().Should().Be(100);
+        json.GetProperty("warning").GetString().Should().Contain("Do NOT re-run").And.Contain(TestEmail);
+        result.Should().NotContain("before any payment was made");
+    }
+
+    [Fact]
+    public async Task CreateAccount_FailedWithNoAmountButReceiptRecorded_FlagsPaid_WithoutClaimingAnAmount()
+    {
+        _l402ClientMock
+            .Setup(c => c.PostFirstPartyAsync(
+                It.IsAny<string>(), It.IsAny<string>(), It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .Callback(() => PaymentReceiptScope.Current!.RecordWrite(true))
+            .ReturnsAsync(L402FetchResult.Failed("https://x/api/signup/l402", "Request timed out", 0, paidAmountSats: 0));
+
+        var result = await CreateAccountTool.CreateLightningEnableAccount(
+            email: TestEmail, l402Client: _l402ClientMock.Object, configService: _configServiceMock.Object);
+
+        var json = JsonDocument.Parse(result).RootElement;
+        json.GetProperty("success").GetBoolean().Should().BeFalse();
+        json.GetProperty("receipt_written").GetBoolean().Should().BeTrue();
+        var activation = json.GetProperty("activation");
+        activation.GetProperty("paid").GetBoolean().Should().BeTrue();
+        activation.TryGetProperty("amountSats", out _).Should().BeFalse("the amount is unknown, so none is claimed");
+        json.GetProperty("warning").GetString().Should().Contain("may have been taken").And.Contain("Do NOT re-run");
+    }
+
+    [Fact]
+    public async Task CreateAccount_UnpaidTransportError_HintIsNeutral()
+    {
+        SetupPostFirstParty(L402FetchResult.Failed("https://x/api/signup/l402", "Request timed out"));
+
+        var result = await CreateAccountTool.CreateLightningEnableAccount(
+            email: TestEmail, l402Client: _l402ClientMock.Object, configService: _configServiceMock.Object);
+
+        var json = JsonDocument.Parse(result).RootElement;
+        json.GetProperty("activation").GetProperty("paid").GetBoolean().Should().BeFalse();
+        json.GetProperty("hint").GetString().Should().Contain("transport or wallet error")
+            .And.Contain("payment history")
+            .And.NotContain("before any payment was made");
+    }
+
+    [Fact]
+    public async Task CreateAccount_PaidRedirect_ReplacesTheRetryWithTokenAdvice()
+    {
+        SetupPostFirstParty(new L402FetchResult
+        {
+            Success = false,
+            Url = "https://x/api/signup/l402",
+            StatusCode = 302,
+            RedirectLocation = "https://x/elsewhere",
+            PaidAmountSats = 100,
+            L402Token = "macaroon:preimage",
+            Protocol = "L402",
+            ErrorMessage = "Payment succeeded (100 sats). The resource redirected to https://x/elsewhere. " +
+                           "You have ALREADY PAID — do NOT pay again. Retry the redirect target with the returned L402 token."
+        });
+
+        var result = await CreateAccountTool.CreateLightningEnableAccount(
+            email: TestEmail, l402Client: _l402ClientMock.Object, configService: _configServiceMock.Object);
+
+        var json = JsonDocument.Parse(result).RootElement;
+        json.GetProperty("activation").GetProperty("paid").GetBoolean().Should().BeTrue();
+        json.GetProperty("error").GetString().Should().Contain("redirect")
+            .And.Contain("Do NOT pay again")
+            .And.NotContain("Retry the redirect target");
+        json.GetProperty("hint").GetString().Should().Contain("redirected").And.Contain("Do not re-pay");
+    }
+
     public void Dispose()
     {
         foreach (var f in _tempFiles)

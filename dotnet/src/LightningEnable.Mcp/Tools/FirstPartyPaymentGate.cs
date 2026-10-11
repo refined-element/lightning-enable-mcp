@@ -185,6 +185,15 @@ internal static class FirstPartyPaymentGate
     }
 
     /// <summary>
+    /// Hint for an unpaid failure that carries no HTTP status: a transport or wallet error,
+    /// not a server refusal. Never says "refused" or "nothing was charged" — a wallet that
+    /// timed out can still settle the payment afterwards.
+    /// </summary>
+    public const string TransportErrorHint =
+        "A transport or wallet error occurred before the server answered (see error). Check your wallet's " +
+        "payment history before retrying — an NWC wallet that timed out can still settle the payment.";
+
+    /// <summary>
     /// The catch-block result for a tool that may have paid before it threw.
     /// <paramref name="safeError"/> must already be scrubbed/redacted by the caller.
     ///

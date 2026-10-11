@@ -166,34 +166,53 @@ public static class CreateAccountTool
                 // This fires for EVERY failure status, not just 409: a duplicate email (409),
                 // a pending payment, and a settled-without-preimage payment (both 402) all
                 // spend real sats.
-                if (fetch.PaidAmountSats > 0)
+                //
+                // Belt-and-braces: the wallet seam's receipt write is independent evidence of a
+                // payment, so it counts even when the client reported no amount — then no amount
+                // is claimed, only that a payment may have been taken.
+                if (fetch.PaidAmountSats > 0 || receiptScope.ReceiptWritten != null)
                 {
+                    var amountKnown = fetch.PaidAmountSats > 0;
+                    var paidRedirect = fetch.RedirectLocation != null;
                     return JsonSerializer.Serialize(new
                     {
                         success = false,
-                        error = scrubbedError,
+                        // The client's paid-redirect text tells the caller to retry with the
+                        // returned token — this tool never returns the token, so replace it.
+                        error = paidRedirect
+                            ? "The account activation was paid, but the server answered with a redirect instead of " +
+                              "returning the account. Do NOT pay again; contact support@lightningenable.com with the " +
+                              "payment hash from your wallet's payment record."
+                            : scrubbedError,
                         statusCode = fetch.StatusCode,
                         receipt_written = receiptScope.ReceiptWritten ?? false,
-                        activation = new
+                        activation = amountKnown
+                            ? (object)new { paid = true, amountSats = fetch.PaidAmountSats }
+                            : new { paid = true },
+                        warning = (amountKnown
+                                      ? $"A payment of {fetch.PaidAmountSats:N0} sats was taken from your wallet"
+                                      : "A payment may have been taken from your wallet") +
+                                  " but account activation did not complete. Do NOT re-run this tool or you may pay the " +
+                                  $"activation fee again — contact support@lightningenable.com with this email ({email}) to recover the account.",
+                        hint = fetch.StatusCode switch
                         {
-                            paid = true,
-                            amountSats = fetch.PaidAmountSats
-                        },
-                        warning = $"A payment of {fetch.PaidAmountSats:N0} sats was taken from your wallet but account " +
-                                  "activation did not complete. Do NOT re-run this tool or you may pay the activation " +
-                                  $"fee again — contact support@lightningenable.com with this email ({email}) to recover the account.",
-                        hint = fetch.StatusCode == 409
                             // Do NOT offer "service is unavailable" here — we know money moved and
                             // the server told us why. Suggesting an outage invites the retry loop.
-                            ? "This email already has a Lightning Enable account. The activation fee is charged before " +
-                              "the server checks for an existing account (it mints the challenge without a pre-check so " +
-                              "signup cannot be used to probe which emails are registered). Retrying with this email will " +
-                              "pay again and fail again. Sign in with the existing account, or use a different email."
+                            409 => "This email already has a Lightning Enable account. The activation fee is charged before " +
+                                   "the server checks for an existing account (it mints the challenge without a pre-check so " +
+                                   "signup cannot be used to probe which emails are registered). Retrying with this email will " +
+                                   "pay again and fail again. Sign in with the existing account, or use a different email.",
+                            0 => "The payment went out, but the connection failed before the server's answer arrived, so the " +
+                                 "account may or may not have been created. Do not re-pay; contact support with this email.",
+                            _ when paidRedirect =>
+                                "The activation fee was paid but the server redirected instead of returning the account. " +
+                                "Do not re-pay; contact support with this email.",
                             // Do NOT say "check wallet balance" here — the wallet did its job and paid.
                             // That hint contradicts the client's own "do not retry it" guidance.
-                            : "The activation fee was paid but the account did not activate — the payment may still be in " +
-                              "flight, or the wallet settled it without returning a preimage (L402 needs one to prove " +
-                              "payment). Check the payment status with your wallet provider; do not re-pay."
+                            _ => "The activation fee was paid but the account did not activate — the payment may still be in " +
+                                 "flight, or the wallet settled it without returning a preimage (L402 needs one to prove " +
+                                 "payment). Check the payment status with your wallet provider; do not re-pay."
+                        }
                     }, new JsonSerializerOptions { WriteIndented = true });
                 }
 
@@ -210,11 +229,16 @@ public static class CreateAccountTool
                         paid = false,
                         amountSats = 0
                     },
-                    hint = fetch.StatusCode == 402
-                        ? "The L402 activation challenge could not be completed and no payment was made. Check wallet " +
-                          "balance and configuration."
-                        : "The signup endpoint returned an error before any payment was made. The email may already have " +
-                          "an account, or the service is unavailable."
+                    hint = fetch.StatusCode switch
+                    {
+                        402 => "The L402 activation challenge could not be completed and no payment was made. Check wallet " +
+                               "balance and configuration.",
+                        // No HTTP status: a transport or wallet error, not a server refusal. A
+                        // wallet that timed out may still settle, so never say "no payment was made".
+                        0 => FirstPartyPaymentGate.TransportErrorHint,
+                        _ => "The signup endpoint returned an error before any payment was made. The email may already have " +
+                             "an account, or the service is unavailable."
+                    }
                 });
             }
 

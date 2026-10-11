@@ -284,4 +284,104 @@ public class L402HttpClientMethodGuardTests
         result.PaidAmountSats.Should().Be(10);
         result.ErrorMessage.Should().NotBeNullOrWhiteSpace().And.NotContain(FixtureMerchantKey);
     }
+
+    // ----- Blank merchant key (refused before anything is sent) -----
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task PostFirstPartyAuthenticated_BlankApiKey_IsRefusedBeforeNetworkOrWallet(string? apiKey)
+    {
+        var (client, handler, wallet, budget) = Build(_ => Challenge());
+
+        var result = await client.PostFirstPartyAuthenticatedAsync(RenewUrl(), "{}", apiKey!);
+
+        result.Success.Should().BeFalse();
+        result.PaidAmountSats.Should().Be(0);
+        result.ErrorMessage.Should().Be("No merchant API key configured; nothing was sent.");
+        handler.Received.Should().BeEmpty("a blank key must never go out as an empty X-Api-Key");
+        wallet.Verify(w => w.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        budget.Verify(b => b.TryReserveAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    // ----- Paid, then the retry throws (funds-safety: never report a settled payment as unpaid) -----
+
+    public static IEnumerable<object[]> RetryFailures() => new[]
+    {
+        new object[] { new HttpRequestException("connection reset by peer"), "connection reset by peer" },
+        new object[] { new TaskCanceledException("timeout"), "timed out" },
+        new object[] { new IOException("stream closed"), "stream closed" },
+    };
+
+    /// <summary>
+    /// The wallet settled the invoice, then the paid retry threw. The generic catch in
+    /// FetchCoreAsync used to turn that into PaidAmountSats = 0 with no token, so every caller
+    /// told the agent nothing was charged. The paid amount and credential must survive.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(RetryFailures))]
+    public async Task PostFirstPartyAuthenticated_RetryThrowsAfterPayment_KeepsPaidAmountAndToken(Exception failure, string reason)
+    {
+        var calls = 0;
+        var (client, handler, wallet, budget) = Build(_ => ++calls == 1 ? Challenge() : throw failure);
+        ArrangeSuccessfulPayment(wallet, budget);
+
+        var result = await client.PostFirstPartyAuthenticatedAsync(RenewUrl(), "{}", FixtureMerchantKey, maxSats: 1000);
+
+        result.Success.Should().BeFalse();
+        result.PaidAmountSats.Should().Be(10);
+        result.L402Token.Should().Be($"YWJjZGVm:{FixturePreimage}");
+        result.Protocol.Should().Be("L402");
+        result.StatusCode.Should().Be(0);
+        result.ErrorMessage.Should().Contain("Payment succeeded (10 sats)")
+            .And.Contain(reason)
+            .And.Contain("Do NOT pay again")
+            .And.NotContain(FixtureMerchantKey);
+        handler.Received.Should().HaveCount(2);
+        wallet.Verify(w => w.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
+        budget.Verify(b => b.CommitReservation(It.IsAny<string>(), 10), Times.Once);
+    }
+
+    [Fact]
+    public async Task PostFirstPartyAuthenticated_CallerCancelsDuringPaidRetry_StillReportsThePayment()
+    {
+        using var cts = new CancellationTokenSource();
+        var calls = 0;
+        var (client, _, wallet, budget) = Build(_ =>
+        {
+            if (++calls == 1) return Challenge();
+            cts.Cancel();
+            throw new OperationCanceledException(cts.Token);
+        });
+        ArrangeSuccessfulPayment(wallet, budget);
+
+        var result = await client.PostFirstPartyAuthenticatedAsync(
+            RenewUrl(), "{}", FixtureMerchantKey, maxSats: 1000, cancellationToken: cts.Token);
+
+        result.Success.Should().BeFalse();
+        result.PaidAmountSats.Should().Be(10, "cancellation after settlement must not erase the payment");
+        result.L402Token.Should().Be($"YWJjZGVm:{FixturePreimage}");
+        result.ErrorMessage.Should().Contain("cancelled").And.Contain("Do NOT pay again");
+    }
+
+    /// <summary>
+    /// Same shared path for the generic GET fetch (access_l402_resource / settle_agent_service).
+    /// </summary>
+    [Fact]
+    public async Task FetchWithL402_RetryThrowsAfterPayment_KeepsPaidAmountAndToken()
+    {
+        var calls = 0;
+        var (client, _, wallet, budget) = Build(_ => ++calls == 1
+            ? Challenge()
+            : throw new HttpRequestException("connection reset by peer"));
+        ArrangeSuccessfulPayment(wallet, budget);
+
+        var result = await client.FetchWithL402Async("https://api.example.com/things", "GET", maxSats: 1000);
+
+        result.Success.Should().BeFalse();
+        result.PaidAmountSats.Should().Be(10);
+        result.L402Token.Should().NotBeNullOrEmpty();
+        result.ErrorMessage.Should().Contain("Do NOT pay again");
+    }
 }

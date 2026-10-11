@@ -24,6 +24,8 @@ Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-ena
   both the initial request and the paid L402 retry (a blank key is refused before anything
   is sent), and `ILightningEnableApiService.ApiKey` (null when unconfigured).
 - Python: a read-only `LightningEnableApiClient.api_key` property.
+- Python server now performs the same best-effort startup version check as the .NET server
+  (stderr only).
 
 ### Changed
 

@@ -132,9 +132,11 @@ public class L402ProducerSurfaceTests
     [Fact]
     public async Task TheToolCountIsUnchanged()
     {
-        // New actions, not new tools — the advertised inventory must not grow.
+        // New actions, not new tools — the producer actions must not grow the advertised
+        // inventory. (17 = the 16 at the time plus renew_lightning_enable_subscription,
+        // which is a separate merchant-billing tool, not a producer action.)
         await using var host = await McpToolHost.StartAsync(ToolProfile.Standard);
-        (await host.AdvertisedNamesAsync()).Should().HaveCount(16);
+        (await host.AdvertisedNamesAsync()).Should().HaveCount(17);
     }
 
     [Fact]

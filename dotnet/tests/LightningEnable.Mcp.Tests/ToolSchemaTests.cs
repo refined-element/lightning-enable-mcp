@@ -51,6 +51,7 @@ public class ToolSchemaTests
     {
         "pay_invoice", "access_l402_resource", "pay_l402_challenge", "test_l402_payment",
         "create_lightning_enable_account", "wallet_ops", "agent_services",
+        "renew_lightning_enable_subscription",
     };
 
     private static readonly IReadOnlySet<string> PureReadTools = new HashSet<string>

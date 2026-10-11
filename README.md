@@ -309,7 +309,7 @@ The satoshi **ceilings** still bound the spend. But a ceiling says *"never more 
 
 ## Tools
 
-**Canonical inventory: 16 tools — 14 free (out of the box, just a wallet) + 2 that require `LIGHTNING_ENABLE_API_KEY`** (an [Agentic Commerce subscription](https://lightningenable.com)). This table is the single source of truth every advertised count derives from — it is pinned to the code by the tool-inventory guard tests in both ports (drift fails CI).
+**Canonical inventory: 17 tools — 14 free (out of the box, just a wallet) + 3 that require `LIGHTNING_ENABLE_API_KEY`** (an [Agentic Commerce subscription](https://lightningenable.com)). This table is the single source of truth every advertised count derives from — it is pinned to the code by the tool-inventory guard tests in both ports (drift fails CI).
 
 Five of these are *action* tools: pass `action` (or `source` for `receipts`) to pick the operation. They replace 16 single-purpose tools whose schemas used to be loaded into the agent's context on every session — see [Tool profiles and old tool names](#tool-profiles-and-old-tool-names). **Every old name still works.**
 
@@ -333,8 +333,9 @@ Five of these are *action* tools: pass `action` (or `source` for `receipts`) to 
 | `create_lightning_enable_account` | Free | Self-bootstrap signup: pay ~100 sats, get a merchant API key |
 | `l402_producer` | Agentic Commerce | `action`: `configure_receive`, `status`, `create_proxy`, `add_endpoint`, `publish`, `list_challenges`, `create`, `verify` — the whole seller side |
 | `agent_services` | Agentic Commerce | `action`: `discover`, `request`, `settle`, `publish`, `unpublish`, `attest`, `reputation` |
+| `renew_lightning_enable_subscription` | Agentic Commerce | Pay the server-priced L402 invoice that buys or extends 30 days of Agentic Commerce for the configured API key (`maxSats` defaults to 50,000) |
 
-`create_lightning_enable_account` is free and *self-provisions* the API key the 2 gated tools need — an agent with a wallet pays a ~100-sat activation fee and unlocks them on the spot.
+`create_lightning_enable_account` is free and *self-provisions* the API key the 3 gated tools need — an agent with a wallet pays a ~100-sat activation fee and unlocks them on the spot.
 
 Every tool carries MCP annotations: a human-readable title and an explicit `readOnlyHint`, plus `destructiveHint` on anything that can spend the wallet. Action tools are annotated for their **widest** action, so `budget` is not read-only (because `tighten` writes) and `wallet_ops` is destructive (because `send_onchain` is).
 

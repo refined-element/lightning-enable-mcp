@@ -59,6 +59,7 @@ public static class ToolProfiles
         "wallet_ops",
         "l402_producer",
         "agent_services",
+        "renew_lightning_enable_subscription",
     };
 
     /// <summary>

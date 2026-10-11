@@ -182,7 +182,7 @@ Add to your Claude Desktop configuration file:
 
 ## Available Tools
 
-The canonical inventory is the [Tools table in the root README](https://github.com/refined-element/lightning-enable-mcp#tools): 16 tools (14 free / 2 gated), five of which take an `action` argument. Set `LIGHTNING_ENABLE_TOOL_PROFILE=lite` for a 6-tool surface, or `full` to also advertise the pre-consolidation names.
+The canonical inventory is the [Tools table in the root README](https://github.com/refined-element/lightning-enable-mcp#tools): 17 tools (14 free / 3 gated), five of which take an `action` argument. Set `LIGHTNING_ENABLE_TOOL_PROFILE=lite` for a 6-tool surface, or `full` to also advertise the pre-consolidation names.
 
 > Some sections below still use pre-consolidation tool names (`get_payment_history`, `configure_budget`, `get_btc_price`, …). They all still work as deprecated aliases; the [old name → new call table](https://github.com/refined-element/lightning-enable-mcp#old-name--new-call) gives the replacement for each.
 
@@ -198,6 +198,16 @@ Self-bootstrapping signup: activate a Lightning Enable account with a tiny Light
 - `confirmationNonce`: Human-relayed confirmation code (only for an above-threshold fee)
 
 **Returns:** `{ success, apiKey, merchantId, planTier, subscriptionStatus, trialEndsAt, dashboardUrl, activation, config }`
+
+### renew_lightning_enable_subscription
+
+Pay for your own Agentic Commerce plan over Lightning: buys or extends 30 days for the account behind the configured `LIGHTNING_ENABLE_API_KEY`. The server sets a fixed price in sats and answers with an L402 challenge; the tool pays it and retries with the credential (the API key is sent on both requests and never appears in a tool result). Requires the API key and a preimage-capable wallet. Above-threshold renewals require a human-supplied confirmation code (same out-of-band flow as `pay_l402_challenge`). If a payment is taken but the renewal does not complete, the result carries `activation.paid: true` and a do-not-retry warning with the payment hash for support.
+
+**Parameters:**
+- `maxSats`: Maximum sats to pay; the renewal is refused before payment if the quoted price is higher. Default: 50000
+- `confirmationNonce`: Human-relayed confirmation code (only for an above-threshold renewal)
+
+**Returns:** `{ success, receipt_written, currentPeriodEnd, paidSats, paymentHash, alreadyCredited, planTier, activation, message }`. Errors carry `error`, `errorCode` (the server's code, such as `stripe_subscription_active`), `statusCode`, and `activation`.
 
 ### pay_invoice
 

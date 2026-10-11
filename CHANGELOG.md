@@ -3,6 +3,43 @@
 All notable changes to the Lightning Enable MCP server are documented here.
 Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-enable-mcp`).
 
+## [2.1.0] — 2026-10-11
+
+### Added
+
+- **`renew_lightning_enable_subscription` tool, both ports.** Pays the L402 challenge from
+  `POST /api/merchant/subscription/renew` to buy or extend 30 days of the Agentic Commerce
+  plan for the merchant account behind the configured API key. It needs
+  `LIGHTNING_ENABLE_API_KEY` and a wallet that returns a preimage, and it refuses a missing
+  or blank key before any invoice is minted. The server sets the price and the period; the
+  tool only caps what it will pay (`maxSats` / `max_sats`). Above the auto-approve threshold
+  the payment needs a human confirmation code, delivered out of band and bound to this tool
+  and the renew URL; the code never appears in a tool result. If a payment was taken but
+  the call then failed, the result reports `activation.paid`, the payment hash (never the
+  preimage), and a warning not to re-run the tool and to contact
+  support@lightningenable.com. The configured key is redacted from every error, log line,
+  and result.
+- .NET: `IL402HttpClient.PostFirstPartyAuthenticatedAsync`, a first-party POST with the same
+  origin gate as `PostFirstPartyAsync` that sends the merchant API key as `X-Api-Key` on
+  both the initial request and the paid L402 retry, and `ILightningEnableApiService.ApiKey`
+  (null when unconfigured).
+- Python: a read-only `LightningEnableApiClient.api_key` property.
+
+### Changed
+
+- The `standard` profile now advertises 17 tools: 14 that need no Lightning Enable API key
+  and 3 gated on `LIGHTNING_ENABLE_API_KEY`. The `full` profile advertises 33.
+- .NET: `create_lightning_enable_account` and `renew_lightning_enable_subscription` share an
+  internal `FirstPartyPaymentGate` (approval check, confirmation nonce, MCP elicitation, and
+  confirmation-channel dispatch). `create_lightning_enable_account` results are unchanged.
+
+### Fixed
+
+- .NET: when `create_lightning_enable_account` or `renew_lightning_enable_subscription`
+  throws after the wallet recorded a payment, the result now reports `activation.paid` with
+  a warning not to re-run the tool and to contact support@lightningenable.com, instead of a
+  plain error that invited a second payment.
+
 ## [2.0.5] — 2026-09-25
 
 ### Security

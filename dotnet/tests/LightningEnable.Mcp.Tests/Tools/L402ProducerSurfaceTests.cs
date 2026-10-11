@@ -213,6 +213,7 @@ public class L402ProducerSurfaceTests
     private sealed class ConfiguredStub : LightningEnable.Mcp.Services.ILightningEnableApiService
     {
         public bool IsConfigured => true;
+        public string? ApiKey => "fixture-string-stub-credential";
         public string BaseUrl => "https://api.example.test";
 
         private static Task<T> Unreachable<T>() =>

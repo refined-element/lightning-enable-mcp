@@ -71,6 +71,30 @@ public class L402HttpClient : IL402HttpClient
         return FetchCoreAsync(url, "POST", null, jsonBody, maxSats, cancellationToken);
     }
 
+    public Task<L402FetchResult> PostFirstPartyAuthenticatedAsync(
+        string url,
+        string jsonBody,
+        string apiKey,
+        long maxSats = 1000,
+        CancellationToken cancellationToken = default)
+    {
+        // Same origin gate as PostFirstPartyAsync, checked BEFORE the key is touched: the
+        // merchant API key must never leave for any origin other than the operator-configured
+        // Lightning Enable API. The refusal text names the origin, never the key.
+        if (!FirstPartyOrigin.IsFirstParty(url))
+        {
+            return Task.FromResult(L402FetchResult.Failed(url,
+                "Refused: POST is only permitted to the configured Lightning Enable API origin " +
+                $"({FirstPartyOrigin.ResolveApiBaseUrl()}). No request was sent and nothing was paid."));
+        }
+
+        // CreateRequest applies this headers JSON to the initial request AND the paid retry,
+        // so the merchant-authed endpoint sees X-Api-Key on both. The headers string is never
+        // logged or folded into any L402FetchResult message.
+        var headers = JsonSerializer.Serialize(new Dictionary<string, string> { ["X-Api-Key"] = apiKey });
+        return FetchCoreAsync(url, "POST", headers, jsonBody, maxSats, cancellationToken);
+    }
+
     private async Task<L402FetchResult> FetchCoreAsync(
         string url,
         string method,

@@ -17,6 +17,14 @@ public interface ILightningEnableApiService
     bool IsConfigured { get; }
 
     /// <summary>
+    /// The merchant API key (env <c>LIGHTNING_ENABLE_API_KEY</c>, else the config file), or
+    /// <c>null</c> when unconfigured. Exposed only so a tool can hand it to
+    /// <see cref="IL402HttpClient.PostFirstPartyAuthenticatedAsync"/> for a merchant-authed
+    /// first-party L402 endpoint. Never log it or put it in a tool result.
+    /// </summary>
+    string? ApiKey { get; }
+
+    /// <summary>
     /// The Lightning Enable API this service talks to, with no trailing slash. Used to turn
     /// the proxy-relative paths the API returns into URLs an agent can actually call.
     /// </summary>
@@ -189,6 +197,9 @@ public class LightningEnableApiService : ILightningEnableApiService
     }
 
     public bool IsConfigured => !string.IsNullOrEmpty(_apiKey);
+
+    /// <inheritdoc />
+    public string? ApiKey => IsConfigured ? _apiKey : null;
 
     /// <inheritdoc />
     public string BaseUrl => _baseUrl;

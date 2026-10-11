@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using FluentAssertions;
+using LightningEnable.Mcp.Models;
 using LightningEnable.Mcp.Services;
 using Moq;
 
@@ -132,5 +133,129 @@ public class L402HttpClientMethodGuardTests
         handler.Received.Should().BeEmpty();
         wallet.Verify(w => w.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
         budget.Verify(b => b.TryReserveAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    // ----- Authenticated first-party POST (merchant-authed L402 endpoints) -----
+
+    // Letters-only fixture: never a real credential, and no gitleaks generic-api-key hit.
+    private const string FixtureMerchantKey = "fixture-string-merchant-credential";
+
+    private const string FixturePreimage = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    private static string RenewUrl() => FirstPartyOrigin.ResolveApiBaseUrl() + "/api/merchant/subscription/renew";
+
+    private static string? HeaderValue(HttpRequestMessage request, string name) =>
+        request.Headers.TryGetValues(name, out var values) ? values.Single() : null;
+
+    private static void ArrangeSuccessfulPayment(Mock<IWalletService> wallet, Mock<IBudgetService> budget)
+    {
+        wallet.Setup(w => w.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new NwcPaymentResult { Success = true, PreimageHex = FixturePreimage });
+        budget.Setup(b => b.TryReserveAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync((long amt, CancellationToken _) => SpendReservationResult.Reserved("res", amt));
+        budget.Setup(b => b.CommitReservation(It.IsAny<string>(), It.IsAny<long>()));
+        budget.Setup(b => b.RecordPaymentTime());
+    }
+
+    [Fact]
+    public async Task PostFirstPartyAuthenticated_ToConfiguredOrigin_SendsApiKeyOnFirstRequest()
+    {
+        var (client, handler, _, _) = Build(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{\"status\":\"active\"}")
+        });
+
+        var result = await client.PostFirstPartyAuthenticatedAsync(RenewUrl(), "{}", FixtureMerchantKey);
+
+        result.Success.Should().BeTrue();
+        var sent = handler.Received.Should().ContainSingle().Subject;
+        sent.Method.Should().Be(HttpMethod.Post);
+        HeaderValue(sent, "X-Api-Key").Should().Be(FixtureMerchantKey);
+        sent.Content!.Headers.ContentType!.MediaType.Should().Be("application/json");
+    }
+
+    [Fact]
+    public async Task PostFirstPartyAuthenticated_PaidRetry_CarriesApiKeyAndL402Authorization()
+    {
+        var calls = 0;
+        var (client, handler, wallet, budget) = Build(_ => ++calls == 1
+            ? Challenge()
+            : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{\"status\":\"active\"}") });
+        ArrangeSuccessfulPayment(wallet, budget);
+
+        var result = await client.PostFirstPartyAuthenticatedAsync(RenewUrl(), "{}", FixtureMerchantKey, maxSats: 1000);
+
+        result.Success.Should().BeTrue();
+        result.PaidAmountSats.Should().Be(10);
+        handler.Received.Should().HaveCount(2);
+
+        var first = handler.Received[0];
+        first.Method.Should().Be(HttpMethod.Post);
+        HeaderValue(first, "X-Api-Key").Should().Be(FixtureMerchantKey);
+        first.Headers.Authorization.Should().BeNull("the initial request carries no payment proof");
+
+        var retry = handler.Received[1];
+        retry.Method.Should().Be(HttpMethod.Post);
+        HeaderValue(retry, "X-Api-Key").Should().Be(FixtureMerchantKey,
+            "the merchant-authed endpoint must see the key on the paid retry too");
+        retry.Headers.Authorization.Should().NotBeNull();
+        retry.Headers.Authorization!.Scheme.Should().Be("L402");
+        retry.Headers.Authorization.Parameter.Should().Be($"YWJjZGVm:{FixturePreimage}");
+        wallet.Verify(w => w.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Once);
+    }
+
+    [Theory]
+    [InlineData("https://attacker.example.net/api/merchant/subscription/renew")]
+    [InlineData("https://api.lightningenable.com.evil.example/api/merchant/subscription/renew")]
+    [InlineData("http://api.lightningenable.com/api/merchant/subscription/renew")]
+    [InlineData("not a url")]
+    [InlineData("")]
+    public async Task PostFirstPartyAuthenticated_ToAnyOtherOrigin_IsRefusedBeforeNetworkOrWallet(string url)
+    {
+        var (client, handler, wallet, budget) = Build(_ => Challenge());
+
+        var result = await client.PostFirstPartyAuthenticatedAsync(url, "{}", FixtureMerchantKey);
+
+        result.Success.Should().BeFalse();
+        result.PaidAmountSats.Should().Be(0);
+        result.ErrorMessage.Should().NotBeNullOrWhiteSpace().And.Contain("Lightning Enable API origin");
+        result.ErrorMessage.Should().NotContain(FixtureMerchantKey);
+        handler.Received.Should().BeEmpty("the key must never be sent to a non-first-party origin");
+        wallet.Verify(w => w.PayInvoiceAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()), Times.Never);
+        budget.Verify(b => b.TryReserveAsync(It.IsAny<long>(), It.IsAny<CancellationToken>()), Times.Never);
+    }
+
+    [Fact]
+    public async Task PostFirstPartyAuthenticated_ServerError_DoesNotEchoApiKeyInErrorMessage()
+    {
+        var (client, handler, _, _) = Build(_ => new HttpResponseMessage(HttpStatusCode.InternalServerError)
+        {
+            Content = new StringContent("internal error")
+        });
+
+        var result = await client.PostFirstPartyAuthenticatedAsync(RenewUrl(), "{}", FixtureMerchantKey);
+
+        result.Success.Should().BeFalse();
+        result.StatusCode.Should().Be(500);
+        result.ErrorMessage.Should().NotBeNullOrWhiteSpace().And.Contain("HTTP 500");
+        result.ErrorMessage.Should().NotContain(FixtureMerchantKey);
+        handler.Received.Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task PostFirstPartyAuthenticated_ServerErrorAfterPayment_DoesNotEchoApiKeyInErrorMessage()
+    {
+        var calls = 0;
+        var (client, _, wallet, budget) = Build(_ => ++calls == 1
+            ? Challenge()
+            : new HttpResponseMessage(HttpStatusCode.InternalServerError) { Content = new StringContent("internal error") });
+        ArrangeSuccessfulPayment(wallet, budget);
+
+        var result = await client.PostFirstPartyAuthenticatedAsync(RenewUrl(), "{}", FixtureMerchantKey);
+
+        result.Success.Should().BeFalse();
+        result.StatusCode.Should().Be(500);
+        result.PaidAmountSats.Should().Be(10);
+        result.ErrorMessage.Should().NotBeNullOrWhiteSpace().And.NotContain(FixtureMerchantKey);
     }
 }

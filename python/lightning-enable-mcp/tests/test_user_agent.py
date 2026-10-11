@@ -36,7 +36,7 @@ def test_no_source_file_hard_codes_a_user_agent_version():
     offenders = [
         str(path.relative_to(_SRC))
         for path in _SRC.rglob("*.py")
-        if re.search(r"[\"']LightningEnable-MCP(-Python)?/[0-9]", path.read_text(encoding="utf-8"))
+        if re.search(r"LightningEnable-MCP(-Python)?/[0-9]", path.read_text(encoding="utf-8"))
     ]
     assert offenders == [], f"use lightning_enable_mcp._version instead: {offenders}"
 

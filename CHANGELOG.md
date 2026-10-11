@@ -41,6 +41,8 @@ Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-ena
 
 ### Fixed
 
+- Pin `bitstring<5`: bitstring 5.0 removed `ConstBitStream`, which `bolt11` still imports,
+  breaking fresh installs on Python 3.12+.
 - .NET: when `create_lightning_enable_account` or `renew_lightning_enable_subscription`
   throws after the wallet recorded a payment, the result now reports `activation.paid` with
   a warning not to re-run the tool and to contact support@lightningenable.com, instead of a

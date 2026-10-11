@@ -37,6 +37,7 @@ public class Program
             try
             {
                 using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+                http.DefaultRequestHeaders.TryAddWithoutValidation("User-Agent", UserAgent.Value);
                 var apiUrl = Environment.GetEnvironmentVariable("LIGHTNING_ENABLE_API_URL")
                     ?? "https://api.lightningenable.com";
                 var response = await http.GetStringAsync($"{apiUrl}/api/mcp/version-check?currentVersion={currentVersion}");

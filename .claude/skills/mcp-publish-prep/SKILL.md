@@ -10,6 +10,7 @@ Prepare the MCP package for a new release. Use $ARGUMENTS for the new version nu
 1. **Bump version in BOTH files** (CRITICAL — must be simultaneous):
    - `dotnet/src/LightningEnable.Mcp/LightningEnable.Mcp.csproj` — update `<Version>`
    - `python/lightning-enable-mcp/pyproject.toml` — update `version`
+   - `dotnet/src/LightningEnable.Mcp/Services/UserAgent.cs` — update `FallbackVersion` (`UserAgentTests` fails on drift)
    - These MUST match. CI/CD publishes both from the same version.
 
 2. **Validate `server.json`:**

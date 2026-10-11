@@ -22,7 +22,7 @@ internal static class UserAgent
     /// <summary>The package version, without any <c>+commit</c> source-revision suffix.</summary>
     public static string Version { get; } = ResolveVersion(typeof(UserAgent).Assembly);
 
-    /// <summary>The full header value, for example <c>LightningEnable-MCP/2.1.0</c>.</summary>
+    /// <summary>The full header value: <c>LightningEnable-MCP/&lt;version&gt;</c>.</summary>
     public static string Value { get; } = $"{ProductToken}/{Version}";
 
     internal static string ResolveVersion(Assembly assembly)

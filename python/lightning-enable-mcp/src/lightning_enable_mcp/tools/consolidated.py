@@ -282,7 +282,8 @@ AGENT_SERVICES_TOOL = Tool(
                 "description": (
                     "discover: search listings. request: ask for a service. "
                     "settle: PAY an agreement's L402 endpoint. publish: list your "
-                    "service. unpublish: remove it. attest: review a finished "
+                    "service once; to change it, unpublish then publish. "
+                    "unpublish: remove it. attest: review a finished "
                     "agreement. reputation: read reviews. Pass only the arguments "
                     "tagged with your action."
                 ),

@@ -174,7 +174,12 @@ Or if installed via pip, replace `"command": "uvx", "args": ["lightning-enable-m
   "mcpServers": {
     "lightning-enable": {
       "command": "docker",
-      "args": ["run", "--rm", "-i", "refinedelement/lightning-enable-mcp:latest"],
+      "args": [
+        "run", "--rm", "-i",
+        "-e", "NWC_CONNECTION_STRING",
+        "-v", "/Users/you/.lightning-enable:/home/mcpuser/.lightning-enable",
+        "refinedelement/lightning-enable-mcp:latest"
+      ],
       "env": {
         "NWC_CONNECTION_STRING": "nostr+walletconnect://..."
       }
@@ -182,6 +187,10 @@ Or if installed via pip, replace `"command": "uvx", "args": ["lightning-enable-m
   }
 }
 ```
+
+`docker run` doesn't pass your environment into the container on its own. Each `-e NAME` with no value forwards that one variable from the `env` block, so add an `-e` pair for every variable you set there (for example `"-e", "STRIKE_API_KEY"` or `"-e", "LIGHTNING_ENABLE_API_KEY"`).
+
+The `-v` mount shares your `~/.lightning-enable` folder (spending limits, API key, and receipt log) with the container. Replace `/Users/you` with your home directory; the config file doesn't expand `~`. Without the mount, the server runs on defaults and forgets its receipts when the container exits. The container runs as a non-root user (`mcpuser`), so on Linux that user must be able to read the mounted folder.
 
 ## Available Tools
 

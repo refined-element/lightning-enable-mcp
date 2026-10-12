@@ -117,8 +117,7 @@ Add to your `claude_desktop_config.json`:
 {
   "mcpServers": {
     "lightning-enable": {
-      "command": "dotnet",
-      "args": ["tool", "run", "lightning-enable-mcp"],
+      "command": "lightning-enable-mcp",
       "env": {
         "STRIKE_API_KEY": "your-strike-api-key"
       }
@@ -126,6 +125,8 @@ Add to your `claude_desktop_config.json`:
   }
 }
 ```
+
+`dotnet tool install -g LightningEnable.Mcp` puts the `lightning-enable-mcp` command on your `PATH`. If Claude Desktop can't find it, set `command` to the full path: `"C:\\Users\\<you>\\.dotnet\\tools\\lightning-enable-mcp.exe"` on Windows (JSON needs the doubled backslashes), `/Users/<you>/.dotnet/tools/lightning-enable-mcp` on macOS, or `/home/<you>/.dotnet/tools/lightning-enable-mcp` on Linux. The config file doesn't expand environment variables such as `%USERPROFILE%` or `$HOME`.
 
 **Python:**
 ```json
@@ -313,7 +314,7 @@ The satoshi **ceilings** still bound the spend. But a ceiling says *"never more 
 
 Five of these are *action* tools: pass `action` (or `source` for `receipts`) to pick the operation. They replace 16 single-purpose tools whose schemas used to be loaded into the agent's context on every session — see [Tool profiles and old tool names](#tool-profiles-and-old-tool-names). **Every old name still works.**
 
-> **ASA availability note.** `agent_services` with `action` `discover`, `settle` or `unpublish` works against the hosted API today, as do `l402_producer`'s `create` and `verify`. The agent-to-agent coordination actions — `publish`, `request`, `attest`, `reputation` — use the agent capability backend, which is **not yet enabled on the hosted Lightning Enable API** (calls there currently return an error) and are in preview. Marketplace listings are published today via the Lightning Enable dashboard / L402 proxy pipeline.
+> **ASA availability note.** Against the hosted Lightning Enable API, `agent_services` actions `discover`, `request`, `settle`, `publish`, `unpublish`, and `reputation` work. `attest` is refused, because the hosted API has no route that accepts attestations, so you can't leave a review through it. See [Agent Service Agreements](#agent-service-agreements-the-agent_services-tool).
 
 | Tool | Access | What it does |
 |------|--------|--------------|
@@ -487,10 +488,12 @@ Payouts settle on **your** wallet. Lightning Enable does not hold the funds.
 Agent-to-agent commerce on Nostr, behind one tool. Pass `action` to pick the operation.
 `agent_services` requires `LIGHTNING_ENABLE_API_KEY` (an [Agentic Commerce subscription](https://lightningenable.com)); `action="settle"` additionally spends your wallet balance, subject to budget limits.
 
+The hosted Lightning Enable API refuses `attest`, because it has no route that accepts attestations, so you can't leave a review through it; `discover`, `request`, `settle`, `publish`, `unpublish`, and `reputation` work.
+
 | Action | Description |
 |--------|-------------|
 | discover | Search for agent capabilities by category, hashtag, or keyword |
-| publish | Publish your agent's services to the Nostr network (kind 38400) |
+| publish | Publish your agent's services to the Nostr network (kind 38400). Publish once: each call creates a new listing and L402 proxy. To change a listing, `unpublish` it and `publish` again, or edit it in the Lightning Enable dashboard |
 | unpublish | Take a published listing down: retire the L402 proxy and emit a NIP-09 removal |
 | request | Request a service from another agent (kind 38401) |
 | settle | Pay for an agent service via L402 Lightning settlement |
@@ -502,7 +505,7 @@ Agent-to-agent commerce on Nostr, behind one tool. Pass `action` to pick the ope
 1. **Discover** — `agent_services(action="discover", category="translation")` finds agents offering translation
 2. **Request** — `agent_services(action="request", capability_event_id=..., budget_sats=100)` sends a service request
 3. **Settle** — `agent_services(action="settle", l402_endpoint=...)` pays via Lightning and receives the result
-4. **Review** — `agent_services(action="attest", subject_pubkey=..., agreement_id=..., rating=5)` builds on-protocol reputation
+4. **Review** — `agent_services(action="attest", subject_pubkey=..., agreement_id=..., rating=5)` builds on-protocol reputation (the hosted API refuses this action)
 
 For dynamic pricing, providers use `l402_producer(action="create")` to generate invoices at the agreed price. Requesters pay and providers verify with `l402_producer(action="verify")`.
 

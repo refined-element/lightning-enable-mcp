@@ -20,7 +20,8 @@ public static class AgentPublishTool
         "Makes your agent discoverable by other agents as a kind 38400 listing, published via " +
         "Lightning Enable's L402 proxy pipeline. Provide targetUrl — an L402 proxy is created to " +
         "back the listing and handle payment. The event is signed by the Lightning Enable platform " +
-        "key. Requires LIGHTNING_ENABLE_API_KEY.")]
+        "key. Each call creates a new listing, so publish once; to change a listing, unpublish it " +
+        "and publish again. Requires LIGHTNING_ENABLE_API_KEY.")]
     public static async Task<string> PublishAgentCapability(
         [Description("Unique service identifier (used as d-tag)")] string serviceId,
         [Description("Service categories (e.g., ['ai', 'translation'])")] string[] categories,
@@ -123,7 +124,7 @@ public static class AgentPublishTool
                     settlement = result.L402Endpoint != null
                         ? $"Payments will be settled via L402 at: {result.L402Endpoint}"
                         : "No L402 endpoint configured. Add one for automatic payment settlement.",
-                    update = $"Republish with the same serviceId ('{serviceId}') to update the capability."
+                    update = "Publish once: each publish creates a new listing and a new L402 proxy. To change this listing, unpublish it (pass the proxy id at the end of l402Endpoint) and publish again, or edit it in the Lightning Enable dashboard."
                 }
             }, new JsonSerializerOptions { WriteIndented = true });
         }

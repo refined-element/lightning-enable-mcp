@@ -58,7 +58,8 @@ public static class AgentServicesTool
     public static async Task<string> AgentServices(
         [Description(
             "discover: search listings. request: ask for a service. settle: PAY the "
-            + "agreement L402 endpoint. publish: list your service. unpublish: remove it. "
+            + "agreement L402 endpoint. publish: list your service once; to change it, "
+            + "unpublish then publish. unpublish: remove it. "
             + "attest: review a finished agreement. reputation: read reviews. Pass only "
             + "the arguments tagged with your action.")]
         AgentServicesAction action,

@@ -134,13 +134,14 @@ Add to your Claude Desktop configuration file:
 **macOS:** `~/Library/Application Support/Claude/claude_desktop_config.json`
 **Linux:** `~/.config/claude/claude_desktop_config.json`
 
+The examples below run the `lightning-enable-mcp` command that `dotnet tool install -g LightningEnable.Mcp` puts on your `PATH`. If Claude Desktop can't find it, set `command` to the full path: `"C:\\Users\\<you>\\.dotnet\\tools\\lightning-enable-mcp.exe"` on Windows (JSON needs the doubled backslashes), `/Users/<you>/.dotnet/tools/lightning-enable-mcp` on macOS, or `/home/<you>/.dotnet/tools/lightning-enable-mcp` on Linux. The config file doesn't expand environment variables such as `%USERPROFILE%` or `$HOME`.
+
 **Using Strike:**
 ```json
 {
   "mcpServers": {
     "lightning-enable": {
-      "command": "dotnet",
-      "args": ["tool", "run", "lightning-enable-mcp"],
+      "command": "lightning-enable-mcp",
       "env": {
         "STRIKE_API_KEY": "your-strike-api-key"
       }
@@ -154,8 +155,7 @@ Add to your Claude Desktop configuration file:
 {
   "mcpServers": {
     "lightning-enable": {
-      "command": "dotnet",
-      "args": ["tool", "run", "lightning-enable-mcp"],
+      "command": "lightning-enable-mcp",
       "env": {
         "NWC_CONNECTION_STRING": "nostr+walletconnect://your-pubkey?relay=wss://relay.getalby.com/v1&secret=your-secret"
       }
@@ -169,8 +169,7 @@ Add to your Claude Desktop configuration file:
 {
   "mcpServers": {
     "lightning-enable": {
-      "command": "dotnet",
-      "args": ["tool", "run", "lightning-enable-mcp"],
+      "command": "lightning-enable-mcp",
       "env": {
         "LND_REST_HOST": "localhost:8080",
         "LND_MACAROON_HEX": "your-admin-macaroon-in-hex"

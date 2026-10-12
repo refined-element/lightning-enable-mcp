@@ -122,7 +122,11 @@ async def publish_agent_capability(
                     if endpoint
                     else "No L402 endpoint configured. Add one for automatic payment settlement."
                 ),
-                "update": f"Republish with the same serviceId ('{service_id}') to update the capability.",
+                "update": (
+                    "Publish once: each publish creates a new listing and a new L402 proxy. "
+                    "To change this listing, unpublish it (pass the proxy id at the end of "
+                    "l402Endpoint) and publish again, or edit it in the Lightning Enable dashboard."
+                ),
             },
         }, indent=2)
 
@@ -142,7 +146,9 @@ PUBLISH_AGENT_CAPABILITY_TOOL = Tool(
         "Makes your agent discoverable by other agents as a kind 38400 listing, "
         "published via Lightning Enable's L402 proxy pipeline. Provide target_url — "
         "an L402 proxy is created to back the listing and handle payment. The event "
-        "is signed by the Lightning Enable platform key. Requires LIGHTNING_ENABLE_API_KEY."
+        "is signed by the Lightning Enable platform key. Each call creates a new "
+        "listing, so publish once; to change a listing, unpublish it and publish "
+        "again. Requires LIGHTNING_ENABLE_API_KEY."
     ),
     inputSchema={
         "type": "object",

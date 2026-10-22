@@ -17,7 +17,7 @@ internal static class UserAgent
     /// version from the package version, so this is a last resort. A test fails if it drifts
     /// from the csproj package version.
     /// </summary>
-    internal const string FallbackVersion = "2.1.0"; // bump with <Version>
+    internal const string FallbackVersion = "2.1.1"; // bump with <Version>
 
     /// <summary>The package version, without any <c>+commit</c> source-revision suffix.</summary>
     public static string Version { get; } = ResolveVersion(typeof(UserAgent).Assembly);

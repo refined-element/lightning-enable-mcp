@@ -187,6 +187,9 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
 
+      - name: Bootstrap trusted pip and certifi (hash-pinned, before any install)
+        uses: ./.github/actions/trusted-pip
+
       - name: Build and publish .NET MCP
         if: github.event_name == 'push' || github.event.inputs.publish_nuget == 'true'
         run: |
@@ -213,7 +216,7 @@ jobs:
           TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}
         run: |
           cd python/lightning-enable-mcp
-          pip install build twine
+          python -m pip install build twine
           python -m build
 
           echo "=== Publishing to PyPI ==="
@@ -237,6 +240,22 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+
+      - name: Wait for the release version to be installable from PyPI
+        env:
+          VERSION: ${{ needs.verify-versions.outputs.version }}
+        run: |
+          # The Dockerfile now installs lightning-enable-mcp==VERSION (passed as a build
+          # arg) instead of whatever PyPI resolves at build time, so the image provably
+          # contains the release it is tagged with. PyPI is eventually consistent right
+          # after publish-packages pushes, so wait (bounded) for the exact version first.
+          for i in $(seq 1 20); do
+            status=$(curl -s -o /dev/null -w "%{http_code}" "https://pypi.org/pypi/lightning-enable-mcp/$VERSION/json")
+            if [ "$status" = "200" ]; then echo "PyPI has $VERSION"; exit 0; fi
+            echo "PyPI: attempt $i/20 returned $status, waiting 15s..."; sleep 15
+          done
+          echo "::error::lightning-enable-mcp $VERSION never became installable from PyPI; refusing to build an image for it. (A workflow_dispatch with publish_pypi=false and publish_docker=true needs the version on PyPI already: publish PyPI first.)"
+          exit 1
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -262,6 +281,8 @@ jobs:
         with:
           context: python/lightning-enable-mcp
           push: true
+          build-args: |
+            MCP_VERSION=${{ needs.verify-versions.outputs.version }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha

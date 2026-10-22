@@ -1,5 +1,7 @@
 # Docker Compose for local testing
-# Usage: docker-compose run --rm lightning-enable-mcp
+# Usage: docker compose run --rm lightning-enable-mcp
+# Needs Compose v2 (BuildKit): the Dockerfile uses `ADD --checksum` and RUN heredocs,
+# which the legacy python `docker-compose` v1 cannot build.
 
 version: '3.8'
 

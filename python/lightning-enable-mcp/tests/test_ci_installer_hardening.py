@@ -24,7 +24,7 @@ PIN_CERTIFI = "2026.10.19"
 PIN_CERTIFI_SHA256 = "42d35340cc5b9ba78e818ddbff0c5b1c2b779de448a340fd1b989f5fa8670e1b"
 ACTION_USE = "./.github/actions/trusted-pip"
 # `pip install ...`, `pip3 install`, `python -m pip install`; group 1 is set only for the -m form.
-PIP_INSTALL = re.compile(r"(?<![\w./-])(python(?:3)?\s+-m\s+)?pip(?:3)?\s+install\b")
+PIP_INSTALL = re.compile(r"(?<![\w./-])(python(?:3(?:\.\d+)?)?\s+-m\s+)?pip(?:3)?\s+install\b")
 
 
 def repo_root() -> Path:
@@ -35,13 +35,19 @@ def repo_root() -> Path:
     for parent in here.parents:
         if (parent / ".github").is_dir():
             return parent
-    raise AssertionError("no .github directory above this test file")
+    # An sdist ships tests/ without .github: nothing to check there, and a collection
+    # error here would abort the whole suite for downstream packagers.
+    pytest.skip("not a repository checkout (no .github directory above the test)", allow_module_level=True)
 
 
 ROOT = repo_root()
 WORKFLOWS = sorted((ROOT / ".github" / "workflows").glob("*.yml"))
 ACTION = ROOT / ".github" / "actions" / "trusted-pip" / "action.yml"
-DOCKERFILES = sorted(p for p in ROOT.rglob("Dockerfile") if ".git" not in p.parts)
+DOCKERFILES = sorted(
+    p for p in ROOT.rglob("Dockerfile")
+    if not any(part.startswith(".") or part in {"node_modules", "site-packages", "venv"}
+               for part in p.relative_to(ROOT).parts)
+)
 
 
 def split_jobs(text: str) -> dict[str, list[str]]:
@@ -52,15 +58,20 @@ def split_jobs(text: str) -> dict[str, list[str]]:
         if re.match(r"^jobs:\s*$", line):
             in_jobs, current = True, None
             continue
+        if line.lstrip().startswith("#") or not line.strip():
+            if current:
+                jobs[current].append(line)
+            continue  # comments and blank lines never open or close a job
         if in_jobs and re.match(r"^\S", line):  # another top-level key ends the jobs map
             in_jobs = False
         if not in_jobs:
             continue
-        m = re.match(r"^  ([A-Za-z0-9_-]+):\s*$", line)
+        m = re.match(r"^  ['\"]?([A-Za-z0-9_.-]+)['\"]?:\s*$", line)
         if m:
             current = m.group(1)
             jobs[current] = []
             continue
+        assert re.match(r"^\s{3,}", line), f"unexpected job-level line (two-space indentation expected): {line!r}"
         if current:
             jobs[current].append(line)
     return jobs
@@ -74,7 +85,7 @@ def is_command(line: str) -> bool:
 
 def first_index(lines: list[str], pattern) -> int | None:
     for i, line in enumerate(lines):
-        if not isinstance(pattern, str) and not is_command(line):
+        if not is_command(line):
             continue
         if isinstance(pattern, str):
             if pattern in line:
@@ -116,6 +127,13 @@ def test_trusted_pip_action_exists_with_expected_pins():
     assert "pip._vendor import certifi" in text, "must verify pip's vendored CA bundle, not only certifi"
     assert "https://files.pythonhosted.org/" in text
     assert "http://" not in text, "plain-http URL in the bootstrap"
+    assert "--proto-redir '=https'" in text, "redirects must stay on https"
+    assert 'if [ "$actual" != "$2" ]' in text and "SHA256 mismatch" in text, "the hash check itself is gone"
+    # The pins appear in both steps (composite actions have no action-wide env); both copies must agree.
+    assert text.count(f"PIN_PIP_VERSION: '{PIN_PIP}'") == 2
+    assert text.count(f"PIN_CERTIFI_VERSION: '{PIN_CERTIFI}'") == 2
+    assert not re.search(r"PIN_PIP_VERSION: '(?!" + re.escape(PIN_PIP) + ")", text)
+    assert not re.search(r"PIN_CERTIFI_VERSION: '(?!" + re.escape(PIN_CERTIFI) + ")", text)
 
 
 @pytest.mark.parametrize("wf,job,lines", PIP_JOBS, ids=PIP_JOB_IDS)
@@ -128,6 +146,17 @@ def test_every_pip_installing_job_bootstraps_first(wf, job, lines):
     setup = first_index(lines, "actions/setup-python@")
     if setup is not None:
         assert setup < boot, f"{wf.name} job '{job}': bootstrap must run after setup-python"
+    # The bootstrap step must be unconditional: an `if:` or `continue-on-error` on it would let
+    # the job fall through to the runner's pip. Inspect the whole step block around the uses line.
+    start = boot
+    while start > 0 and not re.match(r"^\s*- ", lines[start]):
+        start -= 1
+    end = boot + 1
+    while end < len(lines) and not re.match(r"^\s*- ", lines[end]):
+        end += 1
+    block = "\n".join(lines[start:end])
+    assert not re.search(r"^\s*(if|continue-on-error):", block, re.M), (
+        f"{wf.name} job '{job}': the bootstrap step must not be conditional")
 
 
 @pytest.mark.parametrize("wf,job,lines", PIP_JOBS, ids=PIP_JOB_IDS)
@@ -142,7 +171,11 @@ def test_pip_is_invoked_through_the_bootstrapped_interpreter(wf, job, lines):
 @pytest.mark.parametrize("wf,job,lines", PIP_JOBS, ids=PIP_JOB_IDS)
 def test_no_floating_pip_self_upgrade(wf, job, lines):
     for line in filter(is_command, lines):
-        assert not re.search(r"pip install (-U |--upgrade )pip\b", line), (
+        m = PIP_INSTALL.search(line)
+        if not m:
+            continue
+        args = line[m.end():]
+        assert not re.search(r"(^|\s)[\"']?pip[\"']?(\s|$|[=<>~!])", args), (
             f"{wf.name} job '{job}': a floating pip self-upgrade undoes the pin: {line.strip()}")
 
 

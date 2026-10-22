@@ -242,8 +242,9 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Wait for the release version to be installable from PyPI
+        env:
+          VERSION: ${{ needs.verify-versions.outputs.version }}
         run: |
-          VERSION="${{ needs.verify-versions.outputs.version }}"
           # The Dockerfile now installs lightning-enable-mcp==VERSION (passed as a build
           # arg) instead of whatever PyPI resolves at build time, so the image provably
           # contains the release it is tagged with. PyPI is eventually consistent right
@@ -253,7 +254,7 @@ jobs:
             if [ "$status" = "200" ]; then echo "PyPI has $VERSION"; exit 0; fi
             echo "PyPI: attempt $i/20 returned $status, waiting 15s..."; sleep 15
           done
-          echo "::error::lightning-enable-mcp $VERSION never became installable from PyPI; refusing to build an image for it."
+          echo "::error::lightning-enable-mcp $VERSION never became installable from PyPI; refusing to build an image for it. (A workflow_dispatch with publish_pypi=false and publish_docker=true needs the version on PyPI already: publish PyPI first.)"
           exit 1
 
       - name: Set up Docker Buildx

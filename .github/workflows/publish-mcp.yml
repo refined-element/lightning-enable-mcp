@@ -249,10 +249,15 @@ jobs:
           # arg) instead of whatever PyPI resolves at build time, so the image provably
           # contains the release it is tagged with. PyPI is eventually consistent right
           # after publish-packages pushes, so wait (bounded) for the exact version first.
+          # Poll the SIMPLE index, the one pip actually resolves from: the first 2.1.1
+          # release saw the JSON API answer 200 while /simple/ was still stale and the
+          # build failed with "No matching distribution found".
+          WHEEL="lightning_enable_mcp-${VERSION}-py3-none-any.whl"
           for i in $(seq 1 20); do
-            status=$(curl -s -o /dev/null -w "%{http_code}" "https://pypi.org/pypi/lightning-enable-mcp/$VERSION/json")
-            if [ "$status" = "200" ]; then echo "PyPI has $VERSION"; exit 0; fi
-            echo "PyPI: attempt $i/20 returned $status, waiting 15s..."; sleep 15
+            if curl -fsS -H 'Cache-Control: no-cache' "https://pypi.org/simple/lightning-enable-mcp/" | grep -q "$WHEEL"; then
+              echo "PyPI simple index lists $WHEEL"; exit 0
+            fi
+            echo "PyPI simple index: attempt $i/20 does not list $WHEEL yet, waiting 15s..."; sleep 15
           done
           echo "::error::lightning-enable-mcp $VERSION never became installable from PyPI; refusing to build an image for it. (A workflow_dispatch with publish_pypi=false and publish_docker=true needs the version on PyPI already: publish PyPI first.)"
           exit 1

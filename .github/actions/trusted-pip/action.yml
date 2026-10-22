@@ -1,0 +1,97 @@
+name: Trusted pip bootstrap
+description: >
+  Replaces the runner's pre-installed pip and certifi with pinned, SHA256-verified
+  wheels BEFORE any dependency is installed, then proves the versions the job will
+  actually use. The runner's own pip is never executed: pip is imported from inside
+  the verified wheel, so even a compromised or outdated pre-installed pip/CA bundle
+  cannot influence what gets installed. Bump the PIN_* values together when a new
+  pip/certifi is approved.
+
+runs:
+  using: composite
+  steps:
+    - name: Install pinned pip and certifi from hash-verified wheels
+      shell: bash
+      env:
+        PIN_PIP_VERSION: '26.2.2'
+        PIN_PIP_URL: https://files.pythonhosted.org/packages/3f/06/3e4420302363fbb71be3c7f35ce042f54bfca330e3e66b3a2e3c4cca579f/pip-26.2.2-py3-none-any.whl
+        PIN_PIP_SHA256: fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70
+        PIN_CERTIFI_VERSION: '2026.10.19'
+        PIN_CERTIFI_URL: https://files.pythonhosted.org/packages/c4/51/29046e48f693c54e5b7412216d447a1d8362c9653148d98c02cdf65fa733/certifi-2026.10.19-py3-none-any.whl
+        PIN_CERTIFI_SHA256: 42d35340cc5b9ba78e818ddbff0c5b1c2b779de448a340fd1b989f5fa8670e1b
+      run: |
+        set -euo pipefail
+        # Create the scratch dir through Python so the path is native on Windows runners
+        # too (Git Bash's `mktemp -d` returns /tmp/..., which a Windows python cannot open).
+        tmp="$(python -c 'import tempfile; print(tempfile.mkdtemp(prefix="trusted-pip-"))')"
+        trap 'python -c "import shutil, sys; shutil.rmtree(sys.argv[1], ignore_errors=True)" "$tmp"' EXIT
+
+        fetch() {
+          # fetch <url> <sha256> <dest>
+          # Integrity comes from the pinned SHA256, not from the download channel.
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            --retry 3 --retry-delay 2 --output "$3" "$1"
+          actual="$(python -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$3")"
+          if [ "$actual" != "$2" ]; then
+            echo "::error::SHA256 mismatch for $(basename "$3"): expected $2, got $actual"
+            exit 1
+          fi
+          echo "verified $(basename "$3") sha256=$actual"
+        }
+
+        pip_wheel="$tmp/pip-$PIN_PIP_VERSION-py3-none-any.whl"
+        certifi_wheel="$tmp/certifi-$PIN_CERTIFI_VERSION-py3-none-any.whl"
+        fetch "$PIN_PIP_URL" "$PIN_PIP_SHA256" "$pip_wheel"
+        fetch "$PIN_CERTIFI_URL" "$PIN_CERTIFI_SHA256" "$certifi_wheel"
+
+        # Run pip FROM the verified wheel so the runner's pre-installed pip is never used,
+        # not even to replace itself: the wheel goes first on PYTHONPATH (ahead of
+        # site-packages), and `python -m pip` is the form pip on Windows requires before it
+        # will replace itself. Prove the import really came from the wheel before using it.
+        loaded="$(PYTHONPATH="$pip_wheel" python -c 'import pip, os; print(os.path.normcase(os.path.abspath(pip.__file__)))')"
+        wheel_norm="$(python -c 'import os, sys; print(os.path.normcase(os.path.abspath(sys.argv[1])))' "$pip_wheel")"
+        case "$loaded" in
+          "$wheel_norm"*) echo "pip imported from the verified wheel" ;;
+          *) echo "::error::pip was imported from $loaded, not from the verified wheel"; exit 1 ;;
+        esac
+
+        # --isolated ignores PIP_* env vars and user config; --no-index guarantees nothing is
+        # fetched from any index here.
+        PYTHONPATH="$pip_wheel" python -m pip install \
+          --isolated --disable-pip-version-check --no-index --no-deps \
+          --upgrade --force-reinstall \
+          "$pip_wheel" "$certifi_wheel"
+
+    - name: Verify the installers this job will actually use
+      shell: bash
+      env:
+        PIN_PIP_VERSION: '26.2.2'
+        PIN_CERTIFI_VERSION: '2026.10.19'
+      run: |
+        set -euo pipefail
+        python - "$PIN_PIP_VERSION" "$PIN_CERTIFI_VERSION" <<'PY'
+        import importlib.metadata as m
+        import sys
+
+        def parse(v):
+            return tuple(int(p) for p in v.split('.'))
+
+        min_pip, min_certifi = sys.argv[1], sys.argv[2]
+        ok = True
+
+        def require(label, actual, minimum):
+            global ok
+            good = parse(actual) >= parse(minimum)
+            print(f"{label}: {actual} (minimum {minimum}) {'OK' if good else 'TOO OLD'}")
+            ok &= good
+
+        require('pip', m.version('pip'), min_pip)
+        require('certifi', m.version('certifi'), min_certifi)
+        # pip does NOT use the external certifi package; it uses its own vendored copy.
+        from pip._vendor import certifi as vendored
+        require('pip._vendor.certifi', vendored.__version__, min_certifi)
+        if not ok:
+            print('::error::installer/CA bundle below the required version after bootstrap')
+            raise SystemExit(1)
+        PY
+        python -m pip --version

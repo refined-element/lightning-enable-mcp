@@ -3,6 +3,21 @@
 All notable changes to the Lightning Enable MCP server are documented here.
 Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-enable-mcp`).
 
+## [2.1.1] — 2026-10-22
+
+### Changed
+
+- **Build and release pipeline hardening, no functional change to either port.** Every CI job
+  that installs with pip first runs a hash-pinned bootstrap (pip 26.2.2, certifi 2026.10.19
+  verified by SHA256 and installed from the verified wheel, never through the runner's
+  pre-installed pip), and the Docker image is rebuilt from a digest-pinned `python:3.12-slim`
+  with the same bootstrap, installs exactly the release version it is tagged with, and verifies
+  its installers at build time and again at runtime as the unprivileged user. Images published
+  before 2.1.1 carry the base image's older pip; the server never runs pip at runtime, so this
+  only affects how the image was built. Part of the 2026-10-22 eMudhra CA / installer
+  remediation. Note: pip 26.x trusts TLS through the OS trust store by default, so which CAs a
+  Linux build trusts follows the runner or base image, not the certifi bundle.
+
 ## [2.1.0] — 2026-10-11
 
 ### Added

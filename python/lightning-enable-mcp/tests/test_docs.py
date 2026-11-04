@@ -7,7 +7,10 @@ fixture lives above this package and is not shipped in the sdist, so the golden 
 skip when it is absent; the cache and failure-mode tests always run.
 """
 
+import asyncio
 import json
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 import pytest
@@ -196,13 +199,60 @@ class TestRules:
         assert "letters or digits" in result["error"]
 
     def test_read_caps_at_12000_bytes_on_a_line_boundary(self):
-        lines = [f"line {n:05d} " + "x" * 90 for n in range(300)]
+        lines = [f"line {n:05d} " + "x" * 90 + f" end{n:05d}" for n in range(300)]
         text = "\n".join(["=" * 78, "# Big", "Source: https://d.test/big", "=" * 78, ""] + lines)
         result = ds.read(ds.parse(text), "/big")
         assert result["truncated"] is True
         assert len(result["text"].encode("utf-8")) <= ds.MAX_READ_BYTES
-        assert result["text"].endswith("x")  # whole lines only
+        returned = result["text"].split("\n")
+        # Whole lines only: the output is exactly the first N input lines.
+        assert returned == lines[: len(returned)]
+        assert len(returned) < len(lines)
         assert "hint" in result
+
+    def test_a_cut_with_no_late_line_break_is_a_hard_cut(self):
+        text, cut = ds.truncate_utf8("ab\n" + "c" * 50, 20)
+        assert (text, cut) == ("ab\n" + "c" * 17, True)
+
+    def test_the_page_title_counts_once_for_the_page_section(self):
+        text = "\n".join(
+            [
+                "=" * 78,
+                "# Relay",
+                "Source: https://d.test/relay",
+                "=" * 78,
+                "",
+                "intro text",
+                "=" * 78,
+                "# Other",
+                "Source: https://d.test/other",
+                "=" * 78,
+                "",
+                "relay relay relay relay relay relay",
+            ]
+        )
+        result = ds.search(ds.parse(text), "relay")
+        # Body page: 6. Title page: 5 (5 x 1 title hit), not 10.
+        assert [r["path"] for r in result["results"]] == ["/other", "/relay"]
+
+    def test_an_explicit_heading_id_is_stripped_and_used_as_the_anchor(self):
+        text = "\n".join(
+            [
+                "=" * 78,
+                "# P",
+                "Source: https://d.test/p",
+                "=" * 78,
+                "",
+                "## Set up {#setup-guide}",
+                "",
+                "body",
+            ]
+        )
+        pages = ds.parse(text)
+        section = pages[0].sections[0]
+        assert (section.heading, section.anchor) == ("Set up", "setup-guide")
+        assert ds.search(pages, "body")["results"][0]["url"] == "https://d.test/p#setup-guide"
+        assert ds.read(pages, "/p#setup-guide")["section"] == "Set up"
 
     def test_truncation_never_splits_a_multibyte_character(self):
         text, cut = ds.truncate_utf8("ab€c", 4)  # euro sign is 3 bytes
@@ -265,6 +315,42 @@ class TestCache:
         assert fetch.calls == 3
         assert "stale" not in result
 
+    async def test_a_cold_start_failure_is_cached_for_the_back_off(self):
+        fetch, clock = Fetcher(), Clock()
+        fetch.error = RuntimeError("HTTP 503")
+        service = DocsService("https://docs.example.test/llms-full.txt", fetch, clock)
+
+        first = await service.search("alpha")
+        second = await service.read("/one")
+        assert fetch.calls == 1, "a second caller must not wait out its own fetch"
+        assert first["success"] is False and second["success"] is False
+        assert "HTTP 503" in second["error"]
+        assert "Next attempt in" in second["error"]
+
+        clock.now += RETRY_AFTER_FAILURE_SECONDS
+        fetch.error = None
+        assert (await service.read("/one"))["success"] is True
+        assert fetch.calls == 2
+
+    async def test_concurrent_first_calls_fetch_once(self):
+        release = asyncio.Event()
+        calls = 0
+
+        async def blocked_fetch(url: str) -> str:
+            nonlocal calls
+            calls += 1
+            await release.wait()
+            return MINI
+
+        service = DocsService("https://docs.example.test/llms-full.txt", blocked_fetch, Clock())
+        first = asyncio.create_task(service.search("alpha"))
+        second = asyncio.create_task(service.read("/one"))
+        await asyncio.sleep(0.05)
+        release.set()
+        results = await asyncio.gather(first, second)
+        assert calls == 1
+        assert all(r["success"] for r in results)
+
     async def test_failure_with_no_cache_names_the_url(self):
         fetch = Fetcher()
         fetch.error = RuntimeError("HTTP 503")
@@ -283,7 +369,21 @@ class TestCache:
 
     @pytest.mark.parametrize(
         "url",
-        ["http://docs.example.test/llms-full.txt", "ftp://docs.example.test/x", "not a url"],
+        [
+            "http://docs.example.test/llms-full.txt",
+            "ftp://docs.example.test/x",
+            "not a url",
+            "/etc/llms-full.txt",
+            "C:\\docs\\llms-full.txt",
+            "http://localhost.evil.com/x",
+            "http://localhost./x",
+            "http://localhost@evil.com/x",
+            "http://evil.com#@localhost",
+            "http://127.0.0.2/x",
+            "file://server/share/llms-full.txt",
+            "file:////server/share/llms-full.txt",
+            "file://evil.com/llms-full.txt",
+        ],
     )
     async def test_non_https_sources_are_refused(self, url):
         fetch = Fetcher()
@@ -292,7 +392,15 @@ class TestCache:
         assert DOCS_URL_ENV_VAR in result["error"]
         assert fetch.calls == 0
 
-    @pytest.mark.parametrize("url", ["http://localhost:8080/x", "http://127.0.0.1/x"])
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://localhost:8080/x",
+            "http://localhost/x",
+            "http://127.0.0.1/x",
+            "http://[::1]:8080/x",
+        ],
+    )
     async def test_loopback_http_is_allowed(self, url):
         result = await DocsService(url, Fetcher(), Clock()).search("alpha")
         assert result["success"] is True
@@ -304,6 +412,53 @@ class TestCache:
             == DEFAULT_DOCS_URL
             == ("https://docs.lightningenable.com/llms-full.txt")
         )
+
+    async def test_file_localhost_url_is_read(self, tmp_path):
+        target = tmp_path / "llms-full.txt"
+        target.write_text(MINI, encoding="utf-8")
+        url = "file://localhost" + target.as_uri()[len("file://") :]
+        result = await DocsService(url).search("alpha")
+        assert result["success"] is True, result
+
+    async def test_a_directory_is_not_a_regular_file(self, tmp_path):
+        result = await DocsService(tmp_path.as_uri()).search("alpha")
+        assert result["success"] is False
+        assert "not a regular file" in result["error"]
+
+    async def test_an_oversized_file_is_refused_before_reading(self, tmp_path, monkeypatch):
+        target = tmp_path / "big.txt"
+        target.write_text(MINI + "x" * 200, encoding="utf-8")
+        monkeypatch.setattr(ds, "MAX_SOURCE_BYTES", 100)
+        result = await DocsService(target.as_uri()).search("alpha")
+        assert result["success"] is False
+        assert "larger than 100 bytes" in result["error"]
+
+    async def test_a_redirect_is_reported_not_followed(self):
+        hits: list[str] = []
+
+        class Redirect(BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802 - http.server API
+                hits.append(self.path)
+                self.send_response(301)
+                self.send_header("Location", "/moved")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def log_message(self, *args):  # silence test output
+                pass
+
+        server = HTTPServer(("127.0.0.1", 0), Redirect)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            url = f"http://127.0.0.1:{server.server_port}/llms-full.txt"
+            result = await DocsService(url).search("alpha")
+        finally:
+            server.shutdown()
+            server.server_close()
+        assert result["success"] is False
+        assert "HTTP 301 redirect" in result["error"]
+        assert hits == ["/llms-full.txt"], "the redirect target must never be requested"
 
     async def test_missing_file_url_is_a_clear_error(self, tmp_path):
         url = (tmp_path / "missing.txt").as_uri()

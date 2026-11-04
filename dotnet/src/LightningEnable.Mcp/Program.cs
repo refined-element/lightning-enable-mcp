@@ -148,8 +148,9 @@ public class Program
 
         // The docs tool's source: llms-full.txt from docs.lightningenable.com (or
         // LIGHTNING_ENABLE_DOCS_URL), cached in memory for an hour. The URL is operator
-        // configuration, never agent input, so it does not need the SSRF guard above;
-        // redirects are capped at 5 and an https -> http downgrade is never followed.
+        // configuration, never agent input, so it does not need the SSRF guard above.
+        // AllowAutoRedirect = false, as for discover_api: a 3xx is reported as a fetch
+        // failure naming the status (DocsService.RedirectReason), never followed.
         builder.Services.AddHttpClient(DocsService.HttpClientName, client =>
             {
                 client.Timeout = TimeSpan.FromSeconds(15);
@@ -158,8 +159,7 @@ public class Program
             })
             .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
             {
-                AllowAutoRedirect = true,
-                MaxAutomaticRedirections = 5,
+                AllowAutoRedirect = false,
             });
         builder.Services.AddSingleton<IDocsService>(sp =>
         {

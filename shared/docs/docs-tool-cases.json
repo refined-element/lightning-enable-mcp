@@ -82,7 +82,7 @@
         {
           "title": "Nostr Wallet Connect setup > Troubleshooting",
           "path": "/nwc-setup/account-setup",
-          "url": "https://docs.lightningenable.com/nwc-setup/account-setup#troubleshooting",
+          "url": "https://docs.lightningenable.com/nwc-setup/account-setup#nwc-troubleshooting",
           "section": "Troubleshooting",
           "snippet": "If invoices never confirm, check that your wallet supports NIP-04 encryption. A wallet that only speaks NIP-44 will time out."
         },
@@ -248,7 +248,7 @@
         "path": "/nwc-setup/account-setup",
         "url": "https://docs.lightningenable.com/nwc-setup/account-setup",
         "section": null,
-        "text": "# Nostr Wallet Connect setup\n\nReceive payments straight into your own Lightning wallet over NWC (NIP-47).\n\n## Connection string\n\nPaste the nostr+walletconnect connection string from your wallet. The string is encrypted at rest and never echoed back.\n\n### Relay\n\nThe relay parameter names the relay your wallet listens on.\n\n## Troubleshooting\n\nIf invoices never confirm, check that your wallet supports NIP-04 encryption. A wallet that only speaks NIP-44 will time out.",
+        "text": "# Nostr Wallet Connect setup\n\nReceive payments straight into your own Lightning wallet over NWC (NIP-47).\n\n## Connection string\n\nPaste the nostr+walletconnect connection string from your wallet. The string is encrypted at rest and never echoed back.\n\n### Relay\n\nThe relay parameter names the relay your wallet listens on.\n\n## Troubleshooting {#nwc-troubleshooting}\n\nIf invoices never confirm, check that your wallet supports NIP-04 encryption. A wallet that only speaks NIP-44 will time out.",
         "truncated": false,
         "sections": [
           "Connection string",
@@ -354,6 +354,41 @@
           "API Key",
           "Using Your API Key",
           "Rotating a key"
+        ]
+      }
+    },
+    {
+      "path": "https://docs.lightningenable.com/nwc-setup/account-setup#nwc-troubleshooting",
+      "expected": {
+        "success": true,
+        "title": "Nostr Wallet Connect setup",
+        "path": "/nwc-setup/account-setup",
+        "url": "https://docs.lightningenable.com/nwc-setup/account-setup#nwc-troubleshooting",
+        "section": "Troubleshooting",
+        "text": "## Troubleshooting {#nwc-troubleshooting}\n\nIf invoices never confirm, check that your wallet supports NIP-04 encryption. A wallet that only speaks NIP-44 will time out.",
+        "truncated": false,
+        "sections": [
+          "Connection string",
+          "Relay",
+          "Troubleshooting"
+        ]
+      }
+    },
+    {
+      "path": "/nwc-setup/account-setup",
+      "section": "troubleshooting",
+      "expected": {
+        "success": true,
+        "title": "Nostr Wallet Connect setup",
+        "path": "/nwc-setup/account-setup",
+        "url": "https://docs.lightningenable.com/nwc-setup/account-setup#nwc-troubleshooting",
+        "section": "Troubleshooting",
+        "text": "## Troubleshooting {#nwc-troubleshooting}\n\nIf invoices never confirm, check that your wallet supports NIP-04 encryption. A wallet that only speaks NIP-44 will time out.",
+        "truncated": false,
+        "sections": [
+          "Connection string",
+          "Relay",
+          "Troubleshooting"
         ]
       }
     },

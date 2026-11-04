@@ -25,8 +25,10 @@ expected results both test suites assert on.
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import re
+import stat
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -115,6 +117,8 @@ _STOPWORDS = frozenset(
 _TOKEN = re.compile(r"[a-z0-9]+")
 _HEADING = re.compile(r"^(#{1,6})[ \t]+(.+?)[ \t]*$")
 _CLOSING_HASHES = re.compile(r"[ \t]+#+$")
+# Docusaurus explicit heading id: `## Setup {#custom-id}`.
+_CUSTOM_ID = re.compile(r"[ \t]*\{#([^} \t]+)\}$")
 _FENCE = re.compile(r"^[ \t]*(?:```|~~~)")
 # Explicit character classes, not \s: Python and .NET disagree on a few control
 # characters, and the two ports must cut snippets and trim lines identically.
@@ -137,6 +141,7 @@ class DocsSection:
     start: int  # index of the heading line in the page's lines (or 0)
     end: int  # exclusive end of this leaf section
     body: str  # text between this heading and the next one
+    anchor: str = ""  # the heading's id: an explicit {#custom-id}, else derived from the text
 
 
 @dataclass
@@ -188,18 +193,25 @@ def path_of(url: str) -> str:
     return rest
 
 
-def _heading_of(line: str) -> tuple[int, str] | None:
+def _heading_of(line: str) -> tuple[int, str, str] | None:
+    """(level, text, anchor) of an ATX heading line, or None."""
     match = _HEADING.match(line)
     if not match:
         return None
-    text = _CLOSING_HASHES.sub("", match.group(2)).strip(_TRIM)
+    text = match.group(2)
+    custom = _CUSTOM_ID.search(text)
+    custom_id = None
+    if custom:
+        custom_id = custom.group(1)
+        text = text[: custom.start()]
+    text = _CLOSING_HASHES.sub("", text).strip(_TRIM)
     if not text:
         return None
-    return len(match.group(1)), text
+    return len(match.group(1)), text, custom_id or anchor(text)
 
 
 def _split_sections(lines: list[str]) -> list[DocsSection]:
-    headings: list[tuple[int, int, str]] = []  # (line index, level, text)
+    headings: list[tuple[int, int, str, str]] = []  # (line index, level, text, anchor)
     in_fence = False
     for i, line in enumerate(lines):
         if _FENCE.match(line):
@@ -209,17 +221,17 @@ def _split_sections(lines: list[str]) -> list[DocsSection]:
             continue
         heading = _heading_of(line)
         if heading:
-            headings.append((i, heading[0], heading[1]))
+            headings.append((i, heading[0], heading[1], heading[2]))
 
     sections: list[DocsSection] = []
     first = headings[0][0] if headings else len(lines)
     intro = _trim_blank_lines(lines[:first])
     if intro:
         sections.append(DocsSection(None, 0, 0, first, "\n".join(intro)))
-    for n, (index, level, text) in enumerate(headings):
+    for n, (index, level, text, slug) in enumerate(headings):
         end = headings[n + 1][0] if n + 1 < len(headings) else len(lines)
         body = "\n".join(_trim_blank_lines(lines[index + 1 : end]))
-        sections.append(DocsSection(text, level, index, end, body))
+        sections.append(DocsSection(text, level, index, end, body, slug))
     return sections
 
 
@@ -312,7 +324,7 @@ def _section_url(page: DocsPage, section: DocsSection) -> str:
     if _is_page_heading(page, section):
         return page.url
     assert section.heading is not None
-    return f"{page.url}#{anchor(section.heading)}"
+    return f"{page.url}#{section.anchor}"
 
 
 # ── Search and read over a parsed corpus ──────────────────────────────────────
@@ -332,8 +344,13 @@ def search(pages: list[DocsPage], query: str, limit: int | None = None) -> dict[
     scored: list[tuple[int, int, int, int, DocsPage, DocsSection]] = []
     for p_index, page in enumerate(pages):
         for s_index, section in enumerate(page.sections):
-            heading = section.heading or page.title
-            title_tokens = tokens(f"{page.title} {heading}")
+            # The page title counts once: a section that IS the page (its intro, or an
+            # H1 repeating the title) is titled by the page alone.
+            if _is_page_heading(page, section):
+                title_text = page.title
+            else:
+                title_text = f"{page.title} {section.heading}"
+            title_tokens = tokens(title_text)
             body_tokens = tokens(section.body)
             matched = 0
             score = 0
@@ -385,7 +402,7 @@ def _find_section(page: DocsPage, wanted: str) -> DocsSection | None:
             return section
     target_anchor = anchor(target)
     for section in named:
-        if target_anchor and anchor(section.heading) == target_anchor:  # type: ignore[arg-type]
+        if target_anchor and target_anchor in (section.anchor, anchor(section.heading)):  # type: ignore[arg-type]
             return section
     for section in named:
         if target in section.heading.lower():  # type: ignore[union-attr]
@@ -395,9 +412,7 @@ def _find_section(page: DocsPage, wanted: str) -> DocsSection | None:
 
 def _listed_sections(page: DocsPage) -> list[str]:
     return [
-        s.heading
-        for s in page.sections
-        if s.heading is not None and not _is_page_heading(page, s)
+        s.heading for s in page.sections if s.heading is not None and not _is_page_heading(page, s)
     ][:MAX_LISTED_SECTIONS]
 
 
@@ -478,40 +493,82 @@ class DocsSourceError(Exception):
     """The docs source could not be fetched or did not look like llms-full.txt."""
 
 
+def _file_url_path(url: str) -> Path | None:
+    """Local path of a ``file://`` URL, or None when it is not a local file URL.
+
+    Only ``file:///path`` and ``file://localhost/path`` qualify. Any other host, and a
+    path that starts with two separators (``file:////server/share``), would name a UNC
+    / SMB share, which would make the server reach out over the network.
+    """
+    if not url[:7].lower() == "file://":
+        return None
+    parsed = urlparse(url)
+    if parsed.netloc.lower() not in ("", "localhost"):
+        return None
+    raw = unquote(parsed.path)
+    if not raw.startswith("/"):
+        return None
+    if raw.startswith("//") or raw.startswith("\\\\") or raw.startswith("/\\"):
+        return None
+    local = url2pathname(raw)
+    if local.startswith("\\\\") or local.startswith("//"):
+        return None
+    return Path(local)
+
+
 def validate_source_url(url: str) -> str | None:
     """Return an error message when ``url`` is not an allowed docs source."""
+    lowered = url.lower()
     parsed = urlparse(url)
-    scheme = parsed.scheme.lower()
-    if scheme == "https" and parsed.hostname:
+    hostname = (parsed.hostname or "").lower()
+    if lowered.startswith("https://") and hostname:
         return None
-    if scheme == "file":
+    if lowered.startswith("http://") and hostname in _LOOPBACK_HOSTS:
         return None
-    if scheme == "http" and (parsed.hostname or "").lower() in _LOOPBACK_HOSTS:
-        return None
+    if lowered.startswith("file://"):
+        if _file_url_path(url) is not None:
+            return None
+        return (
+            f"{DOCS_URL_ENV_VAR} must name a local file (file:///path or "
+            f"file://localhost/path), not a network share; got '{url}'."
+        )
     return (
         f"{DOCS_URL_ENV_VAR} must be an https:// URL (http:// only for localhost, "
         f"or file://); got '{url}'."
     )
 
 
-def _file_url_to_path(url: str) -> Path:
-    parsed = urlparse(url)
-    raw = unquote(parsed.path)
-    if parsed.netloc and parsed.netloc.lower() != "localhost":
-        raw = f"//{parsed.netloc}{raw}"
-    return Path(url2pathname(raw))
+def _read_local_file(path: Path) -> bytes:
+    """Read a regular file of at most ``MAX_SOURCE_BYTES``, through a bounded read."""
+    try:
+        info = path.stat()
+    except OSError as exc:
+        raise DocsSourceError(f"cannot read {path}: {exc.strerror or exc}") from exc
+    if not stat.S_ISREG(info.st_mode):
+        raise DocsSourceError(f"{path} is not a regular file")
+    if info.st_size > MAX_SOURCE_BYTES:
+        raise DocsSourceError(f"file is larger than {MAX_SOURCE_BYTES} bytes")
+    try:
+        with path.open("rb") as handle:
+            data = handle.read(MAX_SOURCE_BYTES + 1)
+    except OSError as exc:
+        raise DocsSourceError(f"cannot read {path}: {exc.strerror or exc}") from exc
+    if len(data) > MAX_SOURCE_BYTES:
+        raise DocsSourceError(f"file is larger than {MAX_SOURCE_BYTES} bytes")
+    return data
 
 
 async def default_fetch(url: str) -> str:
-    """Fetch the corpus: HTTPS (or loopback HTTP) via httpx, or a file:// path."""
-    if urlparse(url).scheme.lower() == "file":
-        path = _file_url_to_path(url)
-        try:
-            data = await asyncio.to_thread(path.read_bytes)
-        except OSError as exc:
-            raise DocsSourceError(f"cannot read {path}: {exc.strerror or exc}") from exc
-        if len(data) > MAX_SOURCE_BYTES:
-            raise DocsSourceError(f"file is larger than {MAX_SOURCE_BYTES} bytes")
+    """Fetch the corpus: HTTPS (or loopback HTTP) via httpx, or a local file:// path.
+
+    Redirects are not followed (parity with ``discover_api``): a 3xx is reported as a
+    failure naming the status, so the operator points the env var at the final URL.
+    """
+    if url[:7].lower() == "file://":
+        path = _file_url_path(url)
+        if path is None:
+            raise DocsSourceError("not a local file URL")
+        data = await asyncio.to_thread(_read_local_file, path)
         return data.decode("utf-8", errors="replace")
 
     if httpx is None:  # pragma: no cover
@@ -519,13 +576,15 @@ async def default_fetch(url: str) -> str:
     try:
         async with httpx.AsyncClient(
             timeout=FETCH_TIMEOUT_SECONDS,
-            follow_redirects=True,
-            max_redirects=5,
+            follow_redirects=False,
             headers={"User-Agent": USER_AGENT_MCP, "Accept": "text/plain"},
         ) as client:
             async with client.stream("GET", url) as response:
-                if response.status_code < 200 or response.status_code >= 300:
-                    raise DocsSourceError(f"HTTP {response.status_code}")
+                status = response.status_code
+                if 300 <= status < 400:
+                    raise DocsSourceError(redirect_reason(status))
+                if status < 200 or status >= 300:
+                    raise DocsSourceError(f"HTTP {status}")
                 chunks: list[bytes] = []
                 size = 0
                 async for chunk in response.aiter_bytes():
@@ -536,6 +595,14 @@ async def default_fetch(url: str) -> str:
     except httpx.HTTPError as exc:
         raise DocsSourceError(type(exc).__name__ + (f": {exc}" if str(exc) else "")) from exc
     return b"".join(chunks).decode("utf-8", errors="replace")
+
+
+def redirect_reason(status: int) -> str:
+    """Failure reason for a 3xx answer (redirects are never followed)."""
+    return (
+        f"HTTP {status} redirect (redirects are not followed; set {DOCS_URL_ENV_VAR} "
+        "to the final URL)"
+    )
 
 
 class DocsService:
@@ -554,6 +621,7 @@ class DocsService:
         self._pages: list[DocsPage] | None = None
         self._loaded_at = 0.0
         self._retry_at = 0.0
+        self._last_error: str | None = None
         self._lock = asyncio.Lock()
 
     async def _corpus(self) -> tuple[list[DocsPage] | None, dict[str, Any]]:
@@ -572,6 +640,14 @@ class DocsService:
                 return self._pages, {}
             if self._pages is not None and now < self._retry_at:
                 return self._pages, self._stale_fields("the last refresh failed")
+            if self._pages is None and self._last_error is not None and now < self._retry_at:
+                # A cold-start outage: answer from the cached failure instead of making
+                # every caller wait out its own fetch timeout in turn.
+                wait = math.ceil(self._retry_at - now)
+                return None, {
+                    "success": False,
+                    "error": f"{self._last_error} Next attempt in {wait} s.",
+                }
 
             try:
                 text = await self._fetch(self.source_url)
@@ -580,21 +656,20 @@ class DocsService:
                     raise DocsSourceError("no pages found (is this an llms-full.txt file?)")
             except Exception as exc:  # noqa: BLE001 - every failure becomes a clear message
                 reason = str(exc) or type(exc).__name__
+                self._retry_at = now + RETRY_AFTER_FAILURE_SECONDS
                 if self._pages is not None:
-                    self._retry_at = now + RETRY_AFTER_FAILURE_SECONDS
                     return self._pages, self._stale_fields(reason)
-                return None, {
-                    "success": False,
-                    "error": (
-                        f"Could not load the Lightning Enable docs from {self.source_url}: "
-                        f"{reason}. Check network access, or set {DOCS_URL_ENV_VAR} to a "
-                        "reachable copy of llms-full.txt."
-                    ),
-                }
+                self._last_error = (
+                    f"Could not load the Lightning Enable docs from {self.source_url}: "
+                    f"{reason}. Check network access, or set {DOCS_URL_ENV_VAR} to a "
+                    "reachable copy of llms-full.txt."
+                )
+                return None, {"success": False, "error": self._last_error}
 
             self._pages = pages
             self._loaded_at = now
             self._retry_at = 0.0
+            self._last_error = None
             return pages, {}
 
     def _stale_fields(self, reason: str) -> dict[str, Any]:

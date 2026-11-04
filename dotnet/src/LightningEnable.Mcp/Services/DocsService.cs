@@ -11,7 +11,8 @@ namespace LightningEnable.Mcp.Services;
 /// <param name="Start">Index of the heading line in the page's lines (0 for leading text).</param>
 /// <param name="End">Exclusive end of this leaf section.</param>
 /// <param name="Body">Text between this heading and the next one.</param>
-public sealed record DocsSection(string? Heading, int Level, int Start, int End, string Body);
+/// <param name="Anchor">The heading's id: an explicit <c>{#custom-id}</c>, else derived from the text.</param>
+public sealed record DocsSection(string? Heading, int Level, int Start, int End, string Body, string Anchor = "");
 
 /// <summary>One docs page from <c>llms-full.txt</c>.</summary>
 public sealed record DocsPage(
@@ -73,6 +74,9 @@ public static class DocsCorpus
     private static readonly Regex Token = new("[a-z0-9]+", RegexOptions.CultureInvariant);
     private static readonly Regex Heading = new(@"^(#{1,6})[ \t]+(.+?)[ \t]*$", RegexOptions.CultureInvariant);
     private static readonly Regex ClosingHashes = new(@"[ \t]+#+$", RegexOptions.CultureInvariant);
+
+    // Docusaurus explicit heading id: `## Setup {#custom-id}`.
+    private static readonly Regex CustomId = new(@"[ \t]*\{#([^} \t]+)\}$", RegexOptions.CultureInvariant);
     private static readonly Regex Fence = new(@"^[ \t]*(?:```|~~~)", RegexOptions.CultureInvariant);
     private static readonly Regex Whitespace = new(@"[ \t\n\f\v]+", RegexOptions.CultureInvariant);
     private static readonly Regex Origin = new(@"^[A-Za-z][A-Za-z0-9+.-]*://[^/?#]*", RegexOptions.CultureInvariant);
@@ -154,7 +158,7 @@ public static class DocsCorpus
         return rest;
     }
 
-    private static (int Level, string Text)? HeadingOf(string line)
+    private static (int Level, string Text, string Anchor)? HeadingOf(string line)
     {
         var match = Heading.Match(line);
         if (!match.Success)
@@ -162,13 +166,22 @@ public static class DocsCorpus
             return null;
         }
 
-        var text = ClosingHashes.Replace(match.Groups[2].Value, string.Empty).Trim(Trim);
-        return text.Length == 0 ? null : (match.Groups[1].Value.Length, text);
+        var text = match.Groups[2].Value;
+        string? customId = null;
+        var custom = CustomId.Match(text);
+        if (custom.Success)
+        {
+            customId = custom.Groups[1].Value;
+            text = text[..custom.Index];
+        }
+
+        text = ClosingHashes.Replace(text, string.Empty).Trim(Trim);
+        return text.Length == 0 ? null : (match.Groups[1].Value.Length, text, customId ?? Anchor(text));
     }
 
     private static List<DocsSection> SplitSections(string[] lines)
     {
-        var headings = new List<(int Index, int Level, string Text)>();
+        var headings = new List<(int Index, int Level, string Text, string Anchor)>();
         var inFence = false;
         for (var i = 0; i < lines.Length; i++)
         {
@@ -185,7 +198,7 @@ public static class DocsCorpus
 
             if (HeadingOf(lines[i]) is { } heading)
             {
-                headings.Add((i, heading.Level, heading.Text));
+                headings.Add((i, heading.Level, heading.Text, heading.Anchor));
             }
         }
 
@@ -199,10 +212,10 @@ public static class DocsCorpus
 
         for (var n = 0; n < headings.Count; n++)
         {
-            var (index, level, text) = headings[n];
+            var (index, level, text, slug) = headings[n];
             var end = n + 1 < headings.Count ? headings[n + 1].Index : lines.Length;
             var body = string.Join("\n", TrimBlankLines(lines[(index + 1)..end]));
-            sections.Add(new DocsSection(text, level, index, end, body));
+            sections.Add(new DocsSection(text, level, index, end, body, slug));
         }
 
         return sections;
@@ -314,7 +327,7 @@ public static class DocsCorpus
                && string.Equals(section.Heading.ToLowerInvariant(), page.Title.ToLowerInvariant(), StringComparison.Ordinal));
 
     private static string SectionUrl(DocsPage page, DocsSection section)
-        => IsPageHeading(page, section) ? page.Url : $"{page.Url}#{Anchor(section.Heading!)}";
+        => IsPageHeading(page, section) ? page.Url : $"{page.Url}#{section.Anchor}";
 
     private static JsonArray ListedSections(DocsPage page)
         => new(page.Sections
@@ -345,7 +358,9 @@ public static class DocsCorpus
             for (var s = 0; s < page.Sections.Count; s++)
             {
                 var section = page.Sections[s];
-                var titleTokens = Tokens($"{page.Title} {section.Heading ?? page.Title}");
+                // The page title counts once: a section that IS the page (its intro, or an
+                // H1 repeating the title) is titled by the page alone.
+                var titleTokens = Tokens(IsPageHeading(page, section) ? page.Title : $"{page.Title} {section.Heading}");
                 var bodyTokens = Tokens(section.Body);
                 int matched = 0, score = 0;
                 foreach (var term in terms)
@@ -433,7 +448,7 @@ public static class DocsCorpus
 
         var targetAnchor = Anchor(target);
         var byAnchor = targetAnchor.Length > 0
-            ? named.FirstOrDefault(s => Anchor(s.Heading!) == targetAnchor)
+            ? named.FirstOrDefault(s => s.Anchor == targetAnchor || Anchor(s.Heading!) == targetAnchor)
             : null;
         return byAnchor ?? named.FirstOrDefault(
             s => s.Heading!.ToLowerInvariant().Contains(target, StringComparison.Ordinal));
@@ -572,8 +587,7 @@ public sealed class DocsService : IDocsService
 
     private static readonly Lazy<HttpClient> FallbackClient = new(() => CreateHttpClient(new SocketsHttpHandler
     {
-        AllowAutoRedirect = true,
-        MaxAutomaticRedirections = 5,
+        AllowAutoRedirect = false,
     }));
 
     private readonly Func<string, CancellationToken, Task<string>> _fetch;
@@ -583,6 +597,7 @@ public sealed class DocsService : IDocsService
     private IReadOnlyList<DocsPage>? _pages;
     private double _loadedAt;
     private double _retryAt;
+    private string? _lastError;
 
     /// <summary>Creates the service.</summary>
     /// <param name="sourceUrl">Source; <c>null</c> reads <see cref="SourceEnvironmentVariable"/>, then the default.</param>
@@ -621,21 +636,29 @@ public sealed class DocsService : IDocsService
     }
 
     /// <summary>An error message when <paramref name="url"/> is not an allowed source, else null.</summary>
+    /// <remarks>
+    /// The scheme must be spelled out: a bare <c>/etc/x</c> or <c>C:\x</c> parses as a file
+    /// URI in .NET but is refused here, matching the Python port.
+    /// </remarks>
     public static string? ValidateSourceUrl(string url)
     {
+        if (url.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
+        {
+            return FileUrlPath(url) != null
+                ? null
+                : $"{SourceEnvironmentVariable} must name a local file (file:///path or file://localhost/path), not a network share; got '{url}'.";
+        }
+
         if (Uri.TryCreate(url, UriKind.Absolute, out var uri))
         {
-            if (uri.Scheme == Uri.UriSchemeHttps && uri.Host.Length > 0)
+            if (url.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+                && uri.Scheme == Uri.UriSchemeHttps && uri.Host.Length > 0)
             {
                 return null;
             }
 
-            if (uri.Scheme == Uri.UriSchemeFile)
-            {
-                return null;
-            }
-
-            if (uri.Scheme == Uri.UriSchemeHttp && LoopbackHosts.Contains(uri.Host))
+            if (url.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+                && uri.Scheme == Uri.UriSchemeHttp && LoopbackHosts.Contains(uri.Host))
             {
                 return null;
             }
@@ -644,33 +667,88 @@ public sealed class DocsService : IDocsService
         return $"{SourceEnvironmentVariable} must be an https:// URL (http:// only for localhost, or file://); got '{url}'.";
     }
 
-    private async Task<string> DefaultFetchAsync(string url, CancellationToken cancellationToken)
+    /// <summary>
+    /// Local path of a <c>file://</c> URL, or null when it is not a local file URL. Only
+    /// <c>file:///path</c> and <c>file://localhost/path</c> qualify: any other host, or a path
+    /// that starts with two separators, names a UNC / SMB share and would make the server
+    /// reach out over the network.
+    /// </summary>
+    public static string? FileUrlPath(string url)
     {
-        var uri = new Uri(url);
-        if (uri.IsFile)
+        if (!url.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
         {
-            var info = new FileInfo(uri.LocalPath);
-            if (!info.Exists)
-            {
-                throw new FileNotFoundException($"cannot read {uri.LocalPath}: file not found");
-            }
-
-            if (info.Length > MaxSourceBytes)
-            {
-                throw new InvalidDataException($"file is larger than {MaxSourceBytes} bytes");
-            }
-
-            return await File.ReadAllTextAsync(uri.LocalPath, Encoding.UTF8, cancellationToken);
+            return null;
         }
 
-        var client = _httpClient?.Invoke() ?? FallbackClient.Value;
-        using var response = await client.GetAsync(uri, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-        if (!response.IsSuccessStatusCode)
+        var rest = url["file://".Length..];
+        if (rest.StartsWith("localhost/", StringComparison.OrdinalIgnoreCase))
         {
-            throw new HttpRequestException($"HTTP {(int)response.StatusCode}");
+            rest = rest["localhost".Length..];
         }
 
-        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        if (!rest.StartsWith('/'))
+        {
+            return null; // a host other than localhost
+        }
+
+        var raw = Uri.UnescapeDataString(rest);
+        if (raw.StartsWith("//", StringComparison.Ordinal) || raw.StartsWith("/\\", StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        if (!Uri.TryCreate("file://" + rest, UriKind.Absolute, out var uri) || !uri.IsFile || uri.IsUnc || uri.Host.Length > 0)
+        {
+            return null;
+        }
+
+        var local = uri.LocalPath;
+        return local.StartsWith(@"\\", StringComparison.Ordinal) || local.StartsWith("//", StringComparison.Ordinal)
+            ? null
+            : local;
+    }
+
+    /// <summary>Failure reason for a 3xx answer (redirects are never followed).</summary>
+    public static string RedirectReason(int status)
+        => $"HTTP {status} redirect (redirects are not followed; set {SourceEnvironmentVariable} to the final URL)";
+
+    /// <summary>Reads a regular file of at most <see cref="MaxSourceBytes"/>, through a bounded read.</summary>
+    private static async Task<string> ReadLocalFileAsync(string path, CancellationToken cancellationToken)
+    {
+        var info = new FileInfo(path);
+        if ((info.Attributes & FileAttributes.Directory) != 0 && Directory.Exists(path))
+        {
+            throw new InvalidDataException($"{path} is not a regular file");
+        }
+
+        if (!info.Exists)
+        {
+            throw new FileNotFoundException($"cannot read {path}: file not found");
+        }
+
+        // A FIFO or device reports length 0 and would block or never end; an empty file has
+        // no pages anyway.
+        if ((info.Attributes & FileAttributes.Device) != 0 || info.Length == 0)
+        {
+            throw new InvalidDataException($"{path} is not a regular file");
+        }
+
+        if (info.Length > MaxSourceBytes)
+        {
+            throw new InvalidDataException($"file is larger than {MaxSourceBytes} bytes");
+        }
+
+        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 81920, useAsync: true);
+        if (!stream.CanSeek)
+        {
+            throw new InvalidDataException($"{path} is not a regular file");
+        }
+
+        return await ReadBoundedAsync(stream, "file", cancellationToken);
+    }
+
+    private static async Task<string> ReadBoundedAsync(Stream stream, string what, CancellationToken cancellationToken)
+    {
         using var buffer = new MemoryStream();
         var chunk = new byte[81920];
         int read;
@@ -678,13 +756,43 @@ public sealed class DocsService : IDocsService
         {
             if (buffer.Length + read > MaxSourceBytes)
             {
-                throw new InvalidDataException($"response is larger than {MaxSourceBytes} bytes");
+                throw new InvalidDataException($"{what} is larger than {MaxSourceBytes} bytes");
             }
 
             buffer.Write(chunk, 0, read);
         }
 
         return Encoding.UTF8.GetString(buffer.GetBuffer(), 0, (int)buffer.Length);
+    }
+
+    /// <summary>
+    /// Fetches the corpus over HTTPS (or loopback HTTP), or from a local <c>file://</c> path.
+    /// Redirects are not followed (parity with <c>discover_api</c>): a 3xx is a failure that
+    /// names the status, so the operator points the variable at the final URL.
+    /// </summary>
+    private async Task<string> DefaultFetchAsync(string url, CancellationToken cancellationToken)
+    {
+        if (url.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
+        {
+            var path = FileUrlPath(url) ?? throw new InvalidDataException("not a local file URL");
+            return await ReadLocalFileAsync(path, cancellationToken);
+        }
+
+        var client = _httpClient?.Invoke() ?? FallbackClient.Value;
+        using var response = await client.GetAsync(new Uri(url), HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        var status = (int)response.StatusCode;
+        if (status is >= 300 and < 400)
+        {
+            throw new HttpRequestException(RedirectReason(status));
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new HttpRequestException($"HTTP {status}");
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        return await ReadBoundedAsync(stream, "response", cancellationToken);
     }
 
     private async Task<(IReadOnlyList<DocsPage>? Pages, JsonObject Extra)> CorpusAsync(CancellationToken cancellationToken)
@@ -714,6 +822,18 @@ public sealed class DocsService : IDocsService
                 return (_pages, StaleFields("the last refresh failed"));
             }
 
+            if (_pages is null && _lastError != null && now < _retryAt)
+            {
+                // A cold-start outage: answer from the cached failure instead of making every
+                // caller wait out its own fetch timeout in turn.
+                var wait = (long)Math.Ceiling(_retryAt - now);
+                return (null, new JsonObject
+                {
+                    ["success"] = false,
+                    ["error"] = $"{_lastError} Next attempt in {wait} s.",
+                });
+            }
+
             IReadOnlyList<DocsPage> pages;
             try
             {
@@ -727,23 +847,21 @@ public sealed class DocsService : IDocsService
             catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
             {
                 var reason = string.IsNullOrWhiteSpace(ex.Message) ? ex.GetType().Name : ex.Message;
+                _retryAt = now + RetryAfterFailureSeconds;
                 if (_pages != null)
                 {
-                    _retryAt = now + RetryAfterFailureSeconds;
                     return (_pages, StaleFields(reason));
                 }
 
-                return (null, new JsonObject
-                {
-                    ["success"] = false,
-                    ["error"] = $"Could not load the Lightning Enable docs from {SourceUrl}: {reason}. "
-                        + $"Check network access, or set {SourceEnvironmentVariable} to a reachable copy of llms-full.txt.",
-                });
+                _lastError = $"Could not load the Lightning Enable docs from {SourceUrl}: {reason}. "
+                    + $"Check network access, or set {SourceEnvironmentVariable} to a reachable copy of llms-full.txt.";
+                return (null, new JsonObject { ["success"] = false, ["error"] = _lastError });
             }
 
             _pages = pages;
             _loadedAt = now;
             _retryAt = 0;
+            _lastError = null;
             return (pages, new JsonObject());
         }
         finally

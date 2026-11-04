@@ -16,12 +16,12 @@ Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-ena
   the page's section list. The source is `https://docs.lightningenable.com/llms-full.txt`,
   fetched once and cached in memory for an hour; if a refresh fails the cached copy is
   served with `stale: true`, and with nothing cached the error names the URL. Set
-  `LIGHTNING_ENABLE_DOCS_URL` to use another copy (`https://`, `http://` on localhost, or
-  `file://`). No wallet and no API key needed. Ranking is plain term frequency over each
+  `LIGHTNING_ENABLE_DOCS_URL` to use another copy (`https://`, `http://` on localhost, or a
+  local `file://` path; network shares are refused). Redirects are not followed, and a
+  failed first load is retried after a minute rather than on every call. No wallet and no API key needed. Ranking is plain term frequency over each
   section's title and body, with title matches weighted 5x. Advertised in the `standard`
   and `full` profiles, not `lite`; annotated read-only, idempotent and open-world. Both
-  ports assert on the same golden results in `shared/docs/`. The standard surface is now
-  18 tools (15 free / 3 gated).
+  ports assert on the same golden results in `shared/docs/`.
 
 ## [2.1.1] — 2026-10-22
 

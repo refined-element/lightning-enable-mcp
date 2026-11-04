@@ -50,7 +50,7 @@ Paste the nostr+walletconnect connection string from your wallet. The string is 
 
 The relay parameter names the relay your wallet listens on.
 
-## Troubleshooting
+## Troubleshooting {#nwc-troubleshooting}
 
 If invoices never confirm, check that your wallet supports NIP-04 encryption. A wallet that only speaks NIP-44 will time out.
 

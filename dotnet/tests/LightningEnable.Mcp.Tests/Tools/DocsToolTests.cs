@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -217,7 +219,7 @@ public class DocsToolTests
     [Fact]
     public void Read_CapsAt12000Bytes_OnALineBoundary()
     {
-        var lines = Enumerable.Range(0, 300).Select(n => $"line {n:D5} " + new string('x', 90));
+        var lines = Enumerable.Range(0, 300).Select(n => $"line {n:D5} " + new string('x', 90) + $" end{n:D5}").ToList();
         var text = string.Join("\n", new[] { Divider, "# Big", "Source: https://d.test/big", Divider, "" }.Concat(lines));
 
         var result = DocsCorpus.Read(DocsCorpus.Parse(text), "/big", null);
@@ -225,8 +227,39 @@ public class DocsToolTests
         result["truncated"]!.GetValue<bool>().Should().BeTrue();
         var body = result["text"]!.GetValue<string>();
         Encoding.UTF8.GetByteCount(body).Should().BeLessThanOrEqualTo(DocsCorpus.MaxReadBytes);
-        body.Should().EndWith("x", "the cut lands on a whole line");
+        var returned = body.Split('\n');
+        returned.Should().Equal(lines.Take(returned.Length), "the output is exactly the first N whole input lines");
+        returned.Length.Should().BeLessThan(lines.Count);
         result.ContainsKey("hint").Should().BeTrue();
+    }
+
+    [Fact]
+    public void ACutWithNoLateLineBreak_IsAHardCut()
+        => DocsCorpus.TruncateUtf8("ab\n" + new string('c', 50), 20).Should().Be(("ab\n" + new string('c', 17), true));
+
+    [Fact]
+    public void ThePageTitle_CountsOnceForThePageSection()
+    {
+        var text = string.Join("\n",
+            Divider, "# Relay", "Source: https://d.test/relay", Divider, "", "intro text",
+            Divider, "# Other", "Source: https://d.test/other", Divider, "", "relay relay relay relay relay relay");
+
+        // Body page: 6. Title page: 5 (5 x 1 title hit), not 10.
+        DocsCorpus.Search(DocsCorpus.Parse(text), "relay", null)["results"]!.AsArray()
+            .Select(r => r!["path"]!.GetValue<string>()).Should().Equal("/other", "/relay");
+    }
+
+    [Fact]
+    public void AnExplicitHeadingId_IsStrippedAndUsedAsTheAnchor()
+    {
+        var text = string.Join("\n", Divider, "# P", "Source: https://d.test/p", Divider, "", "## Set up {#setup-guide}", "", "body");
+        var pages = DocsCorpus.Parse(text);
+        var section = pages[0].Sections[0];
+
+        (section.Heading, section.Anchor).Should().Be(("Set up", "setup-guide"));
+        DocsCorpus.Search(pages, "body", null)["results"]![0]!["url"]!.GetValue<string>()
+            .Should().Be("https://d.test/p#setup-guide");
+        DocsCorpus.Read(pages, "/p#setup-guide", null)["section"]!.GetValue<string>().Should().Be("Set up");
     }
 
     [Fact]
@@ -300,6 +333,49 @@ public class DocsToolTests
     }
 
     [Fact]
+    public async Task AColdStartFailure_IsCachedForTheBackOff()
+    {
+        var (service, fetch, clock) = NewService();
+        fetch.Error = new HttpRequestException("HTTP 503");
+
+        var first = await service.SearchAsync("alpha", null);
+        var second = await service.ReadAsync("/one", null);
+
+        fetch.Calls.Should().Be(1, "a second caller must not wait out its own fetch");
+        first["success"]!.GetValue<bool>().Should().BeFalse();
+        second["success"]!.GetValue<bool>().Should().BeFalse();
+        second["error"]!.GetValue<string>().Should().Contain("HTTP 503").And.Contain("Next attempt in");
+
+        clock.Now += DocsService.RetryAfterFailureSeconds;
+        fetch.Error = null;
+        (await service.ReadAsync("/one", null))["success"]!.GetValue<bool>().Should().BeTrue();
+        fetch.Calls.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task ConcurrentFirstCalls_FetchOnce()
+    {
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        async Task<string> BlockedFetch(string url, CancellationToken ct)
+        {
+            Interlocked.Increment(ref calls);
+            await release.Task;
+            return Mini;
+        }
+
+        var service = new DocsService("https://docs.example.test/llms-full.txt", BlockedFetch, () => 1000);
+        var first = service.SearchAsync("alpha", null);
+        var second = service.ReadAsync("/one", null);
+        await Task.Delay(50);
+        release.SetResult();
+        var results = await Task.WhenAll(first, second);
+
+        calls.Should().Be(1);
+        results.Should().OnlyContain(r => r["success"]!.GetValue<bool>());
+    }
+
+    [Fact]
     public async Task AFailureWithNoCache_NamesTheUrl()
     {
         var (service, fetch, _) = NewService();
@@ -329,6 +405,16 @@ public class DocsToolTests
     [InlineData("http://docs.example.test/llms-full.txt")]
     [InlineData("ftp://docs.example.test/x")]
     [InlineData("not a url")]
+    [InlineData("/etc/llms-full.txt")]
+    [InlineData(@"C:\docs\llms-full.txt")]
+    [InlineData("http://localhost.evil.com/x")]
+    [InlineData("http://localhost./x")]
+    [InlineData("http://localhost@evil.com/x")]
+    [InlineData("http://evil.com#@localhost")]
+    [InlineData("http://127.0.0.2/x")]
+    [InlineData("file://server/share/llms-full.txt")]
+    [InlineData("file:////server/share/llms-full.txt")]
+    [InlineData("file://evil.com/llms-full.txt")]
     public async Task NonHttpsSources_AreRefused(string url)
     {
         var (service, fetch, _) = NewService(url);
@@ -342,7 +428,9 @@ public class DocsToolTests
 
     [Theory]
     [InlineData("http://localhost:8080/x")]
+    [InlineData("http://localhost/x")]
     [InlineData("http://127.0.0.1/x")]
+    [InlineData("http://[::1]:8080/x")]
     public async Task LoopbackHttp_IsAllowed(string url)
     {
         var (service, _, _) = NewService(url);
@@ -360,6 +448,110 @@ public class DocsToolTests
     [Fact]
     public void TheEnvironmentVariable_OverridesTheSource()
         => DocsService.ResolveSourceUrl(" file:///tmp/llms-full.txt ").Should().Be("file:///tmp/llms-full.txt");
+
+    [Fact]
+    public async Task AFileLocalhostUrl_IsRead()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "le-docs-" + Guid.NewGuid().ToString("N") + ".txt");
+        await File.WriteAllTextAsync(path, Mini);
+        try
+        {
+            var url = "file://localhost" + new Uri(path).AbsoluteUri["file://".Length..];
+            var result = await new DocsService(url).SearchAsync("alpha", null);
+            result["success"]!.GetValue<bool>().Should().BeTrue(result.ToJsonString());
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task ADirectory_IsNotARegularFile()
+    {
+        var result = await new DocsService(new Uri(Path.GetTempPath()).AbsoluteUri).SearchAsync("alpha", null);
+        result["success"]!.GetValue<bool>().Should().BeFalse();
+        result["error"]!.GetValue<string>().Should().Contain("not a regular file");
+    }
+
+    [Fact]
+    public async Task AnOversizedFile_IsRefusedBeforeReading()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "le-docs-big-" + Guid.NewGuid().ToString("N") + ".txt");
+        await using (var stream = File.Create(path))
+        {
+            stream.SetLength(DocsService.MaxSourceBytes + 1L);
+        }
+
+        try
+        {
+            var result = await new DocsService(new Uri(path).AbsoluteUri).SearchAsync("alpha", null);
+            result["success"]!.GetValue<bool>().Should().BeFalse();
+            result["error"]!.GetValue<string>().Should().Contain($"larger than {DocsService.MaxSourceBytes} bytes");
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public async Task ARedirect_IsReportedNotFollowed()
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        var requests = new List<string>();
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        var server = Task.Run(async () =>
+        {
+            try
+            {
+                while (!stop.IsCancellationRequested)
+                {
+                    using var socket = await listener.AcceptTcpClientAsync(stop.Token);
+                    var stream = socket.GetStream();
+                    var reader = new StreamReader(stream, Encoding.ASCII);
+                    var requestLine = await reader.ReadLineAsync(stop.Token);
+                    lock (requests)
+                    {
+                        requests.Add(requestLine ?? string.Empty);
+                    }
+
+                    while (!string.IsNullOrEmpty(await reader.ReadLineAsync(stop.Token)))
+                    {
+                    }
+
+                    var reply = Encoding.ASCII.GetBytes(
+                        "HTTP/1.1 301 Moved Permanently\r\nLocation: /moved\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+                    await stream.WriteAsync(reply, stop.Token);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        });
+
+        try
+        {
+            var result = await new DocsService($"http://127.0.0.1:{port}/llms-full.txt").SearchAsync("alpha", null);
+
+            result["success"]!.GetValue<bool>().Should().BeFalse();
+            result["error"]!.GetValue<string>().Should().Contain("HTTP 301 redirect");
+            await Task.Delay(100);
+            lock (requests)
+            {
+                requests.Should().ContainSingle().Which.Should().StartWith("GET /llms-full.txt ",
+                    "the redirect target must never be requested");
+            }
+        }
+        finally
+        {
+            stop.Cancel();
+            listener.Stop();
+            await server;
+        }
+    }
 
     [Fact]
     public async Task AMissingFileUrl_IsAClearError()

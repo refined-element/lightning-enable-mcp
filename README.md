@@ -310,9 +310,9 @@ The satoshi **ceilings** still bound the spend. But a ceiling says *"never more 
 
 ## Tools
 
-**Canonical inventory: 18 tools — 15 free (out of the box, just a wallet, or nothing at all for `docs`) + 3 that require `LIGHTNING_ENABLE_API_KEY`** (an [Agentic Commerce subscription](https://lightningenable.com)). This table is the single source of truth every advertised count derives from — it is pinned to the code by the tool-inventory guard tests in both ports (drift fails CI).
+**Canonical inventory: the table below.** Tools marked *Free* work out of the box with just a wallet (`docs` needs nothing at all); tools marked *Agentic Commerce* require `LIGHTNING_ENABLE_API_KEY` (an [Agentic Commerce subscription](https://lightningenable.com)). The table is pinned to the code by the tool-inventory guard tests in both ports (`ToolInventoryTests.cs`, `test_server.py`), so drift fails CI; quote counts from those tests, never from prose.
 
-Six of these are *action* tools: pass `action` (or `source` for `receipts`) to pick the operation. Five of them (all but `docs`) replace 16 single-purpose tools whose schemas used to be loaded into the agent's context on every session — see [Tool profiles and old tool names](#tool-profiles-and-old-tool-names). **Every old name still works.**
+Some of these are *action* tools: pass `action` (or `source` for `receipts`) to pick the operation. All but `docs` replace a family of single-purpose tools whose schemas used to be loaded into the agent's context on every session — see [Tool profiles and old tool names](#tool-profiles-and-old-tool-names). **Every old name still works.**
 
 > **ASA availability note.** Against the hosted Lightning Enable API, `agent_services` actions `discover`, `request`, `settle`, `publish`, `unpublish`, and `reputation` work. `attest` is refused, because the hosted API has no route that accepts attestations, so you can't leave a review through it. See [Agent Service Agreements](#agent-service-agreements-the-agent_services-tool).
 
@@ -337,9 +337,9 @@ Six of these are *action* tools: pass `action` (or `source` for `receipts`) to p
 | `agent_services` | Agentic Commerce | `action`: `discover`, `request`, `settle`, `publish`, `unpublish`, `attest`, `reputation` |
 | `renew_lightning_enable_subscription` | Agentic Commerce | Pay the server-priced L402 invoice that buys or extends 30 days of Agentic Commerce for the configured API key (`maxSats` defaults to 50,000) |
 
-`create_lightning_enable_account` is free and *self-provisions* the API key the 3 gated tools need — an agent with a wallet pays a ~100-sat activation fee and unlocks them on the spot.
+`create_lightning_enable_account` is free and *self-provisions* the API key the *Agentic Commerce* tools need — an agent with a wallet pays a ~100-sat activation fee and unlocks them on the spot.
 
-`docs` reads [`llms-full.txt`](https://docs.lightningenable.com/llms-full.txt), the whole docs site in one file, and keeps it in memory for an hour. If a refresh fails it serves the cached copy and marks the result `stale`. Set `LIGHTNING_ENABLE_DOCS_URL` to read another copy (`https://`, `http://` on localhost, or `file://`).
+`docs` reads [`llms-full.txt`](https://docs.lightningenable.com/llms-full.txt), the whole docs site in one file, and keeps it in memory for an hour. If a refresh fails it serves the cached copy and marks the result `stale`. Set `LIGHTNING_ENABLE_DOCS_URL` to read another copy (`https://`, `http://` on localhost, or a local `file://` path; network shares are refused). Redirects are not followed: point the variable at the final URL.
 
 Every tool carries MCP annotations: a human-readable title and an explicit `readOnlyHint`, plus `destructiveHint` on anything that can spend the wallet. Action tools are annotated for their **widest** action, so `budget` is not read-only (because `tighten` writes) and `wallet_ops` is destructive (because `send_onchain` is).
 
@@ -360,9 +360,9 @@ Every advertised tool's JSON schema is loaded into the agent's context at the st
 
 | Profile | Tools | Use it when |
 |---------|-------|-------------|
-| `lite` | 6 — `setup_wallet`, `pay_invoice`, `access_l402_resource`, `get_balance`, `budget`, `receipts` | The agent only needs to get a wallet, spend, and stay inside its budget |
-| `standard` *(default)* | 18 — the table above | Everything, with less schema than the old 26-tool surface |
-| `full` | 34 — `standard` plus every pre-consolidation name | You have prompts or scripts written against the old tool names |
+| `lite` | `setup_wallet`, `pay_invoice`, `access_l402_resource`, `get_balance`, `budget`, `receipts` | The agent only needs to get a wallet, spend, and stay inside its budget |
+| `standard` *(default)* | The table above | Everything, with less schema than the old one-tool-per-operation surface |
+| `full` | `standard` plus every pre-consolidation name | You have prompts or scripts written against the old tool names |
 
 ```json
 {

@@ -26,7 +26,11 @@ from pydantic import AnyUrl
 
 from . import __version__
 from .budget_service import BudgetService, get_budget_service
-from .confirmation_channel import CHANNEL_ENV_VAR, VALID_CHANNELS
+from .confirmation_channel import (
+    CHANNEL_ENV_VAR,
+    VALID_CHANNELS,
+    hosted_first_payment_lockout_warning,
+)
 from .idempotent_wallet import IdempotentWallet
 from .l402_client import L402Client
 from .lightning_enable_api import LightningEnableApiClient
@@ -955,6 +959,28 @@ class LightningEnableServer:
             logger.exception("Failed to initialize services")
             raise RuntimeError(f"Failed to initialize: {e!s}") from e
 
+    @staticmethod
+    def _print_startup_warnings() -> None:
+        """Warnings an operator must see at startup, before (and without) any tool call.
+
+        Loads the budget configuration (creating the default file on a first run, as the
+        first tool call would; the .NET server does the same at startup). Never raises: a
+        config problem is reported by the config loader and must not stop the server.
+        """
+        try:
+            from .config import get_config_service
+
+            config = get_config_service().configuration
+            warning = hosted_first_payment_lockout_warning(
+                config.confirmation,
+                config.session.require_approval_for_first_payment,
+            )
+        except Exception:  # noqa: BLE001 — a startup warning must never break serving
+            logger.exception("Could not evaluate startup warnings")
+            return
+        if warning:
+            print(f"[Lightning Enable MCP] WARNING: {warning}", file=sys.stderr, flush=True)
+
     async def run(self) -> None:
         """Run the MCP server."""
         logger.info("Starting Lightning Enable MCP server...")
@@ -964,6 +990,7 @@ class LightningEnableServer:
             file=sys.stderr,
             flush=True,
         )
+        self._print_startup_warnings()
 
         # Best-effort update check, same as the .NET server: a background task with its own
         # 5-second timeout that swallows every failure, so it never delays or breaks serving.

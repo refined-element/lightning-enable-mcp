@@ -631,6 +631,42 @@ def _refusal_reason_for(resolution: ConfirmationChannelResolution) -> str:
     return DEFAULT_REFUSAL
 
 
+def _is_hosted_first_payment_lockout(
+    resolution: ConfirmationChannelResolution, require_approval_for_first_payment: bool
+) -> bool:
+    # "auto" + refuse means hosted, no channel configured, and no TTY. With first-payment
+    # approval on, the first payment is refused and nothing is ever paid.
+    return (
+        resolution.kind is ConfirmationChannelKind.REFUSE
+        and resolution.source == "auto"
+        and require_approval_for_first_payment
+    )
+
+
+def hosted_first_payment_lockout_warning(
+    settings: ConfirmationSettings | None,
+    require_approval_for_first_payment: bool,
+    stdin_is_tty: bool | None = None,
+    environ: dict | None = None,
+) -> str | None:
+    """The startup lockout warning, or ``None`` when it does not apply. Side-effect free.
+
+    The server prints this once at startup (``LightningEnableServer.run``), independent of
+    wallet configuration, the same moment the .NET server does.
+    """
+    env = os.environ if environ is None else environ
+    is_tty = stdin_is_a_tty() if stdin_is_tty is None else stdin_is_tty
+    resolution = resolve_confirmation_channel(
+        env.get(CHANNEL_ENV_VAR),
+        getattr(settings, "channel", None),
+        is_tty,
+        env.get(HOSTED_ENV_VAR),
+    )
+    if _is_hosted_first_payment_lockout(resolution, require_approval_for_first_payment):
+        return HOSTED_FIRST_PAYMENT_LOCKOUT_WARNING
+    return None
+
+
 def stdin_is_a_tty() -> bool:
     """Whether a human could be watching this console. Never raises."""
     try:
@@ -666,13 +702,9 @@ def create_confirmation_channel(
     if resolution.warning and warn is not None:
         warn(resolution.warning)
 
-    # "auto" + refuse means hosted, no channel configured, and no TTY. With first-payment
-    # approval on, the first payment is refused and nothing is ever paid.
     if (
-        resolution.kind is ConfirmationChannelKind.REFUSE
-        and resolution.source == "auto"
-        and require_approval_for_first_payment
-        and warn is not None
+        warn is not None
+        and _is_hosted_first_payment_lockout(resolution, require_approval_for_first_payment)
     ):
         warn(HOSTED_FIRST_PAYMENT_LOCKOUT_WARNING)
 

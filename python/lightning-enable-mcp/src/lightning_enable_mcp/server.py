@@ -52,6 +52,8 @@ from .tools.create_invoice import create_invoice
 from .tools.create_l402_challenge import create_l402_challenge
 from .tools.discover_agent_services import discover_agent_services
 from .tools.discover_api import discover_api
+from .tools.docs import docs as docs_tool
+from .docs_service import DocsService
 from .tools.exchange_currency import exchange_currency
 from .tools.get_agent_reputation import get_agent_reputation
 from .tools.get_balance import get_balance
@@ -252,6 +254,9 @@ class LightningEnableServer:
         self.receipt_service: ReceiptService | None = ReceiptService(wallet_label="unknown")
         self._nwc_config: NWCConfig | None = None  # Store NWC config for pubkey access
         self.api_client: LightningEnableApiClient | None = None  # For L402 producer tools
+        # Lightning Enable docs (llms-full.txt), cached for an hour. Needs no wallet
+        # and no API key; LIGHTNING_ENABLE_DOCS_URL overrides the source.
+        self.docs_service: DocsService = DocsService()
 
         self._setup_handlers()
 
@@ -592,6 +597,16 @@ class LightningEnableServer:
                         budget_service=self.budget_service,
                     )
 
+                elif name == "docs":
+                    result = await docs_tool(
+                        action=arguments.get("action"),
+                        query=arguments.get("query"),
+                        limit=arguments.get("limit"),
+                        path=arguments.get("path"),
+                        section=arguments.get("section"),
+                        docs_service=self.docs_service,
+                    )
+
                 elif name == "agent_services":
                     action = _action_of("agent_services", arguments)
                     if action == "discover":
@@ -674,7 +689,7 @@ class LightningEnableServer:
                 return [TextContent(type="text", text=f"Error in {requested}: {safe_msg}")]
 
     # Tools that never need a wallet, by canonical (post-alias) name:
-    #  - discover_api / verify_confirmation_code use no wallet at all.
+    #  - discover_api / docs / verify_confirmation_code use no wallet at all.
     #  - test_l402_payment is allowed through without one so it can return its own
     #    structured no_wallet verdict (parity with .NET) rather than the generic guard
     #    string below (which also wrongly suggests OpenNode, which cannot do L402).
@@ -687,6 +702,7 @@ class LightningEnableServer:
         {
             "setup_wallet",
             "discover_api",
+            "docs",
             "verify_confirmation_code",
             "test_l402_payment",
             "get_balance",

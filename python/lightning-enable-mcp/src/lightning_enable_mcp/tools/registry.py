@@ -27,6 +27,7 @@ from .create_invoice import CREATE_INVOICE_TOOL
 from .create_l402_challenge import CREATE_L402_CHALLENGE_TOOL
 from .discover_agent_services import DISCOVER_AGENT_SERVICES_TOOL
 from .discover_api import DISCOVER_API_TOOL
+from .docs import DOCS_TOOL
 from .exchange_currency import EXCHANGE_CURRENCY_TOOL
 from .get_agent_reputation import GET_AGENT_REPUTATION_TOOL
 from .get_balance import GET_BALANCE_TOOL
@@ -61,6 +62,7 @@ STANDARD_TOOLS: list[Tool] = [
     CHECK_INVOICE_STATUS_TOOL,
     VERIFY_CONFIRMATION_CODE_TOOL,
     DISCOVER_API_TOOL,
+    DOCS_TOOL,
     CREATE_LIGHTNING_ENABLE_ACCOUNT_TOOL,
     WALLET_OPS_TOOL,
     L402_PRODUCER_TOOL,

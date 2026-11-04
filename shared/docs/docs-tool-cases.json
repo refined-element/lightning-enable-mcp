@@ -1,0 +1,417 @@
+{
+  "_comment": "Golden results for the docs tool, asserted by BOTH ports: python/lightning-enable-mcp/tests/test_docs.py and dotnet/tests/LightningEnable.Mcp.Tests/Tools/DocsToolTests.cs. They run against llms-full.sample.txt (same format as https://docs.lightningenable.com/llms-full.txt). Change the ranking, snippet or truncation rules in both ports together, then update this file.",
+  "fixture": "llms-full.sample.txt",
+  "pages": [
+    {
+      "path": "/api-reference/authentication",
+      "title": "Authentication",
+      "url": "https://docs.lightningenable.com/api-reference/authentication",
+      "headings": [
+        "Authentication",
+        "API Key",
+        "Using Your API Key",
+        "Rotating a key"
+      ]
+    },
+    {
+      "path": "/nwc-setup/account-setup",
+      "title": "Nostr Wallet Connect setup",
+      "url": "https://docs.lightningenable.com/nwc-setup/account-setup",
+      "headings": [
+        "Nostr Wallet Connect setup",
+        "Connection string",
+        "Relay",
+        "Troubleshooting"
+      ]
+    },
+    {
+      "path": "/",
+      "title": "Lightning Enable",
+      "url": "https://docs.lightningenable.com/",
+      "headings": [
+        "Quick start"
+      ]
+    },
+    {
+      "path": "/api-reference/l402",
+      "title": "L402 Protocol",
+      "url": "https://docs.lightningenable.com/api-reference/l402",
+      "headings": [
+        "L402 Protocol",
+        "Verify a token"
+      ]
+    }
+  ],
+  "search": [
+    {
+      "query": "api key",
+      "expected": [
+        {
+          "title": "Authentication > Using Your API Key",
+          "path": "/api-reference/authentication",
+          "url": "https://docs.lightningenable.com/api-reference/authentication#using-your-api-key",
+          "section": "Using Your API Key",
+          "snippet": "Send the key with curl: ```bash # not a heading: this comment sits inside a code fence curl -H \"X-API-Key: your-api-key\" https://api.lightningenable.com/api/merchant/me ```"
+        },
+        {
+          "title": "Authentication > API Key",
+          "path": "/api-reference/authentication",
+          "url": "https://docs.lightningenable.com/api-reference/authentication#api-key",
+          "section": "API Key",
+          "snippet": "Lightning Enable uses a single merchant API key for payment operations. Include it in the `X-API-Key` header on every authenticated request."
+        },
+        {
+          "title": "Authentication",
+          "path": "/api-reference/authentication",
+          "url": "https://docs.lightningenable.com/api-reference/authentication",
+          "section": "Authentication",
+          "snippet": "All Lightning Enable API requests require authentication using an API key."
+        },
+        {
+          "title": "Authentication > Rotating a key",
+          "path": "/api-reference/authentication",
+          "url": "https://docs.lightningenable.com/api-reference/authentication#rotating-a-key",
+          "section": "Rotating a key",
+          "snippet": "Rotate a key from the dashboard. The old key stops working at once."
+        }
+      ]
+    },
+    {
+      "query": "NIP-04 encryption",
+      "expected": [
+        {
+          "title": "Nostr Wallet Connect setup > Troubleshooting",
+          "path": "/nwc-setup/account-setup",
+          "url": "https://docs.lightningenable.com/nwc-setup/account-setup#troubleshooting",
+          "section": "Troubleshooting",
+          "snippet": "If invoices never confirm, check that your wallet supports NIP-04 encryption. A wallet that only speaks NIP-44 will time out."
+        },
+        {
+          "title": "Nostr Wallet Connect setup",
+          "path": "/nwc-setup/account-setup",
+          "url": "https://docs.lightningenable.com/nwc-setup/account-setup",
+          "section": "Nostr Wallet Connect setup",
+          "snippet": "Receive payments straight into your own Lightning wallet over NWC (NIP-47)."
+        }
+      ]
+    },
+    {
+      "query": "how do I verify an L402 token",
+      "limit": 2,
+      "expected": [
+        {
+          "title": "L402 Protocol > Verify a token",
+          "path": "/api-reference/l402",
+          "url": "https://docs.lightningenable.com/api-reference/l402#verify-a-token",
+          "section": "Verify a token",
+          "snippet": "...SHA-256 of the preimage equals the payment hash. A valid L402 token grants access until its expiry caveat."
+        },
+        {
+          "title": "L402 Protocol",
+          "path": "/api-reference/l402",
+          "url": "https://docs.lightningenable.com/api-reference/l402",
+          "section": "L402 Protocol",
+          "snippet": "L402 pairs a macaroon with a Lightning invoice. The client pays the invoice, receives the preimage, and presents the macaroon and preimage together."
+        }
+      ]
+    },
+    {
+      "query": "preimage",
+      "expected": [
+        {
+          "title": "L402 Protocol",
+          "path": "/api-reference/l402",
+          "url": "https://docs.lightningenable.com/api-reference/l402",
+          "section": "L402 Protocol",
+          "snippet": "...a Lightning invoice. The client pays the invoice, receives the preimage, and presents the macaroon and preimage together."
+        },
+        {
+          "title": "L402 Protocol > Verify a token",
+          "path": "/api-reference/l402",
+          "url": "https://docs.lightningenable.com/api-reference/l402#verify-a-token",
+          "section": "Verify a token",
+          "snippet": "The server checks that the SHA-256 of the preimage equals the payment hash. A valid L402 token grants access until its expiry caveat."
+        }
+      ]
+    },
+    {
+      "query": "quick start",
+      "limit": 1,
+      "expected": [
+        {
+          "title": "Lightning Enable > Quick start",
+          "path": "/",
+          "url": "https://docs.lightningenable.com/#quick-start",
+          "section": "Quick start",
+          "snippet": "Create an account, connect a wallet, and mint your first L402 challenge."
+        }
+      ]
+    },
+    {
+      "query": "zzz",
+      "expected": []
+    },
+    {
+      "query": "the",
+      "expected": [
+        {
+          "title": "L402 Protocol",
+          "path": "/api-reference/l402",
+          "url": "https://docs.lightningenable.com/api-reference/l402",
+          "section": "L402 Protocol",
+          "snippet": "L402 pairs a macaroon with a Lightning invoice. The client pays the invoice, receives the preimage, and presents the macaroon and preimage together."
+        },
+        {
+          "title": "L402 Protocol > Verify a token",
+          "path": "/api-reference/l402",
+          "url": "https://docs.lightningenable.com/api-reference/l402#verify-a-token",
+          "section": "Verify a token",
+          "snippet": "The server checks that the SHA-256 of the preimage equals the payment hash. A valid L402 token grants access until its expiry caveat."
+        },
+        {
+          "title": "Authentication > Rotating a key",
+          "path": "/api-reference/authentication",
+          "url": "https://docs.lightningenable.com/api-reference/authentication#rotating-a-key",
+          "section": "Rotating a key",
+          "snippet": "Rotate a key from the dashboard. The old key stops working at once."
+        },
+        {
+          "title": "Nostr Wallet Connect setup > Connection string",
+          "path": "/nwc-setup/account-setup",
+          "url": "https://docs.lightningenable.com/nwc-setup/account-setup#connection-string",
+          "section": "Connection string",
+          "snippet": "Paste the nostr+walletconnect connection string from your wallet. The string is encrypted at rest and never echoed back."
+        },
+        {
+          "title": "Nostr Wallet Connect setup > Relay",
+          "path": "/nwc-setup/account-setup",
+          "url": "https://docs.lightningenable.com/nwc-setup/account-setup#relay",
+          "section": "Relay",
+          "snippet": "The relay parameter names the relay your wallet listens on."
+        }
+      ]
+    },
+    {
+      "query": "API key",
+      "limit": 50,
+      "expected": [
+        {
+          "title": "Authentication > Using Your API Key",
+          "path": "/api-reference/authentication",
+          "url": "https://docs.lightningenable.com/api-reference/authentication#using-your-api-key",
+          "section": "Using Your API Key",
+          "snippet": "Send the key with curl: ```bash # not a heading: this comment sits inside a code fence curl -H \"X-API-Key: your-api-key\" https://api.lightningenable.com/api/merchant/me ```"
+        },
+        {
+          "title": "Authentication > API Key",
+          "path": "/api-reference/authentication",
+          "url": "https://docs.lightningenable.com/api-reference/authentication#api-key",
+          "section": "API Key",
+          "snippet": "Lightning Enable uses a single merchant API key for payment operations. Include it in the `X-API-Key` header on every authenticated request."
+        },
+        {
+          "title": "Authentication",
+          "path": "/api-reference/authentication",
+          "url": "https://docs.lightningenable.com/api-reference/authentication",
+          "section": "Authentication",
+          "snippet": "All Lightning Enable API requests require authentication using an API key."
+        },
+        {
+          "title": "Authentication > Rotating a key",
+          "path": "/api-reference/authentication",
+          "url": "https://docs.lightningenable.com/api-reference/authentication#rotating-a-key",
+          "section": "Rotating a key",
+          "snippet": "Rotate a key from the dashboard. The old key stops working at once."
+        }
+      ]
+    },
+    {
+      "query": "api key",
+      "limit": 0,
+      "expected": [
+        {
+          "title": "Authentication > Using Your API Key",
+          "path": "/api-reference/authentication",
+          "url": "https://docs.lightningenable.com/api-reference/authentication#using-your-api-key",
+          "section": "Using Your API Key",
+          "snippet": "Send the key with curl: ```bash # not a heading: this comment sits inside a code fence curl -H \"X-API-Key: your-api-key\" https://api.lightningenable.com/api/merchant/me ```"
+        }
+      ]
+    }
+  ],
+  "read": [
+    {
+      "path": "/nwc-setup/account-setup",
+      "expected": {
+        "success": true,
+        "title": "Nostr Wallet Connect setup",
+        "path": "/nwc-setup/account-setup",
+        "url": "https://docs.lightningenable.com/nwc-setup/account-setup",
+        "section": null,
+        "text": "# Nostr Wallet Connect setup\n\nReceive payments straight into your own Lightning wallet over NWC (NIP-47).\n\n## Connection string\n\nPaste the nostr+walletconnect connection string from your wallet. The string is encrypted at rest and never echoed back.\n\n### Relay\n\nThe relay parameter names the relay your wallet listens on.\n\n## Troubleshooting\n\nIf invoices never confirm, check that your wallet supports NIP-04 encryption. A wallet that only speaks NIP-44 will time out.",
+        "truncated": false,
+        "sections": [
+          "Connection string",
+          "Relay",
+          "Troubleshooting"
+        ]
+      }
+    },
+    {
+      "path": "nwc-setup/account-setup/",
+      "section": "Connection string",
+      "expected": {
+        "success": true,
+        "title": "Nostr Wallet Connect setup",
+        "path": "/nwc-setup/account-setup",
+        "url": "https://docs.lightningenable.com/nwc-setup/account-setup#connection-string",
+        "section": "Connection string",
+        "text": "## Connection string\n\nPaste the nostr+walletconnect connection string from your wallet. The string is encrypted at rest and never echoed back.\n\n### Relay\n\nThe relay parameter names the relay your wallet listens on.",
+        "truncated": false,
+        "sections": [
+          "Connection string",
+          "Relay",
+          "Troubleshooting"
+        ]
+      }
+    },
+    {
+      "path": "https://docs.lightningenable.com/api-reference/authentication#using-your-api-key",
+      "expected": {
+        "success": true,
+        "title": "Authentication",
+        "path": "/api-reference/authentication",
+        "url": "https://docs.lightningenable.com/api-reference/authentication#using-your-api-key",
+        "section": "Using Your API Key",
+        "text": "## Using Your API Key\n\nSend the key with curl:\n\n```bash\n# not a heading: this comment sits inside a code fence\ncurl -H \"X-API-Key: your-api-key\" https://api.lightningenable.com/api/merchant/me\n```\n\n### Rotating a key\n\nRotate a key from the dashboard. The old key stops working at once.",
+        "truncated": false,
+        "sections": [
+          "API Key",
+          "Using Your API Key",
+          "Rotating a key"
+        ]
+      }
+    },
+    {
+      "path": "/",
+      "expected": {
+        "success": true,
+        "title": "Lightning Enable",
+        "path": "/",
+        "url": "https://docs.lightningenable.com/",
+        "section": null,
+        "text": "Welcome to the Lightning Enable docs — start with the quick start below.\n\n## Quick start\n\nCreate an account, connect a wallet, and mint your first L402 challenge.",
+        "truncated": false,
+        "sections": [
+          "Quick start"
+        ]
+      }
+    },
+    {
+      "path": "/api-reference/l402",
+      "section": "verify",
+      "expected": {
+        "success": true,
+        "title": "L402 Protocol",
+        "path": "/api-reference/l402",
+        "url": "https://docs.lightningenable.com/api-reference/l402#verify-a-token",
+        "section": "Verify a token",
+        "text": "## Verify a token\n\nThe server checks that the SHA-256 of the preimage equals the payment hash. A valid L402 token grants access until its expiry caveat.",
+        "truncated": false,
+        "sections": [
+          "Verify a token"
+        ]
+      }
+    },
+    {
+      "path": "/API-Reference/L402",
+      "section": "## Verify a token",
+      "expected": {
+        "success": true,
+        "title": "L402 Protocol",
+        "path": "/api-reference/l402",
+        "url": "https://docs.lightningenable.com/api-reference/l402#verify-a-token",
+        "section": "Verify a token",
+        "text": "## Verify a token\n\nThe server checks that the SHA-256 of the preimage equals the payment hash. A valid L402 token grants access until its expiry caveat.",
+        "truncated": false,
+        "sections": [
+          "Verify a token"
+        ]
+      }
+    },
+    {
+      "path": "/api-reference/authentication",
+      "section": "api-key",
+      "expected": {
+        "success": true,
+        "title": "Authentication",
+        "path": "/api-reference/authentication",
+        "url": "https://docs.lightningenable.com/api-reference/authentication#api-key",
+        "section": "API Key",
+        "text": "## API Key\n\nLightning Enable uses a single merchant API key for payment operations. Include it in the `X-API-Key` header on every authenticated request.",
+        "truncated": false,
+        "sections": [
+          "API Key",
+          "Using Your API Key",
+          "Rotating a key"
+        ]
+      }
+    },
+    {
+      "path": "/api-reference/authentication",
+      "maxBytes": 200,
+      "expected": {
+        "success": true,
+        "title": "Authentication",
+        "path": "/api-reference/authentication",
+        "url": "https://docs.lightningenable.com/api-reference/authentication",
+        "section": null,
+        "text": "# Authentication\n\nAll Lightning Enable API requests require authentication using an API key.\n\n## API Key",
+        "truncated": true,
+        "sections": [
+          "API Key",
+          "Using Your API Key",
+          "Rotating a key"
+        ]
+      }
+    },
+    {
+      "path": "/",
+      "maxBytes": 38,
+      "expected": {
+        "success": true,
+        "title": "Lightning Enable",
+        "path": "/",
+        "url": "https://docs.lightningenable.com/",
+        "section": null,
+        "text": "Welcome to the Lightning Enable docs",
+        "truncated": true,
+        "sections": [
+          "Quick start"
+        ]
+      }
+    },
+    {
+      "path": "/nope/account",
+      "expected": {
+        "success": false,
+        "suggestions": [
+          "/nwc-setup/account-setup"
+        ],
+        "errorContains": "No docs page at '/nope/account'"
+      }
+    },
+    {
+      "path": "/api-reference/l402",
+      "section": "Missing",
+      "expected": {
+        "success": false,
+        "path": "/api-reference/l402",
+        "sections": [
+          "Verify a token"
+        ],
+        "errorContains": "No section 'Missing' on /api-reference/l402"
+      }
+    }
+  ]
+}

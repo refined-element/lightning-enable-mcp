@@ -1,0 +1,79 @@
+# Lightning Enable Documentation — llms-full.txt
+
+> Lightning Enable — infrastructure for agent commerce over Lightning.
+> Lightning Enable does not hold funds; the merchant's payment provider
+> facilitates custody and settlement.
+
+This is a small sample of https://docs.lightningenable.com/llms-full.txt,
+used by the docs tool tests in both ports.
+
+==============================================================================
+# Authentication
+Source: https://docs.lightningenable.com/api-reference/authentication
+==============================================================================
+
+# Authentication
+
+All Lightning Enable API requests require authentication using an API key.
+
+## API Key
+
+Lightning Enable uses a single merchant API key for payment operations. Include it in the `X-API-Key` header on every authenticated request.
+
+## Using Your API Key
+
+Send the key with curl:
+
+```bash
+# not a heading: this comment sits inside a code fence
+curl -H "X-API-Key: your-api-key" https://api.lightningenable.com/api/merchant/me
+```
+
+### Rotating a key
+
+Rotate a key from the dashboard. The old key stops working at once.
+
+==============================================================================
+# Nostr Wallet Connect setup
+Source: https://docs.lightningenable.com/nwc-setup/account-setup
+==============================================================================
+
+# Nostr Wallet Connect setup
+
+Receive payments straight into your own Lightning wallet over NWC (NIP-47).
+
+## Connection string
+
+Paste the nostr+walletconnect connection string from your wallet. The string is encrypted at rest and never echoed back.
+
+### Relay
+
+The relay parameter names the relay your wallet listens on.
+
+## Troubleshooting
+
+If invoices never confirm, check that your wallet supports NIP-04 encryption. A wallet that only speaks NIP-44 will time out.
+
+==============================================================================
+# Lightning Enable
+Source: https://docs.lightningenable.com/
+==============================================================================
+
+Welcome to the Lightning Enable docs — start with the quick start below.
+
+## Quick start
+
+Create an account, connect a wallet, and mint your first L402 challenge.
+
+==============================================================================
+# L402 Protocol
+Source: https://docs.lightningenable.com/api-reference/l402
+==============================================================================
+
+# L402 Protocol
+
+L402 pairs a macaroon with a Lightning invoice. The client pays the invoice, receives the preimage, and presents the macaroon and preimage together.
+
+## Verify a token
+
+The server checks that the SHA-256 of the preimage equals the payment hash. A valid L402 token grants access until its expiry caveat.

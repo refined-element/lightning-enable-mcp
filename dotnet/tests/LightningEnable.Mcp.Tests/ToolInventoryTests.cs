@@ -12,12 +12,13 @@ namespace LightningEnable.Mcp.Tests;
 /// plus the free / API-key split. Add or remove a tool and this fails until you update the
 /// ONE list below — which is what every human-facing count is expected to derive from.
 ///
-/// Canonical (the <c>standard</c> profile, which is the default): 17 total = 14
+/// Canonical (the <c>standard</c> profile, which is the default): 18 total = 15
 /// out-of-the-box (free, just a wallet) + 3 that need <c>LIGHTNING_ENABLE_API_KEY</c>.
 /// The 2026-09 tool-surface consolidation folded 16 single-purpose tools into five
 /// action-style verbs (budget, receipts, wallet_ops, l402_producer, agent_services), taking
 /// the advertised surface from 26 tools to 15; <c>setup_wallet</c> then added the wallet
-/// onboarding step every other tool depends on — see <see cref="ToolProfiles"/>.
+/// onboarding step every other tool depends on — see <see cref="ToolProfiles"/>. <c>docs</c>
+/// (free, no wallet) searches and reads the Lightning Enable documentation without web access.
 ///
 /// Every pre-consolidation name still dispatches as an accepted-but-unadvertised forwarding
 /// alias (see <see cref="DeprecatedAliasDispatchTests"/>), and the <c>full</c> profile
@@ -27,14 +28,14 @@ namespace LightningEnable.Mcp.Tests;
 /// </summary>
 public class ToolInventoryTests
 {
-    // 14 tools that work with just a wallet — no LIGHTNING_ENABLE_API_KEY.
+    // 15 tools that work with just a wallet (or nothing at all, for docs) — no LIGHTNING_ENABLE_API_KEY.
     private static readonly IReadOnlySet<string> FreeTools = new HashSet<string>
     {
         "setup_wallet",
         "access_l402_resource", "pay_invoice", "pay_l402_challenge", "test_l402_payment",
         "get_balance", "budget", "receipts", "create_invoice", "check_invoice_status",
         "verify_confirmation_code", "discover_api", "create_lightning_enable_account",
-        "wallet_ops",
+        "wallet_ops", "docs",
     };
 
     // 3 tools that need LIGHTNING_ENABLE_API_KEY: the L402 producer flow, the
@@ -60,12 +61,12 @@ public class ToolInventoryTests
     }
 
     [Fact]
-    public void ToolCounts_AreCanonical_17_14_3()
+    public void ToolCounts_AreCanonical_18_15_3()
     {
-        FreeTools.Count.Should().Be(14, "14 out-of-the-box tools");
+        FreeTools.Count.Should().Be(15, "15 out-of-the-box tools");
         ApiKeyTools.Count.Should().Be(3,
             "3 API-key-gated tools (l402_producer, agent_services, renew_lightning_enable_subscription)");
-        (FreeTools.Count + ApiKeyTools.Count).Should().Be(17, "17 tools total");
+        (FreeTools.Count + ApiKeyTools.Count).Should().Be(18, "18 tools total");
         FreeTools.Overlaps(ApiKeyTools).Should().BeFalse("a tool is either free or API-key-gated, never both");
     }
 

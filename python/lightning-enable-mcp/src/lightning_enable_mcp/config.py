@@ -216,24 +216,24 @@ class TierThresholds:
     Note: This dataclass is frozen (immutable) - AI cannot modify at runtime.
     """
 
-    auto_approve: Decimal = Decimal("1.00")
+    auto_approve: Decimal = Decimal("0.10")
     """
     Payments at or below this amount are auto-approved without any prompt.
-    Default: $1.00 (raised from $0.10 for better UX since most clients lack elicitation)
+    Default: $0.10 (same as the first-run file; see shared/first-run-budget-defaults.json)
     """
 
-    log_and_approve: Decimal = Decimal("5.00")
+    log_and_approve: Decimal = Decimal("1.00")
     """
     Payments above auto_approve but at or below this amount are logged but approved.
-    Default: $5.00 (raised from $1.00)
+    Default: $1.00
     """
 
-    form_confirm: Decimal = Decimal("25.00")
+    form_confirm: Decimal = Decimal("10.00")
     """
     Payments above log_and_approve but at or below this amount require confirmation.
     With elicitation: User sees a prompt in the AI interface.
     Without elicitation: User must re-invoke tool with confirmed=true.
-    Default: $25.00 (raised from $10.00)
+    Default: $10.00
     """
 
     url_confirm: Decimal = Decimal("100.00")
@@ -248,9 +248,9 @@ class TierThresholds:
     def from_dict(cls, data: dict) -> "TierThresholds":
         """Create TierThresholds from a dictionary."""
         return cls(
-            auto_approve=Decimal(str(data.get("autoApprove", "1.00"))),
-            log_and_approve=Decimal(str(data.get("logAndApprove", "5.00"))),
-            form_confirm=Decimal(str(data.get("formConfirm", "25.00"))),
+            auto_approve=Decimal(str(data.get("autoApprove", "0.10"))),
+            log_and_approve=Decimal(str(data.get("logAndApprove", "1.00"))),
+            form_confirm=Decimal(str(data.get("formConfirm", "10.00"))),
             url_confirm=Decimal(str(data.get("urlConfirm", "100.00"))),
         )
 
@@ -329,8 +329,11 @@ class PaymentLimits:
     @classmethod
     def from_dict(cls, data: dict) -> "PaymentLimits":
         """Create PaymentLimits from a dictionary."""
-        max_per_payment = data.get("maxPerPayment")
-        max_per_session = data.get("maxPerSession")
+        # A MISSING key takes the class default ($500 / $100), like the .NET port's
+        # property initializers. Only an explicit ``null`` means "no limit". Using
+        # ``data.get`` here made an omitted key unlimited, which the .NET port never did.
+        max_per_payment = data.get("maxPerPayment", cls.max_per_payment)
+        max_per_session = data.get("maxPerSession", cls.max_per_session)
 
         return cls(
             max_per_payment=Decimal(str(max_per_payment)) if max_per_payment is not None else None,
@@ -368,10 +371,10 @@ class SessionSettings:
     Note: This dataclass is frozen (immutable) - AI cannot modify at runtime.
     """
 
-    require_approval_for_first_payment: bool = False
+    require_approval_for_first_payment: bool = True
     """
     If true, require confirmation for the very first payment of the session.
-    Default: false (disabled because most MCP clients don't support elicitation yet)
+    Default: true (same as the first-run file)
     """
 
     cooldown_seconds: int = 2
@@ -384,7 +387,7 @@ class SessionSettings:
     def from_dict(cls, data: dict) -> "SessionSettings":
         """Create SessionSettings from a dictionary."""
         return cls(
-            require_approval_for_first_payment=data.get("requireApprovalForFirstPayment", False),
+            require_approval_for_first_payment=data.get("requireApprovalForFirstPayment", True),
             cooldown_seconds=data.get("cooldownSeconds", 2),
         )
 

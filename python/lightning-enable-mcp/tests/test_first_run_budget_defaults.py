@@ -78,3 +78,65 @@ def test_first_run_defaults_match_the_shared_cross_port_fixture(tmp_path, monkey
         pytest.skip("shared/first-run-budget-defaults.json not present (unpacked sdist)")
     shared = json.loads(fixture.read_text(encoding="utf-8"), parse_float=Decimal)
     _assert_matches(_write_first_run_config(tmp_path, monkeypatch), shared)
+
+
+# --- Fallbacks for an existing config.json that omits keys -------------------
+# Owner decision 2026-11-03: a key missing from an existing file falls back to the
+# same conservative set the first run writes, never a looser one.
+
+from lightning_enable_mcp.config import (  # noqa: E402
+    PaymentLimits,
+    SessionSettings,
+    TierThresholds,
+)
+
+
+def _fallbacks_from_empty_sections() -> dict:
+    return {
+        "currency": "USD",
+        "tiers": TierThresholds.from_dict({}).to_dict(),
+        "limits": PaymentLimits.from_dict({}).to_dict(),
+        "session": SessionSettings.from_dict({}).to_dict(),
+    }
+
+
+def test_dataclass_defaults_match_the_first_run_set():
+    _assert_matches(
+        {
+            "currency": "USD",
+            "tiers": TierThresholds().to_dict(),
+            "limits": PaymentLimits().to_dict(),
+            "session": SessionSettings().to_dict(),
+        },
+        EXPECTED,
+    )
+
+
+def test_from_dict_fallbacks_match_the_first_run_set():
+    _assert_matches(_fallbacks_from_empty_sections(), EXPECTED)
+
+
+@pytest.mark.parametrize("partial", ["{}", '{"tiers": {}, "limits": {}, "session": {}}'])
+def test_partial_config_file_falls_back_to_the_first_run_set(tmp_path, monkeypatch, partial):
+    monkeypatch.setattr(config_module.Path, "home", staticmethod(lambda: tmp_path))
+    cfg_dir = tmp_path / ".lightning-enable"
+    cfg_dir.mkdir()
+    (cfg_dir / "config.json").write_text(partial, encoding="utf-8")
+    loaded = config_module.ConfigurationService().configuration
+    _assert_matches(
+        {
+            "currency": loaded.currency,
+            "tiers": loaded.tiers.to_dict(),
+            "limits": loaded.limits.to_dict(),
+            "session": loaded.session.to_dict(),
+        },
+        EXPECTED,
+    )
+
+
+def test_fallbacks_match_the_shared_cross_port_fixture():
+    fixture = _find_fixture()
+    if fixture is None:
+        pytest.skip("shared/first-run-budget-defaults.json not present (unpacked sdist)")
+    shared = json.loads(fixture.read_text(encoding="utf-8"), parse_float=Decimal)
+    _assert_matches(_fallbacks_from_empty_sections(), shared)

@@ -18,6 +18,18 @@ Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-ena
   `shared/first-run-budget-defaults.json`, which a test in each suite reads, so the ports
   cannot drift again.
 
+- **Both ports: keys missing from an existing `config.json` now fall back to the same
+  conservative set.** Behaviour change for partial config files. A tier or session key the
+  file omits used to fall back to `autoApprove` $1.00, `logAndApprove` $5.00, `formConfirm`
+  $25.00 and `requireApprovalForFirstPayment: false` in both ports; it now falls back to the
+  first-run values above ($0.10 / $1.00 / $10.00, first-payment approval on). A file that
+  sets only some tiers can now fail the ascending-order check (for example `autoApprove: 5`
+  with no `logAndApprove`); the .NET port then resets the whole tier ladder to these
+  defaults and the Python port logs a warning, as each did before. In the Python port an omitted `limits.maxPerPayment` or `limits.maxPerSession`
+  used to mean **no limit**; it now takes $500.00 / $100.00, as the .NET port always did.
+  An explicit `null` still means no limit in both ports. To keep the old behaviour, write
+  the values you want into `config.json` explicitly.
+
 ## [2.1.1] — 2026-10-22
 
 ### Changed

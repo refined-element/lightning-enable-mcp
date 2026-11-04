@@ -78,4 +78,58 @@ public class FirstRunBudgetDefaultsTests : IDisposable
             }
         }
     }
+
+    // Owner decision 2026-11-03: a key missing from an existing config.json falls back to
+    // the same conservative set the first run writes, never a looser one.
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("""{"tiers": {}, "limits": {}, "session": {}}""")]
+    public void APartialConfigFileFallsBackToTheSharedDefaults(string partial)
+    {
+        var path = Path.Combine(_dir, "config.json");
+        File.WriteAllText(path, partial);
+
+        var loaded = new BudgetConfigurationService(path).Configuration;
+        var json = JsonSerializer.Serialize(loaded, new JsonSerializerOptions
+        {
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        });
+
+        AssertMatchesFixture(json);
+    }
+
+    [Fact]
+    public void ModelDefaultsMatchTheSharedDefaults()
+    {
+        var json = JsonSerializer.Serialize(new LightningEnable.Mcp.Models.UserBudgetConfiguration(),
+            new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+
+        AssertMatchesFixture(json);
+    }
+
+    private static void AssertMatchesFixture(string writtenJson)
+    {
+        using var written = JsonDocument.Parse(writtenJson);
+        using var expected = JsonDocument.Parse(File.ReadAllText(FindFixture()));
+
+        written.RootElement.GetProperty("currency").GetString()
+            .Should().Be(expected.RootElement.GetProperty("currency").GetString());
+
+        foreach (var section in new[] { "tiers", "limits", "session" })
+        {
+            var actualSection = written.RootElement.GetProperty(section);
+            foreach (var field in expected.RootElement.GetProperty(section).EnumerateObject())
+            {
+                var actual = actualSection.GetProperty(field.Name);
+                if (field.Value.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                {
+                    actual.GetBoolean().Should().Be(field.Value.GetBoolean(), $"{section}.{field.Name}");
+                }
+                else
+                {
+                    actual.GetDecimal().Should().Be(field.Value.GetDecimal(), $"{section}.{field.Name}");
+                }
+            }
+        }
+    }
 }

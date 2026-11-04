@@ -313,9 +313,9 @@ public class BudgetSatsLimitsTests
             AutoApproveSats = 1,
         });
 
-        // 500 sats = $0.50, under the $1.00 autoApprove USD tier -> auto-approved even
+        // 50 sats = $0.05, under the $0.10 autoApprove USD tier -> auto-approved even
         // though it is far above the 1-sat outage tier.
-        (await service.CheckApprovalLevelAsync(500)).Level.Should().Be(ApprovalLevel.AutoApprove);
+        (await service.CheckApprovalLevelAsync(50)).Level.Should().Be(ApprovalLevel.AutoApprove);
     }
 
     // ── Both denominations set: the stricter one wins ────────────────────────

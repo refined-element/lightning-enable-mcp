@@ -1449,6 +1449,9 @@ def get_budget_service() -> BudgetService:
             warn=lambda message: print(
                 f"[Lightning Enable] WARNING: {message}", file=sys.stderr, flush=True
             ),
+            require_approval_for_first_payment=(
+                config_service.configuration.session.require_approval_for_first_payment
+            ),
         )
         logger.info("Approval channel for over-threshold payments: %s", channel.kind.value)
         _default_budget_service = BudgetService(

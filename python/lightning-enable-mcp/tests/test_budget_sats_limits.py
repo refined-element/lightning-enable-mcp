@@ -291,9 +291,9 @@ class TestPriceOutageTieringFailsClosed:
         )
         svc = _service(limits, price_available=True)
 
-        # 500 sats = $0.50, under the $1.00 autoApprove USD tier -> auto-approved even
+        # 50 sats = $0.05, under the $0.10 autoApprove USD tier -> auto-approved even
         # though it is far above the 1-sat outage tier.
-        result = await svc.check_approval_level(500)
+        result = await svc.check_approval_level(50)
 
         assert result.level == ApprovalLevel.AUTO_APPROVE
 

@@ -18,10 +18,66 @@ Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-ena
   served with `stale: true`, and with nothing cached the error names the URL. Set
   `LIGHTNING_ENABLE_DOCS_URL` to use another copy (`https://`, `http://` on localhost, or a
   local `file://` path; network shares are refused). Redirects are not followed, and a
-  failed first load is retried after a minute rather than on every call. No wallet and no API key needed. Ranking is plain term frequency over each
+  failed first load is retried after a minute rather than on every call. No wallet and no
+  API key needed. Ranking is plain term frequency over each
   section's title and body, with title matches weighted 5x. Advertised in the `standard`
   and `full` profiles, not `lite`; annotated read-only, idempotent and open-world. Both
   ports assert on the same golden results in `shared/docs/`.
+
+### Changed
+
+- **Python: first-run budget defaults now match the .NET port.** On first run the Python
+  server wrote `~/.lightning-enable/config.json` with tiers `autoApprove` $1.00,
+  `logAndApprove` $5.00, `formConfirm` $25.00 and `requireApprovalForFirstPayment: false`,
+  looser than the .NET port's $0.10 / $1.00 / $10.00 with first-payment approval on. Both
+  ports now write the .NET set: `autoApprove` $0.10, `logAndApprove` $1.00, `formConfirm`
+  $10.00, `urlConfirm` $100.00, `maxPerPayment` $500.00, `maxPerSession` $100.00,
+  `requireApprovalForFirstPayment: true`, `cooldownSeconds` 2. Only a newly created config
+  file is affected; an existing `config.json` is read as it is. The values live in
+  `shared/first-run-budget-defaults.json`, which a test in each suite reads, so the ports
+  cannot drift again.
+
+- **Both ports: keys missing from an existing `config.json` now fall back to the same
+  conservative set.** Behaviour change for partial config files. A tier or session key the
+  file omits used to fall back to `autoApprove` $1.00, `logAndApprove` $5.00, `formConfirm`
+  $25.00 and `requireApprovalForFirstPayment: false` in both ports; it now falls back to the
+  first-run values above ($0.10 / $1.00 / $10.00, first-payment approval on). A file that
+  sets only some tiers can now fail the ascending-order check (for example `autoApprove: 5`
+  with no `logAndApprove`); the .NET port then resets the whole tier ladder to these
+  defaults and the Python port logs a warning, as each did before. In the Python port an omitted `limits.maxPerPayment` or `limits.maxPerSession`
+  used to mean **no limit**; it now takes $500.00 / $100.00, as the .NET port always did.
+  An explicit `null` still means no limit in both ports, so an operator who sets only the
+  sats limits and wants no USD cap must write `"maxPerPayment": null, "maxPerSession": null`.
+  To keep the old behaviour, write the values you want into `config.json` explicitly.
+- **Both ports: an out-of-order tier ladder is clamped down, never reset.** Walking from
+  `urlConfirm` down, a tier above the tier over it is lowered to that tier's value; no tier is
+  ever raised. Before, .NET reset the whole ladder to the defaults (which could loosen a tier:
+  `{"formConfirm": 0.5}` became $10.00) and Python only warned and kept the values (so
+  `{"tiers": {"autoApprove": 2}}` auto-approved a $1.50 payment above the $1.00
+  `logAndApprove`). Now `{"autoApprove": 2}` gives $1.00 / $1.00, `{"logAndApprove": 20}`
+  gives `logAndApprove` $10.00, and `{"formConfirm": 0.5}` gives `logAndApprove` $0.50.
+  Pinned in both suites by `shared/partial-tier-fixtures.json`.
+- **Python: a non-positive `maxPerPayment` / `maxPerSession` or a `cooldownSeconds` outside
+  0-60 now resets to the default with a warning**, as the .NET port already did. Before,
+  Python warned and kept the value.
+
+> **Docker and hosted deployments: check your approval setup before upgrading.** The Docker
+> image creates an empty `~/.lightning-enable` directory, so a container without a mounted
+> config volume writes a fresh `config.json` on every start and gets these defaults:
+> first-payment approval ON, a $0.10 auto-approve tier and a $1.00 log-and-approve tier, so
+> anything above $1.00 needs a human confirmation code. With `LIGHTNING_ENABLE_HOSTED=1` and
+> no approval channel configured, the channel resolves to `refuse`: the first payment of a
+> session needs approval, is refused, and the session never records a payment, so **no
+> payment can succeed** until you change the config. The auto-pay paths (L402 auto-payment,
+> `send_onchain`, `agent_services action=settle`) never prompt, so on any channel they refuse
+> a session's first payment under these defaults. Mount a persistent config volume at
+> `/home/mcpuser/.lightning-enable` with the tiers you want (set
+> `session.requireApprovalForFirstPayment` to `false` for unattended use), or configure an
+> approval channel (`confirmation.channel` `webhook` or `file`). Both ports now print a
+> startup warning to stderr in exactly this state (`LIGHTNING_ENABLE_HOSTED=1`, no approval
+> channel configured so the channel resolves to `refuse`, and
+> `requireApprovalForFirstPayment` true) saying that no payment can be made and naming these
+> three fixes.
 
 ## [2.1.1] — 2026-10-22
 

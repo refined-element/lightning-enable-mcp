@@ -14,6 +14,20 @@ public static class ConfirmationChannelFactory
     public const string WebhookHttpClientName = "confirmation-webhook";
 
     /// <summary>
+    /// Startup warning for the one configuration in which no payment can ever succeed. Same
+    /// text as the Python port's <c>HOSTED_FIRST_PAYMENT_LOCKOUT_WARNING</c>.
+    /// </summary>
+    public const string HostedFirstPaymentLockoutWarning =
+        "No payment can be made in this configuration: "
+        + ConfirmationChannelResolver.HostedEnvironmentVariable
+        + "=1 with no approval channel configured refuses every payment that needs approval, and "
+        + "session.requireApprovalForFirstPayment is true, so the first payment of every session is refused, "
+        + "and a session that never pays never gets past its first payment. Fix one of: (1) mount a "
+        + "persistent config volume at ~/.lightning-enable with your own config.json; (2) set "
+        + "session.requireApprovalForFirstPayment to false for unattended use; (3) set "
+        + "confirmation.channel to \"webhook\" or \"file\".";
+
+    /// <summary>
     /// Create the channel. <paramref name="warn"/> receives at most one startup line.
     /// <paramref name="stdinIsTty"/> and <paramref name="environment"/> are test seams.
     /// </summary>
@@ -22,7 +36,8 @@ public static class ConfirmationChannelFactory
         Func<HttpClient>? webhookClientFactory = null,
         Action<string>? warn = null,
         bool? stdinIsTty = null,
-        Func<string, string?>? environment = null)
+        Func<string, string?>? environment = null,
+        bool requireApprovalForFirstPayment = false)
     {
         var env = environment ?? Environment.GetEnvironmentVariable;
         var isTty = stdinIsTty ?? !Console.IsInputRedirected;
@@ -36,6 +51,15 @@ public static class ConfirmationChannelFactory
         if (resolution.Warning != null)
         {
             warn?.Invoke(resolution.Warning);
+        }
+
+        // "auto" + Refuse means hosted, no channel configured, and no TTY. With first-payment
+        // approval on, the first payment is refused and nothing is ever paid.
+        if (resolution.Kind == ConfirmationChannelKind.Refuse
+            && resolution.Source == "auto"
+            && requireApprovalForFirstPayment)
+        {
+            warn?.Invoke(HostedFirstPaymentLockoutWarning);
         }
 
         switch (resolution.Kind)

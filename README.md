@@ -293,6 +293,16 @@ Limits live in `~/.lightning-enable/config.json` and are read-only at runtime �
 | `maxPerSessionSats` | `LIGHTNING_ENABLE_MAX_PER_SESSION_SATS` | Max satoshis per session |
 | `autoApproveSats` | `LIGHTNING_ENABLE_AUTO_APPROVE_SATS` | Satoshis a payment may spend **without confirmation** while the BTC price is unavailable |
 
+**Defaults.** On first run both ports write the same file: approval tiers `autoApprove` $0.10, `logAndApprove` $1.00, `formConfirm` $10.00 and `urlConfirm` $100.00; `maxPerPayment` $500.00 and `maxPerSession` $100.00; `requireApprovalForFirstPayment: true`; `cooldownSeconds` 2. A key you leave out of an existing file takes the same default.
+
+**An omitted USD limit is not "no limit".** If you set only the sats limits, `maxPerPayment` and `maxPerSession` still apply at $500.00 and $100.00. To rely on the sats limits alone, set the USD keys to `null`:
+
+```json
+{ "limits": { "maxPerPayment": null, "maxPerSession": null, "maxPerSessionSats": 50000 } }
+```
+
+**Tiers must ascend.** If a tier is above the tier over it, it is lowered to that tier's value, never raised: `{"tiers": {"autoApprove": 2}}` with the default `logAndApprove` of $1.00 auto-approves up to $1.00, not $2.00. Set the tiers above it too to raise it.
+
 **Why set the sats ones.** A USD limit has to be converted at the current BTC price, so when every price source is down the payment cannot be checked and is refused — correct, but it stops the agent. A satoshi limit needs no conversion, so a sats-budgeted agent keeps working through a price outage. Set **both** `maxPer…Sats` keys to close every gap.
 
 When both denominations are set, the **stricter** cap wins on every check. `budget(action="status")` reports which one is binding (`bindingDenomination`), the effective cap in sats, whether a price was available, and whether outage mode is active.

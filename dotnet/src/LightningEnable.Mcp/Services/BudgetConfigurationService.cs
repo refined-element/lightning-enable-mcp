@@ -246,43 +246,62 @@ public class BudgetConfigurationService : IBudgetConfigurationService
 
     private static void ValidateConfiguration(UserBudgetConfiguration config)
     {
-        // Ensure tiers are in ascending order
-        if (config.Tiers.AutoApprove > config.Tiers.LogAndApprove)
-        {
-            Console.Error.WriteLine("[Lightning Enable] Warning: autoApprove should be <= logAndApprove. Using defaults.");
-            config.Tiers = new TierThresholds();
-        }
-
-        if (config.Tiers.LogAndApprove > config.Tiers.FormConfirm)
-        {
-            Console.Error.WriteLine("[Lightning Enable] Warning: logAndApprove should be <= formConfirm. Using defaults.");
-            config.Tiers = new TierThresholds();
-        }
-
-        if (config.Tiers.FormConfirm > config.Tiers.UrlConfirm)
-        {
-            Console.Error.WriteLine("[Lightning Enable] Warning: formConfirm should be <= urlConfirm. Using defaults.");
-            config.Tiers = new TierThresholds();
-        }
+        // Make the tier ladder ascend by LOWERING tiers, never raising one. Resetting the
+        // whole ladder to the defaults (the old rule) could loosen a tier the operator set,
+        // e.g. formConfirm 0.5 -> 10. Same rule as the Python port's clamp_tier_ladder;
+        // pinned by shared/partial-tier-fixtures.json.
+        var clamped = ClampTierLadder(config.Tiers);
+        WarnIfLowered("autoApprove", config.Tiers.AutoApprove, clamped.AutoApprove);
+        WarnIfLowered("logAndApprove", config.Tiers.LogAndApprove, clamped.LogAndApprove);
+        WarnIfLowered("formConfirm", config.Tiers.FormConfirm, clamped.FormConfirm);
+        config.Tiers = clamped;
 
         // Ensure limits are positive
         if (config.Limits.MaxPerPayment.HasValue && config.Limits.MaxPerPayment.Value <= 0)
         {
             Console.Error.WriteLine("[Lightning Enable] Warning: maxPerPayment must be positive. Using default.");
-            config.Limits.MaxPerPayment = 500.00m;
+            config.Limits.MaxPerPayment = new PaymentLimits().MaxPerPayment;
         }
 
         if (config.Limits.MaxPerSession.HasValue && config.Limits.MaxPerSession.Value <= 0)
         {
             Console.Error.WriteLine("[Lightning Enable] Warning: maxPerSession must be positive. Using default.");
-            config.Limits.MaxPerSession = 100.00m;
+            config.Limits.MaxPerSession = new PaymentLimits().MaxPerSession;
         }
 
         // Ensure cooldown is reasonable
         if (config.Session.CooldownSeconds < 0 || config.Session.CooldownSeconds > 60)
         {
             Console.Error.WriteLine("[Lightning Enable] Warning: cooldownSeconds should be 0-60. Using default.");
-            config.Session.CooldownSeconds = 2;
+            config.Session.CooldownSeconds = new SessionSettings().CooldownSeconds;
+        }
+    }
+
+    /// <summary>
+    /// Returns an ascending tier ladder: walking from the top down, a tier above the tier
+    /// over it is clamped DOWN to that tier's value. No tier is ever raised.
+    /// </summary>
+    internal static TierThresholds ClampTierLadder(TierThresholds tiers)
+    {
+        var url = tiers.UrlConfirm;
+        var form = Math.Min(tiers.FormConfirm, url);
+        var log = Math.Min(tiers.LogAndApprove, form);
+        var auto = Math.Min(tiers.AutoApprove, log);
+        return new TierThresholds
+        {
+            AutoApprove = auto,
+            LogAndApprove = log,
+            FormConfirm = form,
+            UrlConfirm = url
+        };
+    }
+
+    private static void WarnIfLowered(string key, decimal before, decimal after)
+    {
+        if (after != before)
+        {
+            Console.Error.WriteLine(
+                $"[Lightning Enable] Warning: {key} {before} is above the next tier; lowered to {after} (tiers must ascend).");
         }
     }
 

@@ -1,0 +1,35 @@
+{
+  "_comment": "Tier ladders both ports must produce from a config.json whose tiers are partial or out of order. Rule: missing tiers take the first-run defaults; then, from the top of the ladder down, any tier above the one over it is clamped DOWN to that tier's value. A tier is never raised. Read by test_first_run_budget_defaults.py and FirstRunBudgetDefaultsTests.cs.",
+  "cases": [
+    {
+      "name": "autoApprove above the default logAndApprove",
+      "tiers": { "autoApprove": 2 },
+      "expected": { "autoApprove": 1.00, "logAndApprove": 1.00, "formConfirm": 10.00, "urlConfirm": 100.00 }
+    },
+    {
+      "name": "logAndApprove above the default formConfirm",
+      "tiers": { "logAndApprove": 20 },
+      "expected": { "autoApprove": 0.10, "logAndApprove": 10.00, "formConfirm": 10.00, "urlConfirm": 100.00 }
+    },
+    {
+      "name": "formConfirm below the default logAndApprove",
+      "tiers": { "formConfirm": 0.5 },
+      "expected": { "autoApprove": 0.10, "logAndApprove": 0.50, "formConfirm": 0.50, "urlConfirm": 100.00 }
+    },
+    {
+      "name": "urlConfirm below every default tier",
+      "tiers": { "urlConfirm": 0.05 },
+      "expected": { "autoApprove": 0.05, "logAndApprove": 0.05, "formConfirm": 0.05, "urlConfirm": 0.05 }
+    },
+    {
+      "name": "fully set, already ascending: untouched",
+      "tiers": { "autoApprove": 3, "logAndApprove": 5, "formConfirm": 25, "urlConfirm": 100 },
+      "expected": { "autoApprove": 3.00, "logAndApprove": 5.00, "formConfirm": 25.00, "urlConfirm": 100.00 }
+    },
+    {
+      "name": "fully set, descending: every tier clamped to urlConfirm",
+      "tiers": { "autoApprove": 50, "logAndApprove": 40, "formConfirm": 30, "urlConfirm": 20 },
+      "expected": { "autoApprove": 20.00, "logAndApprove": 20.00, "formConfirm": 20.00, "urlConfirm": 20.00 }
+    }
+  ]
+}

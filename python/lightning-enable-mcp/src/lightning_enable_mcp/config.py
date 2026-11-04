@@ -248,10 +248,10 @@ class TierThresholds:
     def from_dict(cls, data: dict) -> "TierThresholds":
         """Create TierThresholds from a dictionary."""
         return cls(
-            auto_approve=Decimal(str(data.get("autoApprove", "0.10"))),
-            log_and_approve=Decimal(str(data.get("logAndApprove", "1.00"))),
-            form_confirm=Decimal(str(data.get("formConfirm", "10.00"))),
-            url_confirm=Decimal(str(data.get("urlConfirm", "100.00"))),
+            auto_approve=Decimal(str(data.get("autoApprove", cls.auto_approve))),
+            log_and_approve=Decimal(str(data.get("logAndApprove", cls.log_and_approve))),
+            form_confirm=Decimal(str(data.get("formConfirm", cls.form_confirm))),
+            url_confirm=Decimal(str(data.get("urlConfirm", cls.url_confirm))),
         )
 
     def to_dict(self) -> dict:
@@ -262,6 +262,26 @@ class TierThresholds:
             "formConfirm": float(self.form_confirm),
             "urlConfirm": float(self.url_confirm),
         }
+
+
+def clamp_tier_ladder(tiers: "TierThresholds") -> "TierThresholds":
+    """Make the tier ladder ascending by lowering tiers, never raising one.
+
+    Walks from the top of the ladder down: a tier above the tier over it is clamped
+    DOWN to that tier's value. So ``{"autoApprove": 2}`` (with the default
+    ``logAndApprove`` of $1) becomes $1 / $1, and ``{"formConfirm": 0.5}`` lowers
+    ``logAndApprove`` to $0.50 rather than resetting the whole ladder (which could
+    LOOSEN a tier the operator set). Same rule as the .NET port's
+    ``BudgetConfigurationService.ClampTierLadder``; pinned by
+    ``shared/partial-tier-fixtures.json``.
+    """
+    url = tiers.url_confirm
+    form = min(tiers.form_confirm, url)
+    log = min(tiers.log_and_approve, form)
+    auto = min(tiers.auto_approve, log)
+    return replace(
+        tiers, auto_approve=auto, log_and_approve=log, form_confirm=form, url_confirm=url
+    )
 
 
 @dataclass(frozen=True)
@@ -387,8 +407,10 @@ class SessionSettings:
     def from_dict(cls, data: dict) -> "SessionSettings":
         """Create SessionSettings from a dictionary."""
         return cls(
-            require_approval_for_first_payment=data.get("requireApprovalForFirstPayment", True),
-            cooldown_seconds=data.get("cooldownSeconds", 2),
+            require_approval_for_first_payment=data.get(
+                "requireApprovalForFirstPayment", cls.require_approval_for_first_payment
+            ),
+            cooldown_seconds=data.get("cooldownSeconds", cls.cooldown_seconds),
         )
 
     def to_dict(self) -> dict:
@@ -606,7 +628,7 @@ class ConfigurationService:
                 config = self._apply_sats_limit_env_overrides(
                     UserBudgetConfiguration.from_dict(data)
                 )
-                self._validate_configuration(config)
+                config = self._validate_configuration(config)
                 self._log_config_loaded(config)
                 return config
             else:
@@ -727,51 +749,52 @@ class ConfigurationService:
             wallets=WalletSettings(),
         )
 
-    def _validate_configuration(self, config: UserBudgetConfiguration) -> None:
+    @staticmethod
+    def _validate_configuration(config: UserBudgetConfiguration) -> UserBudgetConfiguration:
         """
-        Validate configuration values and log warnings for invalid values.
+        Repair unusable values and return the corrected (new, frozen) configuration.
 
-        Note: Since config is frozen, we cannot modify it here. Instead, we log
-        warnings and the calling code should fall back to defaults if needed.
+        Mirrors the .NET port's ``ValidateConfiguration``: an out-of-order tier ladder
+        is clamped DOWN (``clamp_tier_ladder``), a non-positive USD limit and a
+        cooldown outside 0-60 reset to the default, each with a warning.
         """
-        # Check tiers are in ascending order
-        if config.tiers.auto_approve > config.tiers.log_and_approve:
-            print(
-                "[Lightning Enable] Warning: autoApprove should be <= logAndApprove.",
-                file=sys.stderr,
-            )
+        tiers = clamp_tier_ladder(config.tiers)
+        for key, before, after in (
+            ("autoApprove", config.tiers.auto_approve, tiers.auto_approve),
+            ("logAndApprove", config.tiers.log_and_approve, tiers.log_and_approve),
+            ("formConfirm", config.tiers.form_confirm, tiers.form_confirm),
+        ):
+            if after != before:
+                print(
+                    f"[Lightning Enable] Warning: {key} ${before} is above the next tier; "
+                    f"lowered to ${after} (tiers must ascend).",
+                    file=sys.stderr,
+                )
 
-        if config.tiers.log_and_approve > config.tiers.form_confirm:
+        limits = config.limits
+        if limits.max_per_payment is not None and limits.max_per_payment <= 0:
             print(
-                "[Lightning Enable] Warning: logAndApprove should be <= formConfirm.",
+                "[Lightning Enable] Warning: maxPerPayment must be positive. Using default.",
                 file=sys.stderr,
             )
+            limits = replace(limits, max_per_payment=PaymentLimits.max_per_payment)
 
-        if config.tiers.form_confirm > config.tiers.url_confirm:
+        if limits.max_per_session is not None and limits.max_per_session <= 0:
             print(
-                "[Lightning Enable] Warning: formConfirm should be <= urlConfirm.",
+                "[Lightning Enable] Warning: maxPerSession must be positive. Using default.",
                 file=sys.stderr,
             )
+            limits = replace(limits, max_per_session=PaymentLimits.max_per_session)
 
-        # Check limits are positive
-        if config.limits.max_per_payment is not None and config.limits.max_per_payment <= 0:
+        session = config.session
+        if session.cooldown_seconds < 0 or session.cooldown_seconds > 60:
             print(
-                "[Lightning Enable] Warning: maxPerPayment must be positive.",
+                "[Lightning Enable] Warning: cooldownSeconds should be 0-60. Using default.",
                 file=sys.stderr,
             )
+            session = replace(session, cooldown_seconds=SessionSettings.cooldown_seconds)
 
-        if config.limits.max_per_session is not None and config.limits.max_per_session <= 0:
-            print(
-                "[Lightning Enable] Warning: maxPerSession must be positive.",
-                file=sys.stderr,
-            )
-
-        # Check cooldown is reasonable
-        if config.session.cooldown_seconds < 0 or config.session.cooldown_seconds > 60:
-            print(
-                "[Lightning Enable] Warning: cooldownSeconds should be 0-60.",
-                file=sys.stderr,
-            )
+        return replace(config, tiers=tiers, limits=limits, session=session)
 
     def _log_config_loaded(self, config: UserBudgetConfiguration) -> None:
         """Log configuration loaded message."""

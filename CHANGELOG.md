@@ -5,6 +5,8 @@ Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-ena
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-11-04
+
 ### Added
 
 - **`docs` tool, both ports.** Lets an agent search and read the Lightning Enable

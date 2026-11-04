@@ -1,0 +1,18 @@
+{
+  "_comment": "The budget defaults BOTH ports write to ~/.lightning-enable/config.json on first run. Read by python/lightning-enable-mcp/tests/test_first_run_budget_defaults.py and dotnet/tests/LightningEnable.Mcp.Tests/Services/FirstRunBudgetDefaultsTests.cs, so the two ports cannot drift. Change this file and both ports together.",
+  "currency": "USD",
+  "tiers": {
+    "autoApprove": 0.10,
+    "logAndApprove": 1.00,
+    "formConfirm": 10.00,
+    "urlConfirm": 100.00
+  },
+  "limits": {
+    "maxPerPayment": 500.00,
+    "maxPerSession": 100.00
+  },
+  "session": {
+    "requireApprovalForFirstPayment": true,
+    "cooldownSeconds": 2
+  }
+}

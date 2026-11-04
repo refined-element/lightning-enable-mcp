@@ -679,10 +679,10 @@ class ConfigurationService:
             print(f"  {self._config_file_path}", file=sys.stderr)
             print("", file=sys.stderr)
             print("  Default spending limits (in USD):", file=sys.stderr)
-            print("    - Auto-approve:      <= $1.00", file=sys.stderr)
-            print("    - Log & approve:     $1.00 - $5.00", file=sys.stderr)
-            print("    - Require confirm:   $5.00 - $25.00", file=sys.stderr)
-            print("    - Browser confirm:   $25.00 - $100.00", file=sys.stderr)
+            print("    - Auto-approve:      <= $0.10", file=sys.stderr)
+            print("    - Log & approve:     $0.10 - $1.00", file=sys.stderr)
+            print("    - Require confirm:   $1.00 - $10.00", file=sys.stderr)
+            print("    - Browser confirm:   $10.00 - $100.00", file=sys.stderr)
             print("    - Max per payment:   $500.00", file=sys.stderr)
             print("    - Max per session:   $100.00", file=sys.stderr)
             print("", file=sys.stderr)
@@ -699,13 +699,18 @@ class ConfigurationService:
 
     @staticmethod
     def _create_default_configuration() -> UserBudgetConfiguration:
-        """Create default configuration with sensible defaults."""
+        """Create the first-run default configuration.
+
+        Must equal the .NET port's ``CreateDefaultConfiguration`` and the shared
+        fixture ``shared/first-run-budget-defaults.json``
+        (pinned by ``tests/test_first_run_budget_defaults.py``).
+        """
         return UserBudgetConfiguration(
             currency="USD",
             tiers=TierThresholds(
-                auto_approve=Decimal("1.00"),
-                log_and_approve=Decimal("5.00"),
-                form_confirm=Decimal("25.00"),
+                auto_approve=Decimal("0.10"),
+                log_and_approve=Decimal("1.00"),
+                form_confirm=Decimal("10.00"),
                 url_confirm=Decimal("100.00"),
             ),
             limits=PaymentLimits(
@@ -713,7 +718,7 @@ class ConfigurationService:
                 max_per_session=Decimal("100.00"),
             ),
             session=SessionSettings(
-                require_approval_for_first_payment=False,
+                require_approval_for_first_payment=True,
                 cooldown_seconds=2,
             ),
             wallets=WalletSettings(),

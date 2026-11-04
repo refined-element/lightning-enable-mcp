@@ -3,6 +3,21 @@
 All notable changes to the Lightning Enable MCP server are documented here.
 Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-enable-mcp`).
 
+## [Unreleased]
+
+### Changed
+
+- **Python: first-run budget defaults now match the .NET port.** On first run the Python
+  server wrote `~/.lightning-enable/config.json` with tiers `autoApprove` $1.00,
+  `logAndApprove` $5.00, `formConfirm` $25.00 and `requireApprovalForFirstPayment: false`,
+  looser than the .NET port's $0.10 / $1.00 / $10.00 with first-payment approval on. Both
+  ports now write the .NET set: `autoApprove` $0.10, `logAndApprove` $1.00, `formConfirm`
+  $10.00, `urlConfirm` $100.00, `maxPerPayment` $500.00, `maxPerSession` $100.00,
+  `requireApprovalForFirstPayment: true`, `cooldownSeconds` 2. Only a newly created config
+  file is affected; an existing `config.json` is read as it is. The values live in
+  `shared/first-run-budget-defaults.json`, which a test in each suite reads, so the ports
+  cannot drift again.
+
 ## [2.1.1] — 2026-10-22
 
 ### Changed

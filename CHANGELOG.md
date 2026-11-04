@@ -79,7 +79,10 @@ Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-ena
 > startup warning to stderr in exactly this state (`LIGHTNING_ENABLE_HOSTED=1`, no approval
 > channel configured so the channel resolves to `refuse`, and
 > `requireApprovalForFirstPayment` true) saying that no payment can be made and naming these
-> three fixes.
+> three fixes. It is printed once, when the server starts, whether or not a wallet is
+> configured; to evaluate it, the Python server now loads `config.json` at startup (creating
+> the default file on a first run), as the .NET server already did, rather than on the
+> first tool call.
 
 ## [2.1.1] — 2026-10-22
 

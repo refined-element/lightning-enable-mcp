@@ -314,7 +314,8 @@ public class Program
             return ConfirmationChannelFactory.Create(
                 config.Confirmation,
                 () => httpClientFactory.CreateClient(ConfirmationChannelFactory.WebhookHttpClientName),
-                warning => Console.Error.WriteLine($"[Lightning Enable MCP] WARNING: {warning}"));
+                warning => Console.Error.WriteLine($"[Lightning Enable MCP] WARNING: {warning}"),
+                requireApprovalForFirstPayment: config.Session.RequireApprovalForFirstPayment);
         });
 
         // Register singleton services

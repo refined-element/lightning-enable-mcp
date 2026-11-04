@@ -54,7 +54,11 @@ Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-ena
 > a session's first payment under these defaults. Mount a persistent config volume at
 > `/home/mcpuser/.lightning-enable` with the tiers you want (set
 > `session.requireApprovalForFirstPayment` to `false` for unattended use), or configure an
-> approval channel (`confirmation.channel` `webhook` or `file`).
+> approval channel (`confirmation.channel` `webhook` or `file`). Both ports now print a
+> startup warning to stderr in exactly this state (`LIGHTNING_ENABLE_HOSTED=1`, no approval
+> channel configured so the channel resolves to `refuse`, and
+> `requireApprovalForFirstPayment` true) saying that no payment can be made and naming these
+> three fixes.
 
 ## [2.1.1] — 2026-10-22
 

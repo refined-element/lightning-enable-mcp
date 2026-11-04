@@ -190,6 +190,19 @@ jobs:
       - name: Bootstrap trusted pip and certifi (hash-pinned, before any install)
         uses: ./.github/actions/trusted-pip
 
+      # NuGet.org Trusted Publishing: GitHub mints an OIDC token (job has id-token: write),
+      # NuGet/login exchanges it for a short-lived API key against the policy configured
+      # on nuget.org (owner refined-element, repo lightning-enable-mcp, workflow
+      # publish-mcp.yml). No long-lived NUGET_API_KEY secret is needed; the old one
+      # expired 2026-11-04 and broke the 2.2.0 publish. `user` is the nuget.org profile
+      # name that owns the package, not an email, and is not sensitive.
+      - name: NuGet login (OIDC -> temporary API key)
+        if: github.event_name == 'push' || github.event.inputs.publish_nuget == 'true'
+        id: nuget-login
+        uses: NuGet/login@v1
+        with:
+          user: LightningEnable
+
       - name: Build and publish .NET MCP
         if: github.event_name == 'push' || github.event.inputs.publish_nuget == 'true'
         run: |
@@ -200,7 +213,7 @@ jobs:
 
           echo "=== Publishing to NuGet ==="
           dotnet nuget push ./nupkg/*.nupkg \
-            --api-key ${{ secrets.NUGET_API_KEY }} \
+            --api-key ${{ steps.nuget-login.outputs.NUGET_API_KEY }} \
             --source https://api.nuget.org/v3/index.json \
             --skip-duplicate
 

@@ -485,6 +485,19 @@ def parse_channel(value: str | None) -> ConfirmationChannelKind | None:
         return None
 
 
+HOSTED_FIRST_PAYMENT_LOCKOUT_WARNING = (
+    "No payment can be made in this configuration: "
+    f"{HOSTED_ENV_VAR}=1 with no approval channel configured refuses every payment that needs "
+    "approval, and session.requireApprovalForFirstPayment is true, so the first payment of "
+    "every session is refused, and a session that never pays never gets past its first "
+    "payment. Fix one of: (1) mount a persistent config volume at ~/.lightning-enable with "
+    "your own config.json; (2) set session.requireApprovalForFirstPayment to false for "
+    'unattended use; (3) set confirmation.channel to "webhook" or "file".'
+)
+"""Startup warning for the one configuration in which no payment can ever succeed. Same text
+as the .NET port's ``ConfirmationChannelFactory.HostedFirstPaymentLockoutWarning``."""
+
+
 def is_hosted(hosted_flag: str | None) -> bool:
     """True when the operator declared a hosted deployment (``1`` or ``true``)."""
     value = (hosted_flag or "").strip().lower()
@@ -632,6 +645,7 @@ def create_confirmation_channel(
     stdin_is_tty: bool | None = None,
     environ: dict | None = None,
     client_factory: Callable[[], httpx.AsyncClient] | None = None,
+    require_approval_for_first_payment: bool = False,
 ) -> ConfirmationChannel:
     """Build the approval channel for this process from config + environment + TTY.
 
@@ -651,6 +665,16 @@ def create_confirmation_channel(
 
     if resolution.warning and warn is not None:
         warn(resolution.warning)
+
+    # "auto" + refuse means hosted, no channel configured, and no TTY. With first-payment
+    # approval on, the first payment is refused and nothing is ever paid.
+    if (
+        resolution.kind is ConfirmationChannelKind.REFUSE
+        and resolution.source == "auto"
+        and require_approval_for_first_payment
+        and warn is not None
+    ):
+        warn(HOSTED_FIRST_PAYMENT_LOCKOUT_WARNING)
 
     if resolution.kind is ConfirmationChannelKind.STDERR:
         return StderrConfirmationChannel()

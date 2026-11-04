@@ -216,24 +216,24 @@ class TierThresholds:
     Note: This dataclass is frozen (immutable) - AI cannot modify at runtime.
     """
 
-    auto_approve: Decimal = Decimal("1.00")
+    auto_approve: Decimal = Decimal("0.10")
     """
     Payments at or below this amount are auto-approved without any prompt.
-    Default: $1.00 (raised from $0.10 for better UX since most clients lack elicitation)
+    Default: $0.10 (same as the first-run file; see shared/first-run-budget-defaults.json)
     """
 
-    log_and_approve: Decimal = Decimal("5.00")
+    log_and_approve: Decimal = Decimal("1.00")
     """
     Payments above auto_approve but at or below this amount are logged but approved.
-    Default: $5.00 (raised from $1.00)
+    Default: $1.00
     """
 
-    form_confirm: Decimal = Decimal("25.00")
+    form_confirm: Decimal = Decimal("10.00")
     """
     Payments above log_and_approve but at or below this amount require confirmation.
     With elicitation: User sees a prompt in the AI interface.
     Without elicitation: User must re-invoke tool with confirmed=true.
-    Default: $25.00 (raised from $10.00)
+    Default: $10.00
     """
 
     url_confirm: Decimal = Decimal("100.00")
@@ -248,10 +248,10 @@ class TierThresholds:
     def from_dict(cls, data: dict) -> "TierThresholds":
         """Create TierThresholds from a dictionary."""
         return cls(
-            auto_approve=Decimal(str(data.get("autoApprove", "1.00"))),
-            log_and_approve=Decimal(str(data.get("logAndApprove", "5.00"))),
-            form_confirm=Decimal(str(data.get("formConfirm", "25.00"))),
-            url_confirm=Decimal(str(data.get("urlConfirm", "100.00"))),
+            auto_approve=Decimal(str(data.get("autoApprove", cls.auto_approve))),
+            log_and_approve=Decimal(str(data.get("logAndApprove", cls.log_and_approve))),
+            form_confirm=Decimal(str(data.get("formConfirm", cls.form_confirm))),
+            url_confirm=Decimal(str(data.get("urlConfirm", cls.url_confirm))),
         )
 
     def to_dict(self) -> dict:
@@ -262,6 +262,26 @@ class TierThresholds:
             "formConfirm": float(self.form_confirm),
             "urlConfirm": float(self.url_confirm),
         }
+
+
+def clamp_tier_ladder(tiers: "TierThresholds") -> "TierThresholds":
+    """Make the tier ladder ascending by lowering tiers, never raising one.
+
+    Walks from the top of the ladder down: a tier above the tier over it is clamped
+    DOWN to that tier's value. So ``{"autoApprove": 2}`` (with the default
+    ``logAndApprove`` of $1) becomes $1 / $1, and ``{"formConfirm": 0.5}`` lowers
+    ``logAndApprove`` to $0.50 rather than resetting the whole ladder (which could
+    LOOSEN a tier the operator set). Same rule as the .NET port's
+    ``BudgetConfigurationService.ClampTierLadder``; pinned by
+    ``shared/partial-tier-fixtures.json``.
+    """
+    url = tiers.url_confirm
+    form = min(tiers.form_confirm, url)
+    log = min(tiers.log_and_approve, form)
+    auto = min(tiers.auto_approve, log)
+    return replace(
+        tiers, auto_approve=auto, log_and_approve=log, form_confirm=form, url_confirm=url
+    )
 
 
 @dataclass(frozen=True)
@@ -329,8 +349,11 @@ class PaymentLimits:
     @classmethod
     def from_dict(cls, data: dict) -> "PaymentLimits":
         """Create PaymentLimits from a dictionary."""
-        max_per_payment = data.get("maxPerPayment")
-        max_per_session = data.get("maxPerSession")
+        # A MISSING key takes the class default ($500 / $100), like the .NET port's
+        # property initializers. Only an explicit ``null`` means "no limit". Using
+        # ``data.get`` here made an omitted key unlimited, which the .NET port never did.
+        max_per_payment = data.get("maxPerPayment", cls.max_per_payment)
+        max_per_session = data.get("maxPerSession", cls.max_per_session)
 
         return cls(
             max_per_payment=Decimal(str(max_per_payment)) if max_per_payment is not None else None,
@@ -368,10 +391,10 @@ class SessionSettings:
     Note: This dataclass is frozen (immutable) - AI cannot modify at runtime.
     """
 
-    require_approval_for_first_payment: bool = False
+    require_approval_for_first_payment: bool = True
     """
     If true, require confirmation for the very first payment of the session.
-    Default: false (disabled because most MCP clients don't support elicitation yet)
+    Default: true (same as the first-run file)
     """
 
     cooldown_seconds: int = 2
@@ -384,8 +407,10 @@ class SessionSettings:
     def from_dict(cls, data: dict) -> "SessionSettings":
         """Create SessionSettings from a dictionary."""
         return cls(
-            require_approval_for_first_payment=data.get("requireApprovalForFirstPayment", False),
-            cooldown_seconds=data.get("cooldownSeconds", 2),
+            require_approval_for_first_payment=data.get(
+                "requireApprovalForFirstPayment", cls.require_approval_for_first_payment
+            ),
+            cooldown_seconds=data.get("cooldownSeconds", cls.cooldown_seconds),
         )
 
     def to_dict(self) -> dict:
@@ -603,7 +628,7 @@ class ConfigurationService:
                 config = self._apply_sats_limit_env_overrides(
                     UserBudgetConfiguration.from_dict(data)
                 )
-                self._validate_configuration(config)
+                config = self._validate_configuration(config)
                 self._log_config_loaded(config)
                 return config
             else:
@@ -679,10 +704,10 @@ class ConfigurationService:
             print(f"  {self._config_file_path}", file=sys.stderr)
             print("", file=sys.stderr)
             print("  Default spending limits (in USD):", file=sys.stderr)
-            print("    - Auto-approve:      <= $1.00", file=sys.stderr)
-            print("    - Log & approve:     $1.00 - $5.00", file=sys.stderr)
-            print("    - Require confirm:   $5.00 - $25.00", file=sys.stderr)
-            print("    - Browser confirm:   $25.00 - $100.00", file=sys.stderr)
+            print("    - Auto-approve:      <= $0.10", file=sys.stderr)
+            print("    - Log & approve:     $0.10 - $1.00", file=sys.stderr)
+            print("    - Require confirm:   $1.00 - $10.00", file=sys.stderr)
+            print("    - Browser confirm:   $10.00 - $100.00", file=sys.stderr)
             print("    - Max per payment:   $500.00", file=sys.stderr)
             print("    - Max per session:   $100.00", file=sys.stderr)
             print("", file=sys.stderr)
@@ -699,13 +724,18 @@ class ConfigurationService:
 
     @staticmethod
     def _create_default_configuration() -> UserBudgetConfiguration:
-        """Create default configuration with sensible defaults."""
+        """Create the first-run default configuration.
+
+        Must equal the .NET port's ``CreateDefaultConfiguration`` and the shared
+        fixture ``shared/first-run-budget-defaults.json``
+        (pinned by ``tests/test_first_run_budget_defaults.py``).
+        """
         return UserBudgetConfiguration(
             currency="USD",
             tiers=TierThresholds(
-                auto_approve=Decimal("1.00"),
-                log_and_approve=Decimal("5.00"),
-                form_confirm=Decimal("25.00"),
+                auto_approve=Decimal("0.10"),
+                log_and_approve=Decimal("1.00"),
+                form_confirm=Decimal("10.00"),
                 url_confirm=Decimal("100.00"),
             ),
             limits=PaymentLimits(
@@ -713,57 +743,58 @@ class ConfigurationService:
                 max_per_session=Decimal("100.00"),
             ),
             session=SessionSettings(
-                require_approval_for_first_payment=False,
+                require_approval_for_first_payment=True,
                 cooldown_seconds=2,
             ),
             wallets=WalletSettings(),
         )
 
-    def _validate_configuration(self, config: UserBudgetConfiguration) -> None:
+    @staticmethod
+    def _validate_configuration(config: UserBudgetConfiguration) -> UserBudgetConfiguration:
         """
-        Validate configuration values and log warnings for invalid values.
+        Repair unusable values and return the corrected (new, frozen) configuration.
 
-        Note: Since config is frozen, we cannot modify it here. Instead, we log
-        warnings and the calling code should fall back to defaults if needed.
+        Mirrors the .NET port's ``ValidateConfiguration``: an out-of-order tier ladder
+        is clamped DOWN (``clamp_tier_ladder``), a non-positive USD limit and a
+        cooldown outside 0-60 reset to the default, each with a warning.
         """
-        # Check tiers are in ascending order
-        if config.tiers.auto_approve > config.tiers.log_and_approve:
-            print(
-                "[Lightning Enable] Warning: autoApprove should be <= logAndApprove.",
-                file=sys.stderr,
-            )
+        tiers = clamp_tier_ladder(config.tiers)
+        for key, before, after in (
+            ("autoApprove", config.tiers.auto_approve, tiers.auto_approve),
+            ("logAndApprove", config.tiers.log_and_approve, tiers.log_and_approve),
+            ("formConfirm", config.tiers.form_confirm, tiers.form_confirm),
+        ):
+            if after != before:
+                print(
+                    f"[Lightning Enable] Warning: {key} ${before} is above the next tier; "
+                    f"lowered to ${after} (tiers must ascend).",
+                    file=sys.stderr,
+                )
 
-        if config.tiers.log_and_approve > config.tiers.form_confirm:
+        limits = config.limits
+        if limits.max_per_payment is not None and limits.max_per_payment <= 0:
             print(
-                "[Lightning Enable] Warning: logAndApprove should be <= formConfirm.",
+                "[Lightning Enable] Warning: maxPerPayment must be positive. Using default.",
                 file=sys.stderr,
             )
+            limits = replace(limits, max_per_payment=PaymentLimits.max_per_payment)
 
-        if config.tiers.form_confirm > config.tiers.url_confirm:
+        if limits.max_per_session is not None and limits.max_per_session <= 0:
             print(
-                "[Lightning Enable] Warning: formConfirm should be <= urlConfirm.",
+                "[Lightning Enable] Warning: maxPerSession must be positive. Using default.",
                 file=sys.stderr,
             )
+            limits = replace(limits, max_per_session=PaymentLimits.max_per_session)
 
-        # Check limits are positive
-        if config.limits.max_per_payment is not None and config.limits.max_per_payment <= 0:
+        session = config.session
+        if session.cooldown_seconds < 0 or session.cooldown_seconds > 60:
             print(
-                "[Lightning Enable] Warning: maxPerPayment must be positive.",
+                "[Lightning Enable] Warning: cooldownSeconds should be 0-60. Using default.",
                 file=sys.stderr,
             )
+            session = replace(session, cooldown_seconds=SessionSettings.cooldown_seconds)
 
-        if config.limits.max_per_session is not None and config.limits.max_per_session <= 0:
-            print(
-                "[Lightning Enable] Warning: maxPerSession must be positive.",
-                file=sys.stderr,
-            )
-
-        # Check cooldown is reasonable
-        if config.session.cooldown_seconds < 0 or config.session.cooldown_seconds > 60:
-            print(
-                "[Lightning Enable] Warning: cooldownSeconds should be 0-60.",
-                file=sys.stderr,
-            )
+        return replace(config, tiers=tiers, limits=limits, session=session)
 
     def _log_config_loaded(self, config: UserBudgetConfiguration) -> None:
         """Log configuration loaded message."""

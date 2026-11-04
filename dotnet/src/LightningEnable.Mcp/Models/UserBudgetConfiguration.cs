@@ -136,26 +136,26 @@ public class TierThresholds
 {
     /// <summary>
     /// Payments at or below this amount are auto-approved without any prompt.
-    /// Default: $1.00 (raised from $0.10 for better UX since most clients lack elicitation)
+    /// Default: $0.10 (same as the first-run file; see shared/first-run-budget-defaults.json)
     /// </summary>
     [JsonPropertyName("autoApprove")]
-    public decimal AutoApprove { get; set; } = 1.00m;
+    public decimal AutoApprove { get; set; } = 0.10m;
 
     /// <summary>
     /// Payments above autoApprove but at or below this amount are logged but approved.
-    /// Default: $5.00 (raised from $1.00)
+    /// Default: $1.00
     /// </summary>
     [JsonPropertyName("logAndApprove")]
-    public decimal LogAndApprove { get; set; } = 5.00m;
+    public decimal LogAndApprove { get; set; } = 1.00m;
 
     /// <summary>
     /// Payments above logAndApprove but at or below this amount require confirmation.
     /// With elicitation: User sees a prompt in the AI interface.
     /// Without elicitation: Nonce-based flow - user re-calls the payment tool with the confirmed nonce (verify_confirmation_code checks it).
-    /// Default: $25.00 (raised from $10.00)
+    /// Default: $10.00
     /// </summary>
     [JsonPropertyName("formConfirm")]
-    public decimal FormConfirm { get; set; } = 25.00m;
+    public decimal FormConfirm { get; set; } = 10.00m;
 
     /// <summary>
     /// Payments above formConfirm but at or below this amount require strong confirmation.
@@ -243,10 +243,10 @@ public class SessionSettings
 {
     /// <summary>
     /// If true, require confirmation for the very first payment of the session.
-    /// Default: false (disabled because most MCP clients don't support elicitation yet)
+    /// Default: true (same as the first-run file)
     /// </summary>
     [JsonPropertyName("requireApprovalForFirstPayment")]
-    public bool RequireApprovalForFirstPayment { get; set; } = false;
+    public bool RequireApprovalForFirstPayment { get; set; } = true;
 
     /// <summary>
     /// Minimum seconds between payments (prevents rapid-fire attacks).

@@ -49,10 +49,14 @@ PRE_CONSOLIDATION_SCHEMA_BYTES = 17_926
 #: near 70% of the pre-consolidation payload, and the guard keeps roughly 950 bytes of
 #: headroom, so the next verbose addition fails again.
 #:
+#: Raised 0.75 → 0.79 when ``docs`` was added (owner decision 2026-11-03): one new verb,
+#: kept to ~470 bytes by leaving most arguments undescribed. The surface lands near 77%,
+#: with roughly 300 bytes of headroom.
+#:
 #: ``ToolSchemaTests.cs`` holds the same line at a different number — the .NET SDK emits a
 #: richer per-parameter schema, so that port's payload is larger. The two fractions are
 #: tuned independently rather than copied.
-MAX_STANDARD_FRACTION = 0.75
+MAX_STANDARD_FRACTION = 0.79
 
 
 def schema_bytes(tools) -> int:
@@ -123,7 +127,7 @@ class TestProfileResolution:
 class TestProfileContents:
     def test_standard_is_the_consolidated_set(self):
         assert [t.name for t in STANDARD_TOOLS] == list(profiles.STANDARD_TOOL_NAMES)
-        assert len(STANDARD_TOOLS) == 17
+        assert len(STANDARD_TOOLS) == 18
 
     def test_lite_is_only_wallet_setup_spend_and_budget(self):
         assert {t.name for t in LITE_TOOLS} == {
@@ -145,7 +149,7 @@ class TestProfileContents:
         assert set(names) - {t.name for t in STANDARD_TOOLS} == set(
             profiles.LEGACY_TOOL_NAMES
         )
-        assert len(names) == 33
+        assert len(names) == 34
 
     def test_legacy_names_are_all_dispatchable_aliases(self):
         """`full` may only re-advertise names the dispatcher actually accepts."""
@@ -170,7 +174,7 @@ class TestProfileSelection:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         "value,expected_count",
-        [("lite", 6), ("standard", 17), ("full", 33)],
+        [("lite", 6), ("standard", 18), ("full", 34)],
     )
     async def test_env_var_selects_profile(self, monkeypatch, value, expected_count):
         monkeypatch.setenv(profiles.PROFILE_ENV_VAR, value)
@@ -501,6 +505,7 @@ PURE_READ_TOOLS = {
     "get_balance",
     "receipts",
     "discover_api",
+    "docs",
     "check_invoice_status",
     "verify_confirmation_code",
 }

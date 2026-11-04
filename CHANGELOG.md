@@ -5,6 +5,25 @@ Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-ena
 
 ## [Unreleased]
 
+### Added
+
+- **`docs` tool, both ports.** Lets an agent search and read the Lightning Enable
+  documentation without web access. `action: "search"` takes `query` and an optional
+  `limit` (default 5, max 20) and returns ranked sections as `{title, path, url, section,
+  snippet}`; `action: "read"` takes `path` (for example `/nwc-setup/account-setup`, a full
+  docs URL also works) and an optional `section` (heading text) and returns that page or
+  section as text, capped at 12,000 UTF-8 bytes with a `truncated` flag, the public URL and
+  the page's section list. The source is `https://docs.lightningenable.com/llms-full.txt`,
+  fetched once and cached in memory for an hour; if a refresh fails the cached copy is
+  served with `stale: true`, and with nothing cached the error names the URL. Set
+  `LIGHTNING_ENABLE_DOCS_URL` to use another copy (`https://`, `http://` on localhost, or a
+  local `file://` path; network shares are refused). Redirects are not followed, and a
+  failed first load is retried after a minute rather than on every call. No wallet and no
+  API key needed. Ranking is plain term frequency over each
+  section's title and body, with title matches weighted 5x. Advertised in the `standard`
+  and `full` profiles, not `lite`; annotated read-only, idempotent and open-world. Both
+  ports assert on the same golden results in `shared/docs/`.
+
 ### Changed
 
 - **Python: first-run budget defaults now match the .NET port.** On first run the Python

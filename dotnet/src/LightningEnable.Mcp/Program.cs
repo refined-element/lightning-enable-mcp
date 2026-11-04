@@ -146,6 +146,27 @@ public class Program
                 ConnectCallback = SsrfConnectValidator.ConnectAsync,
             });
 
+        // The docs tool's source: llms-full.txt from docs.lightningenable.com (or
+        // LIGHTNING_ENABLE_DOCS_URL), cached in memory for an hour. The URL is operator
+        // configuration, never agent input, so it does not need the SSRF guard above.
+        // AllowAutoRedirect = false, as for discover_api: a 3xx is reported as a fetch
+        // failure naming the status (DocsService.RedirectReason), never followed.
+        builder.Services.AddHttpClient(DocsService.HttpClientName, client =>
+            {
+                client.Timeout = TimeSpan.FromSeconds(15);
+                client.DefaultRequestHeaders.Add("Accept", "text/plain");
+                client.DefaultRequestHeaders.Add("User-Agent", UserAgent.Value);
+            })
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            {
+                AllowAutoRedirect = false,
+            });
+        builder.Services.AddSingleton<IDocsService>(sp =>
+        {
+            var factory = sp.GetRequiredService<IHttpClientFactory>();
+            return new DocsService(httpClient: () => factory.CreateClient(DocsService.HttpClientName));
+        });
+
         // Register wallet service
         // Default priority for L402: LND > NWC > Strike > OpenNode
         // (LND, NWC, and Strike return preimage; OpenNode does not)

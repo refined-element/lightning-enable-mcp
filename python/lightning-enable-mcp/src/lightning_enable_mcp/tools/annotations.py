@@ -69,6 +69,14 @@ TOOL_ANNOTATIONS: dict[str, ToolAnnotations] = {
         title="Verify confirmation code", readOnlyHint=True, openWorldHint=False
     ),
     "discover_api": ToolAnnotations(title="Discover L402 APIs", readOnlyHint=True),
+    # Read-only, but idempotent is stated anyway: a cached corpus answers the same
+    # call the same way. Open-world because it fetches docs.lightningenable.com.
+    "docs": ToolAnnotations(
+        title="Lightning Enable docs",
+        readOnlyHint=True,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
     "create_lightning_enable_account": ToolAnnotations(
         title="Create Lightning Enable account",
         readOnlyHint=False,

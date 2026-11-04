@@ -41,11 +41,15 @@ public class ToolSchemaTests
     /// surface still lands near 72% of the pre-consolidation payload, and the guard keeps
     /// roughly 1KB of headroom, so it fails again on the next verbose addition.</para>
     ///
+    /// <para>Raised 0.78 → 0.83 when <c>docs</c> was added (owner decision 2026-11-03): one new
+    /// verb whose arguments are mostly left undescribed to keep it small. The surface lands near
+    /// 81%, with roughly 350 bytes of headroom.</para>
+    ///
     /// <para>The Python guard (<c>tests/test_tool_profiles.py</c>) holds the same line at a
     /// different number — its schemas are smaller because the .NET SDK emits a richer
     /// per-parameter schema — so the two fractions are tuned independently, not copied.</para>
     /// </summary>
-    private const double MaxStandardFraction = 0.78;
+    private const double MaxStandardFraction = 0.83;
 
     private static readonly IReadOnlySet<string> MoneyMovingTools = new HashSet<string>
     {
@@ -56,7 +60,7 @@ public class ToolSchemaTests
 
     private static readonly IReadOnlySet<string> PureReadTools = new HashSet<string>
     {
-        "get_balance", "receipts", "discover_api", "check_invoice_status",
+        "get_balance", "receipts", "discover_api", "docs", "check_invoice_status",
         "verify_confirmation_code",
     };
 
@@ -69,7 +73,7 @@ public class ToolSchemaTests
         "walletService", "budgetService", "priceService", "configService", "paymentHistory",
         "paymentHistoryService", "historyService", "receiptService", "l402Client",
         "apiService", "agentService", "rateLimiter", "operationLedger", "httpClientFactory",
-        "onboarding",
+        "onboarding", "docsService",
         "server", "cancellationToken",
     };
 

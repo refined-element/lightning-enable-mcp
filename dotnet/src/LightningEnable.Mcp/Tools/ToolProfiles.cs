@@ -55,6 +55,7 @@ public static class ToolProfiles
         "check_invoice_status",
         "verify_confirmation_code",
         "discover_api",
+        "docs",
         "create_lightning_enable_account",
         "wallet_ops",
         "l402_producer",

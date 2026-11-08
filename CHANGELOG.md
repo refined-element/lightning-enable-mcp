@@ -5,6 +5,8 @@ Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-ena
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-11-09
+
 ### Added
 
 - **`l402_producer(action="sell_url")`, both ports.** Charge for an API in one call: a target

@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -72,6 +74,15 @@ internal static class ProducerClaimErrors
     };
 
     /// <summary>
+    /// <c>merchant_exists</c> after payment: the server checks the recovery email only in phase 2
+    /// (spec §17.3). Changing the arguments would be a new claim and a new payment.
+    /// </summary>
+    public const string MerchantExistsAfterPayment =
+        "The claim payment is spent, and an account already uses that recovery email. Do not change the "
+        + "arguments or claim again: a different body is a new claim and a new payment. Contact "
+        + "support@lightningenable.com with the payment hash.";
+
+    /// <summary>
     /// Refusals that are permanent before payment but can clear on a phase-2 retry: phase 2
     /// re-runs the DNS check and the Lightning Address lookup, so a provider or resolver that
     /// was briefly down recovers.
@@ -114,13 +125,21 @@ internal sealed class SellUrlOptions
 /// <see cref="PayL402ChallengeTool"/>, the same budget and out-of-band confirmation path every
 /// paying tool uses → phase 2 with the byte-identical body and <c>Authorization: L402</c>.</para>
 ///
-/// <para><b>Crash safety.</b> The exact body and the challenge are written to
-/// <c>&lt;config dir&gt;/claim/sell-&lt;hash&gt;.json</c> (0600) BEFORE paying, and the preimage
-/// right after, so calling again with the same arguments skips phase 1 and redeems the token
-/// already paid for. The file is deleted once the claim answers 200.</para>
+/// <para><b>State.</b> One file per exact body, <c>&lt;config dir&gt;/claim/sell-&lt;hash&gt;.json</c>
+/// (0600), whose phase only moves forward: <c>challenge</c> (saved before paying) →
+/// <c>paying</c> (the wallet may be asked) → <c>paid</c> (preimage saved) → <c>redeemed</c>
+/// (a secret-free marker). The only step back is <c>paying</c> → <c>challenge</c>, and only
+/// when the pay path refused before the wallet was asked and the operation ledger has no
+/// record of the invoice. Only a <c>challenge</c> file may expire. Calls for the same body are
+/// serialized by a per-file lock, and every save re-reads the file and refuses to move it
+/// backwards.</para>
+///
+/// <para><b>Money safety.</b> "Nothing was charged" is said only for refusals known to happen
+/// before the wallet. Any other failure after the wallet may have been asked is
+/// <c>payment_state_unknown</c> with <c>paid: "unknown"</c>, never paid again by this tool.</para>
 ///
 /// <para><b>Secrets.</b> The macaroon and preimage never enter a tool result; the API key
-/// enters exactly one (the first 200), after it has been stored.</para>
+/// enters exactly one result per issue, after it has been stored.</para>
 /// </summary>
 internal static class ProducerSellUrl
 {
@@ -128,17 +147,35 @@ internal static class ProducerSellUrl
     private const string ConfigKey = "lightningEnableApiKey";
     private const int MaxRetryDelaySeconds = 10;
 
-    private const string BodyRule =
+    /// <summary>Used only when the server's quote carries no <c>bodyRule</c> of its own.</summary>
+    private const string FallbackBodyRule =
         "The claim body is written once and sent twice: the payment is bound to the target URL, the Lightning "
         + "Address, and the recovery binding. Changing any of them after paying makes the payment unusable, so "
         + "call sell_url again with exactly the same arguments.";
 
+    internal const string RecoveryEmailWarning =
+        "An email that already belongs to a Lightning Enable account is refused only after payment "
+        + "(merchant_exists), and the paid claim cannot be reused for a different body. Use an email that is "
+        + "not registered yet, a Nostr public key, or no recovery.";
+
+    internal const string ReplayRotatedNote =
+        "This claim was replayed, so the server rotated the account's API key: the key returned here is now the "
+        + "only valid one, and any earlier key for this account no longer works.";
+
+    internal const string ReplayWithoutKeyNote =
+        "The server answered this replay without an API key. A replay normally rotates the key and returns the new "
+        + "one; if the account's key is lost, recover it with the recovery binding, or contact support with the "
+        + "payment hash.";
+
     private static readonly JsonSerializerOptions Indented = new() { WriteIndented = true };
+
+    /// <summary>Serializes calls for the same claim body within this process.</summary>
+    private static readonly ConcurrentDictionary<string, SemaphoreSlim> Locks = new(StringComparer.OrdinalIgnoreCase);
 
     public static async Task<string> SellUrlAsync(
         string? targetUrl,
         string? lightningAddress,
-        long priceSats,
+        long? defaultPriceSats,
         string? name,
         string? description,
         string? recoveryEmail,
@@ -148,6 +185,8 @@ internal static class ProducerSellUrl
         string? confirmationNonce,
         IProducerClaimClient? claimClient,
         IL402HttpClient? l402Client,
+        IWalletService? walletService,
+        IOperationLedger? ledger,
         IBudgetService? budgetService,
         IPriceService? priceService,
         IPaymentHistoryService? paymentHistory,
@@ -157,154 +196,207 @@ internal static class ProducerSellUrl
         CancellationToken cancellationToken)
     {
         options ??= SellUrlOptions.Default;
+
+        // ── Local checks: nothing is sent, nothing is minted. ──────────────────────────
+        targetUrl = targetUrl?.Trim();
+        lightningAddress = lightningAddress?.Trim();
+        if (string.IsNullOrEmpty(targetUrl))
+            return LocalRefusal("invalid_target_url", "targetUrl is required: the https URL of the API to sell.");
+        if (!Uri.TryCreate(targetUrl, UriKind.Absolute, out var target)
+            || target.Scheme != Uri.UriSchemeHttps
+            || string.IsNullOrEmpty(target.Host))
+            return LocalRefusal("invalid_target_url", "targetUrl must be an absolute https URL, like https://api.example.com.");
+        if (string.IsNullOrEmpty(lightningAddress) || !lightningAddress.Contains('@'))
+            return LocalRefusal("invalid_lightning_address",
+                "lightningAddress is required, as name@domain from a wallet provider that supports Lightning Addresses.");
+        var email = string.IsNullOrWhiteSpace(recoveryEmail) ? null : recoveryEmail.Trim();
+        var pubkey = string.IsNullOrWhiteSpace(recoveryNostrPubkey) ? null : recoveryNostrPubkey.Trim();
+        if (email != null && pubkey != null)
+            return LocalRefusal("invalid_recovery", "Give recoveryEmail or recoveryNostrPubkey, not both.");
+        if (defaultPriceSats is < 0)
+            return LocalRefusal("invalid_price", "defaultPriceSats must be positive; omit it for the server default.");
+        if (claimClient == null)
+            return Failure("not_available", "The producer claim client is not available on this server.", stage: "setup");
+
+        var ctx = new Ctx
+        {
+            ClaimClient = claimClient,
+            L402Client = l402Client,
+            // IL402HttpClient is always registered, so the wallet itself says whether it can pay.
+            HasWallet = l402Client != null && walletService?.IsConfigured != false,
+            Ledger = ledger,
+            BudgetService = budgetService,
+            PriceService = priceService,
+            PaymentHistory = paymentHistory,
+            Server = server,
+            Options = options,
+            ConfigPath = options.ConfigPath ?? configService?.ConfigFilePath ?? DefaultConfigPath(),
+            ConfirmationNonce = confirmationNonce,
+            RecoveryEmail = email,
+        };
+        var stateDir = Path.Combine(Path.GetDirectoryName(ctx.ConfigPath) ?? ".", "claim");
+        var serviceName = string.IsNullOrWhiteSpace(name) ? target.Host : name.Trim();
+
+        string? body = null;
+        SemaphoreSlim? gate = null;
         try
         {
-            // ── Local checks: nothing is sent, nothing is minted. ──────────────────────
-            targetUrl = targetUrl?.Trim();
-            lightningAddress = lightningAddress?.Trim();
-            if (string.IsNullOrEmpty(targetUrl))
-                return LocalRefusal("invalid_target_url", "targetUrl is required: the https URL of the API to sell.");
-            if (!Uri.TryCreate(targetUrl, UriKind.Absolute, out var target)
-                || (target.Scheme != Uri.UriSchemeHttps && target.Scheme != Uri.UriSchemeHttp)
-                || string.IsNullOrEmpty(target.Host))
-                return LocalRefusal("invalid_target_url", "targetUrl must be an absolute https URL, like https://api.example.com.");
-            if (string.IsNullOrEmpty(lightningAddress) || !lightningAddress.Contains('@'))
-                return LocalRefusal("invalid_lightning_address",
-                    "lightningAddress is required, as name@domain from a wallet provider that supports Lightning Addresses.");
-            var email = string.IsNullOrWhiteSpace(recoveryEmail) ? null : recoveryEmail.Trim();
-            var pubkey = string.IsNullOrWhiteSpace(recoveryNostrPubkey) ? null : recoveryNostrPubkey.Trim();
-            if (email != null && pubkey != null)
-                return LocalRefusal("invalid_recovery", "Give recoveryEmail or recoveryNostrPubkey, not both.");
-            if (priceSats < 0)
-                return LocalRefusal("invalid_price", "priceSats must be positive; omit it for the server default.");
-            if (claimClient == null)
-                return Failure("not_available", "The producer claim client is not available on this server.", stage: "setup");
-
-            var serviceName = string.IsNullOrWhiteSpace(name) ? target.Host : name.Trim();
-            var configPath = options.ConfigPath ?? configService?.ConfigFilePath ?? DefaultConfigPath();
-            var stateDir = Path.Combine(Path.GetDirectoryName(configPath) ?? ".", "claim");
-
-            // ── Resume: a saved challenge for this exact body skips phase 1. ───────────
-            string? body = null;
             if (!string.IsNullOrWhiteSpace(acceptTerms))
             {
-                body = BuildBody(targetUrl, serviceName, description, priceSats, lightningAddress, email, pubkey,
+                body = BuildBody(targetUrl, serviceName, description, defaultPriceSats, lightningAddress, email, pubkey,
                     listPublicly, acceptTerms.Trim());
-                var saved = ClaimState.Load(stateDir, body);
-                if (saved != null)
-                {
-                    if (saved.Phase == ClaimState.Paid)
-                    {
-                        return await RedeemAsync(saved, claimClient, configPath, options, resumed: true, cancellationToken);
-                    }
-                    if (saved.Phase == ClaimState.Paying || !saved.IsExpired(options.UtcNow()))
-                    {
-                        return await PayThenRedeemAsync(saved, confirmationNonce, claimClient, l402Client,
-                            budgetService, priceService, paymentHistory, server, configPath, options, cancellationToken);
-                    }
-                    saved.Delete(); // an unpaid, expired challenge is worth nothing
-                }
+                var bodyLock = Locks.GetOrAdd(Path.GetFullPath(Path.Combine(stateDir, ClaimState.FileNameFor(body))),
+                    _ => new SemaphoreSlim(1, 1));
+                await bodyLock.WaitAsync(cancellationToken);
+                gate = bodyLock; // released in finally only once actually held
             }
 
-            // ── 1. The quote (free). ───────────────────────────────────────────────────
-            ClaimHttpResponse quoteResponse;
-            try
-            {
-                quoteResponse = await claimClient.GetQuoteAsync(cancellationToken);
-            }
-            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
-            {
-                return ProblemResult(ProducerClaimErrors.NetworkError, 0, null, null, null, "quote", paid: false);
-            }
-            if (quoteResponse.Status != 200)
-                return HttpProblem(quoteResponse, "quote", paid: false);
-
-            var quote = ParseObject(quoteResponse.Body);
-            if (quote == null)
-                return Failure("invalid_quote", "The claim quote was not valid JSON.", stage: "quote");
-            if (quote["enabled"] is JsonValue enabled && enabled.TryGetValue<bool>(out var isEnabled) && !isEnabled)
-                return ProblemResult("claim_unavailable", 200, null, null, null, "quote", paid: false);
-
-            var termsVersion = GetString(quote["terms"]?["version"]);
-            var quotedSats = GetLong(quote["price"]?["sats"]);
-            if (string.IsNullOrEmpty(termsVersion) || quotedSats <= 0)
-                return Failure("invalid_quote", "The claim quote has no terms version or price.", stage: "quote");
-
-            if (string.IsNullOrWhiteSpace(acceptTerms) || !string.Equals(acceptTerms.Trim(), termsVersion, StringComparison.Ordinal))
-            {
-                return QuoteResult(quote, termsVersion, acceptTerms, serviceName);
-            }
-
-            // ── 2. Phase 1: the 402. ───────────────────────────────────────────────────
-            if (l402Client == null)
-            {
-                return Failure("no_wallet",
-                    "No spending wallet is configured, so the claim cannot be paid. Configure LND, NWC, or Strike "
-                    + "(setup_wallet), then call sell_url again. Nothing was minted or charged.", stage: "phase1");
-            }
-
-            ClaimHttpResponse challengeResponse;
-            try
-            {
-                challengeResponse = await claimClient.PostAsync(body!, null, cancellationToken);
-            }
-            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
-            {
-                return ProblemResult(ProducerClaimErrors.NetworkError, 0, null, null, null, "phase1", paid: false);
-            }
-
-            var challenge = challengeResponse.Status == 402 ? ParseObject(challengeResponse.Body) : null;
-            var invoice = GetString(challenge?["invoice"]);
-            var macaroon = GetString(challenge?["macaroon"]);
-            if (challengeResponse.Status != 402 || string.IsNullOrEmpty(invoice) || string.IsNullOrEmpty(macaroon))
-                return HttpProblem(challengeResponse, "phase1", paid: false);
-
-            var challengeSats = GetLong(challenge!["priceSats"]);
-            if (challengeSats <= 0 || challengeSats > quotedSats)
-            {
-                return Failure("price_changed",
-                    $"The claim invoice asks for {challengeSats:N0} sats but the quote said {quotedSats:N0}. Nothing "
-                    + "was paid. Show the operator the new figure and call sell_url again if they agree.",
-                    stage: "phase1", extra: new JsonObject { ["quotedSats"] = quotedSats, ["invoiceSats"] = challengeSats });
-            }
-
-            var state = new ClaimState(stateDir, body!)
-            {
-                ClaimUrl = claimClient.ClaimUrl,
-                Invoice = invoice,
-                Macaroon = macaroon,
-                PaymentHash = GetString(challenge["paymentHash"]),
-                ExpiresAt = GetString(challenge["expiresAt"]) ?? challenge["expiresAt"]?.ToString(),
-                PriceSats = challengeSats,
-                Phase = ClaimState.Challenge,
-            };
-            state.Save(); // before paying: a crash from here on is recoverable
-
-            return await PayThenRedeemAsync(state, confirmationNonce, claimClient, l402Client, budgetService,
-                priceService, paymentHistory, server, configPath, options, cancellationToken);
+            return await RunAsync(ctx, stateDir, body, acceptTerms, serviceName, cancellationToken);
         }
         catch (Exception ex)
         {
+            // Whatever escaped, the file says whether money may have moved.
+            var saved = body == null ? null : ClaimState.Load(stateDir, body);
+            if (saved?.Phase == ClaimState.Paid)
+                return Paid(saved, "sell_url_failed",
+                    $"sell_url stopped after the claim was paid: {CreateAccountTool.Scrub(ex.Message)}", paid: true);
+            if (saved?.Phase == ClaimState.Paying)
+                return Unknown(saved, CreateAccountTool.Scrub(ex.Message, 300));
+            if (saved?.Phase == ClaimState.Redeemed)
+                return AlreadyClaimed(saved);
             return Failure("sell_url_failed", $"sell_url failed: {CreateAccountTool.Scrub(ex.Message)}", stage: "unknown");
         }
+        finally
+        {
+            gate?.Release();
+        }
+    }
+
+    private sealed class Ctx
+    {
+        public required IProducerClaimClient ClaimClient { get; init; }
+        public IL402HttpClient? L402Client { get; init; }
+        public bool HasWallet { get; init; }
+        public IOperationLedger? Ledger { get; init; }
+        public IBudgetService? BudgetService { get; init; }
+        public IPriceService? PriceService { get; init; }
+        public IPaymentHistoryService? PaymentHistory { get; init; }
+        public McpServer? Server { get; init; }
+        public required SellUrlOptions Options { get; init; }
+        public required string ConfigPath { get; init; }
+        public string? ConfirmationNonce { get; init; }
+        public string? RecoveryEmail { get; init; }
+    }
+
+    private static async Task<string> RunAsync(
+        Ctx ctx, string stateDir, string? body, string? acceptTerms, string serviceName, CancellationToken ct)
+    {
+        // ── Resume: the saved state for this exact body decides. ─────────────────────────
+        if (body != null && ClaimState.Load(stateDir, body) is { } saved)
+        {
+            switch (saved.Phase)
+            {
+                case ClaimState.Redeemed:
+                    return AlreadyClaimed(saved);
+                case ClaimState.Paid:
+                    return await RedeemAsync(saved, ctx, resumed: true, ct);
+                case ClaimState.Paying:
+                    // The wallet may have been asked. Only the ledger can prove it was not.
+                    if (ctx.Ledger != null && !LedgerKnows(ctx.Ledger, saved.Invoice))
+                    {
+                        saved.Phase = ClaimState.Challenge;
+                        saved.Save(allowDowngradeFromPaying: true);
+                        return await PayThenRedeemAsync(saved, ctx, ct);
+                    }
+                    return Unknown(saved, null);
+                default:
+                    if (!saved.IsExpired(ctx.Options.UtcNow()))
+                        return await PayThenRedeemAsync(saved, ctx, ct);
+                    saved.Delete(); // a challenge the wallet never saw, and expired: worth nothing
+                    break;
+            }
+        }
+
+        // ── 1. The quote (free). ───────────────────────────────────────────────────────
+        ClaimHttpResponse quoteResponse;
+        try
+        {
+            quoteResponse = await ctx.ClaimClient.GetQuoteAsync(ct);
+        }
+        catch (Exception ex) when ((ex is HttpRequestException or TaskCanceledException) && !ct.IsCancellationRequested)
+        {
+            return ProblemResult(ProducerClaimErrors.NetworkError, 0, null, null, null, "quote", paid: false);
+        }
+        if (quoteResponse.Status != 200)
+            return HttpProblem(quoteResponse, "quote");
+
+        var quote = ParseObject(quoteResponse.Body);
+        if (quote == null)
+            return Failure("invalid_quote", "The claim quote was not valid JSON.", stage: "quote");
+        if (quote["enabled"] is JsonValue enabled && enabled.TryGetValue<bool>(out var isEnabled) && !isEnabled)
+            return ProblemResult("claim_unavailable", 200, null, null, null, "quote", paid: false);
+
+        var termsVersion = GetString(quote["terms"]?["version"]);
+        var quotedSats = GetLong(quote["price"]?["sats"]);
+        if (string.IsNullOrEmpty(termsVersion) || quotedSats <= 0)
+            return Failure("invalid_quote", "The claim quote has no terms version or price.", stage: "quote");
+
+        if (body == null || !string.Equals(acceptTerms!.Trim(), termsVersion, StringComparison.Ordinal))
+        {
+            return QuoteResult(quote, termsVersion, acceptTerms, serviceName, ctx.RecoveryEmail != null);
+        }
+
+        // ── 2. Phase 1: the 402. ───────────────────────────────────────────────────────
+        if (!ctx.HasWallet)
+            return NoWallet("phase1");
+
+        ClaimHttpResponse challengeResponse;
+        try
+        {
+            challengeResponse = await ctx.ClaimClient.PostAsync(body, null, ct);
+        }
+        catch (Exception ex) when ((ex is HttpRequestException or TaskCanceledException) && !ct.IsCancellationRequested)
+        {
+            return ProblemResult(ProducerClaimErrors.NetworkError, 0, null, null, null, "phase1", paid: false);
+        }
+
+        var challenge = challengeResponse.Status == 402 ? ParseObject(challengeResponse.Body) : null;
+        var invoice = GetString(challenge?["invoice"]);
+        var macaroon = GetString(challenge?["macaroon"]);
+        if (challengeResponse.Status != 402 || string.IsNullOrEmpty(invoice) || string.IsNullOrEmpty(macaroon))
+            return HttpProblem(challengeResponse, "phase1");
+
+        var challengeSats = GetLong(challenge!["priceSats"]);
+        if (challengeSats <= 0 || challengeSats > quotedSats)
+        {
+            return Failure("price_changed",
+                $"The claim invoice asks for {challengeSats:N0} sats but the quote said {quotedSats:N0}. Nothing "
+                + "was paid. Show the operator the new figure and call sell_url again if they agree.",
+                stage: "phase1", extra: new JsonObject { ["quotedSats"] = quotedSats, ["invoiceSats"] = challengeSats });
+        }
+
+        var state = new ClaimState(stateDir, body)
+        {
+            ClaimUrl = ctx.ClaimClient.ClaimUrl,
+            Invoice = invoice,
+            Macaroon = macaroon,
+            PaymentHash = GetString(challenge["paymentHash"]),
+            ExpiresAt = GetString(challenge["expiresAt"]) ?? challenge["expiresAt"]?.ToString(),
+            PriceSats = challengeSats,
+            Phase = ClaimState.Challenge,
+        };
+        state.Save(); // before paying: a crash from here on is recoverable
+
+        return await PayThenRedeemAsync(state, ctx, ct);
     }
 
     // ── Pay ──────────────────────────────────────────────────────────────────────────
 
-    private static async Task<string> PayThenRedeemAsync(
-        ClaimState state, string? confirmationNonce, IProducerClaimClient claimClient,
-        IL402HttpClient? l402Client, IBudgetService? budgetService, IPriceService? priceService,
-        IPaymentHistoryService? paymentHistory, McpServer? server, string configPath, SellUrlOptions options,
-        CancellationToken cancellationToken)
+    private static async Task<string> PayThenRedeemAsync(ClaimState state, Ctx ctx, CancellationToken ct)
     {
-        if (l402Client == null)
-        {
-            return Failure("no_wallet",
-                "No spending wallet is configured, so the claim cannot be paid. Configure LND, NWC, or Strike "
-                + "(setup_wallet), then call sell_url again with the same arguments.", stage: "payment");
-        }
+        if (!ctx.HasWallet)
+            return NoWallet("payment");
 
-        var wasPaying = state.Phase == ClaimState.Paying;
         state.Phase = ClaimState.Paying;
         state.Save();
 
@@ -315,14 +407,14 @@ internal static class ProducerSellUrl
             invoice: state.Invoice,
             macaroon: state.Macaroon,
             maxSats: (int)Math.Min(state.PriceSats, int.MaxValue),
-            confirmationNonce: confirmationNonce,
+            confirmationNonce: ctx.ConfirmationNonce,
             challengeHeader: null,
-            server: server,
-            l402Client: l402Client,
-            budgetService: budgetService,
-            priceService: priceService,
-            paymentHistory: paymentHistory,
-            cancellationToken: cancellationToken);
+            server: ctx.Server,
+            l402Client: ctx.L402Client,
+            budgetService: ctx.BudgetService,
+            priceService: ctx.PriceService,
+            paymentHistory: ctx.PaymentHistory,
+            cancellationToken: ct);
 
         var pay = ParseObject(payJson) ?? new JsonObject();
         if (GetBool(pay["success"]))
@@ -334,13 +426,29 @@ internal static class ProducerSellUrl
                 : token[(token.LastIndexOf(':') + 1)..];
             state.Phase = ClaimState.Paid;
             state.Save(); // the preimage first, before anything else can fail
-            return await RedeemAsync(state, claimClient, configPath, options, resumed: false, cancellationToken);
+            return await RedeemAsync(state, ctx, resumed: false, ct);
         }
+
+        // Money left the wallet (or is in flight) without a proof: the wallet seam wrote a receipt.
+        if (pay["receipt_written"] is JsonValue)
+        {
+            return Paid(state, "payment_unproven",
+                "The claim payment left the wallet (or is in flight), but the wallet returned no proof of payment, "
+                + "so the claim cannot be redeemed yet. Do NOT pay again.", paid: true,
+                detail: CreateAccountTool.Scrub(pay["error"]?.ToString(), 300));
+        }
+
+        // Anything not provably refused before the wallet is ambiguous: keep 'paying'.
+        if (!IsKnownPreWalletRefusal(pay) || LedgerKnows(ctx.Ledger, state.Invoice))
+        {
+            return Unknown(state, CreateAccountTool.Scrub(pay["error"]?.ToString(), 300));
+        }
+
+        state.Phase = ClaimState.Challenge;
+        state.Save(allowDowngradeFromPaying: true);
 
         if (GetBool(pay["requiresConfirmation"]))
         {
-            state.Phase = ClaimState.Challenge;
-            state.Save();
             return JsonSerializer.Serialize(new JsonObject
             {
                 ["success"] = false,
@@ -359,32 +467,6 @@ internal static class ProducerSellUrl
             }, Indented);
         }
 
-        // Did money move? receipt_written is null when nothing was paid, true/false once the
-        // wallet seam saw a payment (pending, or settled without a preimage).
-        var moneyMoved = pay["receipt_written"] is JsonValue;
-        if (moneyMoved || wasPaying)
-        {
-            return JsonSerializer.Serialize(new JsonObject
-            {
-                ["success"] = false,
-                ["action"] = "sell_url",
-                ["stage"] = "payment",
-                ["error"] = moneyMoved ? "payment_unproven" : "payment_state_unknown",
-                ["message"] = moneyMoved
-                    ? "The claim payment left the wallet (or is in flight), but the wallet returned no proof of payment, "
-                      + "so the claim cannot be redeemed yet. Do NOT pay again."
-                    : "An earlier sell_url call started paying this claim and did not finish, and the wallet now refuses "
-                      + "the invoice. It may have been paid. Do NOT pay again.",
-                ["detail"] = CreateAccountTool.Scrub(pay["error"]?.ToString(), 300),
-                ["retryable"] = false,
-                ["paid"] = true,
-                ["recovery"] = RecoveryBlock(state),
-            }, Indented);
-        }
-
-        // Refused before the wallet was asked: budget, ceiling, approval channel. Nothing was spent.
-        state.Phase = ClaimState.Challenge;
-        state.Save();
         var refused = new JsonObject
         {
             ["success"] = false,
@@ -396,6 +478,8 @@ internal static class ProducerSellUrl
             ["retryable"] = false,
             ["paid"] = false,
             ["priceSats"] = state.PriceSats,
+            ["nextStep"] = "If a confirmation code was rejected, call sell_url again with the same arguments and no "
+                           + "confirmationNonce to request a new one.",
         };
         if (pay["budget"] is JsonNode budget)
             refused["budget"] = budget.DeepClone();
@@ -404,11 +488,34 @@ internal static class ProducerSellUrl
         return JsonSerializer.Serialize(refused, Indented);
     }
 
+    /// <summary>
+    /// The pay results <see cref="PayL402ChallengeTool"/> returns only BEFORE the wallet is
+    /// asked: budget deny, confirmation required or refused by the channel, an invalid or
+    /// expired code, an amountless or invalid invoice, the <c>maxSats</c> ceiling, the
+    /// reservation refusal, and no wallet. Everything else may have reached the wallet.
+    /// </summary>
+    internal static bool IsKnownPreWalletRefusal(JsonObject pay)
+    {
+        if (pay.ContainsKey("budget") || pay.ContainsKey("requiresConfirmation"))
+            return true;
+        var error = GetString(pay["error"]) ?? string.Empty;
+        return error.StartsWith("Confirmation code is invalid", StringComparison.Ordinal)
+               || error.StartsWith("Invoice has no amount", StringComparison.Ordinal)
+               || error.StartsWith("Invoice is required", StringComparison.Ordinal)
+               || error.StartsWith("L402 HTTP client not available", StringComparison.Ordinal)
+               || error.StartsWith("Budget check failed:", StringComparison.Ordinal)
+               || error.StartsWith("NWC wallet not configured", StringComparison.Ordinal)
+               || (error.StartsWith("Invoice amount ", StringComparison.Ordinal)
+                   && error.Contains(" exceeds maximum ", StringComparison.Ordinal));
+    }
+
+    private static bool LedgerKnows(IOperationLedger? ledger, string? invoice) =>
+        ledger != null && !string.IsNullOrEmpty(invoice)
+        && ledger.Lookup(IdempotentWalletService.DeriveOperationId(invoice)) != null;
+
     // ── Phase 2 ──────────────────────────────────────────────────────────────────────
 
-    private static async Task<string> RedeemAsync(
-        ClaimState state, IProducerClaimClient claimClient, string configPath, SellUrlOptions options, bool resumed,
-        CancellationToken cancellationToken)
+    private static async Task<string> RedeemAsync(ClaimState state, Ctx ctx, bool resumed, CancellationToken ct)
     {
         var authorization = $"L402 {state.Macaroon}:{state.Preimage}";
         var code = ProducerClaimErrors.NetworkError;
@@ -421,9 +528,9 @@ internal static class ProducerSellUrl
             ClaimHttpResponse? response = null;
             try
             {
-                response = await claimClient.PostAsync(state.Body, authorization, cancellationToken);
+                response = await ctx.ClaimClient.PostAsync(state.Body, authorization, ct);
             }
-            catch (Exception ex) when ((ex is HttpRequestException or TaskCanceledException) && !cancellationToken.IsCancellationRequested)
+            catch (Exception ex) when ((ex is HttpRequestException or TaskCanceledException) && !ct.IsCancellationRequested)
             {
                 code = ProducerClaimErrors.NetworkError;
                 status = 0;
@@ -435,7 +542,7 @@ internal static class ProducerSellUrl
             {
                 if (response.Status == 200 && ParseObject(response.Body) is JsonObject claimed)
                 {
-                    return SuccessResult(claimed, state, configPath, options, resumed);
+                    return SuccessResult(claimed, state, ctx);
                 }
                 status = response.Status;
                 problem = ParseObject(response.Body);
@@ -449,7 +556,7 @@ internal static class ProducerSellUrl
             {
                 return ProblemResult(code, status, problem, retryAfter, state, "phase2", paid: true, attempts: attempt);
             }
-            await options.Delay(BackoffFor(attempt, retryAfter), cancellationToken);
+            await ctx.Options.Delay(BackoffFor(attempt, retryAfter), ct);
         }
 
         return ProblemResult(code, status, problem, retryAfter, state, "phase2", paid: true, attempts: MaxRedeemAttempts);
@@ -460,8 +567,7 @@ internal static class ProducerSellUrl
             ? Math.Clamp(s, 1, MaxRetryDelaySeconds)
             : Math.Min(1 << (attempt - 1), MaxRetryDelaySeconds));
 
-    private static string SuccessResult(
-        JsonObject claimed, ClaimState state, string configPath, SellUrlOptions options, bool resumed)
+    private static string SuccessResult(JsonObject claimed, ClaimState state, Ctx ctx)
     {
         var proxy = claimed["proxy"] as JsonObject;
         var proxyId = GetString(proxy?["proxyId"]) ?? "claim";
@@ -490,39 +596,60 @@ internal static class ProducerSellUrl
             ["claimPaidSats"] = state.PriceSats,
         };
 
+        KeyStorage? stored = null;
         if (!string.IsNullOrEmpty(apiKey))
         {
-            var stored = StoreApiKey(configPath, proxyId, apiKey, options);
+            // A rotated key replaces this claim's earlier key where that one was stored: the old
+            // key is dead. The target is recorded in the state file BEFORE the key is written, so
+            // a crash between the two still lets the next replay find it.
+            var replaceConfig = keyRotated && state.KeyLocation == "config";
+            var plan = PlanKeyTarget(ctx.ConfigPath, proxyId, apiKey, ctx.Options, replaceConfig);
+            state.KeyLocation = plan.Location;
+            state.KeyPath = plan.Path;
+            state.Save();
+            stored = WriteKey(plan, ctx.ConfigPath, proxyId, apiKey);
+            if (stored.Location != plan.Location)
+            {
+                state.KeyLocation = stored.Location;
+                state.KeyPath = stored.Path;
+                state.Save();
+            }
+
             result["apiKey"] = apiKey;
             result["apiKeyStorage"] = new JsonObject
             {
                 ["written"] = stored.Written,
                 ["location"] = stored.Location,
                 ["path"] = stored.Path,
+                ["replacedRotatedKey"] = replaceConfig && stored.Location == "config",
                 ["error"] = stored.Error,
             };
             var only = recovery == "none" ? " With no recovery binding it is the account's only credential." : "";
-            var rotated = keyRotated ? " This is a fresh key: any earlier key for this account no longer works." : "";
-            result["apiKeyNote"] = stored.Written
-                ? stored.Location == "config"
-                    ? $"This API key is shown once, here. It is stored in {stored.Path} as {ConfigKey}; restart the MCP "
-                      + $"server so l402_producer uses it.{only}{rotated}"
-                    : $"This API key is shown once, here. Another account's key is already configured, so this one was "
-                      + $"stored in {stored.Path} (readable only by you) instead of config.json. Set "
-                      + $"LIGHTNING_ENABLE_API_KEY to it to manage this proxy.{only}{rotated}"
-                : $"This API key is shown once, here, and could not be saved ({stored.Error}). Save it now.{only}{rotated}";
+            var lead = replayed || keyRotated ? ReplayRotatedNote : "This API key is shown once, here.";
+            var where = !stored.Written
+                ? $" It could not be saved ({stored.Error}). Save it now."
+                : stored.Location == "config"
+                    ? replaceConfig
+                        ? $" It replaced this claim's earlier key in {stored.Path} ({ConfigKey}); restart the MCP server so "
+                          + "l402_producer uses it."
+                        : $" It is stored in {stored.Path} as {ConfigKey}; restart the MCP server so l402_producer uses it."
+                    : $" Another account's key is already configured, so this one was stored in {stored.Path} (readable "
+                      + "only by you) instead of config.json. Set LIGHTNING_ENABLE_API_KEY to it to manage this proxy.";
+            result["apiKeyNote"] = lead + where + only;
         }
         else if (replayed)
         {
-            result["apiKeyNote"] = resumed
-                ? "This claim had already been redeemed, so the server does not return the API key again. If the "
-                  + "first answer was lost, recover the account with the recovery binding, or contact support with the "
-                  + "payment hash."
-                : "The server returned the stored claim without the API key: only the first answer carries it.";
+            result["apiKeyNote"] = ReplayWithoutKeyNote;
             result["paymentHash"] = state.PaymentHash;
         }
 
-        state.Delete();
+        // Replace the token with a secret-free marker, so a re-call answers "already claimed"
+        // instead of buying a second claim.
+        state.MarkRedeemed(proxyId, GetString(proxy?["url"]), GetString(proxy?["manifest"]),
+            stored is { Written: true } ? stored.Location : state.KeyLocation,
+            stored is { Written: true } ? stored.Path : state.KeyPath,
+            ctx.Options.UtcNow());
+
         result["message"] = "The URL is now a paid L402 endpoint. Share proxyUrl; buyers pay per call to the "
                             + "Lightning Address, and agents find the price at manifestUrl.";
         return JsonSerializer.Serialize(result, Indented);
@@ -532,40 +659,63 @@ internal static class ProducerSellUrl
 
     internal sealed record KeyStorage(bool Written, string Location, string Path, string? Error);
 
+    internal sealed record KeyTarget(string Location, string Path);
+
     /// <summary>
-    /// Empty config slot (and no key in the environment): merge into config.json the way
-    /// <c>create_lightning_enable_account</c> does. Otherwise another account owns the slot, so
-    /// write <c>claim-&lt;proxyId&gt;.key</c> beside it, 0600.
+    /// Where the key goes. The config slot when it is empty (and no key is in the environment),
+    /// already holds this key, or holds this claim's own key that a replay just rotated.
+    /// Otherwise another account owns the slot, so <c>claim-&lt;proxyId&gt;.key</c> beside it.
     /// </summary>
-    internal static KeyStorage StoreApiKey(string configPath, string proxyId, string apiKey, SellUrlOptions options)
+    internal static KeyTarget PlanKeyTarget(
+        string configPath, string proxyId, string apiKey, SellUrlOptions options, bool replaceConfig)
     {
+        if (replaceConfig)
+            return new KeyTarget("config", configPath);
+
         var existing = options.EnvironmentApiKey();
         if (string.IsNullOrWhiteSpace(existing) || existing.StartsWith("${", StringComparison.Ordinal))
-        {
             existing = ReadConfigKey(configPath);
-        }
 
-        if (string.IsNullOrWhiteSpace(existing) || existing == apiKey)
+        return string.IsNullOrWhiteSpace(existing) || existing == apiKey
+            ? new KeyTarget("config", configPath)
+            : new KeyTarget("key_file", KeyFilePath(configPath, proxyId));
+    }
+
+    private static string KeyFilePath(string configPath, string proxyId)
+    {
+        var safeId = new string(proxyId.Select(c => char.IsAsciiLetterOrDigit(c) || c == '-' ? char.ToLowerInvariant(c) : '-').ToArray());
+        return Path.Combine(Path.GetDirectoryName(configPath) ?? ".", $"claim-{safeId}.key");
+    }
+
+    private static KeyStorage WriteKey(KeyTarget plan, string configPath, string proxyId, string apiKey)
+    {
+        if (plan.Location == "config")
         {
             var (ok, _) = CreateAccountTool.MergeApiKeyIntoConfig(configPath, apiKey);
             if (ok)
                 return new KeyStorage(true, "config", configPath, null);
-            // An unparseable config is never overwritten; fall through to the key file.
+            // An unparseable config is never overwritten; fall back to the key file.
         }
 
-        var safeId = new string(proxyId.Select(c => char.IsAsciiLetterOrDigit(c) || c == '-' ? char.ToLowerInvariant(c) : '-').ToArray());
-        var keyPath = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(configPath) ?? ".", $"claim-{safeId}.key");
+        var keyPath = KeyFilePath(configPath, proxyId);
         try
         {
-            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(keyPath)!);
-            File.WriteAllText(keyPath, apiKey + "\n");
-            try { BudgetConfigurationService.RestrictFilePermissions(keyPath); } catch { /* best effort */ }
+            Directory.CreateDirectory(Path.GetDirectoryName(keyPath)!);
+            WriteRestricted(keyPath, apiKey + "\n");
             return new KeyStorage(true, "key_file", keyPath, null);
         }
         catch (Exception ex)
         {
             return new KeyStorage(false, "none", keyPath, CreateAccountTool.Scrub(ex.Message));
         }
+    }
+
+    /// <summary>Create the file empty, restrict it to the owner, THEN write the secret.</summary>
+    private static void WriteRestricted(string path, string contents)
+    {
+        File.WriteAllText(path, string.Empty);
+        try { BudgetConfigurationService.RestrictFilePermissions(path); } catch { /* best effort */ }
+        File.WriteAllText(path, contents);
     }
 
     private static string? ReadConfigKey(string configPath)
@@ -585,10 +735,11 @@ internal static class ProducerSellUrl
 
     // ── Results ──────────────────────────────────────────────────────────────────────
 
-    private static string QuoteResult(JsonObject quote, string termsVersion, string? acceptTerms, string serviceName)
+    private static string QuoteResult(
+        JsonObject quote, string termsVersion, string? acceptTerms, string serviceName, bool hasRecoveryEmail)
     {
         var mismatch = !string.IsNullOrWhiteSpace(acceptTerms);
-        return JsonSerializer.Serialize(new JsonObject
+        var result = new JsonObject
         {
             ["success"] = true,
             ["action"] = "sell_url",
@@ -601,22 +752,91 @@ internal static class ProducerSellUrl
             ["limits"] = quote["limits"]?.DeepClone(),
             ["terms"] = quote["terms"]?.DeepClone(),
             ["listing"] = quote["listing"]?.DeepClone(),
+            // The server's own wording, verbatim, so the agent can show it without another call.
+            ["pricingNote"] = quote["pricingNote"]?.DeepClone(),
+            ["bodyRule"] = quote["bodyRule"]?.DeepClone() ?? FallbackBodyRule,
             ["name"] = serviceName,
-            ["bodyRule"] = BodyRule,
             ["message"] = (mismatch
                               ? $"acceptTerms \"{acceptTerms!.Trim()}\" is not the current terms version. "
                               : "")
                           + "Nothing was sent or charged. Show the operator the claim price, what it covers, the renewal, "
                           + "and the terms link, and get an explicit yes before paying.",
             ["nextStep"] = $"Call l402_producer(action=\"sell_url\") again with the same arguments plus acceptTerms=\"{termsVersion}\".",
-        }, Indented);
+        };
+        if (hasRecoveryEmail)
+            result["recoveryEmailWarning"] = RecoveryEmailWarning;
+        return JsonSerializer.Serialize(result, Indented);
     }
 
-    private static string HttpProblem(ClaimHttpResponse response, string stage, bool paid)
+    private static string AlreadyClaimed(ClaimState s) =>
+        JsonSerializer.Serialize(new JsonObject
+        {
+            ["success"] = true,
+            ["action"] = "sell_url",
+            ["stage"] = "already_claimed",
+            ["alreadyClaimed"] = true,
+            ["paidThisCall"] = false,
+            ["proxyId"] = s.ProxyId,
+            ["proxyUrl"] = s.ProxyUrl,
+            ["manifestUrl"] = s.ManifestUrl,
+            ["paymentHash"] = s.PaymentHash,
+            ["apiKeyStorage"] = new JsonObject { ["location"] = s.KeyLocation, ["path"] = s.KeyPath },
+            ["redeemedAt"] = s.RedeemedAt,
+            ["message"] = $"This exact claim was already completed at {s.RedeemedAt}. Nothing was paid again. "
+                          + (s.KeyPath != null
+                              ? $"The API key was stored in {s.KeyPath} and is not shown again."
+                              : "The API key was shown only in the first result.")
+                          + " Selling a different URL or changing the details is a new claim and a new payment.",
+        }, Indented);
+
+    private static string Unknown(ClaimState state, string? detail)
+    {
+        var result = new JsonObject
+        {
+            ["success"] = false,
+            ["action"] = "sell_url",
+            ["stage"] = "payment",
+            ["error"] = "payment_state_unknown",
+            ["message"] =
+                "The claim payment may have been made: the attempt did not finish cleanly after the wallet may have "
+                + "been asked. Do NOT pay again and do not change the arguments. Check the wallet's payment history "
+                + "for the payment hash, then contact support@lightningenable.com with it.",
+            ["retryable"] = false,
+            ["paid"] = "unknown",
+            ["recovery"] = RecoveryBlock(state),
+        };
+        if (!string.IsNullOrEmpty(detail)) result["detail"] = detail;
+        return JsonSerializer.Serialize(result, Indented);
+    }
+
+    private static string Paid(ClaimState state, string code, string message, bool paid, string? detail = null)
+    {
+        var result = new JsonObject
+        {
+            ["success"] = false,
+            ["action"] = "sell_url",
+            ["stage"] = state.Phase == ClaimState.Paid ? "phase2" : "payment",
+            ["error"] = code,
+            ["message"] = message,
+            ["retryable"] = false,
+            ["paid"] = paid,
+            ["recovery"] = RecoveryBlock(state),
+        };
+        if (!string.IsNullOrEmpty(detail)) result["detail"] = detail;
+        return JsonSerializer.Serialize(result, Indented);
+    }
+
+    private static string NoWallet(string stage) =>
+        Failure("no_wallet",
+            "No spending wallet is configured, so the claim cannot be paid. Configure LND, NWC, or Strike "
+            + "(setup_wallet), then call sell_url again with the same arguments. Nothing was minted or charged.",
+            stage: stage);
+
+    private static string HttpProblem(ClaimHttpResponse response, string stage)
     {
         var problem = ParseObject(response.Body);
         return ProblemResult(CodeFor(response.Status, problem), response.Status, problem, response.RetryAfterSeconds,
-            null, stage, paid);
+            null, stage, paid: false);
     }
 
     private static string CodeFor(int status, JsonObject? problem)
@@ -644,13 +864,14 @@ internal static class ProducerSellUrl
         int? attempts = null)
     {
         var info = ProducerClaimErrors.Describe(code, status);
+        var message = paid && code == "merchant_exists" ? ProducerClaimErrors.MerchantExistsAfterPayment : info.Message;
         var result = new JsonObject
         {
             ["success"] = false,
             ["action"] = "sell_url",
             ["stage"] = stage,
             ["error"] = code,
-            ["message"] = info.Message,
+            ["message"] = message,
             ["retryable"] = info.Retryable,
             ["paid"] = paid,
         };
@@ -684,17 +905,23 @@ internal static class ProducerSellUrl
 
     private static JsonObject RecoveryBlock(ClaimState state) => new()
     {
-        ["paymentSpent"] = true,
+        ["paymentSpent"] = state.Preimage != null ? true : "unknown",
         ["paymentHash"] = state.PaymentHash,
         ["stateFile"] = state.FilePath,
         ["tokenExpiresAt"] = state.ExpiresAt,
-        ["instructions"] =
-            "The claim payment is spent; do not pay again. The saved file holds the exact claim body and the paid token "
-            + "(macaroon and preimage). Do not edit it and never paste its contents into chat. To retry, call "
-            + "l402_producer(action=\"sell_url\") again with exactly the same arguments before the token expires; the tool "
-            + $"skips the payment and redeems the saved token. By hand: POST the file's \"body\" byte for byte to {state.ClaimUrl} "
-            + "with Content-Type: application/json and Authorization: L402 <macaroon>:<preimage> taken from the file. If it "
-            + "keeps failing, contact support@lightningenable.com with the payment hash only.",
+        ["instructions"] = state.Preimage != null
+            ? "The claim payment is spent; do not pay again. The saved file holds the exact claim body and the paid "
+              + "token (macaroon and preimage). Do not edit it and never paste its contents into chat. To retry, call "
+              + "l402_producer(action=\"sell_url\") again with exactly the same arguments before the token expires; "
+              + "the tool skips the payment and redeems the saved token. By hand: POST the file's \"body\" byte for "
+              + $"byte to {state.ClaimUrl} with Content-Type: application/json and Authorization: L402 "
+              + "<macaroon>:<preimage> taken from the file. If it keeps failing, contact support@lightningenable.com "
+              + "with the payment hash only."
+            : "No proof of payment was saved, and the wallet may have paid. Do not pay again and do not change the "
+              + "arguments; calling sell_url again with the same arguments answers from the saved file and never pays "
+              + "this claim again. Check the wallet's payment history for the payment hash, then contact "
+              + "support@lightningenable.com with the payment hash only. Keep the saved file and never paste its "
+              + "contents into chat.",
     };
 
     private static string LocalRefusal(string code, string message) =>
@@ -728,26 +955,75 @@ internal static class ProducerSellUrl
         return JsonSerializer.Serialize(result, Indented);
     }
 
-    // ── Body and JSON helpers ────────────────────────────────────────────────────────
+    // ── Body: one canonical serialization, shared with the Python port ───────────────
 
-    /// <summary>The claim body, field order as the skill writes it. Serialized ONCE.</summary>
+    /// <summary>
+    /// The claim body, serialized ONCE, canonically (<c>shared/l402-producer-sell-url.json</c>
+    /// <c>canonicalBody</c>): fixed key order, compact separators, UTF-8, no HTML escaping, and
+    /// only <c>"</c>, <c>\</c> and control characters escaped (<c>\b \f \n \r \t</c>, else
+    /// lowercase <c>\u00xx</c>). This is exactly Python's
+    /// <c>json.dumps(separators=(",", ":"), ensure_ascii=False)</c>, so both ports send the
+    /// same bytes and name the same state file.
+    /// </summary>
     internal static string BuildBody(
-        string targetUrl, string name, string? description, long priceSats, string lightningAddress,
+        string targetUrl, string name, string? description, long? defaultPriceSats, string lightningAddress,
         string? email, string? pubkey, bool listPublicly, string acceptTerms)
     {
-        var body = new JsonObject
+        var sb = new StringBuilder("{");
+        Field(sb, "targetUrl"); Str(sb, targetUrl);
+        sb.Append(','); Field(sb, "name"); Str(sb, name);
+        if (!string.IsNullOrWhiteSpace(description))
         {
-            ["targetUrl"] = targetUrl,
-            ["name"] = name,
-        };
-        if (!string.IsNullOrWhiteSpace(description)) body["description"] = description.Trim();
-        if (priceSats > 0) body["defaultPriceSats"] = priceSats;
-        body["receive"] = new JsonObject { ["lightningAddress"] = lightningAddress };
-        if (email != null) body["recovery"] = new JsonObject { ["email"] = email };
-        else if (pubkey != null) body["recovery"] = new JsonObject { ["nostrPubkey"] = pubkey };
-        body["listPublicly"] = listPublicly;
-        body["acceptTerms"] = acceptTerms;
-        return body.ToJsonString();
+            sb.Append(','); Field(sb, "description"); Str(sb, description.Trim());
+        }
+        if (defaultPriceSats is > 0)
+        {
+            sb.Append(','); Field(sb, "defaultPriceSats");
+            sb.Append(defaultPriceSats.Value.ToString(CultureInfo.InvariantCulture));
+        }
+        sb.Append(','); Field(sb, "receive"); sb.Append('{'); Field(sb, "lightningAddress"); Str(sb, lightningAddress); sb.Append('}');
+        if (email != null)
+        {
+            sb.Append(','); Field(sb, "recovery"); sb.Append('{'); Field(sb, "email"); Str(sb, email); sb.Append('}');
+        }
+        else if (pubkey != null)
+        {
+            sb.Append(','); Field(sb, "recovery"); sb.Append('{'); Field(sb, "nostrPubkey"); Str(sb, pubkey); sb.Append('}');
+        }
+        sb.Append(','); Field(sb, "listPublicly"); sb.Append(listPublicly ? "true" : "false");
+        sb.Append(','); Field(sb, "acceptTerms"); Str(sb, acceptTerms);
+        return sb.Append('}').ToString();
+
+        static void Field(StringBuilder b, string key)
+        {
+            Str(b, key);
+            b.Append(':');
+        }
+    }
+
+    private static void Str(StringBuilder sb, string value)
+    {
+        sb.Append('"');
+        foreach (var c in value)
+        {
+            switch (c)
+            {
+                case '"': sb.Append("\\\""); break;
+                case '\\': sb.Append("\\\\"); break;
+                case '\b': sb.Append("\\b"); break;
+                case '\f': sb.Append("\\f"); break;
+                case '\n': sb.Append("\\n"); break;
+                case '\r': sb.Append("\\r"); break;
+                case '\t': sb.Append("\\t"); break;
+                default:
+                    if (c < 0x20)
+                        sb.Append("\\u").Append(((int)c).ToString("x4", CultureInfo.InvariantCulture));
+                    else
+                        sb.Append(c);
+                    break;
+            }
+        }
+        sb.Append('"');
     }
 
     private static JsonObject? ParseObject(string? json)
@@ -781,16 +1057,27 @@ internal static class ProducerSellUrl
 
     // ── Scratch state ────────────────────────────────────────────────────────────────
 
+    /// <summary>Thrown when a save would move the state file backwards.</summary>
+    internal sealed class ClaimStateConflictException(string message) : InvalidOperationException(message);
+
     /// <summary>
-    /// The claim in flight, one file per exact body: <c>claim/sell-&lt;sha256(body)[:16]&gt;.json</c>,
-    /// 0600. Holds the body and the challenge from before payment, and the preimage from the
-    /// moment payment settles, so a crash anywhere after paying is recoverable.
+    /// The claim, one file per exact body: <c>claim/sell-&lt;sha256(body)[:16]&gt;.json</c>, 0600.
+    /// The phase only moves forward (see <see cref="ProducerSellUrl"/>).
     /// </summary>
     internal sealed class ClaimState
     {
         public const string Challenge = "challenge";
         public const string Paying = "paying";
         public const string Paid = "paid";
+        public const string Redeemed = "redeemed";
+
+        private static int Rank(string? phase) => phase switch
+        {
+            Paying => 1,
+            Paid => 2,
+            Redeemed => 3,
+            _ => 0,
+        };
 
         public ClaimState(string directory, string body)
         {
@@ -808,6 +1095,12 @@ internal static class ProducerSellUrl
         public long PriceSats { get; set; }
         public string Phase { get; set; } = Challenge;
         public string? Preimage { get; set; }
+        public string? ProxyId { get; set; }
+        public string? ProxyUrl { get; set; }
+        public string? ManifestUrl { get; set; }
+        public string? KeyLocation { get; set; }
+        public string? KeyPath { get; set; }
+        public string? RedeemedAt { get; set; }
 
         public static string FileNameFor(string body)
         {
@@ -815,9 +1108,11 @@ internal static class ProducerSellUrl
             return $"sell-{hash[..16]}.json";
         }
 
+        /// <summary>Only a <c>challenge</c> the wallet never saw can expire.</summary>
         public bool IsExpired(DateTimeOffset now) =>
-            DateTimeOffset.TryParse(ExpiresAt, System.Globalization.CultureInfo.InvariantCulture,
-                System.Globalization.DateTimeStyles.AssumeUniversal, out var expires) && expires <= now;
+            Phase == Challenge
+            && DateTimeOffset.TryParse(ExpiresAt, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out var expires)
+            && expires <= now;
 
         public static ClaimState? Load(string directory, string body)
         {
@@ -838,6 +1133,12 @@ internal static class ProducerSellUrl
                     PriceSats = GetLong(o["priceSats"]),
                     Phase = GetString(o["phase"]) ?? Challenge,
                     Preimage = GetString(o["preimage"]),
+                    ProxyId = GetString(o["proxyId"]),
+                    ProxyUrl = GetString(o["proxyUrl"]),
+                    ManifestUrl = GetString(o["manifestUrl"]),
+                    KeyLocation = GetString(o["keyLocation"]),
+                    KeyPath = GetString(o["keyPath"]),
+                    RedeemedAt = GetString(o["redeemedAt"]),
                 };
             }
             catch
@@ -846,7 +1147,29 @@ internal static class ProducerSellUrl
             }
         }
 
-        public void Save()
+        /// <summary>Replace the token with a secret-free marker of the finished claim.</summary>
+        public void MarkRedeemed(string proxyId, string? proxyUrl, string? manifestUrl, string? keyLocation,
+            string? keyPath, DateTimeOffset now)
+        {
+            Phase = Redeemed;
+            Invoice = null;
+            Macaroon = null;
+            Preimage = null;
+            ProxyId = proxyId;
+            ProxyUrl = proxyUrl;
+            ManifestUrl = manifestUrl;
+            KeyLocation = keyLocation;
+            KeyPath = keyPath;
+            RedeemedAt = now.UtcDateTime.ToString("O", CultureInfo.InvariantCulture);
+            Save();
+        }
+
+        /// <summary>
+        /// Writes the state, re-reading the file first: a save never moves the phase backwards,
+        /// except <c>paying</c> → <c>challenge</c> when <paramref name="allowDowngradeFromPaying"/>
+        /// is set AND the file still says <c>paying</c>.
+        /// </summary>
+        public void Save(bool allowDowngradeFromPaying = false)
         {
             var directory = Path.GetDirectoryName(FilePath)!;
             if (!Directory.Exists(directory))
@@ -856,26 +1179,40 @@ internal static class ProducerSellUrl
                 else
                     Directory.CreateDirectory(directory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
             }
+
+            var onDisk = Load(directory, Body);
+            if (onDisk != null && Rank(onDisk.Phase) > Rank(Phase))
+            {
+                var permitted = allowDowngradeFromPaying && onDisk.Phase == Paying && Phase == Challenge;
+                if (!permitted)
+                    throw new ClaimStateConflictException(
+                        $"The claim state moved to '{onDisk.Phase}' elsewhere; not overwriting it with '{Phase}'.");
+            }
+
             var o = new JsonObject
             {
                 ["version"] = 1,
                 ["claimUrl"] = ClaimUrl,
                 ["body"] = Body,
-                ["invoice"] = Invoice,
-                ["macaroon"] = Macaroon,
                 ["paymentHash"] = PaymentHash,
                 ["expiresAt"] = ExpiresAt,
                 ["priceSats"] = PriceSats,
                 ["phase"] = Phase,
             };
+            if (Invoice != null) o["invoice"] = Invoice;
+            if (Macaroon != null) o["macaroon"] = Macaroon;
             if (Preimage != null) o["preimage"] = Preimage;
+            if (ProxyId != null) o["proxyId"] = ProxyId;
+            if (ProxyUrl != null) o["proxyUrl"] = ProxyUrl;
+            if (ManifestUrl != null) o["manifestUrl"] = ManifestUrl;
+            if (KeyLocation != null) o["keyLocation"] = KeyLocation;
+            if (KeyPath != null) o["keyPath"] = KeyPath;
+            if (RedeemedAt != null) o["redeemedAt"] = RedeemedAt;
 
-            // Write-then-rename so a crash mid-write never leaves a torn file. Tighten the
-            // temp file BEFORE the secrets matter: it is created, restricted, then filled.
+            // Write-then-rename so a crash mid-write never leaves a torn file. The temp file is
+            // created and restricted BEFORE the secrets go in.
             var tmp = FilePath + ".tmp";
-            File.WriteAllText(tmp, string.Empty);
-            try { BudgetConfigurationService.RestrictFilePermissions(tmp); } catch { /* best effort */ }
-            File.WriteAllText(tmp, o.ToJsonString(Indented));
+            WriteRestricted(tmp, o.ToJsonString(Indented));
             File.Move(tmp, FilePath, overwrite: true);
         }
 

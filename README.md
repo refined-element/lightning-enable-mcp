@@ -457,7 +457,7 @@ and none of them can spend your wallet.
 
 | Action | Arguments | What it does |
 |--------|-----------|--------------|
-| `sell_url` | `target_url`, `lightning_address`, `price_sats`, `name`, `description`, `recovery_email` or `recovery_nostr_pubkey`, `list_publicly`, `accept_terms`, `confirmation_nonce` | Charge for your API in one call: a URL and a Lightning Address become a paid endpoint and a new account *(pays the claim)* |
+| `sell_url` | `target_url`, `lightning_address`, `default_price_sats` (per-call price buyers pay), `name`, `description`, `recovery_email` or `recovery_nostr_pubkey`, `list_publicly`, `accept_terms`, `confirmation_nonce` | Charge for your API in one call: a URL and a Lightning Address become a paid endpoint and a new account *(pays the claim)* |
 | `configure_receive` | `nwc_connection_string` *(optional)* | Point L402 payouts at a wallet you control |
 | `status` | `limit` | Plan, receiving wallet, onboarding checklist, recent mints *(read-only)* |
 | `create_proxy` | `name`, `target_base_url`, `description`, `default_price_sats` | Put an existing API behind L402 |
@@ -483,15 +483,29 @@ For an operator with no account who wants to charge for an API they already run:
    proxy URL, the manifest URL, paid-through date, renewal endpoint, recovery binding, listing
    status and warnings.
 3. **The API key, once.** The new account's key is returned in that one result and stored in
-   `~/.lightning-enable/config.json` as `lightningEnableApiKey`, or, when another account's key
-   is already configured, in `~/.lightning-enable/claim-<proxyId>.key` (owner-only). The
-   result says which.
+   your `config.json` as `lightningEnableApiKey`, or, when another account's key is already
+   configured, in `claim-<proxyId>.key` beside it (owner-only). The result says which. If a
+   replay rotates the key, the new key replaces this claim's old one where it was stored.
 
-`name` defaults to the target's hostname. The claim body is written once and sent twice;
-the payment is bound to the target URL, the Lightning Address, and the recovery binding. The
-tool saves the body and the paid token in `~/.lightning-enable/claim/` (owner-only) before
-paying, so if anything fails after payment, calling `sell_url` again with the same arguments
-redeems the saved token without paying again. A refusal before payment costs nothing.
+`name` defaults to the target's hostname, and `default_price_sats` (the per-call price buyers
+pay) defaults to the server's. The claim body is written once and sent twice; the payment is
+bound to the target URL, the Lightning Address, and the recovery binding. If you give a
+`recovery_email`, use one that is not registered yet: an email that already belongs to an
+account is refused only after payment.
+
+The tool keeps one state file per claim in a `claim/` folder beside your `config.json`
+(owner-only), written before paying. Calling `sell_url` again with the same arguments is
+always safe:
+
+- **Paid but not yet redeemed:** it redeems the saved token without paying again.
+- **Already claimed:** it answers from a marker with the proxy URL and where the key is
+  stored. It does not mint or pay a second claim.
+- **Payment outcome unknown** (the wallet may have paid but gave no answer): it reports
+  `payment_state_unknown` with the payment hash and never pays that claim again. Check the
+  wallet's payment history and contact support.
+
+Until a claim is redeemed, its state file holds the paid token, which can rotate the account's
+key, so treat it like the key file. A refusal before payment costs nothing.
 
 ### From an API key to a paid endpoint
 

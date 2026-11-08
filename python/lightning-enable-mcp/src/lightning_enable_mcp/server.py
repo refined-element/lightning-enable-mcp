@@ -186,6 +186,15 @@ def _mark_deprecated(result: str, target: AliasTarget) -> str:
     return json.dumps(data, indent=2)
 
 
+def _as_bool(value) -> bool:
+    """A JSON boolean, or the strings "true"/"false" some clients send. Anything else is False."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() == "true"
+    return False
+
+
 def _unknown_action(tool: str, key: str, value: Any) -> str:
     """Descriptive error for a missing/unrecognized action on a consolidated tool."""
     _, allowed = ACTION_TOOLS[tool]
@@ -588,18 +597,19 @@ class LightningEnableServer:
                         result = await sell_url(
                             target_url=arguments.get("target_url"),
                             lightning_address=arguments.get("lightning_address"),
-                            price_sats=arguments.get("price_sats"),
+                            default_price_sats=arguments.get("default_price_sats"),
                             name=arguments.get("name"),
                             description=arguments.get("description"),
                             recovery_email=arguments.get("recovery_email"),
                             recovery_nostr_pubkey=arguments.get("recovery_nostr_pubkey"),
-                            list_publicly=bool(arguments.get("list_publicly", False)),
+                            list_publicly=_as_bool(arguments.get("list_publicly")),
                             accept_terms=arguments.get("accept_terms"),
                             confirmation_nonce=arguments.get("confirmation_nonce"),
                             claim_client=self.claim_client,
                             wallet=self.paying_wallet or self.wallet,
                             budget_service=self.budget_service,
                             payment_history_service=self.payment_history_service,
+                            operation_ledger=getattr(self, "operation_ledger", None),
                         )
                     else:
                         result = _unknown_action(

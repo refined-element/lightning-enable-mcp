@@ -44,7 +44,7 @@
   "sellUrlArguments": [
     "target_url",
     "lightning_address",
-    "price_sats",
+    "default_price_sats",
     "name",
     "description",
     "recovery_email",
@@ -84,5 +84,21 @@
     "invalid_lightning_address",
     "invalid_target_url"
   ],
-  "maxRedeemAttempts": 4
+  "maxRedeemAttempts": 4,
+  "canonicalBody": {
+    "_comment": "One serialization for the claim body in both ports: keys in this order, compact separators, UTF-8, no HTML escaping, and only the quote, the backslash and control characters escaped (\\b \\f \\n \\r \\t named, others as lowercase \\u00xx). This equals Python json.dumps(separators=(',', ':'), ensure_ascii=False). The body bytes sent and the state file name sell-<sha256(utf8 body)[:16]>.json both come from it.",
+    "inputs": {
+      "targetUrl": "https://api.example.com/v1?a=1&b=<2>+'x'",
+      "name": "Café “Wetter” ✓ 🌤",
+      "description": "Line1\nTab\there \"quoted\" \\ back \u0001",
+      "defaultPriceSats": 21,
+      "lightningAddress": "alice@wallet.example.com",
+      "recoveryEmail": "op+tag@example.com",
+      "recoveryNostrPubkey": null,
+      "listPublicly": true,
+      "acceptTerms": "2026-11"
+    },
+    "expectedBody": "{\"targetUrl\":\"https://api.example.com/v1?a=1&b=<2>+'x'\",\"name\":\"Café “Wetter” ✓ 🌤\",\"description\":\"Line1\\nTab\\there \\\"quoted\\\" \\\\ back \\u0001\",\"defaultPriceSats\":21,\"receive\":{\"lightningAddress\":\"alice@wallet.example.com\"},\"recovery\":{\"email\":\"op+tag@example.com\"},\"listPublicly\":true,\"acceptTerms\":\"2026-11\"}",
+    "expectedFileName": "sell-e40dfbf6582aa058.json"
+  }
 }

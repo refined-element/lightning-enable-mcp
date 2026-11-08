@@ -186,7 +186,7 @@ L402_PRODUCER_TOOL = Tool(
             },
             "price_sats": {
                 "type": "integer",
-                "description": "create/add_endpoint/sell_url: price in sats",
+                "description": "create/add_endpoint: price in sats",
             },
             "description": {
                 "type": "string",
@@ -208,7 +208,7 @@ L402_PRODUCER_TOOL = Tool(
             },
             "default_price_sats": {
                 "type": "integer",
-                "description": "create_proxy: default price per request",
+                "description": "create_proxy/sell_url: per-call price buyers pay",
             },
             "proxy_id": {
                 "type": "string",

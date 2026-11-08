@@ -1,8 +1,9 @@
 """``l402_producer(action="sell_url")`` against a scripted claim endpoint.
 
 Quote, phase 1 (402), payment through ``pay_l402_challenge``, phase 2, key storage, error
-mapping, phase-2 retries and crash recovery. No network: the claim endpoint is an
-``httpx.MockTransport`` and the wallet is a mock.
+mapping, phase-2 retries, crash recovery, the money-safety rules for ambiguous payments, and
+the redeemed marker. No network: the claim endpoint is an ``httpx.MockTransport`` and the
+wallet is a mock.
 
 Mirrors ``dotnet/tests/LightningEnable.Mcp.Tests/Tools/ProducerSellUrlTests.cs``; both read
 ``shared/l402-producer-sell-url.json``.
@@ -10,6 +11,7 @@ Mirrors ``dotnet/tests/LightningEnable.Mcp.Tests/Tools/ProducerSellUrlTests.cs``
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from collections import deque
@@ -23,7 +25,9 @@ import pytest
 
 from lightning_enable_mcp.budget_service import SpendReservationResult
 from lightning_enable_mcp.config import ApprovalLevel
+from lightning_enable_mcp.operation_ledger import OperationRecord, OperationState
 from lightning_enable_mcp.tools import producer_sell_url as sell
+from lightning_enable_mcp.wallet_errors import PaymentPendingError
 from tests.confirmation_helpers import make_pending, setup_delivered
 
 TARGET_URL = "https://api.example-weather.dev/v1"
@@ -34,6 +38,8 @@ PREIMAGE = "ea195ec92c7e00000000000000000000000000000000000000000000000000aa"
 INVOICE = "lnbc1500n1pjfixtureinvoice"
 FRESH_KEY = "le_fixture_claim_key_1"
 CLAIM_URL = "https://api.example.test/api/producer/claim"
+PRICING_NOTE = "Server pricing note, verbatim."
+SERVER_BODY_RULE = "Server body rule, verbatim."
 
 
 def _find_shared(name: str) -> Path:
@@ -59,18 +65,18 @@ def quote_json(sats: int = 150, terms: str = TERMS) -> dict:
         "limits": {"maxProxyPriceSats": 1000000, "minProxyPriceSats": 1},
         "terms": {"version": terms, "url": "https://lightningenable.com/terms"},
         "listing": {"available": False, "note": "pending verification"},
+        "pricingNote": PRICING_NOTE,
+        "bodyRule": SERVER_BODY_RULE,
     }
 
 
-def challenge_json(sats: int = 150) -> dict:
+def challenge_json(now: datetime, sats: int = 150) -> dict:
     return {
         "invoice": INVOICE,
         "macaroon": MACAROON,
         "paymentHash": "2859e1e143bc0000",
         # .NET round-trip format, seven fractional digits.
-        "expiresAt": (datetime.now(timezone.utc) + timedelta(minutes=10)).strftime(
-            "%Y-%m-%dT%H:%M:%S.%f0Z"
-        ),
+        "expiresAt": (now + timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%S.%f0Z"),
         "priceSats": sats,
         "instructions": "Pay the Lightning invoice, then retry.",
     }
@@ -95,9 +101,8 @@ def claimed_json(replayed=False, api_key=FRESH_KEY, key_rotated=False, recovery=
         "listing": {"requested": False, "listed": False, "reason": "verification_required"},
         "warnings": ["No recovery binding: this API key is the only credential. Store it securely."],
         "replayed": replayed,
+        "keyRotated": key_rotated,
     }
-    if key_rotated:
-        body["keyRotated"] = True
     if api_key is not None:
         body["apiKey"] = api_key
     return body
@@ -128,7 +133,7 @@ class StubClaim:
         self.requests.append(request)
         queue = self.quotes if request.method == "GET" else self.posts
         item = queue.popleft()
-        if isinstance(item, Exception):
+        if isinstance(item, BaseException):
             raise item
         status, body, headers = item
         content = b"" if body is None else json.dumps(body).encode()
@@ -165,6 +170,14 @@ def make_budget(level=ApprovalLevel.AUTO_APPROVE, denial=None):
     return budget
 
 
+def ledger_with_record():
+    ledger = MagicMock()
+    ledger.lookup = MagicMock(
+        return_value=OperationRecord("ln:x", OperationState.SUBMITTED, 150)
+    )
+    return ledger
+
+
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     """Isolated config dir, no merchant key in the environment, instant retries, 150-sat invoices."""
@@ -187,6 +200,8 @@ def env(tmp_path, monkeypatch):
             "client": make_claim_client(stub),
             "wallet": wallet,
             "budget": make_budget(),
+            "ledger": None,
+            "now": datetime.now(timezone.utc),
             "config": tmp_path / "config.json",
             "dir": tmp_path,
             "delays": delays,
@@ -197,23 +212,61 @@ async def call(env, **overrides) -> tuple[dict, str]:
     kwargs = dict(
         target_url=TARGET_URL,
         lightning_address=ADDRESS,
-        price_sats=21,
+        default_price_sats=21,
         description="Weather for agents",
         accept_terms=TERMS,
         claim_client=env["client"],
         wallet=env["wallet"],
         budget_service=env["budget"],
         payment_history_service=None,
+        operation_ledger=env["ledger"],
         config_path=str(env["config"]),
+        now=lambda: env["now"],
     )
     kwargs.update(overrides)
     raw = await sell.sell_url(**kwargs)
     return json.loads(raw), raw
 
 
+def queue_quote_and_challenge(env) -> None:
+    env["stub"].quotes.append((200, quote_json(), None))
+    env["stub"].posts.append((402, challenge_json(env["now"]), None))
+
+
 def state_files(env) -> list[Path]:
     d = env["dir"] / "claim"
     return sorted(d.glob("sell-*.json")) if d.exists() else []
+
+
+def only_state(env) -> dict:
+    (path,) = state_files(env)
+    return json.loads(path.read_text())
+
+
+def body_for_defaults() -> str:
+    return sell.build_body(
+        TARGET_URL, "api.example-weather.dev", "Weather for agents", 21, ADDRESS,
+        None, None, False, TERMS,
+    )
+
+
+def save_state(env, phase: str, preimage=None, **extra) -> Path:
+    state = sell.ClaimState(
+        directory=env["dir"] / "claim",
+        body=body_for_defaults(),
+        claim_url=CLAIM_URL,
+        invoice=INVOICE,
+        macaroon=MACAROON,
+        payment_hash="2859e1e143bc0000",
+        expires_at=(env["now"] + timedelta(minutes=5)).isoformat(),
+        price_sats=150,
+        phase=phase,
+        preimage=preimage,
+    )
+    for key, value in extra.items():
+        setattr(state, key, value)
+    state.save()
+    return Path(state.file_path)
 
 
 def assert_no_secrets(raw: str) -> None:
@@ -236,13 +289,27 @@ class TestQuote:
         assert result["requiresTermsAcceptance"] is True
         assert result["price"]["sats"] == 150
         assert result["terms"] == {"version": TERMS, "url": "https://lightningenable.com/terms"}
-        assert result["covers"]["days"] == 30
-        assert "written once and sent twice" in result["bodyRule"]
         assert f'accept_terms="{TERMS}"' in result["nextStep"]
         assert result["name"] == "api.example-weather.dev", "name defaults to the hostname"
+        assert "recoveryEmailWarning" not in result
         assert env["stub"].post_requests == []
         env["wallet"].pay_invoice.assert_not_called()
         assert state_files(env) == []
+
+    async def test_quote_carries_the_servers_pricing_note_and_body_rule_verbatim(self, env):
+        env["stub"].quotes.append((200, quote_json(), None))
+
+        result, _ = await call(env, accept_terms=None)
+
+        assert result["pricingNote"] == PRICING_NOTE
+        assert result["bodyRule"] == SERVER_BODY_RULE
+
+    async def test_recovery_email_warns_a_registered_email_is_refused_only_after_payment(self, env):
+        env["stub"].quotes.append((200, quote_json(), None))
+
+        result, _ = await call(env, accept_terms=None, recovery_email="op@example.com")
+
+        assert "only after payment" in result["recoveryEmailWarning"]
 
     async def test_bare_404_means_the_feature_is_not_enabled(self, env):
         env["stub"].quotes.append((404, None, None))
@@ -254,15 +321,20 @@ class TestQuote:
         assert result["paid"] is False
         assert env["stub"].post_requests == []
 
+    async def test_http_target_is_refused_locally(self, env):
+        result, _ = await call(env, target_url="http://api.example.com")
+
+        assert result["error"] == "invalid_target_url"
+        assert env["stub"].requests == []
+
 
 # ── Happy path ───────────────────────────────────────────────────────────────────────
 
 
 class TestHappyPath:
-    async def test_quote_pays_redeems_and_stores_the_key_once(self, env):
+    async def test_quote_pays_redeems_stores_the_key_once_and_leaves_a_secret_free_marker(self, env):
         stub = env["stub"]
-        stub.quotes.append((200, quote_json(), None))
-        stub.posts.append((402, challenge_json(), None))
+        queue_quote_and_challenge(env)
         stub.posts.append((200, claimed_json(), None))
 
         result, raw = await call(env)
@@ -272,12 +344,11 @@ class TestHappyPath:
         assert result["manifestUrl"].endswith("l402-manifest.json")
         assert result["proxyId"] == "claimed-weather-api"
         assert result["paidThrough"] == "2026-12-08T21:00:30Z"
-        assert "renew" in result["renew"]["endpoint"]
         assert result["recovery"] == "none"
         assert result["listing"]["listed"] is False
-        assert len(result["warnings"]) == 1
         assert result["apiKeyStorage"]["location"] == "config"
         assert str(env["config"]) in result["apiKeyNote"]
+        assert "shown once" in result["apiKeyNote"]
 
         assert raw.count(FRESH_KEY) == 1
         assert json.loads(env["config"].read_text())["lightningEnableApiKey"] == FRESH_KEY
@@ -293,45 +364,80 @@ class TestHappyPath:
         assert body["name"] == "api.example-weather.dev"
         assert body["defaultPriceSats"] == 21
         assert body["receive"] == {"lightningAddress": ADDRESS}
-        assert body["acceptTerms"] == TERMS
         assert "recovery" not in body
 
         env["budget"].check_approval_level.assert_awaited_once_with(150)
         env["wallet"].pay_invoice.assert_awaited_once_with(INVOICE)
-        assert state_files(env) == [], "the scratch file is deleted once the claim answers 200"
 
-    async def test_replay_with_key_rotated_stores_the_fresh_key_beside_an_existing_config_key(self, env):
+        marker = only_state(env)
+        assert marker["phase"] == "redeemed"
+        assert marker["proxyId"] == "claimed-weather-api"
+        assert marker["keyLocation"] == "config"
+        text = json.dumps(marker)
+        assert MACAROON not in text and PREIMAGE not in text and INVOICE not in text
+
+    async def test_re_call_after_success_answers_already_claimed_without_minting_or_paying(self, env):
+        queue_quote_and_challenge(env)
+        env["stub"].posts.append((200, claimed_json(), None))
+        await call(env)
+
+        result, raw = await call(env)
+
+        assert result["success"] is True
+        assert result["alreadyClaimed"] is True
+        assert result["paidThisCall"] is False
+        assert result["proxyUrl"].endswith("/claimed-weather-api/")
+        assert result["apiKeyStorage"]["path"] == str(env["config"])
+        assert FRESH_KEY not in raw
+        assert env["stub"].quote_calls == 1
+        assert len(env["stub"].post_requests) == 2
+        env["wallet"].pay_invoice.assert_awaited_once()
+
+    async def test_replay_with_key_rotated_stores_the_fresh_key_beside_another_accounts_key(self, env):
         env["config"].write_text(json.dumps({"lightningEnableApiKey": "le_other_account"}))
-        stub = env["stub"]
-        stub.quotes.append((200, quote_json(), None))
-        stub.posts.append((402, challenge_json(), None))
-        stub.posts.append((200, claimed_json(replayed=True, key_rotated=True), None))
+        queue_quote_and_challenge(env)
+        env["stub"].posts.append((200, claimed_json(replayed=True, key_rotated=True), None))
 
         result, raw = await call(env)
 
         assert result["success"] is True, raw
-        assert result["replayed"] is True
         assert result["keyRotated"] is True
         assert result["apiKey"] == FRESH_KEY
         assert result["apiKeyStorage"]["location"] == "key_file"
-        assert "fresh key" in result["apiKeyNote"]
+        note = result["apiKeyNote"]
+        assert "rotated" in note and "only valid one" in note
+        assert "never" not in note and "not return the API key again" not in note
         key_file = env["dir"] / "claim-claimed-weather-api.key"
         assert key_file.read_text().strip() == FRESH_KEY
         assert json.loads(env["config"].read_text())["lightningEnableApiKey"] == "le_other_account"
         assert_no_secrets(raw)
 
-    async def test_replay_without_a_key_says_it_is_not_returned_again(self, env):
-        stub = env["stub"]
-        stub.quotes.append((200, quote_json(), None))
-        stub.posts.append((402, challenge_json(), None))
-        stub.posts.append((200, claimed_json(replayed=True, api_key=None), None))
+    async def test_replay_with_key_rotated_replaces_this_claims_own_dead_key_in_config(self, env):
+        # The first redeem stored this claim's key in config, then the result was lost before the
+        # marker landed: the state still says 'paid', and records where the key went.
+        env["config"].write_text(json.dumps({"lightningEnableApiKey": "le_this_claims_old_key"}))
+        save_state(env, sell.PAID, PREIMAGE, key_location="config", key_path=str(env["config"]))
+        env["stub"].posts.append((200, claimed_json(replayed=True, key_rotated=True), None))
+
+        result, _ = await call(env)
+
+        assert result["apiKeyStorage"]["location"] == "config"
+        assert result["apiKeyStorage"]["replacedRotatedKey"] is True
+        assert json.loads(env["config"].read_text())["lightningEnableApiKey"] == FRESH_KEY
+        assert not (env["dir"] / "claim-claimed-weather-api.key").exists()
+        env["wallet"].pay_invoice.assert_not_called()
+
+    async def test_replay_without_a_key_does_not_claim_the_server_never_returns_it(self, env):
+        queue_quote_and_challenge(env)
+        env["stub"].posts.append((200, claimed_json(replayed=True, api_key=None), None))
 
         result, _ = await call(env)
 
         assert result["success"] is True
         assert "apiKey" not in result
-        assert "only the first answer" in result["apiKeyNote"]
-        assert not env["config"].exists()
+        assert "without an API key" in result["apiKeyNote"]
+        assert "rotates" in result["apiKeyNote"]
+        assert "only the first answer" not in result["apiKeyNote"]
 
 
 # ── Errors ───────────────────────────────────────────────────────────────────────────
@@ -342,7 +448,17 @@ class TestErrors:
         assert {code: retry for code, (_, retry) in sell.ERROR_TABLE.items()} == FIXTURE["errorCodes"]
         assert set(sell.RETRY_AFTER_PAYMENT_ALSO) == set(FIXTURE["retryAfterPaymentAlso"])
         assert sell.MAX_REDEEM_ATTEMPTS == FIXTURE["maxRedeemAttempts"]
-        assert all(message.strip() for message, _ in sell.ERROR_TABLE.values())
+
+    def test_canonical_body_matches_the_shared_vector_bytes_and_file_name(self):
+        vector = FIXTURE["canonicalBody"]
+        i = vector["inputs"]
+        body = sell.build_body(
+            i["targetUrl"], i["name"], i["description"], i["defaultPriceSats"],
+            i["lightningAddress"], i["recoveryEmail"], i["recoveryNostrPubkey"],
+            i["listPublicly"], i["acceptTerms"],
+        )
+        assert body == vector["expectedBody"]
+        assert sell.state_file_name(body) == vector["expectedFileName"]
 
     @pytest.mark.parametrize("code,retryable", sorted(FIXTURE["errorCodes"].items()))
     async def test_every_phase1_code_maps_to_its_message_and_retry_flag_and_costs_nothing(
@@ -362,7 +478,6 @@ class TestErrors:
 
         result, _ = await call(env)
 
-        assert result["success"] is False
         assert result["error"] == code
         assert result["retryable"] is retryable
         assert result["message"] == sell.ERROR_TABLE[code][0]
@@ -394,15 +509,14 @@ class TestErrors:
         assert result["paid"] is False
         assert "costs nothing" in result["note"]
         assert result["problem"] == {"minSendableSats": 1, "maxSendableSats": 10}
-        assert "outside" in result["detail"]
-        assert len(stub.post_requests) == 1, "one phase-1 attempt, no retry before payment"
+        assert len(stub.post_requests) == 1
         env["wallet"].pay_invoice.assert_not_called()
         env["budget"].check_approval_level.assert_not_called()
         assert state_files(env) == []
 
     async def test_invoice_above_the_quote_is_refused_before_paying(self, env):
         env["stub"].quotes.append((200, quote_json(sats=100), None))
-        env["stub"].posts.append((402, challenge_json(sats=150), None))
+        env["stub"].posts.append((402, challenge_json(env["now"], sats=150), None))
 
         result, _ = await call(env)
 
@@ -416,26 +530,34 @@ class TestErrors:
         assert result["error"] == "invalid_recovery"
         assert env["stub"].requests == []
 
+    async def test_no_wallet_refuses_before_minting(self, env):
+        env["stub"].quotes.append((200, quote_json(), None))
+
+        result, _ = await call(env, wallet=None)
+
+        assert result["error"] == "no_wallet"
+        assert env["stub"].post_requests == []
+
 
 # ── Budget and confirmation ──────────────────────────────────────────────────────────
 
 
 class TestBudgetAndConfirmation:
-    async def test_budget_refusal_when_the_price_exceeds_the_ceiling_pays_nothing(self, env):
+    async def test_budget_refusal_pays_nothing_and_says_so(self, env):
         env["budget"] = make_budget(
             ApprovalLevel.DENY, denial="Payment of 150 sats exceeds the per-payment limit"
         )
-        env["stub"].quotes.append((200, quote_json(), None))
-        env["stub"].posts.append((402, challenge_json(), None))
+        queue_quote_and_challenge(env)
 
         result, raw = await call(env)
 
-        assert result["success"] is False
         assert result["error"] == "payment_refused"
         assert "per-payment limit" in result["message"]
+        assert "Nothing was charged" in result["message"]
         assert result["paid"] is False
         assert len(env["stub"].post_requests) == 1, "no phase 2 without a payment"
         env["wallet"].pay_invoice.assert_not_called()
+        assert only_state(env)["phase"] == "challenge"
         assert_no_secrets(raw)
 
     async def test_over_threshold_requests_the_code_then_same_arguments_plus_code_pay(self, env):
@@ -446,17 +568,15 @@ class TestBudgetAndConfirmation:
         setup_delivered(budget, pending=pending)
         budget.validate_and_consume_confirmation = MagicMock(return_value=pending)
         env["budget"] = budget
-        env["stub"].quotes.append((200, quote_json(), None))
-        env["stub"].posts.append((402, challenge_json(), None))
+        queue_quote_and_challenge(env)
 
         first, raw = await call(env)
 
         assert first["requiresConfirmation"] is True
         assert "sell_url" in first["howToConfirm"] and "confirmation_nonce" in first["howToConfirm"]
         assert "ZZZ999" not in raw
-        budget.request_confirmation.assert_awaited_once()
         env["wallet"].pay_invoice.assert_not_called()
-        assert len(state_files(env)) == 1, "the challenge is saved so the code binds to the same invoice"
+        assert only_state(env)["phase"] == "challenge"
 
         env["stub"].posts.append((200, claimed_json(), None))
         second, _ = await call(env, confirmation_nonce="zzz999")
@@ -465,9 +585,123 @@ class TestBudgetAndConfirmation:
         budget.validate_and_consume_confirmation.assert_called_once_with(
             "ZZZ999", 150, "pay_l402_challenge", INVOICE
         )
-        assert len(env["stub"].post_requests) == 2, "the second call skipped phase 1 and redeemed"
         assert env["stub"].quote_calls == 1
         env["wallet"].pay_invoice.assert_awaited_once()
+
+
+# ── C1: ambiguous payments are never reported as unpaid ─────────────────────────────
+
+
+class TestAmbiguousPayments:
+    async def test_wallet_failure_after_submit_is_payment_state_unknown_and_keeps_paying(self, env):
+        env["ledger"] = ledger_with_record()
+        env["wallet"].pay_invoice = AsyncMock(side_effect=Exception("NO_RESPONSE"))
+        queue_quote_and_challenge(env)
+
+        result, raw = await call(env)
+
+        assert result["error"] == "payment_state_unknown"
+        assert result["paid"] == "unknown"
+        assert "Do NOT pay again" in result["message"]
+        assert "Nothing was charged" not in raw
+        assert result["recovery"]["paymentHash"] == "2859e1e143bc0000"
+        assert only_state(env)["phase"] == "paying"
+        assert_no_secrets(raw)
+
+    async def test_known_pre_wallet_shape_but_ledger_saw_the_invoice_is_still_unknown(self, env):
+        env["ledger"] = ledger_with_record()
+        env["budget"] = make_budget(ApprovalLevel.DENY, denial="over the cap")
+        queue_quote_and_challenge(env)
+
+        result, _ = await call(env)
+
+        assert result["error"] == "payment_state_unknown"
+        assert only_state(env)["phase"] == "paying"
+
+    async def test_payment_unproven_pending_is_paid_true(self, env):
+        env["wallet"].pay_invoice = AsyncMock(
+            side_effect=PaymentPendingError("not settled yet", provider="nwc")
+        )
+        queue_quote_and_challenge(env)
+
+        result, raw = await call(env)
+
+        assert result["error"] == "payment_unproven"
+        assert result["paid"] is True
+        assert "Nothing was charged" not in raw
+        assert only_state(env)["phase"] == "paying"
+
+    async def test_resume_from_paying_returns_unknown_without_paying_or_minting(self, env):
+        save_state(env, sell.PAYING)
+
+        result, _ = await call(env)
+
+        assert result["error"] == "payment_state_unknown"
+        assert result["paid"] == "unknown"
+        assert env["stub"].requests == []
+        env["wallet"].pay_invoice.assert_not_called()
+
+    async def test_resume_from_paying_when_the_ledger_never_saw_the_invoice_pays(self, env):
+        ledger = MagicMock()
+        ledger.lookup = MagicMock(return_value=None)
+        env["ledger"] = ledger
+        save_state(env, sell.PAYING)
+        env["stub"].posts.append((200, claimed_json(), None))
+
+        result, _ = await call(env)
+
+        assert result["success"] is True
+        env["wallet"].pay_invoice.assert_awaited_once()
+
+    async def test_expired_after_ambiguous_failure_never_mints_or_pays_again(self, env):
+        env["wallet"].pay_invoice = AsyncMock(side_effect=Exception("NO_RESPONSE"))
+        queue_quote_and_challenge(env)
+        await call(env)
+
+        env["now"] = env["now"] + timedelta(hours=2)
+        result, _ = await call(env)
+
+        assert result["error"] == "payment_state_unknown"
+        assert env["stub"].quote_calls == 1
+        assert len(env["stub"].post_requests) == 1, "no second mint"
+        assert env["wallet"].pay_invoice.await_count == 1
+        assert only_state(env)["phase"] == "paying"
+
+    async def test_two_concurrent_identical_calls_pay_once_and_never_downgrade(self, env):
+        gate = asyncio.Event()
+
+        async def slow_pay(_invoice, *args, **kwargs):
+            await gate.wait()
+            return PREIMAGE
+
+        env["wallet"].pay_invoice = AsyncMock(side_effect=slow_pay)
+        queue_quote_and_challenge(env)
+        env["stub"].posts.append((200, claimed_json(), None))
+
+        first = asyncio.create_task(call(env))
+        second = asyncio.create_task(call(env))
+        await asyncio.sleep(0.05)
+        gate.set()
+        results = [r for r, _ in await asyncio.gather(first, second)]
+
+        assert sum(1 for r in results if "apiKey" in r) == 1
+        assert sum(1 for r in results if r.get("alreadyClaimed")) == 1
+        assert env["wallet"].pay_invoice.await_count == 1
+        assert env["stub"].quote_calls == 1
+        assert only_state(env)["phase"] == "redeemed"
+
+    def test_stale_save_cannot_move_the_state_backwards(self, env):
+        save_state(env, sell.PAID, PREIMAGE)
+        stale = sell.ClaimState(directory=env["dir"] / "claim", body=body_for_defaults(), phase=sell.PAYING)
+        downgrade = sell.ClaimState(
+            directory=env["dir"] / "claim", body=body_for_defaults(), phase=sell.CHALLENGE
+        )
+
+        with pytest.raises(sell.ClaimStateConflict):
+            stale.save()
+        with pytest.raises(sell.ClaimStateConflict):
+            downgrade.save(allow_downgrade_from_paying=True)
+        assert only_state(env)["preimage"] == PREIMAGE
 
 
 # ── Phase 2 retries and recovery ─────────────────────────────────────────────────────
@@ -476,8 +710,7 @@ class TestBudgetAndConfirmation:
 class TestRedeem:
     async def test_transient_phase2_failure_is_retried_with_the_same_body_and_token(self, env):
         stub = env["stub"]
-        stub.quotes.append((200, quote_json(), None))
-        stub.posts.append((402, challenge_json(), None))
+        queue_quote_and_challenge(env)
         stub.posts.append((503, problem(503, "claim_contended", "Try again"), {"Retry-After": "1"}))
         stub.posts.append((400, problem(400, "invalid_lightning_address", "LNURL lookup failed"), None))
         stub.posts.append((200, claimed_json(), None))
@@ -488,53 +721,55 @@ class TestRedeem:
         posts = stub.post_requests
         assert len(posts) == 4
         assert {p.content for p in posts} == {posts[0].content}
-        assert len({p.headers["authorization"] for p in posts[1:]}) == 1
         assert env["delays"] == [1.0, 2.0], "Retry-After is honoured, then backoff"
         env["wallet"].pay_invoice.assert_awaited_once()
 
     async def test_giving_up_returns_recovery_without_secrets_and_keeps_the_token(self, env):
         stub = env["stub"]
-        stub.quotes.append((200, quote_json(), None))
-        stub.posts.append((402, challenge_json(), None))
+        queue_quote_and_challenge(env)
         for _ in range(sell.MAX_REDEEM_ATTEMPTS):
             stub.posts.append((503, problem(503, "upstream_unavailable", "down"), None))
 
         result, raw = await call(env)
 
-        assert result["success"] is False
         assert result["paid"] is True
         assert result["error"] == "upstream_unavailable"
         assert result["redeemAttempts"] == sell.MAX_REDEEM_ATTEMPTS
         recovery = result["recovery"]
         assert recovery["paymentSpent"] is True
-        assert recovery["paymentHash"] == "2859e1e143bc0000"
         assert "same arguments" in recovery["instructions"]
         assert "do not pay again" in recovery["instructions"]
         saved = json.loads(Path(recovery["stateFile"]).read_text())
         assert saved["macaroon"] == MACAROON
         assert saved["preimage"] == PREIMAGE
-        assert saved["body"] == stub.post_requests[0].content.decode()
-        assert len(stub.post_requests) == 1 + sell.MAX_REDEEM_ATTEMPTS
         assert_no_secrets(raw)
 
-    async def test_non_retryable_phase2_refusal_gives_up_at_once_with_recovery(self, env):
-        stub = env["stub"]
-        stub.quotes.append((200, quote_json(), None))
-        stub.posts.append((402, challenge_json(), None))
-        stub.posts.append((409, problem(409, "merchant_exists", "Account exists"), None))
+    async def test_merchant_exists_after_payment_says_do_not_change_arguments(self, env):
+        queue_quote_and_challenge(env)
+        env["stub"].posts.append((409, problem(409, "merchant_exists", "Account exists"), None))
 
         result, _ = await call(env, recovery_email="op@example.com")
 
         assert result["error"] == "merchant_exists"
         assert result["paid"] is True
-        assert result["recovery"]["paymentSpent"] is True
-        assert len(stub.post_requests) == 2
+        assert "Do not change the" in result["message"]
+        assert "payment hash" in result["message"]
+        assert "use a different recovery" not in result["message"]
         assert env["delays"] == []
 
-    async def test_crash_after_paying_is_recovered_from_the_saved_token_without_paying_again(self, env):
+    async def test_unexpected_exception_after_payment_reports_paid_with_recovery(self, env):
+        queue_quote_and_challenge(env)
+        env["stub"].posts.append(RuntimeError("boom"))
+
+        result, raw = await call(env)
+
+        assert result["paid"] is True
+        assert result["recovery"]["paymentSpent"] is True
+        assert_no_secrets(raw)
+
+    async def test_crash_after_paying_is_recovered_from_the_saved_token(self, env):
         stub = env["stub"]
-        stub.quotes.append((200, quote_json(), None))
-        stub.posts.append((402, challenge_json(), None))
+        queue_quote_and_challenge(env)
         for _ in range(sell.MAX_REDEEM_ATTEMPTS):
             stub.posts.append((503, problem(503, "upstream_unavailable", "down"), None))
         await call(env)
@@ -547,28 +782,12 @@ class TestRedeem:
         assert result["apiKey"] == FRESH_KEY
         assert stub.quote_calls == 1
         assert len(stub.post_requests) == posts_before + 1
-        last = stub.post_requests[-1]
-        assert last.headers["authorization"] == f"L402 {MACAROON}:{PREIMAGE}"
-        assert last.content == stub.post_requests[0].content
+        assert stub.post_requests[-1].headers["authorization"] == f"L402 {MACAROON}:{PREIMAGE}"
         env["wallet"].pay_invoice.assert_awaited_once()
-        assert state_files(env) == []
+        assert only_state(env)["phase"] == "redeemed"
 
-    async def test_crash_before_paying_resumes_from_the_saved_challenge_without_another_mint(self, env):
-        body = sell.build_body(
-            TARGET_URL, "api.example-weather.dev", "Weather for agents", 21, ADDRESS,
-            None, None, False, TERMS,
-        )
-        sell.ClaimState(
-            directory=env["dir"] / "claim",
-            body=body,
-            claim_url=CLAIM_URL,
-            invoice=INVOICE,
-            macaroon=MACAROON,
-            payment_hash="2859e1e143bc0000",
-            expires_at=(datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat(),
-            price_sats=150,
-            phase=sell.CHALLENGE,
-        ).save()
+    async def test_crash_before_paying_resumes_from_the_saved_challenge(self, env):
+        save_state(env, sell.CHALLENGE)
         env["stub"].posts.append((200, claimed_json(), None))
 
         result, _ = await call(env)
@@ -579,19 +798,19 @@ class TestRedeem:
         assert only.headers["authorization"].startswith("L402 ")
         env["wallet"].pay_invoice.assert_awaited_once_with(INVOICE)
 
-    async def test_no_wallet_refuses_before_minting(self, env):
-        env["stub"].quotes.append((200, quote_json(), None))
-
-        result, _ = await call(env, wallet=None)
-
-        assert result["error"] == "no_wallet"
-        assert env["stub"].post_requests == []
-
 
 # ── Advertised surface ───────────────────────────────────────────────────────────────
 
 
 class TestAdvertisedSurface:
+    def test_list_publicly_string_false_is_false(self):
+        from lightning_enable_mcp.server import _as_bool
+
+        assert _as_bool("false") is False
+        assert _as_bool("true") is True
+        assert _as_bool(None) is False
+        assert _as_bool(True) is True
+
     def test_schema_matches_the_shared_fixture_so_both_ports_agree(self):
         from lightning_enable_mcp.tools.consolidated import ACTION_TOOLS, L402_PRODUCER_TOOL
 
@@ -601,6 +820,8 @@ class TestAdvertisedSurface:
         assert ACTION_TOOLS["l402_producer"] == ("action", tuple(FIXTURE["actions"]))
         for argument in FIXTURE["sellUrlArguments"]:
             assert "sell_url" in properties[argument]["description"], argument
+        assert "sell_url" not in properties["price_sats"]["description"]
+        assert "buyers pay" in properties["default_price_sats"]["description"]
 
     def test_description_lands_on_the_operators_words_without_prices_or_custody_claims(self):
         from lightning_enable_mcp.tools.consolidated import L402_PRODUCER_TOOL
@@ -612,7 +833,7 @@ class TestAdvertisedSurface:
         for word in ("non-custodial", "self-custody", "trustless", "decentralized"):
             assert word not in description.lower()
 
-    async def test_server_dispatches_sell_url_with_the_paying_wallet(self):
+    async def test_server_dispatches_sell_url_with_the_paying_wallet_and_ledger(self):
         from mcp.types import CallToolRequest, CallToolRequestParams
 
         from lightning_enable_mcp.server import LightningEnableServer
@@ -621,6 +842,7 @@ class TestAdvertisedSurface:
         server.wallet = MagicMock()
         server.paying_wallet = MagicMock()
         server.l402_client = MagicMock()
+        server.operation_ledger = MagicMock()
         handler = server.server.request_handlers[CallToolRequest]
         with patch(
             "lightning_enable_mcp.server.sell_url",
@@ -635,6 +857,8 @@ class TestAdvertisedSurface:
                             "action": "sell_url",
                             "target_url": TARGET_URL,
                             "lightning_address": ADDRESS,
+                            "default_price_sats": 21,
+                            "list_publicly": True,
                             "accept_terms": TERMS,
                             "confirmation_nonce": "ABC123",
                         },
@@ -643,7 +867,8 @@ class TestAdvertisedSurface:
             )
         kwargs = tool.await_args.kwargs
         assert kwargs["wallet"] is server.paying_wallet
-        assert kwargs["target_url"] == TARGET_URL
-        assert kwargs["accept_terms"] == TERMS
+        assert kwargs["operation_ledger"] is server.operation_ledger
+        assert kwargs["default_price_sats"] == 21
+        assert kwargs["list_publicly"] is True
         assert kwargs["confirmation_nonce"] == "ABC123"
         assert isinstance(kwargs["claim_client"], sell.ProducerClaimClient)

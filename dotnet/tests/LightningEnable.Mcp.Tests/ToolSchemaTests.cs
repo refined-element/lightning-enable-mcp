@@ -46,7 +46,7 @@ public class ToolSchemaTests
     /// 81%, with roughly 350 bytes of headroom.</para>
     ///
     /// <para>Raised 0.83 → 0.88 when <c>l402_producer</c> gained <c>sell_url</c> (claim-endpoint spec
-    /// §14/§15): six new arguments on an EXISTING verb, so an operator with only a URL and a
+    /// §14/§15): seven new arguments on an EXISTING verb, so an operator with only a URL and a
     /// Lightning Address can sell an API in one call instead of the skill's shell steps. The
     /// argument descriptions are cut to a few words each; the surface lands near 86%, with
     /// roughly 290 bytes of headroom.</para>

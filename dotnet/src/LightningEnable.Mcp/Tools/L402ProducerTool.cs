@@ -87,7 +87,7 @@ public static class L402ProducerTool
             + "Pass only the arguments tagged with your action.")]
         L402ProducerAction action,
         [Description("create: URL or name you are charging for")] string? resource = null,
-        [Description("create/add_endpoint/sell_url: price in sats")] long priceSats = 0,
+        [Description("create/add_endpoint: price in sats")] long priceSats = 0,
         [Description("create: invoice text; create_proxy/sell_url: what the API does")] string? description = null,
         [Description("verify: base64 macaroon")] string? macaroon = null,
         [Description("verify: hex preimage")] string? preimage = null,
@@ -95,7 +95,7 @@ public static class L402ProducerTool
         string? nwcConnectionString = null,
         [Description("create_proxy/sell_url: service name")] string? name = null,
         [Description("create_proxy: https:// base URL to monetize")] string? targetBaseUrl = null,
-        [Description("create_proxy: default price per request")] int defaultPriceSats = 10,
+        [Description("create_proxy/sell_url: per-call price buyers pay")] int? defaultPriceSats = null,
         [Description("add_endpoint/publish: id from create_proxy")] string? proxyId = null,
         [Description("add_endpoint: stable id for the route")] string? endpointId = null,
         [Description("add_endpoint: route path like /forecast")] string? path = null,
@@ -119,6 +119,8 @@ public static class L402ProducerTool
         IWalletOnboardingService? onboarding = null,
         IProducerClaimClient? claimClient = null,
         IL402HttpClient? l402Client = null,
+        IWalletService? walletService = null,
+        IOperationLedger? operationLedger = null,
         IBudgetService? budgetService = null,
         IPriceService? priceService = null,
         IPaymentHistoryService? paymentHistory = null,
@@ -136,7 +138,7 @@ public static class L402ProducerTool
             L402ProducerAction.status => await ProducerSetupTools.StatusAsync(
                 limit <= 0 ? 5 : limit, apiService, cancellationToken),
             L402ProducerAction.create_proxy => await ProducerSetupTools.CreateProxyAsync(
-                name, targetBaseUrl, description, defaultPriceSats, apiService, cancellationToken),
+                name, targetBaseUrl, description, defaultPriceSats ?? 10, apiService, cancellationToken),
             L402ProducerAction.add_endpoint => await ProducerSetupTools.AddEndpointAsync(
                 proxyId, endpointId, path, httpMethod, summary, priceSats, apiService, cancellationToken),
             L402ProducerAction.publish => await ProducerSetupTools.PublishAsync(
@@ -144,9 +146,9 @@ public static class L402ProducerTool
             L402ProducerAction.list_challenges => await ProducerSetupTools.ListChallengesAsync(
                 challengeStatus, limit <= 0 ? 20 : limit, offset, apiService, cancellationToken),
             L402ProducerAction.sell_url => await ProducerSellUrl.SellUrlAsync(
-                targetUrl, lightningAddress, priceSats, name, description, recoveryEmail, recoveryNostrPubkey,
-                listPublicly, acceptTerms, confirmationNonce, claimClient, l402Client, budgetService, priceService,
-                paymentHistory, configService, server, null, cancellationToken),
+                targetUrl, lightningAddress, defaultPriceSats, name, description, recoveryEmail, recoveryNostrPubkey,
+                listPublicly, acceptTerms, confirmationNonce, claimClient, l402Client, walletService, operationLedger,
+                budgetService, priceService, paymentHistory, configService, server, null, cancellationToken),
             _ => ActionErrors.Unknown(
                 "l402_producer", "action", action,
                 L402ProducerAction.create, L402ProducerAction.verify,

@@ -54,7 +54,7 @@ PRE_CONSOLIDATION_SCHEMA_BYTES = 17_926
 #: with roughly 300 bytes of headroom.
 #:
 #: Raised 0.79 → 0.84 when ``l402_producer`` gained ``sell_url`` (claim-endpoint spec §14/§15):
-#: six new arguments on an EXISTING verb, so an operator with only a URL and a Lightning
+#: seven new arguments on an EXISTING verb, so an operator with only a URL and a Lightning
 #: Address can sell an API in one call instead of the skill's shell steps. The argument
 #: descriptions are cut to a few words each; the surface lands near 82%, with roughly 290
 #: bytes of headroom.

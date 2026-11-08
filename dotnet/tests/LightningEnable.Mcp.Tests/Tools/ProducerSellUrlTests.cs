@@ -24,7 +24,7 @@ public sealed class ProducerSellUrlTests : IDisposable
     private const string Terms = "2026-11";
     private const string Macaroon = "MDAyZGxvY2F0aW9uIGZpeHR1cmU";
     private const string Preimage = "ea195ec92c7e00000000000000000000000000000000000000000000000000aa";
-    private const string FreshKey = "le_fixture_claim_key_1";
+    private const string FreshKey = "test-fresh-key-not-a-credential-0001"; // gitleaks:allow
     private const string PricingNote = "Server pricing note, verbatim.";
     private const string ServerBodyRule = "Server body rule, verbatim.";
     private static readonly string Invoice = TestInvoices.Build("lnbc1500n"); // 150 sats

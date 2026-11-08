@@ -85,8 +85,9 @@ TOOL_ANNOTATIONS: dict[str, ToolAnnotations] = {
     "wallet_ops": ToolAnnotations(
         title="Wallet operations", readOnlyHint=False, destructiveHint=True
     ),
+    # sell_url pays the producer claim from the wallet, so the widest action is destructive.
     "l402_producer": ToolAnnotations(
-        title="L402 producer", readOnlyHint=False, destructiveHint=False
+        title="L402 producer", readOnlyHint=False, destructiveHint=True
     ),
     "agent_services": ToolAnnotations(
         title="Agent services", readOnlyHint=False, destructiveHint=True

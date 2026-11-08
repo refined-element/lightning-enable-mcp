@@ -45,17 +45,23 @@ public class ToolSchemaTests
     /// verb whose arguments are mostly left undescribed to keep it small. The surface lands near
     /// 81%, with roughly 350 bytes of headroom.</para>
     ///
+    /// <para>Raised 0.83 → 0.88 when <c>l402_producer</c> gained <c>sell_url</c> (claim-endpoint spec
+    /// §14/§15): six new arguments on an EXISTING verb, so an operator with only a URL and a
+    /// Lightning Address can sell an API in one call instead of the skill's shell steps. The
+    /// argument descriptions are cut to a few words each; the surface lands near 86%, with
+    /// roughly 290 bytes of headroom.</para>
+    ///
     /// <para>The Python guard (<c>tests/test_tool_profiles.py</c>) holds the same line at a
     /// different number — its schemas are smaller because the .NET SDK emits a richer
     /// per-parameter schema — so the two fractions are tuned independently, not copied.</para>
     /// </summary>
-    private const double MaxStandardFraction = 0.83;
+    private const double MaxStandardFraction = 0.88;
 
     private static readonly IReadOnlySet<string> MoneyMovingTools = new HashSet<string>
     {
         "pay_invoice", "access_l402_resource", "pay_l402_challenge", "test_l402_payment",
         "create_lightning_enable_account", "wallet_ops", "agent_services",
-        "renew_lightning_enable_subscription",
+        "renew_lightning_enable_subscription", "l402_producer",
     };
 
     private static readonly IReadOnlySet<string> PureReadTools = new HashSet<string>
@@ -73,7 +79,7 @@ public class ToolSchemaTests
         "walletService", "budgetService", "priceService", "configService", "paymentHistory",
         "paymentHistoryService", "historyService", "receiptService", "l402Client",
         "apiService", "agentService", "rateLimiter", "operationLedger", "httpClientFactory",
-        "onboarding", "docsService",
+        "onboarding", "docsService", "claimClient",
         "server", "cancellationToken",
     };
 
@@ -205,11 +211,11 @@ public class ToolSchemaTests
         await using var host = await McpToolHost.StartAsync(ToolProfile.Standard);
         var names = (await host.AdvertisedToolsAsync()).Select(t => t.Name).ToHashSet();
 
-        // budget, create_invoice, l402_producer and setup_wallet are writes that are not
-        // destructive: none of them can spend the wallet.
+        // budget, create_invoice and setup_wallet are writes that are not destructive: none
+        // of them can spend the wallet. (l402_producer moved to MoneyMovingTools with sell_url.)
         var classifiedElsewhere = new[]
         {
-            "budget", "create_invoice", "l402_producer", "setup_wallet",
+            "budget", "create_invoice", "setup_wallet",
         };
         names.Except(MoneyMovingTools).Except(PureReadTools).Except(classifiedElsewhere)
             .Should().BeEmpty("every advertised tool needs a deliberate read/write classification");

@@ -149,8 +149,9 @@ WALLET_OPS_TOOL = Tool(
 L402_PRODUCER_TOOL = Tool(
     name="l402_producer",
     description=(
-        "Sell access with L402: set up the seller account, monetize an API, mint "
-        "challenges and verify payer tokens. Requires LIGHTNING_ENABLE_API_KEY."
+        "Sell access with L402: charge for your API or monetize an endpoint. sell_url "
+        "turns a URL and a Lightning Address into a paid endpoint in one call, paid from "
+        "this wallet, no account needed. Other actions need LIGHTNING_ENABLE_API_KEY."
     ),
     inputSchema={
         "type": "object",
@@ -166,6 +167,7 @@ L402_PRODUCER_TOOL = Tool(
                     "add_endpoint",
                     "publish",
                     "list_challenges",
+                    "sell_url",
                 ],
                 "description": (
                     "create: mint an invoice + macaroon challenge. verify: check a "
@@ -174,7 +176,8 @@ L402_PRODUCER_TOOL = Tool(
                     "and recent mints (read-only). create_proxy: put an API behind "
                     "L402. add_endpoint: price one route. publish: list the service "
                     "publicly. list_challenges: read what you minted (read-only). "
-                    "Pass only the arguments tagged with your action."
+                    "sell_url: pay once to put target_url behind L402, paid to "
+                    "lightning_address. Pass only the arguments tagged with your action."
                 ),
             },
             "resource": {
@@ -183,11 +186,11 @@ L402_PRODUCER_TOOL = Tool(
             },
             "price_sats": {
                 "type": "integer",
-                "description": "create/add_endpoint: price in sats",
+                "description": "create/add_endpoint/sell_url: price in sats",
             },
             "description": {
                 "type": "string",
-                "description": "create: invoice text; create_proxy: what the API does",
+                "description": "create: invoice text; create_proxy/sell_url: what the API does",
             },
             "macaroon": {"type": "string", "description": "verify: base64 macaroon"},
             "preimage": {"type": "string", "description": "verify: hex preimage"},
@@ -198,7 +201,7 @@ L402_PRODUCER_TOOL = Tool(
                     "this server's own NWC wallet"
                 ),
             },
-            "name": {"type": "string", "description": "create_proxy: service name"},
+            "name": {"type": "string", "description": "create_proxy/sell_url: service name"},
             "target_base_url": {
                 "type": "string",
                 "description": "create_proxy: https:// base URL to monetize",
@@ -252,6 +255,33 @@ L402_PRODUCER_TOOL = Tool(
             "offset": {
                 "type": "integer",
                 "description": "list_challenges: rows to skip",
+            },
+            "target_url": {"type": "string", "description": "sell_url: https URL to sell"},
+            "lightning_address": {
+                "type": "string",
+                "description": "sell_url: name@domain paid per call",
+            },
+            "recovery_email": {"type": "string", "description": "sell_url: recovery email"},
+            "recovery_nostr_pubkey": {
+                "type": "string",
+                "description": "sell_url: recovery Nostr pubkey, hex",
+            },
+            "list_publicly": {
+                "type": "boolean",
+                "description": "sell_url: list once verified",
+            },
+            "accept_terms": {
+                "type": "string",
+                "description": (
+                    "sell_url: terms version the operator accepted; omit for the quote"
+                ),
+            },
+            "confirmation_nonce": {
+                "type": "string",
+                "description": (
+                    "sell_url: code the human reads off the server console; omit to "
+                    "request one"
+                ),
             },
         },
         "required": ["action"],
@@ -376,6 +406,7 @@ ACTION_TOOLS: dict[str, tuple[str, tuple[str, ...]]] = {
             "add_endpoint",
             "publish",
             "list_challenges",
+            "sell_url",
         ),
     ),
     "agent_services": (

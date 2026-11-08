@@ -72,6 +72,7 @@ from .tools.producer_setup import (
     producer_status,
 )
 from .tools.producer_setup import list_challenges as list_l402_challenges
+from .tools.producer_sell_url import ProducerClaimClient, sell_url
 from .tools.producer_setup import publish as publish_l402_service
 from .tools.profiles import PROFILE_ENV_VAR, resolve_profile
 from .tools.publish_agent_attestation import publish_agent_attestation
@@ -581,6 +582,25 @@ class LightningEnableServer:
                             offset=arguments.get("offset", 0),
                             api_client=self.api_client,
                         )
+                    elif action == "sell_url":
+                        if getattr(self, "claim_client", None) is None:
+                            self.claim_client = ProducerClaimClient()
+                        result = await sell_url(
+                            target_url=arguments.get("target_url"),
+                            lightning_address=arguments.get("lightning_address"),
+                            price_sats=arguments.get("price_sats"),
+                            name=arguments.get("name"),
+                            description=arguments.get("description"),
+                            recovery_email=arguments.get("recovery_email"),
+                            recovery_nostr_pubkey=arguments.get("recovery_nostr_pubkey"),
+                            list_publicly=bool(arguments.get("list_publicly", False)),
+                            accept_terms=arguments.get("accept_terms"),
+                            confirmation_nonce=arguments.get("confirmation_nonce"),
+                            claim_client=self.claim_client,
+                            wallet=self.paying_wallet or self.wallet,
+                            budget_service=self.budget_service,
+                            payment_history_service=self.payment_history_service,
+                        )
                     else:
                         result = _unknown_action(
                             "l402_producer", "action", arguments.get("action")
@@ -699,7 +719,8 @@ class LightningEnableServer:
     #    string below (which also wrongly suggests OpenNode, which cannot do L402).
     #  - get_balance is a READ-ONLY balance tool that returns its own
     #    receiving-oriented no-wallet message, so it is exempt from the payment guard.
-    #  - l402_producer (create/verify) goes to the Lightning Enable API, not a wallet.
+    #  - l402_producer (create/verify) goes to the Lightning Enable API, not a wallet;
+    #    its one paying action, sell_url, returns its own no_wallet refusal.
     #  - setup_wallet is how an agent GETS a wallet — gating it behind one would be a
     #    deadlock, and it is the tool the guard message below points at.
     _WALLET_FREE_TOOLS = frozenset(

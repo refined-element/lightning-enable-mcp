@@ -343,7 +343,7 @@ Some of these are *action* tools: pass `action` (or `source` for `receipts`) to 
 | `wallet_ops` | Free | `action`: `price`, `exchange`, or `send_onchain` (Strike; `send_onchain` also LND). `send_onchain` takes `address`, `amountSats`, `confirmationNonce`, and an optional `intentId` (supply a new one only to pay the same address the same amount again; a repeat is reported as status, never re-sent) |
 | `verify_confirmation_code` | Free | Verify an out-of-band payment confirmation code (verification only — never pays) |
 | `create_lightning_enable_account` | Free | Self-bootstrap signup: pay ~100 sats, get a merchant API key |
-| `l402_producer` | Agentic Commerce | `action`: `configure_receive`, `status`, `create_proxy`, `add_endpoint`, `publish`, `list_challenges`, `create`, `verify` — the whole seller side |
+| `l402_producer` | Agentic Commerce | `action`: `sell_url` (no key needed: pays a one-time claim), `configure_receive`, `status`, `create_proxy`, `add_endpoint`, `publish`, `list_challenges`, `create`, `verify` — the whole seller side |
 | `agent_services` | Agentic Commerce | `action`: `discover`, `request`, `settle`, `publish`, `unpublish`, `attest`, `reputation` |
 | `renew_lightning_enable_subscription` | Agentic Commerce | Pay the server-priced L402 invoice that buys or extends 30 days of Agentic Commerce for the configured API key (`maxSats` defaults to 50,000) |
 
@@ -443,9 +443,11 @@ lightning-enable-mcp/
 
 ## Selling with L402 (the `l402_producer` tool)
 
-The whole seller side behind one tool. Pass `action` to pick the operation. Every action
-needs `LIGHTNING_ENABLE_API_KEY` (an [Agentic Commerce subscription](https://lightningenable.com));
-no action can spend your wallet.
+The whole seller side behind one tool. Pass `action` to pick the operation. `sell_url` needs
+no account: it pays a one-time claim from your wallet, through the same budget and
+confirmation rules as every other payment. Every other action needs
+`LIGHTNING_ENABLE_API_KEY` (an [Agentic Commerce subscription](https://lightningenable.com))
+and none of them can spend your wallet.
 
 > **API version.** `create`, `verify`, `create_proxy`, `add_endpoint` and `publish` work
 > against every Lightning Enable API build. `configure_receive` needs the NWC receiving lane
@@ -455,6 +457,7 @@ no action can spend your wallet.
 
 | Action | Arguments | What it does |
 |--------|-----------|--------------|
+| `sell_url` | `target_url`, `lightning_address`, `price_sats`, `name`, `description`, `recovery_email` or `recovery_nostr_pubkey`, `list_publicly`, `accept_terms`, `confirmation_nonce` | Charge for your API in one call: a URL and a Lightning Address become a paid endpoint and a new account *(pays the claim)* |
 | `configure_receive` | `nwc_connection_string` *(optional)* | Point L402 payouts at a wallet you control |
 | `status` | `limit` | Plan, receiving wallet, onboarding checklist, recent mints *(read-only)* |
 | `create_proxy` | `name`, `target_base_url`, `description`, `default_price_sats` | Put an existing API behind L402 |
@@ -463,6 +466,32 @@ no action can spend your wallet.
 | `list_challenges` | `challenge_status`, `limit`, `offset` | Read back what you minted *(read-only)* |
 | `create` | `resource`, `price_sats`, `description` | Mint a one-off invoice + macaroon challenge |
 | `verify` | `macaroon`, `preimage` | Check a payer's token before granting access |
+
+### From a URL and a Lightning Address to a paid endpoint
+
+For an operator with no account who wants to charge for an API they already run:
+
+1. **Read the quote.**
+   `l402_producer(action="sell_url", target_url="https://api.example.com", lightning_address="you@wallet.example")`
+   — without `accept_terms` the tool only reads the free quote: the claim price, what it
+   covers, the renewal, and the terms version and link. Nothing is posted or charged. Show the
+   operator the quote and get an explicit yes.
+2. **Claim it.** Call again with the same arguments plus `accept_terms="<terms.version>"`. The
+   tool posts the claim, pays its invoice from this wallet (over-threshold amounts ask the
+   operator for a confirmation code, as `pay_l402_challenge` does; pass it back as
+   `confirmation_nonce` with the same arguments), and redeems the paid token. It returns the
+   proxy URL, the manifest URL, paid-through date, renewal endpoint, recovery binding, listing
+   status and warnings.
+3. **The API key, once.** The new account's key is returned in that one result and stored in
+   `~/.lightning-enable/config.json` as `lightningEnableApiKey`, or, when another account's key
+   is already configured, in `~/.lightning-enable/claim-<proxyId>.key` (owner-only). The
+   result says which.
+
+`name` defaults to the target's hostname. The claim body is written once and sent twice;
+the payment is bound to the target URL, the Lightning Address, and the recovery binding. The
+tool saves the body and the paid token in `~/.lightning-enable/claim/` (owner-only) before
+paying, so if anything fails after payment, calling `sell_url` again with the same arguments
+redeems the saved token without paying again. A refusal before payment costs nothing.
 
 ### From an API key to a paid endpoint
 

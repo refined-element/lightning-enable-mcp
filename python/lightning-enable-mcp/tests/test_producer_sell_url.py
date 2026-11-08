@@ -274,6 +274,58 @@ def assert_no_secrets(raw: str) -> None:
     assert PREIMAGE not in raw, "the preimage never enters a tool result"
 
 
+VERIFY_FIXTURE = json.loads(_find_shared("l402-producer-verify.json").read_text(encoding="utf-8"))
+OWNERSHIP_VALUE = "fixture-ownership-value-00000000000000000000"
+
+
+class TestVerificationPassThrough:
+    async def test_the_claims_verification_block_is_returned_once_and_stored_for_verify(self, env):
+        from lightning_enable_mcp.tools import producer_verify as pv
+
+        stub = env["stub"]
+        queue_quote_and_challenge(env)
+        claimed = claimed_json()
+        claimed["verification"] = {
+            "token": OWNERSHIP_VALUE,
+            "instructions": {
+                "tokenPlaceholder": "<token>",
+                "methods": [
+                    {"method": "dns-txt", "order": 2, "summary": "Add a TXT record.",
+                     "recordName": "_lightning-enable.api.example.com", "recordType": "TXT",
+                     "value": "<token>"},
+                ],
+            },
+            "verifyEndpoint": "/api/proxy/claimed-weather-api/verify",
+        }
+        assert sorted(claimed["verification"]) == sorted(
+            VERIFY_FIXTURE["sellUrlVerification"]["claimFields"]
+        )
+        stub.posts.append((200, claimed, None))
+
+        result, raw = await call(env)
+
+        block = result["verification"]
+        assert sorted(block) == sorted(VERIFY_FIXTURE["sellUrlVerification"]["resultFields"])
+        assert block["token"] == OWNERSHIP_VALUE
+        assert raw.count(OWNERSHIP_VALUE) == 1
+        assert "shown once" in block["tokenNote"]
+        assert block["tokenStorage"]["written"] is True
+        assert block["methods"][0]["proves"] == pv.METHODS[1]["proves"]
+        stored = pv.load_token(str(env["config"]), "claimed-weather-api")
+        assert stored["token"] == OWNERSHIP_VALUE
+        assert stored["source"] == "sell_url"
+        assert Path(stored["path"]).parent == env["dir"]
+
+    async def test_a_claim_without_verification_adds_no_block(self, env):
+        stub = env["stub"]
+        queue_quote_and_challenge(env)
+        stub.posts.append((200, claimed_json(), None))
+
+        result, _ = await call(env)
+
+        assert "verification" not in result
+
+
 # ── Quote ────────────────────────────────────────────────────────────────────────────
 
 

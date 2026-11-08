@@ -280,6 +280,61 @@ public sealed class ProducerSellUrlTests : IDisposable
         _claim.QuoteCalls.Should().Be(0);
     }
 
+    // ── Verification pass-through ────────────────────────────────────────────────────
+
+    private const string OwnershipValue = "fixture-ownership-value-00000000000000000000";
+
+    [Fact]
+    public async Task TheClaimsVerificationBlock_IsReturnedOnce_AndStoredForVerify()
+    {
+        using var verifyFixture = JsonDocument.Parse(File.ReadAllText(SharedFixture.Path("l402-producer-verify.json")));
+        var contract = verifyFixture.RootElement.GetProperty("sellUrlVerification");
+        QueueQuoteAndChallenge();
+        var claimed = JsonNode.Parse(ClaimedJson())!.AsObject();
+        claimed["verification"] = new JsonObject
+        {
+            ["token"] = OwnershipValue,
+            ["instructions"] = new JsonObject
+            {
+                ["tokenPlaceholder"] = "<token>",
+                ["methods"] = new JsonArray(new JsonObject
+                {
+                    ["method"] = "dns-txt", ["order"] = 2, ["summary"] = "Add a TXT record.",
+                    ["recordName"] = "_lightning-enable.api.example.com", ["recordType"] = "TXT", ["value"] = "<token>",
+                }),
+            },
+            ["verifyEndpoint"] = "/api/proxy/claimed-weather-api/verify",
+        };
+        claimed["verification"]!.AsObject().Select(p => p.Key)
+            .Should().BeEquivalentTo(contract.GetProperty("claimFields").EnumerateArray().Select(e => e.GetString()));
+        _claim.Responses.Enqueue(new ClaimHttpResponse(200, claimed.ToJsonString()));
+
+        var raw = await SellAsync();
+        var block = Parse(raw).GetProperty("verification");
+
+        block.EnumerateObject().Select(p => p.Name)
+            .Should().BeEquivalentTo(contract.GetProperty("resultFields").EnumerateArray().Select(e => e.GetString()));
+        block.GetProperty("token").GetString().Should().Be(OwnershipValue);
+        raw.Split(OwnershipValue).Length.Should().Be(2, "the token appears exactly once");
+        block.GetProperty("tokenNote").GetString().Should().Contain("shown once");
+        block.GetProperty("tokenStorage").GetProperty("written").GetBoolean().Should().BeTrue();
+        block.GetProperty("methods")[0].GetProperty("proves").GetString().Should().Be(ProducerVerification.Methods[1].Proves);
+
+        var stored = ProducerVerification.LoadToken(_configPath, "claimed-weather-api")!;
+        stored.Token.Should().Be(OwnershipValue);
+        stored.Source.Should().Be("sell_url");
+        Path.GetDirectoryName(stored.Path).Should().Be(_dir);
+    }
+
+    [Fact]
+    public async Task AClaimWithoutVerification_AddsNoBlock()
+    {
+        QueueQuoteAndChallenge();
+        _claim.Responses.Enqueue(new ClaimHttpResponse(200, ClaimedJson()));
+
+        Parse(await SellAsync()).TryGetProperty("verification", out _).Should().BeFalse();
+    }
+
     // ── Happy path ───────────────────────────────────────────────────────────────────
 
     [Fact]

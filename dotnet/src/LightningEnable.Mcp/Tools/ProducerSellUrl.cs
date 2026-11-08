@@ -567,6 +567,42 @@ internal static class ProducerSellUrl
             ? Math.Clamp(s, 1, MaxRetryDelaySeconds)
             : Math.Min(1 << (attempt - 1), MaxRetryDelaySeconds));
 
+    /// <summary>
+    /// The claim's <c>verification</c> block: the ownership token (shown once, stored owner-only
+    /// beside config.json so <c>verify</c> finds it), the instructions, and the verify route.
+    /// </summary>
+    internal static JsonObject? VerificationBlock(JsonObject? raw, string configPath, string proxyId)
+    {
+        if (raw is null)
+        {
+            return null;
+        }
+
+        var instructions = raw["instructions"] as JsonObject;
+        var block = new JsonObject();
+        var token = GetString(raw["token"]);
+        if (!string.IsNullOrEmpty(token))
+        {
+            var storage = ProducerVerification.StoreToken(configPath, proxyId, token, "sell_url");
+            block["token"] = token;
+            block["tokenNote"] = "This ownership-verification token is shown once, here. "
+                + ProducerVerification.StorageNote(storage)
+                + " Publish it by one method below, replacing <token>, then call l402_producer "
+                + $"action=verify proxy_id={proxyId}. Only a verified proxy can be listed.";
+            block["tokenStorage"] = JsonSerializer.SerializeToNode(ProducerVerification.StorageJson(storage));
+        }
+        if (GetString(instructions?["tokenPlaceholder"]) is { } placeholder)
+        {
+            block["tokenPlaceholder"] = placeholder;
+        }
+        block["methods"] = JsonSerializer.SerializeToNode(ProducerVerification.MethodsFrom(instructions));
+        if ((GetString(raw["verifyEndpoint"]) ?? GetString(instructions?["verifyEndpoint"])) is { } verifyEndpoint)
+        {
+            block["verifyEndpoint"] = verifyEndpoint;
+        }
+        return block;
+    }
+
     private static string SuccessResult(JsonObject claimed, ClaimState state, Ctx ctx)
     {
         var proxy = claimed["proxy"] as JsonObject;
@@ -595,6 +631,11 @@ internal static class ProducerSellUrl
             ["warnings"] = claimed["warnings"]?.DeepClone() ?? new JsonArray(),
             ["claimPaidSats"] = state.PriceSats,
         };
+
+        if (VerificationBlock(claimed["verification"] as JsonObject, ctx.ConfigPath, proxyId) is { } verification)
+        {
+            result["verification"] = verification;
+        }
 
         KeyStorage? stored = null;
         if (!string.IsNullOrEmpty(apiKey))

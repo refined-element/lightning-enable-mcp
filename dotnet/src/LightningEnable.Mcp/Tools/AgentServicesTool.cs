@@ -90,6 +90,7 @@ public static class AgentServicesTool
         IBudgetService? budgetService = null,
         IL402HttpClient? l402Client = null,
         IPaymentHistoryService? paymentHistoryService = null,
+        IBudgetConfigurationService? configService = null,
         CancellationToken cancellationToken = default)
         => action switch
         {
@@ -104,7 +105,7 @@ public static class AgentServicesTool
             AgentServicesAction.publish => await AgentPublishTool.PublishAgentCapability(
                 serviceId ?? string.Empty, categories ?? Array.Empty<string>(),
                 content ?? string.Empty, priceSats, l402Endpoint, targetUrl, hashtags,
-                agentService, apiService, cancellationToken),
+                agentService, apiService, configService, cancellationToken),
             AgentServicesAction.unpublish => await AgentUnpublishTool.UnpublishAgentCapability(
                 serviceId ?? string.Empty, reason, agentService, cancellationToken),
             AgentServicesAction.attest => await AgentAttestationTool.PublishAgentAttestation(

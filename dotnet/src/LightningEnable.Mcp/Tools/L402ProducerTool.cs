@@ -38,6 +38,9 @@ public enum L402ProducerAction
 
     /// <summary>Turn a URL plus a Lightning Address into a paid endpoint (pays the claim).</summary>
     sell_url,
+
+    /// <summary>Issue the token that proves ownership of a proxy's API (shown once).</summary>
+    verification_token,
 }
 
 #pragma warning restore CA1707, IDE1006
@@ -58,6 +61,10 @@ public enum L402ProducerAction
 /// (<see cref="ProducerSellUrl"/>). It needs no API key; it pays the claim from this server's
 /// wallet through the same budget and confirmation path as <c>pay_l402_challenge</c>.</para>
 ///
+/// <para><c>verify</c> with a <c>proxyId</c> (and no macaroon or preimage) checks ownership of
+/// the API behind a proxy instead of a payment, and <c>verification_token</c> issues the token
+/// to publish for it (<see cref="ProducerVerification"/>). A verified proxy can be listed.</para>
+///
 /// <para><b>Read vs write.</b> MCP annotations are per TOOL, so the widest action decides:
 /// <c>sell_url</c> can spend the wallet, so the tool is destructive and not read-only.
 /// <c>status</c> and <c>list_challenges</c> are the read-only actions and say so in the
@@ -75,15 +82,17 @@ public static class L402ProducerTool
     [Description(
         "Sell access with L402: charge for your API or monetize an endpoint. sell_url turns a URL "
         + "and a Lightning Address into a paid endpoint in one call, paid from this wallet, no "
-        + "account needed. Other actions need LIGHTNING_ENABLE_API_KEY.")]
+        + "account needed. verify with proxyId proves domain ownership to get listed. Other "
+        + "actions need LIGHTNING_ENABLE_API_KEY.")]
     public static async Task<string> L402Producer(
         [Description(
             "create: mint an invoice + macaroon challenge. verify: check a payer's token "
-            + "before granting access. configure_receive: point payouts at your own NWC "
+            + "before granting access, or with proxyId your API ownership. configure_receive: point payouts at your own NWC "
             + "wallet. status: plan, wallet, checklist and recent mints (read-only). "
             + "create_proxy: put an API behind L402. add_endpoint: price one route. publish: "
             + "list the service publicly. list_challenges: read what you minted (read-only). "
             + "sell_url: pay once to put targetUrl behind L402, paid to lightningAddress. "
+            + "verification_token: ownership token, shown once. "
             + "Pass only the arguments tagged with your action.")]
         L402ProducerAction action,
         [Description("create: URL or name you are charging for")] string? resource = null,
@@ -96,7 +105,7 @@ public static class L402ProducerTool
         [Description("create_proxy/sell_url: service name")] string? name = null,
         [Description("create_proxy: https:// base URL to monetize")] string? targetBaseUrl = null,
         [Description("create_proxy/sell_url: per-call price buyers pay")] int? defaultPriceSats = null,
-        [Description("add_endpoint/publish: id from create_proxy")] string? proxyId = null,
+        [Description("add_endpoint/publish/verify*: proxy id")] string? proxyId = null,
         [Description("add_endpoint: stable id for the route")] string? endpointId = null,
         [Description("add_endpoint: route path like /forecast")] string? path = null,
         [Description("add_endpoint: GET, POST, ... (default GET)")] string? httpMethod = null,
@@ -115,6 +124,8 @@ public static class L402ProducerTool
         [Description("sell_url: terms version the operator accepted; omit for the quote")] string? acceptTerms = null,
         [Description("sell_url: code the human reads off the server console; omit to request one")]
         string? confirmationNonce = null,
+        [Description("verify*: well-known, dns-txt or header")] string? method = null,
+        [Description("verification_token: rotate a verified token")] bool reissue = false,
         ILightningEnableApiService? apiService = null,
         IWalletOnboardingService? onboarding = null,
         IProducerClaimClient? claimClient = null,
@@ -131,6 +142,11 @@ public static class L402ProducerTool
         {
             L402ProducerAction.create => await CreateL402ChallengeTool.CreateL402Challenge(
                 resource ?? string.Empty, priceSats, description, apiService, cancellationToken),
+            L402ProducerAction.verify when ProducerVerification.IsAmbiguousVerify(proxyId, macaroon, preimage)
+                => ProducerVerification.AmbiguousVerifyResult(),
+            L402ProducerAction.verify when ProducerVerification.IsOwnershipVerify(proxyId, macaroon, preimage)
+                => await ProducerVerification.VerifyAsync(
+                    proxyId, method, apiService, null, cancellationToken, configService?.ConfigFilePath),
             L402ProducerAction.verify => await VerifyL402PaymentTool.VerifyL402Payment(
                 macaroon ?? string.Empty, preimage ?? string.Empty, apiService, cancellationToken),
             L402ProducerAction.configure_receive => await ProducerSetupTools.ConfigureReceiveAsync(
@@ -149,12 +165,14 @@ public static class L402ProducerTool
                 targetUrl, lightningAddress, defaultPriceSats, name, description, recoveryEmail, recoveryNostrPubkey,
                 listPublicly, acceptTerms, confirmationNonce, claimClient, l402Client, walletService, operationLedger,
                 budgetService, priceService, paymentHistory, configService, server, null, cancellationToken),
+            L402ProducerAction.verification_token => await ProducerVerification.TokenAsync(
+                proxyId, method, reissue, apiService, cancellationToken, configService?.ConfigFilePath),
             _ => ActionErrors.Unknown(
                 "l402_producer", "action", action,
                 L402ProducerAction.create, L402ProducerAction.verify,
                 L402ProducerAction.configure_receive, L402ProducerAction.status,
                 L402ProducerAction.create_proxy, L402ProducerAction.add_endpoint,
                 L402ProducerAction.publish, L402ProducerAction.list_challenges,
-                L402ProducerAction.sell_url),
+                L402ProducerAction.sell_url, L402ProducerAction.verification_token),
         };
 }

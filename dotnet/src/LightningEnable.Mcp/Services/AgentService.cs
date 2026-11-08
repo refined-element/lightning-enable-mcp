@@ -100,6 +100,31 @@ public record AgentPublishResult
     public string? EventId { get; init; }
     public string? L402Endpoint { get; init; }
     public string? ErrorMessage { get; init; }
+
+    /// <summary>
+    /// Whether the capability is publicly listed. <c>null</c> from a server that predates
+    /// ownership verification (it listed on creation); <c>false</c> when listing waits for
+    /// ownership verification of the target (see <see cref="Reason"/>).
+    /// </summary>
+    public bool? Published { get; init; }
+
+    /// <summary>Why it is not listed yet, e.g. <c>ownership_verification_required</c>.</summary>
+    public string? Reason { get; init; }
+
+    /// <summary>The proxy backing the capability.</summary>
+    public string? ProxyId { get; init; }
+
+    /// <summary>The server's verify route for that proxy.</summary>
+    public string? VerifyEndpoint { get; init; }
+
+    /// <summary>
+    /// The ownership-verification token. Returned by the server once and only here: never
+    /// log it.
+    /// </summary>
+    public string? VerificationToken { get; init; }
+
+    /// <summary>The server's <c>verification.instructions</c> block, with a <c>&lt;token&gt;</c> placeholder.</summary>
+    public System.Text.Json.Nodes.JsonObject? VerificationInstructions { get; init; }
 }
 
 /// <summary>
@@ -328,15 +353,27 @@ public class AgentService : IAgentService
                 return new AgentPublishResult { Success = false, ErrorMessage = errorMessage };
             }
 
-            using var doc = JsonDocument.Parse(responseBody);
-            var root = doc.RootElement;
+            var root = System.Text.Json.Nodes.JsonNode.Parse(responseBody) as System.Text.Json.Nodes.JsonObject
+                ?? new System.Text.Json.Nodes.JsonObject();
+            var verification = root["verification"] as System.Text.Json.Nodes.JsonObject;
 
             return new AgentPublishResult
             {
                 Success = true,
-                EventId = root.TryGetProperty("eventId", out var eid) ? eid.GetString() : null,
-                L402Endpoint = root.TryGetProperty("l402Endpoint", out var ep) ? ep.GetString() : l402Endpoint
+                EventId = Str(root, "eventId"),
+                L402Endpoint = Str(root, "l402Endpoint") ?? l402Endpoint,
+                Published = root["published"] is System.Text.Json.Nodes.JsonValue p && p.TryGetValue<bool>(out var flag)
+                    ? flag
+                    : null,
+                Reason = Str(root, "reason"),
+                ProxyId = Str(root, "proxyId"),
+                VerifyEndpoint = Str(root, "verifyEndpoint"),
+                VerificationToken = Str(verification, "token"),
+                VerificationInstructions = verification?["instructions"]?.DeepClone() as System.Text.Json.Nodes.JsonObject,
             };
+
+            static string? Str(System.Text.Json.Nodes.JsonObject? node, string key)
+                => node?[key] is System.Text.Json.Nodes.JsonValue v && v.TryGetValue<string>(out var text) ? text : null;
         }
         catch (TaskCanceledException)
         {

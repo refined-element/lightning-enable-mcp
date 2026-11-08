@@ -1,0 +1,174 @@
+{
+  "_comment": "The l402_producer ownership-verification contract BOTH ports must match: action verify with proxy_id, and action verification_token. Read by python/lightning-enable-mcp/tests/test_producer_verify.py and dotnet/tests/LightningEnable.Mcp.Tests/Tools/ProducerVerifyTests.cs. The server routes are GET /api/proxy/{proxyId}/verification, POST .../verification/token and POST /api/proxy/{proxyId}/verify (ProxyVerificationController). Argument names are the Python snake_case. Change this file and both ports together.",
+  "verifyArguments": [
+    "proxy_id",
+    "method"
+  ],
+  "tokenArguments": [
+    "proxy_id",
+    "method",
+    "reissue"
+  ],
+  "methods": [
+    {
+      "method": "well-known",
+      "proves": "that you control the web root of the target host",
+      "chooseWhen": "you control the web server for the target's hostname and can add a file at its root"
+    },
+    {
+      "method": "dns-txt",
+      "proves": "that you control the DNS zone for the target's hostname",
+      "chooseWhen": "someone else hosts the API but you manage DNS for its hostname"
+    },
+    {
+      "method": "header",
+      "proves": "only that you control the API's responses at the target base URL",
+      "chooseWhen": "you own the API's code but not the web root or DNS"
+    }
+  ],
+  "liveMethods": [
+    "well-known",
+    "dns-txt",
+    "header"
+  ],
+  "maxPendingAttempts": 4,
+  "maxRetryAfterSeconds": 10,
+  "errorCodes": {
+    "proxy_id_required": false,
+    "invalid_method": false,
+    "ambiguous_verify": false,
+    "reissue_required": false,
+    "verification_token_required": false,
+    "unauthorized": false,
+    "proxy_not_found": false,
+    "feature_not_enabled": false,
+    "rate_limited": true,
+    "request_rejected": false,
+    "upstream_error": true
+  },
+  "reasonHints": [
+    {
+      "contains": "The target host was refused before any request",
+      "method": null,
+      "hint": "No method ran: the target host resolves to a private or internal address, or does not resolve. Point the proxy at the API's public HTTPS address."
+    },
+    {
+      "contains": "The target URL cannot be verified",
+      "method": null,
+      "hint": "No method ran: the target base URL uses an IP address, localhost or an internal domain, a port other than 80 or 443, or a scheme other than http or https. Update the proxy's target to the API's public hostname, then issue a token and verify again."
+    },
+    {
+      "contains": "was re-issued while this check ran",
+      "method": null,
+      "hint": "The token was replaced while the check ran. Publish the newest token and call verify again."
+    },
+    {
+      "contains": "which is not followed",
+      "method": null,
+      "hint": "Redirects are never followed. Serve the file or header on the target host itself, make the base URL answer without a trailing-slash redirect, and exempt the path from any sign-in redirect."
+    },
+    {
+      "contains": "the host check did not finish",
+      "method": null,
+      "hint": "The target host could not be looked up in time. Call verify again; if it persists, check the hostname's DNS."
+    },
+    {
+      "contains": "the host check failed",
+      "method": null,
+      "hint": "The target host could not be looked up in time. Call verify again; if it persists, check the hostname's DNS."
+    },
+    {
+      "contains": "no answer within",
+      "method": null,
+      "hint": "The target answered too slowly. Make the file or base URL answer quickly without waking a cold-start backend, or use dns-txt, which does not depend on your server's response time."
+    },
+    {
+      "contains": "could not be reached",
+      "method": null,
+      "hint": "The request did not complete. Check that the host answers HTTPS on port 443 with a valid, publicly trusted certificate and that a firewall does not block outside requests."
+    },
+    {
+      "contains": "lightning-enable.json answered HTTP",
+      "method": "well-known",
+      "hint": "The file is not served at the target host's /.well-known/lightning-enable.json, or a CDN still serves a cached 404. Check the path on the target host itself and purge the cache."
+    },
+    {
+      "contains": "is not valid JSON",
+      "method": "well-known",
+      "hint": "Serve exactly {\"verify\":\"<token>\"}, with straight quotes and no comments."
+    },
+    {
+      "contains": "has no \"verify\" field",
+      "method": "well-known",
+      "hint": "The key must be verify, in lowercase."
+    },
+    {
+      "contains": "must be a string or an array of strings",
+      "method": "well-known",
+      "hint": "Put the token in quotes, or in an array of quoted tokens."
+    },
+    {
+      "contains": "is larger than",
+      "method": "well-known",
+      "hint": "Serve only the verify field; the file must stay under 4 KB."
+    },
+    {
+      "contains": "\"verify\" does not contain this proxy's current token",
+      "method": "well-known",
+      "hint": "The file's token is old, mistyped, or cached. Publish the token you most recently issued, or issue a new one."
+    },
+    {
+      "contains": "contains this proxy's current token",
+      "method": "dns-txt",
+      "hint": "A TXT record exists, but none of its values is exactly the current token. Remove quotes, prefixes and old tokens, or issue a new token."
+    },
+    {
+      "contains": "no TXT record at",
+      "method": "dns-txt",
+      "hint": "No TXT record is visible yet. A new record can take minutes to propagate; check with dig +short TXT on the record name. Many DNS providers append your zone, so enter only the part before it."
+    },
+    {
+      "contains": "does not carry this proxy's current token",
+      "method": "header",
+      "hint": "The header is there, but its value is not the current token. Publish the token you most recently issued."
+    },
+    {
+      "contains": "without X-Lightning-Enable-Verify",
+      "method": "header",
+      "hint": "The base URL answered without the header. Add it to every response at the base URL, including error responses and HEAD."
+    }
+  ],
+  "reasonHintFallback": "Fix what the reason names for the method you published, then call verify again. Only that method needs to pass; the others failing is expected.",
+  "tokenStore": {
+    "_comment": "Where a verification token is kept after it is shown once (by sell_url or verification_token): an owner-only JSON file beside config.json. verify reads it before pointing at verification_token.",
+    "filePrefix": "verification-",
+    "fields": [
+      "proxyId",
+      "token",
+      "source",
+      "storedAt"
+    ],
+    "examples": [
+      {
+        "proxyId": "Forecast_API.a1b2",
+        "fileName": "verification-forecast-api-a1b2.json"
+      }
+    ]
+  },
+  "sellUrlVerification": {
+    "_comment": "sell_url passes the claim response's verification block through: claim fields in, result fields out. The token appears once in the result and is stored with source sell_url.",
+    "claimFields": [
+      "token",
+      "instructions",
+      "verifyEndpoint"
+    ],
+    "resultFields": [
+      "token",
+      "tokenNote",
+      "tokenStorage",
+      "tokenPlaceholder",
+      "methods",
+      "verifyEndpoint"
+    ]
+  }
+}

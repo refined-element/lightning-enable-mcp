@@ -6,8 +6,11 @@ Used by merchants/producers who want AI agents to charge other agents for access
 """
 
 import logging
+import math
 import os
 import time
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.parse import quote
 
@@ -422,12 +425,27 @@ class LightningEnableApiClient:
             if response.status_code >= 400:
                 return {"success": False, "error": self._error_message(response, data)}
 
+            body = data if isinstance(data, dict) else {}
+            verification = body.get("verification")
+            if not isinstance(verification, dict):
+                verification = {}
+            instructions = verification.get("instructions")
+            published = body.get("published")
             return {
                 "success": True,
-                "eventId": data.get("eventId") if isinstance(data, dict) else None,
-                "l402Endpoint": (
-                    data.get("l402Endpoint") if isinstance(data, dict) else None
-                ) or l402_endpoint,
+                "eventId": body.get("eventId"),
+                "l402Endpoint": body.get("l402Endpoint") or l402_endpoint,
+                # None from a server that predates ownership verification (it listed on
+                # creation); False when listing waits for ownership verification.
+                "published": published if isinstance(published, bool) else None,
+                "reason": body.get("reason"),
+                "proxyId": body.get("proxyId"),
+                "verifyEndpoint": body.get("verifyEndpoint"),
+                # Returned by the server once and only here: never log it.
+                "verificationToken": verification.get("token"),
+                "verificationInstructions": (
+                    instructions if isinstance(instructions, dict) else None
+                ),
             }
 
         except httpx.TimeoutException:
@@ -718,14 +736,36 @@ class LightningEnableApiClient:
             return {"success": False, "error": f"HTTP error calling {method} {path}: {e}"}
 
         data = self._safe_json(response)
+        retry_after = self._retry_after_seconds(response)
         if response.status_code >= 400:
-            return {"success": False, **self._problem_error(response, data)}
+            failure: dict[str, Any] = {"success": False, **self._problem_error(response, data)}
+            if retry_after is not None:
+                failure["retryAfterSeconds"] = retry_after
+            return failure
 
-        return {
+        result: dict[str, Any] = {
             "success": True,
             "data": data if isinstance(data, dict) else {},
             "httpStatus": response.status_code,
         }
+        if retry_after is not None:
+            result["retryAfterSeconds"] = retry_after
+        return result
+
+    @staticmethod
+    def _retry_after_seconds(response: httpx.Response) -> int | None:
+        """The ``Retry-After`` header as whole seconds (delta or HTTP date), if any."""
+        raw = response.headers.get("retry-after")
+        if not raw:
+            return None
+        raw = raw.strip()
+        if raw.isdigit():
+            return int(raw)
+        try:
+            when = parsedate_to_datetime(raw)
+            return max(0, math.ceil((when - datetime.now(timezone.utc)).total_seconds()))
+        except (TypeError, ValueError):
+            return None
 
     async def save_nwc_connection(self, nwc_connection_string: str) -> dict[str, Any]:
         """``PUT /api/merchant/nwc-connection`` — store the merchant's receiving wallet.
@@ -839,6 +879,33 @@ class LightningEnableApiClient:
             "PUT",
             f"/api/proxy/{quote(proxy_id, safe='')}/manifest/settings",
             json_body=body,
+        )
+
+    # ── Ownership verification (ProxyVerificationController) ─────────────────
+
+    async def get_proxy_verification(self, proxy_id: str) -> dict[str, Any]:
+        """``GET /api/proxy/{proxyId}/verification`` — state and instructions, never the token."""
+        return await self._producer_request(
+            "GET", f"/api/proxy/{quote(proxy_id, safe='')}/verification"
+        )
+
+    async def issue_proxy_verification_token(self, proxy_id: str) -> dict[str, Any]:
+        """``POST /api/proxy/{proxyId}/verification/token`` — issue (or re-issue) the token.
+
+        The response is the only place the token ever appears: never log it, never cache it.
+        """
+        return await self._producer_request(
+            "POST", f"/api/proxy/{quote(proxy_id, safe='')}/verification/token"
+        )
+
+    async def verify_proxy_ownership(self, proxy_id: str) -> dict[str, Any]:
+        """``POST /api/proxy/{proxyId}/verify`` — run the ownership check now.
+
+        A check that runs past the server's bound answers ``pending: true`` with
+        ``retryAfterSeconds``.
+        """
+        return await self._producer_request(
+            "POST", f"/api/proxy/{quote(proxy_id, safe='')}/verify"
         )
 
     @staticmethod

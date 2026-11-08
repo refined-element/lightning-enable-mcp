@@ -86,6 +86,27 @@ public interface ILightningEnableApiService
     /// </summary>
     Task<ApiCallResult> UpdateManifestSettingsAsync(
         string proxyId, string? serviceDescription, IReadOnlyList<string>? categories, CancellationToken ct);
+
+    // ── Ownership verification (ProxyVerificationController) ────────────────
+
+    /// <summary>
+    /// <c>GET /api/proxy/{proxyId}/verification</c> — the proxy's verification state and the
+    /// exact instructions for each method. Never carries the token.
+    /// </summary>
+    Task<ApiCallResult> GetProxyVerificationAsync(string proxyId, CancellationToken ct);
+
+    /// <summary>
+    /// <c>POST /api/proxy/{proxyId}/verification/token</c> — issues (or re-issues) the
+    /// verification token. The response is the only place the token ever appears: never log
+    /// it, never cache it.
+    /// </summary>
+    Task<ApiCallResult> IssueProxyVerificationTokenAsync(string proxyId, CancellationToken ct);
+
+    /// <summary>
+    /// <c>POST /api/proxy/{proxyId}/verify</c> — runs the ownership check now. A check that
+    /// runs past the server's bound answers <c>pending: true</c> with <c>retryAfterSeconds</c>.
+    /// </summary>
+    Task<ApiCallResult> VerifyProxyOwnershipAsync(string proxyId, CancellationToken ct);
 }
 
 /// <summary>
@@ -130,6 +151,12 @@ public sealed record ApiCallResult
     /// "One or more validation errors occurred" and cannot tell which field it got wrong.
     /// </summary>
     public JsonObject? ValidationErrors { get; init; }
+
+    /// <summary>
+    /// The response's <c>Retry-After</c> header in seconds, when it sent one (a <c>429</c>, or a
+    /// pending verification check).
+    /// </summary>
+    public int? RetryAfterSeconds { get; init; }
 
     /// <summary>A transport-level failure, with no HTTP status to report.</summary>
     public static ApiCallResult Failed(string message) =>
@@ -422,6 +449,18 @@ public class LightningEnableApiService : ILightningEnableApiService
             ct);
     }
 
+    /// <inheritdoc />
+    public Task<ApiCallResult> GetProxyVerificationAsync(string proxyId, CancellationToken ct)
+        => SendAsync(HttpMethod.Get, $"/api/proxy/{Uri.EscapeDataString(proxyId)}/verification", null, ct);
+
+    /// <inheritdoc />
+    public Task<ApiCallResult> IssueProxyVerificationTokenAsync(string proxyId, CancellationToken ct)
+        => SendAsync(HttpMethod.Post, $"/api/proxy/{Uri.EscapeDataString(proxyId)}/verification/token", null, ct);
+
+    /// <inheritdoc />
+    public Task<ApiCallResult> VerifyProxyOwnershipAsync(string proxyId, CancellationToken ct)
+        => SendAsync(HttpMethod.Post, $"/api/proxy/{Uri.EscapeDataString(proxyId)}/verify", null, ct);
+
     /// <summary>
     /// One producer-setup API call. Never throws at the caller and never carries the API
     /// key: the key rides in a default request header set once in the constructor.
@@ -470,9 +509,10 @@ public class LightningEnableApiService : ILightningEnableApiService
                 // the error path below falls back to naming the status.
             }
 
+            var retryAfter = RetryAfterOf(response);
             if (!response.IsSuccessStatusCode)
             {
-                return ProblemFrom(parsed, (int)response.StatusCode);
+                return ProblemFrom(parsed, (int)response.StatusCode) with { RetryAfterSeconds = retryAfter };
             }
 
             return new ApiCallResult
@@ -480,6 +520,7 @@ public class LightningEnableApiService : ILightningEnableApiService
                 Success = true,
                 Data = parsed,
                 HttpStatus = (int)response.StatusCode,
+                RetryAfterSeconds = retryAfter,
             };
         }
     }
@@ -525,6 +566,21 @@ public class LightningEnableApiService : ILightningEnableApiService
             HttpStatus = status,
             ValidationErrors = validation is null ? null : (JsonObject)validation.DeepClone(),
         };
+    }
+
+    /// <summary>The <c>Retry-After</c> header as whole seconds (delta or HTTP date), if any.</summary>
+    private static int? RetryAfterOf(HttpResponseMessage response)
+    {
+        var header = response.Headers.RetryAfter;
+        if (header?.Delta is { } delta)
+        {
+            return (int)Math.Ceiling(Math.Max(0, delta.TotalSeconds));
+        }
+        if (header?.Date is { } date)
+        {
+            return (int)Math.Ceiling(Math.Max(0, (date - DateTimeOffset.UtcNow).TotalSeconds));
+        }
+        return null;
     }
 
     private static string? ReadString(JsonObject body, string key)

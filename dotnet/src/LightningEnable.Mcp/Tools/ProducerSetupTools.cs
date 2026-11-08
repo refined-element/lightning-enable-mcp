@@ -509,7 +509,14 @@ public static class ProducerSetupTools
                 slug, serviceDescription, categories, cancellationToken);
             if (!result.Success)
             {
-                return FromApi(result);
+                return result.ErrorCode == "ownership_verification_required"
+                    ? FromApi(result, new Dictionary<string, object?>
+                    {
+                        ["hint"] = "Listing needs proof that you own the API behind this proxy. Call "
+                            + $"l402_producer action=verification_token proxy_id={slug}, publish the token, "
+                            + $"call l402_producer action=verify proxy_id={slug}, then publish again.",
+                    })
+                    : FromApi(result);
             }
 
             var settings = result.Data ?? new JsonObject();

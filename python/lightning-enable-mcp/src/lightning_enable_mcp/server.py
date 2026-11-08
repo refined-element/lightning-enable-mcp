@@ -73,6 +73,13 @@ from .tools.producer_setup import (
 )
 from .tools.producer_setup import list_challenges as list_l402_challenges
 from .tools.producer_sell_url import ProducerClaimClient, sell_url
+from .tools.producer_verify import (
+    ambiguous_verify_result,
+    is_ambiguous_verify,
+    is_ownership_verify,
+    verification_token,
+    verify_ownership,
+)
 from .tools.producer_setup import publish as publish_l402_service
 from .tools.profiles import PROFILE_ENV_VAR, resolve_profile
 from .tools.publish_agent_attestation import publish_agent_attestation
@@ -540,6 +547,29 @@ class LightningEnableServer:
                             resource=arguments.get("resource", ""),
                             price_sats=arguments.get("price_sats", 0),
                             description=arguments.get("description"),
+                            api_client=self.api_client,
+                        )
+                    elif action == "verify" and is_ambiguous_verify(
+                        arguments.get("proxy_id"),
+                        arguments.get("macaroon"),
+                        arguments.get("preimage"),
+                    ):
+                        result = ambiguous_verify_result()
+                    elif action == "verify" and is_ownership_verify(
+                        arguments.get("proxy_id"),
+                        arguments.get("macaroon"),
+                        arguments.get("preimage"),
+                    ):
+                        result = await verify_ownership(
+                            proxy_id=arguments.get("proxy_id"),
+                            method=arguments.get("method"),
+                            api_client=self.api_client,
+                        )
+                    elif action == "verification_token":
+                        result = await verification_token(
+                            proxy_id=arguments.get("proxy_id"),
+                            method=arguments.get("method"),
+                            reissue=_as_bool(arguments.get("reissue")),
                             api_client=self.api_client,
                         )
                     elif action == "verify":

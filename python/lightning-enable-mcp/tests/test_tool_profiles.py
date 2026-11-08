@@ -59,10 +59,17 @@ PRE_CONSOLIDATION_SCHEMA_BYTES = 17_926
 #: descriptions are cut to a few words each; the surface lands near 82%, with roughly 290
 #: bytes of headroom.
 #:
+#: Raised 0.84 → 0.85 when ``l402_producer`` gained ownership verification (``verify`` with
+#: ``proxy_id``, and ``verification_token``): one enum value and two short arguments on an
+#: EXISTING verb, so an operator can get a proxy listed without raw REST. ``reissue`` is kept
+#: on purpose: without it a stray ``verification_token`` call would silently unlist a verified
+#: proxy. The descriptions were cut first; the surface lands near 84.2%, with roughly 140
+#: bytes of headroom.
+#:
 #: ``ToolSchemaTests.cs`` holds the same line at a different number — the .NET SDK emits a
 #: richer per-parameter schema, so that port's payload is larger. The two fractions are
 #: tuned independently rather than copied.
-MAX_STANDARD_FRACTION = 0.84
+MAX_STANDARD_FRACTION = 0.85
 
 
 def schema_bytes(tools) -> int:

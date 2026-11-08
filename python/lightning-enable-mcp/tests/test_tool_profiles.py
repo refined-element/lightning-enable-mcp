@@ -53,10 +53,16 @@ PRE_CONSOLIDATION_SCHEMA_BYTES = 17_926
 #: kept to ~470 bytes by leaving most arguments undescribed. The surface lands near 77%,
 #: with roughly 300 bytes of headroom.
 #:
+#: Raised 0.79 → 0.84 when ``l402_producer`` gained ``sell_url`` (claim-endpoint spec §14/§15):
+#: seven new arguments on an EXISTING verb, so an operator with only a URL and a Lightning
+#: Address can sell an API in one call instead of the skill's shell steps. The argument
+#: descriptions are cut to a few words each; the surface lands near 82%, with roughly 290
+#: bytes of headroom.
+#:
 #: ``ToolSchemaTests.cs`` holds the same line at a different number — the .NET SDK emits a
 #: richer per-parameter schema, so that port's payload is larger. The two fractions are
 #: tuned independently rather than copied.
-MAX_STANDARD_FRACTION = 0.79
+MAX_STANDARD_FRACTION = 0.84
 
 
 def schema_bytes(tools) -> int:

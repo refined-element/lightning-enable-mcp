@@ -895,6 +895,7 @@ ACTION_IMPLEMENTATIONS = {
     "add_endpoint": "add_endpoint",
     "publish": "publish_l402_service",
     "list_challenges": "list_l402_challenges",
+    "sell_url": "sell_url",
 }
 
 #: Actions that only read. Annotations are per TOOL, so these do not change the tool's
@@ -902,7 +903,7 @@ ACTION_IMPLEMENTATIONS = {
 #: and reflected in the action description the model reads.
 READ_ONLY_ACTIONS = frozenset({"status", "list_challenges"})
 WRITE_ACTIONS = frozenset(
-    {"create", "verify", "configure_receive", "create_proxy", "add_endpoint", "publish"}
+    {"create", "verify", "configure_receive", "create_proxy", "add_endpoint", "publish", "sell_url"}
 )
 
 
@@ -967,7 +968,8 @@ class TestAdvertisedSurface:
 
         annotations = TOOL_ANNOTATIONS["l402_producer"]
         assert annotations.readOnlyHint is False
-        assert annotations.destructiveHint is False
+        # sell_url pays the producer claim from the wallet.
+        assert annotations.destructiveHint is True
         assert annotations.title == "L402 producer"
 
     def test_the_tool_count_is_unchanged(self):

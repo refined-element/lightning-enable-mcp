@@ -304,6 +304,12 @@ public class Program
         // Register Lightning Enable API service for L402 producer tools
         builder.Services.AddHttpClient<ILightningEnableApiService, LightningEnableApiService>();
 
+        // The producer claim (l402_producer sell_url). Its own client: no merchant key on it
+        // (an unauthenticated claim creates a NEW account), and redirects are not followed so
+        // the paid Authorization header never leaves the configured Lightning Enable origin.
+        builder.Services.AddHttpClient<IProducerClaimClient, ProducerClaimClient>()
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false });
+
         // Register price service for USD/sats conversion
         builder.Services.AddHttpClient<IPriceService, PriceService>();
 

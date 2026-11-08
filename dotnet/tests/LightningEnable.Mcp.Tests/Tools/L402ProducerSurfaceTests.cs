@@ -22,7 +22,7 @@ public class L402ProducerSurfaceTests
     private static readonly string[] AllActions =
     {
         "create", "verify", "configure_receive", "status",
-        "create_proxy", "add_endpoint", "publish", "list_challenges",
+        "create_proxy", "add_endpoint", "publish", "list_challenges", "sell_url",
     };
 
     /// <summary>
@@ -34,7 +34,7 @@ public class L402ProducerSurfaceTests
 
     private static readonly string[] WriteActions =
     {
-        "create", "verify", "configure_receive", "create_proxy", "add_endpoint", "publish",
+        "create", "verify", "configure_receive", "create_proxy", "add_endpoint", "publish", "sell_url",
     };
 
     private static async Task<JsonElement> ProducerSchemaAsync()
@@ -126,7 +126,7 @@ public class L402ProducerSurfaceTests
 
         annotations.Title.Should().Be("L402 producer");
         annotations.ReadOnlyHint.Should().BeFalse();
-        annotations.DestructiveHint.Should().BeFalse("no producer action can spend the wallet");
+        annotations.DestructiveHint.Should().BeTrue("sell_url pays the producer claim from the wallet");
     }
 
     [Fact]

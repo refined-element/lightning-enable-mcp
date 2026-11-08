@@ -290,7 +290,7 @@ public sealed class IdempotentWalletService : IWalletService
         : OperationState.FailedNoFunds;
 
     /// <summary>SHA256 of the normalized invoice — a stable, non-secret idempotency key.</summary>
-    private static string DeriveOperationId(string bolt11)
+    internal static string DeriveOperationId(string bolt11)
     {
         var normalized = (bolt11 ?? string.Empty).Trim().ToLowerInvariant();
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(normalized));

@@ -5,6 +5,75 @@ Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-ena
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-11-09
+
+### Added
+
+- **`l402_producer(action="sell_url")`, both ports.** Charge for an API in one call: a target
+  URL plus a Lightning Address become a paid L402 endpoint and a new Lightning Enable account,
+  through the producer claim endpoint (`GET`/`POST /api/producer/claim`). No API key needed.
+  Without `accept_terms` (`acceptTerms` in .NET) equal to the quote's `terms.version`, the tool
+  only returns the free quote (claim price, what it covers, renewal, terms version and link,
+  and the server's `pricingNote` and `bodyRule` verbatim) and posts nothing. With a
+  `recovery_email`, the quote warns that an already-registered email is refused only after
+  payment. With it, the tool posts phase 1, pays the
+  402 through the `pay_l402_challenge` path (same budget check, auto-approve threshold,
+  out-of-band confirmation via `RequestConfirmationAsync` / `request_confirmation`, spend
+  reservation and receipts; the 402's `priceSats` is the ceiling, and an invoice above the
+  quote is refused before paying), then redeems with the byte-identical body and
+  `Authorization: L402`. Over-threshold claims return `requiresConfirmation`; call again with
+  the same arguments plus `confirmation_nonce` / `confirmationNonce`. `name` defaults to the
+  target's hostname. Arguments: `target_url` (https only), `lightning_address`,
+  `default_price_sats` (the per-call price buyers pay, the same argument `create_proxy` uses),
+  `name`, `description`, `recovery_email` or `recovery_nostr_pubkey`, `list_publicly`. With no
+  wallet that can pay (`IWalletService.IsConfigured` in .NET), the tool refuses before minting.
+  - **Result:** proxy URL, manifest and OpenAPI URLs, proxy id, receive lane, paid-through
+    date, renewal endpoint, recovery binding, listing status, and the server's warnings word
+    for word. The macaroon and preimage never appear in a result.
+  - **API key, once.** Stored where `create_lightning_enable_account` stores keys
+    (`~/.lightning-enable/config.json`, `lightningEnableApiKey`, owner-only) when that slot and
+    `LIGHTNING_ENABLE_API_KEY` are empty; otherwise in `~/.lightning-enable/claim-<proxyId>.key`
+    (owner-only, restricted before the key is written), never overwriting another account's
+    key. The result names the file. A replay carrying `keyRotated: true` and a fresh key
+    replaces this claim's earlier key where that one was stored, and the note says the returned
+    key is now the only valid one.
+  - **Errors.** Every claim code maps to an operator-facing message and a `retryable` flag
+    (spec §3.2 plus `claim_body_mismatch`, `plan_limit_reached`,
+    `receive_lane_already_configured`, `payment_provider_busy`, `payment_provider_rejected`,
+    `connect_not_available`, and a bare 404 as `feature_not_enabled`). A refusal before payment
+    costs nothing and says so. `merchant_exists` after payment says not to change the arguments
+    and to contact support with the payment hash.
+  - **After payment.** Phase 2 is retried up to 4 attempts on transient failures (honouring
+    `Retry-After`, capped at 10 seconds), with the same body and token. On giving up, the
+    result carries `paid: true` and recovery instructions: the payment hash and the path of the
+    saved claim file, never its secrets.
+  - **State and crash safety.** One owner-only file per exact body,
+    `claim/sell-<hash>.json` beside `config.json`. Its phase only moves forward: `challenge`
+    (saved before paying), `paying`, `paid` (preimage saved right after payment), then
+    `redeemed`, a secret-free marker with the proxy URL and where the key is stored. Calling
+    `sell_url` again with the same arguments redeems a saved token without paying again, or
+    answers "already claimed" from the marker. Calls for the same body are serialized, and a
+    save never moves the file backwards.
+  - **Money safety.** "Nothing was charged" is reported only for refusals known to happen
+    before the wallet is asked (budget deny, the ceiling, an invalid or amountless invoice, a
+    confirmation request, a rejected code, a refusing channel), and only when the operation
+    ledger has no record of the invoice. Any other failure after the wallet may have been
+    asked returns `payment_state_unknown` with `paid: "unknown"` and the payment hash; the tool
+    never pays that claim again, and only a `challenge` file the wallet never saw can expire.
+    An exception after payment reports `paid: true` or `"unknown"` with recovery instructions.
+  - **Canonical body.** Both ports serialize the claim body identically (fixed key order,
+    compact, UTF-8, no HTML escaping), so the bytes sent and the state file name agree across
+    ports.
+  - The shared fixture `shared/l402-producer-sell-url.json` pins the `l402_producer` argument
+    list, the action enum, the error table and a canonical-body test vector for both ports.
+
+### Changed
+
+- **`l402_producer` is now annotated `destructiveHint: true`**, because `sell_url` can spend
+  the wallet. Its description now leads with "charge for your API or monetize an endpoint".
+  The schema-size guards were raised to fit the new arguments (.NET 0.83 to 0.88, Python 0.79
+  to 0.84 of the pre-consolidation payload).
+
 ## [2.2.0] - 2026-11-04
 
 ### Added

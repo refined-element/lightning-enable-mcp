@@ -2,3 +2,6 @@
 # PaymentHistoryRedactionTests.cs seeds a fake macaroon/preimage sentinel and asserts it is
 # never retained in history. Not a credential.
 f33a18634f667278fd69d06e7b675dc62c1d675f:dotnet/tests/LightningEnable.Mcp.Tests/Services/PaymentHistoryRedactionTests.cs:generic-api-key:313
+# ProducerSellUrlTests.cs / test_producer_sell_url.py: the sell_url fake API-key fixture as first committed. Not a credential.
+a8a4c5fc99085fc4f80b66e9fa4194c771fe9003:dotnet/tests/LightningEnable.Mcp.Tests/Tools/ProducerSellUrlTests.cs:generic-api-key:27
+a8a4c5fc99085fc4f80b66e9fa4194c771fe9003:python/lightning-enable-mcp/tests/test_producer_sell_url.py:generic-api-key:35

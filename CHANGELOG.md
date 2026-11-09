@@ -5,6 +5,8 @@ Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-ena
 
 ## [Unreleased]
 
+## [2.3.1] - 2026-11-09
+
 ### Added
 
 - **Ownership verification on `l402_producer`, both ports.** `verify` with `proxy_id` (and no

@@ -729,3 +729,75 @@ async def test_capability_published_keeps_the_old_success_path():
 
     assert result["eventId"] == "evt1"
     assert "published successfully" in result["message"]
+
+
+# ── unverified publish: the shared field contract ──────────────────────────
+
+UNVERIFIED = FIXTURE["unverifiedPublish"]
+
+
+def _token_at_path(result):
+    node = result
+    for key in UNVERIFIED["tokenPath"]:
+        if not isinstance(node, dict) or key not in node:
+            return None
+        node = node[key]
+    return node
+
+
+def _assert_unverified_fields(result):
+    for name, expected in UNVERIFIED["fields"].items():
+        assert name in result, f"{name} missing from {sorted(result)}"
+        assert result[name] == expected, name
+
+
+@pytest.mark.asyncio
+async def test_unverified_capability_publish_carries_the_shared_fields():
+    response = UNVERIFIED["capabilityResponse"]
+    api = ScriptedApi().on(
+        "POST", "/api/agents/capabilities", Reply(response["status"], copy.deepcopy(response["body"]))
+    )
+
+    result = json.loads(
+        await publish_agent_capability(
+            "forecast", ["weather"], "Forecasts", 10,
+            target_url="https://api.example.com/v1", api_client=client_for(api),
+        )
+    )
+
+    _assert_unverified_fields(result)
+    assert _token_at_path(result) == response["body"]["verification"]["token"]
+
+
+@pytest.mark.asyncio
+async def test_unverified_capability_publish_without_a_token_invents_none():
+    body = copy.deepcopy(UNVERIFIED["capabilityResponse"]["body"])
+    del body["verification"]["token"]
+    api = ScriptedApi().on("POST", "/api/agents/capabilities", Reply(201, body))
+
+    raw = await publish_agent_capability(
+        "forecast", ["weather"], "Forecasts", 10,
+        target_url="https://api.example.com/v1", api_client=client_for(api),
+    )
+    result = json.loads(raw)
+
+    _assert_unverified_fields(result)
+    assert _token_at_path(result) is None
+    assert FIXTURE_VERIFICATION_VALUE not in raw
+
+
+@pytest.mark.asyncio
+async def test_unverified_listing_refusal_carries_the_shared_fields():
+    refusal = UNVERIFIED["listingRefusal"]
+    api = ScriptedApi().on(
+        "PUT",
+        f"/api/proxy/{PROXY_ID}/manifest/settings",
+        Reply(refusal["status"], copy.deepcopy(refusal["body"])),
+    )
+
+    result = json.loads(await publish(PROXY_ID, api_client=client_for(api)))
+
+    assert result["success"] is False
+    assert result["errorCode"] == "ownership_verification_required"
+    _assert_unverified_fields(result)
+    assert _token_at_path(result) is None

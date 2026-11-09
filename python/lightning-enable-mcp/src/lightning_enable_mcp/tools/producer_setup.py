@@ -542,8 +542,14 @@ async def publish(
         )
         if not result.get("success"):
             if result.get("errorCode") == "ownership_verification_required":
+                # Same fields as publish_agent_capability's unverified result
+                # (shared/l402-producer-verify.json unverifiedPublish).
                 return _from_api(
                     result,
+                    published=False,
+                    reason="ownership_verification_required",
+                    proxyId=slug,
+                    verifyEndpoint=result.get("verifyEndpoint"),
                     hint=(
                         "Listing needs proof that you own the API behind this proxy. Call "
                         f"l402_producer action=verification_token proxy_id={slug}, publish the "

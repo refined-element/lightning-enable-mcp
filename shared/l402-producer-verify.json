@@ -58,9 +58,9 @@
       "hint": "No method ran: the target base URL uses an IP address, localhost or an internal domain, a port other than 80 or 443, or a scheme other than http or https. Update the proxy's target to the API's public hostname, then issue a token and verify again."
     },
     {
-      "contains": "was re-issued while this check ran",
+      "contains": "while this check ran",
       "method": null,
-      "hint": "The token was replaced while the check ran. Publish the newest token and call verify again."
+      "hint": "The token was replaced, or the proxy's target URL changed, while the check ran. Publish the newest token on the current target and call verify again."
     },
     {
       "contains": "which is not followed",
@@ -169,6 +169,66 @@
       "tokenPlaceholder",
       "methods",
       "verifyEndpoint"
+    ],
+    "noTokenNote": "The claim response carried no token (a replay does not return it). If you never saved the token from the first response, call l402_producer action=verification_token proxy_id={proxyId}."
+  },
+  "serverReasonSamples": {
+    "_comment": "Exact reason strings from ProxyVerificationService, each with the hint it must select.",
+    "The verification token was re-issued, or the target URL changed, while this check ran. Check again.": "The token was replaced, or the proxy's target URL changed, while the check ran. Publish the newest token on the current target and call verify again."
+  },
+  "storedTokenSteps": {
+    "_comment": "verify's step when a token is stored locally. stale is used when the reason contains staleWhen; {path} and {proxyId} are filled in.",
+    "staleWhen": "current token",
+    "default": "A token is stored in {path} (token above). Publish it unless a newer token was issued elsewhere (dashboard, API, another host), which supersedes it; verification_token would replace it.",
+    "stale": "The published token is not the proxy's current one. If you published the stored token from {path}, it is stale: a token issued elsewhere supersedes it. Call l402_producer action=verification_token proxy_id={proxyId} for a fresh one and publish that."
+  },
+  "unprovenMethodSteps": {
+    "_comment": "The server sends verified:false for these; verify leads with this step.",
+    "grandfathered": "This proxy was listed before ownership verification existed and keeps its listing (grandfathered); the daily re-check skips it. To replace that with a real method, call verification_token, publish the token, and call verify.",
+    "platform": "Lightning Enable vouches for this proxy (platform); there is nothing to publish."
+  },
+  "verifyRouting": {
+    "_comment": "Which branch l402_producer verify takes for each argument combination: payment (macaroon/preimage check), ownership, or ambiguous_verify.",
+    "cases": [
+      {
+        "args": [],
+        "route": "payment"
+      },
+      {
+        "args": [
+          "macaroon",
+          "preimage"
+        ],
+        "route": "payment"
+      },
+      {
+        "args": [
+          "proxy_id"
+        ],
+        "route": "ownership"
+      },
+      {
+        "args": [
+          "proxy_id",
+          "macaroon"
+        ],
+        "route": "ambiguous"
+      },
+      {
+        "args": [
+          "proxy_id",
+          "preimage"
+        ],
+        "route": "ambiguous"
+      },
+      {
+        "args": [
+          "proxy_id",
+          "macaroon",
+          "preimage"
+        ],
+        "route": "ambiguous"
+      }
     ]
   }
 }

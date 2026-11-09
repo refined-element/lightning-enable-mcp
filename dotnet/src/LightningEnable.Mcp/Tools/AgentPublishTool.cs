@@ -21,8 +21,8 @@ public static class AgentPublishTool
         "Lightning Enable's L402 proxy pipeline. Provide targetUrl — an L402 proxy is created to " +
         "back the listing and handle payment. The event is signed by the Lightning Enable platform " +
         "key. Each call creates a new listing, so publish once; to change a listing, unpublish it " +
-        "and publish again. A third-party target is listed only after ownership verification: the " +
-        "result then says published=false and returns a one-time token to publish before " +
+        "and publish again. Listing waits for ownership verification: the result says " +
+        "published=false and returns a one-time token to publish before " +
         "l402_producer(action=verify). Requires LIGHTNING_ENABLE_API_KEY.")]
     public static async Task<string> PublishAgentCapability(
         [Description("Unique service identifier (used as d-tag)")] string serviceId,
@@ -169,7 +169,7 @@ public static class AgentPublishTool
             ["priceSats"] = priceSats,
             ["l402Endpoint"] = result.L402Endpoint,
             ["message"] = $"Capability '{serviceId}' was created but NOT published: it is not on Nostr or in the "
-                + "registry yet, because listing a third-party target requires proof that you own it. Its L402 "
+                + "registry yet, because listing requires proof that you own the target. Its L402 "
                 + "endpoint already works by its direct URL.",
         };
 

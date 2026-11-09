@@ -112,11 +112,11 @@ REASON_HINTS: list[dict[str, Any]] = [
         ),
     },
     {
-        "contains": "was re-issued while this check ran",
+        "contains": "while this check ran",
         "method": None,
         "hint": (
-            "The token was replaced while the check ran. Publish the newest token and call "
-            "verify again."
+            "The token was replaced, or the proxy's target URL changed, while the check ran. "
+            "Publish the newest token on the current target and call verify again."
         ),
     },
     {
@@ -224,6 +224,22 @@ REASON_HINT_FALLBACK = (
     "Fix what the reason names for the method you published, then call verify again. Only "
     "that method needs to pass; the others failing is expected."
 )
+
+#: verify's step when a token is stored locally; ``{path}`` is filled in.
+STORED_TOKEN_STEP = "A token is stored in {path} (token above). Publish it unless a newer token was issued elsewhere (dashboard, API, another host), which supersedes it; verification_token would replace it."
+
+#: The step when the reason says the published token is not the current one: a token issued
+#: elsewhere supersedes the stored one. ``{path}`` and ``{proxyId}`` are filled in.
+STALE_STORED_TOKEN_STEP = "The published token is not the proxy's current one. If you published the stored token from {path}, it is stale: a token issued elsewhere supersedes it. Call l402_producer action=verification_token proxy_id={proxyId} for a fresh one and publish that."
+
+#: The reason text that marks a stored token as possibly stale.
+STALE_WHEN = "current token"
+
+#: Lead steps for the methods the server reports with ``verified: false``.
+UNPROVEN_METHOD_STEPS: dict[str, str] = {
+    "grandfathered": "This proxy was listed before ownership verification existed and keeps its listing (grandfathered); the daily re-check skips it. To replace that with a real method, call verification_token, publish the token, and call verify.",
+    "platform": "Lightning Enable vouches for this proxy (platform); there is nothing to publish.",
+}
 
 _ABOUT = (
     "Ownership verification proves you control the API behind the proxy. Only a verified "
@@ -460,26 +476,15 @@ def _next_steps(state: dict[str, Any], slug: str, method: str | None, attempts: 
 
     if state.get("verified") is True:
         info = next((m for m in METHODS if m["method"] == verified_by), None)
-        if verified_by == "grandfathered":
-            steps.append(
-                "This proxy was listed before ownership verification existed, so it stays "
-                "verified (grandfathered) and the daily re-check skips it. To replace that with "
-                "a real method, call verification_token, publish the token, and call verify."
-            )
-        elif verified_by == "platform":
-            steps.append(
-                "Lightning Enable vouches for this proxy (platform); there is nothing to publish."
-            )
-        else:
-            steps.append(
-                f"Verified by {verified_by}."
-                if info is None
-                else f"Verified by {verified_by}, which proves {info['proves']}."
-            )
-            steps.append(
-                "Leave the token in place: verified proxies are re-checked daily, and three "
-                "failed re-checks in a row make the proxy unverified and unlisted."
-            )
+        steps.append(
+            f"Verified by {verified_by}."
+            if info is None
+            else f"Verified by {verified_by}, which proves {info['proves']}."
+        )
+        steps.append(
+            "Leave the token in place: verified proxies are re-checked daily, and three "
+            "failed re-checks in a row make the proxy unverified and unlisted."
+        )
         steps.append(
             "It is listed publicly."
             if state.get("listed") is True
@@ -487,8 +492,15 @@ def _next_steps(state: dict[str, Any], slug: str, method: str | None, attempts: 
         )
         return steps
 
+    # The server reports grandfathered and platform proxies with verified: false.
+    if verified_by in UNPROVEN_METHOD_STEPS:
+        steps.append(UNPROVEN_METHOD_STEPS[verified_by])
+
     if state.get("tokenIssued") is False:
-        return [f"No token exists yet. Call l402_producer action=verification_token proxy_id={slug}."]
+        steps.append(
+            f"No token exists yet. Call l402_producer action=verification_token proxy_id={slug}."
+        )
+        return steps
 
     steps.extend(hints_for(state.get("reason"), method))
     return steps or [REASON_HINT_FALLBACK]
@@ -631,11 +643,10 @@ async def verify_ownership(
             # Use the token already issued (by sell_url or verification_token) rather than
             # sending the agent to verification_token, which would replace it.
             payload["storedToken"] = stored
-            steps.insert(
-                0,
-                f"Publish the token stored in {stored['path']} (token above); you do not need "
-                "a new one. A new token from verification_token would replace it.",
-            )
+            # Never assert the stored token is current: a token issued elsewhere supersedes it.
+            stale = STALE_WHEN in str(state.get("reason") or "")
+            template = STALE_STORED_TOKEN_STEP if stale else STORED_TOKEN_STEP
+            steps.insert(0, template.replace("{path}", stored["path"]).replace("{proxyId}", slug))
         payload["nextSteps"] = steps
         return json.dumps(payload, indent=2)
     except asyncio.CancelledError:

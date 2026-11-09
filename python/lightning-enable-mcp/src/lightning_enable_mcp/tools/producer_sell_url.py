@@ -805,6 +805,10 @@ def store_api_key(config_path: str, proxy_id: str, api_key: str) -> dict:
     return write_key(location, config_path, proxy_id, api_key)
 
 
+#: Said when the claim carried a verification block without its token (a replay).
+NO_VERIFICATION_TOKEN_NOTE = "The claim response carried no token (a replay does not return it). If you never saved the token from the first response, call l402_producer action=verification_token proxy_id={proxyId}."
+
+
 def _verification_block(raw: Any, config_path: str, proxy_id: str) -> Optional[dict]:
     """The claim's ``verification`` block: the ownership token (shown once, stored owner-only
     beside config.json so ``verify`` finds it), the instructions, and the verify route."""
@@ -824,6 +828,8 @@ def _verification_block(raw: Any, config_path: str, proxy_id: str) -> Optional[d
             f"action=verify proxy_id={proxy_id}. Only a verified proxy can be listed."
         )
         block["tokenStorage"] = storage
+    else:
+        block["tokenNote"] = NO_VERIFICATION_TOKEN_NOTE.replace("{proxyId}", proxy_id)
     if isinstance(instructions, dict) and isinstance(instructions.get("tokenPlaceholder"), str):
         block["tokenPlaceholder"] = instructions["tokenPlaceholder"]
     block["methods"] = methods_from(instructions)

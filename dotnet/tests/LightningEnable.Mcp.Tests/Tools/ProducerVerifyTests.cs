@@ -202,6 +202,15 @@ public sealed class ProducerVerifyTests : IDisposable
                 h.GetProperty("hint").GetString()!))
             .Should().Equal(ProducerVerification.ReasonHints);
         root.GetProperty("reasonHintFallback").GetString().Should().Be(ProducerVerification.ReasonHintFallback);
+        var storedSteps = root.GetProperty("storedTokenSteps");
+        storedSteps.GetProperty("staleWhen").GetString().Should().Be(ProducerVerification.StaleWhen);
+        storedSteps.GetProperty("default").GetString().Should().Be(ProducerVerification.StoredTokenStep);
+        storedSteps.GetProperty("stale").GetString().Should().Be(ProducerVerification.StaleStoredTokenStep);
+        root.GetProperty("unprovenMethodSteps").EnumerateObject().Where(p => p.Name != "_comment")
+            .ToDictionary(p => p.Name, p => p.Value.GetString()!)
+            .Should().Equal(ProducerVerification.UnprovenMethodSteps);
+        root.GetProperty("sellUrlVerification").GetProperty("noTokenNote").GetString()
+            .Should().Be(ProducerSellUrl.NoVerificationTokenNote);
 
         var store = root.GetProperty("tokenStore");
         store.GetProperty("filePrefix").GetString().Should().Be(ProducerVerification.TokenFilePrefix);
@@ -234,7 +243,42 @@ public sealed class ProducerVerifyTests : IDisposable
 
         result.GetProperty("storedToken").GetProperty("token").GetString().Should().Be(FixtureVerificationValue);
         result.GetProperty("storedToken").GetProperty("source").GetString().Should().Be("sell_url");
-        Strings(result, "nextSteps")[0].Should().Contain("you do not need a new one");
+        Strings(result, "nextSteps")[0].Should().Be(
+            ProducerVerification.StoredTokenStep.Replace("{path}", ProducerVerification.LoadToken(ConfigPath, ProxyId)!.Path));
+    }
+
+    [Fact]
+    public async Task Verify_WhenTheReasonSaysNotCurrent_CallsTheStoredTokenStale_AndPointsAtReissue()
+    {
+        ProducerVerification.StoreToken(ConfigPath, ProxyId, FixtureVerificationValue, "sell_url");
+        var api = new ScriptedApi().On("POST", VerifyPath,
+            Ok(State(reason: "well-known: \"verify\" does not contain this proxy's current token")));
+
+        var first = Strings(Parse(await Verify(api)), "nextSteps")[0];
+
+        first.Should().Contain("stale").And.Contain($"action=verification_token proxy_id={ProxyId}");
+        first.Should().NotContain("Publish it unless");
+    }
+
+    [Fact]
+    public async Task Verify_GrandfatheredProxy_ReportedUnverified_LeadsWithItsStanding()
+    {
+        var api = new ScriptedApi().On("POST", VerifyPath,
+            Ok(State(verified: false, method: "grandfathered", listed: true)));
+
+        Strings(Parse(await Verify(api)), "nextSteps")[0]
+            .Should().Be(ProducerVerification.UnprovenMethodSteps["grandfathered"]);
+    }
+
+    [Fact]
+    public void ExactServerReasons_SelectTheirHint()
+    {
+        using var doc = Fixture();
+        foreach (var sample in doc.RootElement.GetProperty("serverReasonSamples").EnumerateObject()
+                     .Where(p => p.Name != "_comment"))
+        {
+            ProducerVerification.HintsFor(sample.Name, null)[0].Should().Be(sample.Value.GetString(), sample.Name);
+        }
     }
 
     [Fact]
@@ -524,7 +568,7 @@ public sealed class ProducerVerifyTests : IDisposable
         var api = new ScriptedApi().On("POST", VerifyPath, Ok(State(verified: true, method: "header")));
 
         var ownership = Parse(await L402ProducerTool.L402Producer(
-            L402ProducerAction.verify, proxyId: ProxyId, apiService: Service(api)));
+            L402ProducerAction.verify, proxyId: ProxyId, apiService: Service(api), configService: Config()));
         ownership.GetProperty("verified").GetBoolean().Should().BeTrue();
 
         var both = Parse(await L402ProducerTool.L402Producer(
@@ -532,8 +576,62 @@ public sealed class ProducerVerifyTests : IDisposable
         both.GetProperty("errorCode").GetString().Should().Be(ProducerVerification.AmbiguousVerify);
 
         var token = Parse(await L402ProducerTool.L402Producer(
-            L402ProducerAction.verification_token, apiService: Service(api)));
+            L402ProducerAction.verification_token, apiService: Service(api), configService: Config()));
         token.GetProperty("errorCode").GetString().Should().Be(ProducerVerification.ProxyIdRequired);
+    }
+
+    public static IEnumerable<object[]> RoutingCases()
+    {
+        using var doc = Fixture();
+        return doc.RootElement.GetProperty("verifyRouting").GetProperty("cases").EnumerateArray()
+            .Select(c => new object[]
+            {
+                string.Join(",", c.GetProperty("args").EnumerateArray().Select(a => a.GetString())),
+                c.GetProperty("route").GetString()!,
+            })
+            .ToList();
+    }
+
+    [Theory]
+    [MemberData(nameof(RoutingCases))]
+    public async Task VerifyRouting_MatchesTheSharedTable(string args, string route)
+    {
+        var given = args.Split(',', StringSplitOptions.RemoveEmptyEntries).ToHashSet();
+        var api = new Mock<ILightningEnableApiService>();
+        api.SetupGet(a => a.IsConfigured).Returns(true);
+        api.SetupGet(a => a.BaseUrl).Returns(ApiBase);
+        api.Setup(a => a.VerifyTokenAsync(It.IsAny<string>(), It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new VerifyTokenResult { Success = true, Valid = true, Resource = "r" });
+        api.Setup(a => a.VerifyProxyOwnershipAsync(It.IsAny<string>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(new ApiCallResult { Success = true, Data = JsonNode.Parse(State(verified: true, method: "header"))!.AsObject() });
+
+        var result = Parse(await L402ProducerTool.L402Producer(
+            L402ProducerAction.verify,
+            proxyId: given.Contains("proxy_id") ? ProxyId : null,
+            macaroon: given.Contains("macaroon") ? "AgEL" : null,
+            preimage: given.Contains("preimage") ? "00" : null,
+            apiService: api.Object,
+            configService: Config()));
+
+        var ownershipCalls = api.Invocations.Count(i => i.Method.Name == nameof(ILightningEnableApiService.VerifyProxyOwnershipAsync));
+        var paymentCalls = api.Invocations.Count(i => i.Method.Name == nameof(ILightningEnableApiService.VerifyTokenAsync));
+        var ambiguous = result.TryGetProperty("errorCode", out var code) && code.GetString() == ProducerVerification.AmbiguousVerify;
+        var actual = ambiguous ? "ambiguous" : ownershipCalls > 0 ? "ownership" : "payment";
+
+        actual.Should().Be(route, args);
+        if (route == "payment")
+        {
+            ownershipCalls.Should().Be(0);
+            // Bare verify fails the payment tool's own argument check; with both it reaches the API.
+            if (given.Count == 0)
+                result.GetProperty("error").GetString().Should().Contain("Macaroon is required");
+            else
+                paymentCalls.Should().Be(1);
+        }
+        else
+        {
+            paymentCalls.Should().Be(0);
+        }
     }
 
     [Fact]
@@ -607,6 +705,21 @@ public sealed class ProducerVerifyTests : IDisposable
         var agent = Agent(new AgentPublishResult
         {
             Success = true, EventId = "evt1", L402Endpoint = $"{ApiBase}/l402/proxy/{ProxyId}", Published = true,
+        });
+
+        var result = Parse(await AgentPublishTool.PublishAgentCapability(
+            "forecast", new[] { "weather" }, "Forecasts", 10, agentService: agent.Object));
+
+        result.GetProperty("eventId").GetString().Should().Be("evt1");
+        result.GetProperty("message").GetString().Should().Contain("published successfully");
+    }
+
+    [Fact]
+    public async Task Capability_FromAServerWithoutThePublishedField_KeepsTheOldSuccessPath()
+    {
+        var agent = Agent(new AgentPublishResult
+        {
+            Success = true, EventId = "evt1", L402Endpoint = $"{ApiBase}/l402/proxy/{ProxyId}", Published = null,
         });
 
         var result = Parse(await AgentPublishTool.PublishAgentCapability(

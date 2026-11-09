@@ -565,7 +565,7 @@ payments by its direct URL.
 4. **List it.** Once verified, `l402_producer(action="publish", proxy_id="weather-api")`.
 
 `publish_agent_capability` (and `agent_services(action="publish")`) follows the same rule:
-for a third-party target the result says `published: false` and returns the one-time token,
+the result says `published: false` and returns the one-time token,
 and the listing goes up after `verify` succeeds.
 
 ## Agent Service Agreements (the `agent_services` tool)
@@ -578,7 +578,7 @@ The hosted Lightning Enable API refuses `attest`, because it has no route that a
 | Action | Description |
 |--------|-------------|
 | discover | Search for agent capabilities by category, hashtag, or keyword |
-| publish | Publish your agent's services to the Nostr network (kind 38400). Publish once: each call creates a new listing and L402 proxy. To change a listing, `unpublish` it and `publish` again, or edit it in the Lightning Enable dashboard. A third-party target is listed only after ownership verification: the result then says `published: false`, returns a one-time token, and points at `l402_producer(action="verify")` |
+| publish | Publish your agent's services to the Nostr network (kind 38400). Publish once: each call creates a new listing and L402 proxy. To change a listing, `unpublish` it and `publish` again, or edit it in the Lightning Enable dashboard. Listing waits for ownership verification: the result says `published: false`, returns a one-time token, and points at `l402_producer(action="verify")` |
 | unpublish | Take a published listing down: retire the L402 proxy and emit a NIP-09 removal |
 | request | Request a service from another agent (kind 38401) |
 | settle | Pay for an agent service via L402 Lightning settlement |

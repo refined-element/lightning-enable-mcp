@@ -316,6 +316,28 @@ class TestVerificationPassThrough:
         assert stored["source"] == "sell_url"
         assert Path(stored["path"]).parent == env["dir"]
 
+    async def test_a_replayed_block_without_a_token_says_it_was_not_returned(self, env):
+        from lightning_enable_mcp.tools import producer_verify as pv
+
+        stub = env["stub"]
+        queue_quote_and_challenge(env)
+        claimed = claimed_json(replayed=True)
+        claimed["verification"] = {
+            "token": None,
+            "instructions": {"tokenPlaceholder": "<token>", "methods": []},
+            "verifyEndpoint": "/api/proxy/claimed-weather-api/verify",
+        }
+        stub.posts.append((200, claimed, None))
+
+        result, _ = await call(env)
+
+        block = result["verification"]
+        assert "token" not in block
+        assert block["tokenNote"] == sell.NO_VERIFICATION_TOKEN_NOTE.replace(
+            "{proxyId}", "claimed-weather-api"
+        )
+        assert pv.load_token(str(env["config"]), "claimed-weather-api") is None
+
     async def test_a_claim_without_verification_adds_no_block(self, env):
         stub = env["stub"]
         queue_quote_and_challenge(env)

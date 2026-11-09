@@ -30,7 +30,7 @@ Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-ena
 
 - **`publish_agent_capability` no longer reports an unlisted capability as published.** The
   server now answers `published: false`, `reason: "ownership_verification_required"` and a
-  one-time `verification` token for a third-party target. Both ports say so plainly, return
+  one-time `verification` token when it creates a capability. Both ports say so plainly, return
   the token with a storage note, and point at `l402_producer(action="verify")`; a
   `published: true` (or older) response keeps the old success result.
 - **`l402_producer(action="publish")`** adds a hint pointing at `verification_token` and

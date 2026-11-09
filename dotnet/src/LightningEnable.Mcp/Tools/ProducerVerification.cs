@@ -102,8 +102,9 @@ internal static class ProducerVerification
             "No method ran: the target base URL uses an IP address, localhost or an internal domain, a port other "
             + "than 80 or 443, or a scheme other than http or https. Update the proxy's target to the API's public "
             + "hostname, then issue a token and verify again."),
-        new VerificationReasonHint("was re-issued while this check ran", null,
-            "The token was replaced while the check ran. Publish the newest token and call verify again."),
+        new VerificationReasonHint("while this check ran", null,
+            "The token was replaced, or the proxy's target URL changed, while the check ran. Publish the newest "
+            + "token on the current target and call verify again."),
         new VerificationReasonHint("which is not followed", null,
             "Redirects are never followed. Serve the file or header on the target host itself, make the base URL "
             + "answer without a trailing-slash redirect, and exempt the path from any sign-in redirect."),
@@ -150,6 +151,25 @@ internal static class ProducerVerification
     public const string ReasonHintFallback =
         "Fix what the reason names for the method you published, then call verify again. Only that method needs "
         + "to pass; the others failing is expected.";
+
+    /// <summary>verify's step when a token is stored locally; <c>{path}</c> is filled in.</summary>
+    public const string StoredTokenStep = "A token is stored in {path} (token above). Publish it unless a newer token was issued elsewhere (dashboard, API, another host), which supersedes it; verification_token would replace it.";
+
+    /// <summary>
+    /// The step when the reason says the published token is not the current one: a token issued
+    /// elsewhere supersedes the stored one. <c>{path}</c> and <c>{proxyId}</c> are filled in.
+    /// </summary>
+    public const string StaleStoredTokenStep = "The published token is not the proxy's current one. If you published the stored token from {path}, it is stale: a token issued elsewhere supersedes it. Call l402_producer action=verification_token proxy_id={proxyId} for a fresh one and publish that.";
+
+    /// <summary>The reason text that marks a stored token as possibly stale.</summary>
+    public const string StaleWhen = "current token";
+
+    /// <summary>Lead steps for the methods the server reports with <c>verified: false</c>.</summary>
+    public static readonly IReadOnlyDictionary<string, string> UnprovenMethodSteps = new Dictionary<string, string>
+    {
+        ["grandfathered"] = "This proxy was listed before ownership verification existed and keeps its listing (grandfathered); the daily re-check skips it. To replace that with a real method, call verification_token, publish the token, and call verify.",
+        ["platform"] = "Lightning Enable vouches for this proxy (platform); there is nothing to publish.",
+    };
 
     private const string About =
         "Ownership verification proves you control the API behind the proxy. Only a verified proxy can be listed "
@@ -232,8 +252,11 @@ internal static class ProducerVerification
                     ["path"] = stored.Path,
                     ["source"] = stored.Source,
                 };
-                steps.Insert(0, $"Publish the token stored in {stored.Path} (token above); you do not need a new "
-                    + "one. A new token from verification_token would replace it.");
+                // Never assert the stored token is current: a token issued elsewhere supersedes it.
+                var stale = Text(state, "reason")?.Contains(StaleWhen, StringComparison.Ordinal) == true;
+                steps.Insert(0, (stale ? StaleStoredTokenStep : StoredTokenStep)
+                    .Replace("{path}", stored.Path, StringComparison.Ordinal)
+                    .Replace("{proxyId}", slug, StringComparison.Ordinal));
             }
             payload["nextSteps"] = steps;
             return Json(payload);
@@ -538,29 +561,22 @@ internal static class ProducerVerification
         if (Bool(state, "verified") == true)
         {
             var info = Methods.FirstOrDefault(m => m.Method == method);
-            if (method == "grandfathered")
-            {
-                steps.Add("This proxy was listed before ownership verification existed, so it stays verified "
-                    + "(grandfathered) and the daily re-check skips it. To replace that with a real method, call "
-                    + "verification_token, publish the token, and call verify.");
-            }
-            else if (method == "platform")
-            {
-                steps.Add("Lightning Enable vouches for this proxy (platform); there is nothing to publish.");
-            }
-            else
-            {
-                steps.Add(info is null
-                    ? $"Verified by {method}."
-                    : $"Verified by {method}, which proves {info.Proves}.");
-                steps.Add("Leave the token in place: verified proxies are re-checked daily, and three failed re-checks "
-                    + "in a row make the proxy unverified and unlisted.");
-            }
+            steps.Add(info is null
+                ? $"Verified by {method}."
+                : $"Verified by {method}, which proves {info.Proves}.");
+            steps.Add("Leave the token in place: verified proxies are re-checked daily, and three failed re-checks "
+                + "in a row make the proxy unverified and unlisted.");
 
             steps.Add(Bool(state, "listed") == true
                 ? "It is listed publicly."
                 : $"Listing is not on yet. To list it, call l402_producer action=publish proxy_id={slug}.");
             return steps;
+        }
+
+        // The server reports grandfathered and platform proxies with verified: false.
+        if (method is not null && UnprovenMethodSteps.TryGetValue(method, out var standing))
+        {
+            steps.Add(standing);
         }
 
         if (Bool(state, "tokenIssued") == false)

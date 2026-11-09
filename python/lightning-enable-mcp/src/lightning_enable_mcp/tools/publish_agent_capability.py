@@ -209,8 +209,8 @@ def _unpublished(
             "l402Endpoint": result.get("l402Endpoint"),
             "message": (
                 f"Capability '{service_id}' was created but NOT published: it is not on Nostr "
-                "or in the registry yet, because listing a third-party target requires proof "
-                "that you own it. Its L402 endpoint already works by its direct URL."
+                "or in the registry yet, because listing requires proof that you own the "
+                "target. Its L402 endpoint already works by its direct URL."
             ),
             "verification": verification,
             "nextSteps": [
@@ -233,9 +233,9 @@ PUBLISH_AGENT_CAPABILITY_TOOL = Tool(
         "an L402 proxy is created to back the listing and handle payment. The event "
         "is signed by the Lightning Enable platform key. Each call creates a new "
         "listing, so publish once; to change a listing, unpublish it and publish "
-        "again. A third-party target is listed only after ownership verification: the "
-        "result then says published=false and returns a one-time token to publish "
-        "before l402_producer(action=verify). Requires LIGHTNING_ENABLE_API_KEY."
+        "again. Listing waits for ownership verification: the result says "
+        "published=false and returns a one-time token to publish before "
+        "l402_producer(action=verify). Requires LIGHTNING_ENABLE_API_KEY."
     ),
     inputSchema={
         "type": "object",

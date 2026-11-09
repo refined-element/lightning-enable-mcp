@@ -327,6 +327,27 @@ public sealed class ProducerSellUrlTests : IDisposable
     }
 
     [Fact]
+    public async Task AReplayedClaimsBlockWithoutAToken_SaysTheTokenWasNotReturned()
+    {
+        QueueQuoteAndChallenge();
+        var claimed = JsonNode.Parse(ClaimedJson(replayed: true))!.AsObject();
+        claimed["verification"] = new JsonObject
+        {
+            ["token"] = null,
+            ["instructions"] = new JsonObject { ["tokenPlaceholder"] = "<token>", ["methods"] = new JsonArray() },
+            ["verifyEndpoint"] = "/api/proxy/claimed-weather-api/verify",
+        };
+        _claim.Responses.Enqueue(new ClaimHttpResponse(200, claimed.ToJsonString()));
+
+        var block = Parse(await SellAsync()).GetProperty("verification");
+
+        block.TryGetProperty("token", out _).Should().BeFalse();
+        block.GetProperty("tokenNote").GetString().Should().Be(
+            ProducerSellUrl.NoVerificationTokenNote.Replace("{proxyId}", "claimed-weather-api"));
+        ProducerVerification.LoadToken(_configPath, "claimed-weather-api").Should().BeNull();
+    }
+
+    [Fact]
     public async Task AClaimWithoutVerification_AddsNoBlock()
     {
         QueueQuoteAndChallenge();

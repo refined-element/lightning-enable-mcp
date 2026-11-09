@@ -571,6 +571,9 @@ internal static class ProducerSellUrl
     /// The claim's <c>verification</c> block: the ownership token (shown once, stored owner-only
     /// beside config.json so <c>verify</c> finds it), the instructions, and the verify route.
     /// </summary>
+    /// <summary>Said when the claim carried a verification block without its token (a replay).</summary>
+    internal const string NoVerificationTokenNote = "The claim response carried no token (a replay does not return it). If you never saved the token from the first response, call l402_producer action=verification_token proxy_id={proxyId}.";
+
     internal static JsonObject? VerificationBlock(JsonObject? raw, string configPath, string proxyId)
     {
         if (raw is null)
@@ -590,6 +593,10 @@ internal static class ProducerSellUrl
                 + " Publish it by one method below, replacing <token>, then call l402_producer "
                 + $"action=verify proxy_id={proxyId}. Only a verified proxy can be listed.";
             block["tokenStorage"] = JsonSerializer.SerializeToNode(ProducerVerification.StorageJson(storage));
+        }
+        else
+        {
+            block["tokenNote"] = NoVerificationTokenNote.Replace("{proxyId}", proxyId, StringComparison.Ordinal);
         }
         if (GetString(instructions?["tokenPlaceholder"]) is { } placeholder)
         {

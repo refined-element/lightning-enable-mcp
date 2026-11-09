@@ -207,6 +207,21 @@ class TestFixtureParity:
         assert FIXTURE["maxRetryAfterSeconds"] == pv.MAX_RETRY_AFTER_SECONDS
         assert FIXTURE["reasonHints"] == pv.REASON_HINTS
         assert FIXTURE["reasonHintFallback"] == pv.REASON_HINT_FALLBACK
+        steps = FIXTURE["storedTokenSteps"]
+        assert steps["staleWhen"] == pv.STALE_WHEN
+        assert steps["default"] == pv.STORED_TOKEN_STEP
+        assert steps["stale"] == pv.STALE_STORED_TOKEN_STEP
+        unproven = {k: v for k, v in FIXTURE["unprovenMethodSteps"].items() if k != "_comment"}
+        assert unproven == pv.UNPROVEN_METHOD_STEPS
+        from lightning_enable_mcp.tools.producer_sell_url import NO_VERIFICATION_TOKEN_NOTE
+
+        assert FIXTURE["sellUrlVerification"]["noTokenNote"] == NO_VERIFICATION_TOKEN_NOTE
+
+    def test_exact_server_reasons_select_their_hint(self):
+        for reason, hint in FIXTURE["serverReasonSamples"].items():
+            if reason == "_comment":
+                continue
+            assert pv.hints_for(reason, None)[0] == hint, reason
         store = FIXTURE["tokenStore"]
         assert store["filePrefix"] == pv.TOKEN_FILE_PREFIX
         for example in store["examples"]:
@@ -371,7 +386,32 @@ class TestToken:
 
         assert result["storedToken"]["token"] == FIXTURE_VERIFICATION_VALUE
         assert result["storedToken"]["source"] == "sell_url"
-        assert "you do not need a new one" in result["nextSteps"][0]
+        assert result["nextSteps"][0] == pv.STORED_TOKEN_STEP.replace(
+            "{path}", pv.load_token(None, PROXY_ID)["path"]
+        )
+
+    async def test_verify_when_the_reason_says_not_current_calls_the_stored_token_stale(self):
+        pv.store_token(None, PROXY_ID, FIXTURE_VERIFICATION_VALUE, "sell_url")
+        api = ScriptedApi().on(
+            "POST",
+            VERIFY_PATH,
+            ok(state(reason="well-known: \"verify\" does not contain this proxy's current token")),
+        )
+
+        first = (await verify(api))["nextSteps"][0]
+
+        assert "stale" in first
+        assert f"action=verification_token proxy_id={PROXY_ID}" in first
+        assert "Publish it unless" not in first
+
+    async def test_grandfathered_proxy_reported_unverified_leads_with_its_standing(self):
+        api = ScriptedApi().on(
+            "POST", VERIFY_PATH, ok(state(verified=False, method="grandfathered", listed=True))
+        )
+
+        steps = (await verify(api))["nextSteps"]
+
+        assert steps[0] == pv.UNPROVEN_METHOD_STEPS["grandfathered"]
 
     async def test_verify_does_not_echo_a_stored_token_once_verified(self):
         pv.store_token(None, PROXY_ID, FIXTURE_VERIFICATION_VALUE, "sell_url")
@@ -521,6 +561,7 @@ async def test_verify_action_with_proxy_id_checks_ownership_and_with_both_is_ref
 
     server = LightningEnableServer()
     server.wallet = MagicMock()
+    server.l402_client = MagicMock()
     server.api_client = MagicMock()
     with patch(
         "lightning_enable_mcp.server.verify_ownership",
@@ -544,6 +585,42 @@ async def test_verify_action_with_proxy_id_checks_ownership_and_with_both_is_ref
     assert json.loads(both)["errorCode"] == pv.AMBIGUOUS_VERIFY
     payment.assert_awaited_once()
     assert issue.await_args.kwargs["reissue"] is True
+
+
+ROUTING_CASES = [(tuple(c["args"]), c["route"]) for c in FIXTURE["verifyRouting"]["cases"]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("args,route", ROUTING_CASES)
+async def test_verify_routing_matches_the_shared_table(args, route):
+    from lightning_enable_mcp.server import LightningEnableServer
+
+    server = LightningEnableServer()
+    server.wallet = MagicMock()
+    server.l402_client = MagicMock()
+    server.api_client = MagicMock()
+    values = {"proxy_id": PROXY_ID, "macaroon": "AgEL", "preimage": "00"}
+    arguments = {"action": "verify", **{name: values[name] for name in args}}
+    with patch(
+        "lightning_enable_mcp.server.verify_ownership",
+        new=AsyncMock(return_value='{"success": true}'),
+    ) as ownership, patch(
+        "lightning_enable_mcp.server.verify_l402_payment",
+        new=AsyncMock(return_value='{"success": true}'),
+    ) as payment:
+        text = await _call(server, arguments)
+
+    result = json.loads(text)
+    if result.get("errorCode") == pv.AMBIGUOUS_VERIFY:
+        actual = "ambiguous"
+    elif ownership.await_count:
+        actual = "ownership"
+    elif payment.await_count:
+        actual = "payment"
+    else:
+        actual = "none"
+    assert actual == route, args
+    assert ownership.await_count + payment.await_count == (0 if route == "ambiguous" else 1)
 
 
 @pytest.mark.asyncio
@@ -609,6 +686,31 @@ async def test_capability_not_published_says_so_returns_the_token_once_and_point
     assert f'l402_producer(action="verify", proxy_id="{PROXY_ID}")' in " ".join(
         result["nextSteps"]
     )
+
+
+@pytest.mark.asyncio
+async def test_capability_explicitly_published_keeps_the_old_success_path():
+    api = ScriptedApi().on(
+        "POST",
+        "/api/agents/capabilities",
+        Reply(
+            201,
+            {
+                "eventId": "evt1",
+                "l402Endpoint": f"{API_BASE}/l402/proxy/{PROXY_ID}",
+                "published": True,
+            },
+        ),
+    )
+
+    result = json.loads(
+        await publish_agent_capability(
+            "forecast", ["weather"], "Forecasts", 10, api_client=client_for(api)
+        )
+    )
+
+    assert result["eventId"] == "evt1"
+    assert "published successfully" in result["message"]
 
 
 @pytest.mark.asyncio

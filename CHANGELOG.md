@@ -5,6 +5,37 @@ Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-ena
 
 ## [Unreleased]
 
+## [2.3.1] - 2026-11-09
+
+### Added
+
+- **Ownership verification on `l402_producer`, both ports.** `verify` with `proxy_id` (and no
+  macaroon or preimage) runs `POST /api/proxy/{proxyId}/verify` and returns the state, what
+  each method (well-known file, DNS TXT, response header) proves, and plain-language next
+  steps for each failure reason. A `pending` check is polled up to 4 times, honoring
+  `retryAfterSeconds` capped at 10 seconds. New action `verification_token` issues the token
+  (`POST .../verification/token`), returns it once with the instructions, and stores it
+  owner-only in `verification-<proxyId>.json` beside `config.json`; for a proxy already
+  verified by a live method it needs `reissue=true`, because a new token unverifies and
+  unlists it. `method` (`well-known`, `dns-txt`, `header`) only filters the instructions.
+  Errors carry a stable `errorCode`: `verification_token_required`, `unauthorized`,
+  `proxy_not_found`, `feature_not_enabled` (a bare 404 from a server without the routes),
+  `rate_limited` (with `retryAfterSeconds`), and more. Contract pinned in
+  `shared/l402-producer-verify.json`.
+- **`sell_url` passes the claim's `verification` block through**: the ownership token once,
+  with the instructions and verify route, stored beside `config.json` like the API key so
+  `verify` can point at it instead of a new token.
+
+### Fixed
+
+- **`publish_agent_capability` no longer reports an unlisted capability as published.** The
+  server now answers `published: false`, `reason: "ownership_verification_required"` and a
+  one-time `verification` token when it creates a capability. Both ports say so plainly, return
+  the token with a storage note, and point at `l402_producer(action="verify")`; a
+  `published: true` (or older) response keeps the old success result.
+- **`l402_producer(action="publish")`** adds a hint pointing at `verification_token` and
+  `verify` when the server refuses with `ownership_verification_required`.
+
 ## [2.3.0] - 2026-11-09
 
 ### Added

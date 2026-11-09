@@ -22,7 +22,7 @@ public class L402ProducerSurfaceTests
     private static readonly string[] AllActions =
     {
         "create", "verify", "configure_receive", "status",
-        "create_proxy", "add_endpoint", "publish", "list_challenges", "sell_url",
+        "create_proxy", "add_endpoint", "publish", "list_challenges", "sell_url", "verification_token",
     };
 
     /// <summary>
@@ -35,6 +35,7 @@ public class L402ProducerSurfaceTests
     private static readonly string[] WriteActions =
     {
         "create", "verify", "configure_receive", "create_proxy", "add_endpoint", "publish", "sell_url",
+        "verification_token",
     };
 
     private static async Task<JsonElement> ProducerSchemaAsync()
@@ -263,6 +264,18 @@ public class L402ProducerSurfaceTests
 
         public Task<LightningEnable.Mcp.Services.ApiCallResult> UpdateManifestSettingsAsync(
             string proxyId, string? serviceDescription, IReadOnlyList<string>? categories, CancellationToken ct)
+            => Unreachable<LightningEnable.Mcp.Services.ApiCallResult>();
+
+        public Task<LightningEnable.Mcp.Services.ApiCallResult> GetProxyVerificationAsync(
+            string proxyId, CancellationToken ct)
+            => Unreachable<LightningEnable.Mcp.Services.ApiCallResult>();
+
+        public Task<LightningEnable.Mcp.Services.ApiCallResult> IssueProxyVerificationTokenAsync(
+            string proxyId, CancellationToken ct)
+            => Unreachable<LightningEnable.Mcp.Services.ApiCallResult>();
+
+        public Task<LightningEnable.Mcp.Services.ApiCallResult> VerifyProxyOwnershipAsync(
+            string proxyId, CancellationToken ct)
             => Unreachable<LightningEnable.Mcp.Services.ApiCallResult>();
     }
 }

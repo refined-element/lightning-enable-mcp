@@ -51,11 +51,18 @@ public class ToolSchemaTests
     /// argument descriptions are cut to a few words each; the surface lands near 86%, with
     /// roughly 290 bytes of headroom.</para>
     ///
+    /// <para>Raised 0.88 → 0.89 when <c>l402_producer</c> gained ownership verification
+    /// (<c>verify</c> with <c>proxyId</c>, and <c>verification_token</c>): one enum value and two
+    /// short arguments on an EXISTING verb, so an operator can get a proxy listed without raw
+    /// REST. <c>reissue</c> is the costliest of them and is kept on purpose: without it a stray
+    /// <c>verification_token</c> call would silently unlist a verified proxy. The descriptions
+    /// were cut first; the surface lands near 88.5%, with roughly 90 bytes of headroom.</para>
+    ///
     /// <para>The Python guard (<c>tests/test_tool_profiles.py</c>) holds the same line at a
     /// different number — its schemas are smaller because the .NET SDK emits a richer
     /// per-parameter schema — so the two fractions are tuned independently, not copied.</para>
     /// </summary>
-    private const double MaxStandardFraction = 0.88;
+    private const double MaxStandardFraction = 0.89;
 
     private static readonly IReadOnlySet<string> MoneyMovingTools = new HashSet<string>
     {

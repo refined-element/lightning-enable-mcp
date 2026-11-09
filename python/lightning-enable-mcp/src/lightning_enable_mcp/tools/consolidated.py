@@ -151,7 +151,8 @@ L402_PRODUCER_TOOL = Tool(
     description=(
         "Sell access with L402: charge for your API or monetize an endpoint. sell_url "
         "turns a URL and a Lightning Address into a paid endpoint in one call, paid from "
-        "this wallet, no account needed. Other actions need LIGHTNING_ENABLE_API_KEY."
+        "this wallet, no account needed. verify with proxy_id proves domain ownership to "
+        "get listed. Other actions need LIGHTNING_ENABLE_API_KEY."
     ),
     inputSchema={
         "type": "object",
@@ -168,16 +169,19 @@ L402_PRODUCER_TOOL = Tool(
                     "publish",
                     "list_challenges",
                     "sell_url",
+                    "verification_token",
                 ],
                 "description": (
                     "create: mint an invoice + macaroon challenge. verify: check a "
-                    "payer's token before granting access. configure_receive: point "
+                    "payer's token before granting access, or with proxy_id your API "
+                    "ownership. configure_receive: point "
                     "payouts at your own NWC wallet. status: plan, wallet, checklist "
                     "and recent mints (read-only). create_proxy: put an API behind "
                     "L402. add_endpoint: price one route. publish: list the service "
                     "publicly. list_challenges: read what you minted (read-only). "
                     "sell_url: pay once to put target_url behind L402, paid to "
-                    "lightning_address. Pass only the arguments tagged with your action."
+                    "lightning_address. verification_token: ownership token, shown once. "
+                    "Pass only the arguments tagged with your action."
                 ),
             },
             "resource": {
@@ -212,7 +216,7 @@ L402_PRODUCER_TOOL = Tool(
             },
             "proxy_id": {
                 "type": "string",
-                "description": "add_endpoint/publish: id from create_proxy",
+                "description": "add_endpoint/publish/verify*: proxy id",
             },
             "endpoint_id": {
                 "type": "string",
@@ -282,6 +286,14 @@ L402_PRODUCER_TOOL = Tool(
                     "sell_url: code the human reads off the server console; omit to "
                     "request one"
                 ),
+            },
+            "method": {
+                "type": "string",
+                "description": "verify*: well-known, dns-txt or header",
+            },
+            "reissue": {
+                "type": "boolean",
+                "description": "verification_token: rotate a verified token",
             },
         },
         "required": ["action"],
@@ -407,6 +419,7 @@ ACTION_TOOLS: dict[str, tuple[str, tuple[str, ...]]] = {
             "publish",
             "list_challenges",
             "sell_url",
+            "verification_token",
         ),
     ),
     "agent_services": (

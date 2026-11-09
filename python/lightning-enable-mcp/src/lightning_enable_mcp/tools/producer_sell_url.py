@@ -805,6 +805,42 @@ def store_api_key(config_path: str, proxy_id: str, api_key: str) -> dict:
     return write_key(location, config_path, proxy_id, api_key)
 
 
+#: Said when the claim carried a verification block without its token (a replay).
+NO_VERIFICATION_TOKEN_NOTE = "The claim response carried no token (a replay does not return it). If you never saved the token from the first response, call l402_producer action=verification_token proxy_id={proxyId}."
+
+
+def _verification_block(raw: Any, config_path: str, proxy_id: str) -> Optional[dict]:
+    """The claim's ``verification`` block: the ownership token (shown once, stored owner-only
+    beside config.json so ``verify`` finds it), the instructions, and the verify route."""
+    if not isinstance(raw, dict):
+        return None
+    from .producer_verify import methods_from, storage_note, store_token
+
+    instructions = raw.get("instructions")
+    block: dict[str, Any] = {}
+    token = raw.get("token")
+    if isinstance(token, str) and token:
+        storage = store_token(config_path, proxy_id, token, "sell_url")
+        block["token"] = token
+        block["tokenNote"] = (
+            "This ownership-verification token is shown once, here. " + storage_note(storage)
+            + " Publish it by one method below, replacing <token>, then call l402_producer "
+            f"action=verify proxy_id={proxy_id}. Only a verified proxy can be listed."
+        )
+        block["tokenStorage"] = storage
+    else:
+        block["tokenNote"] = NO_VERIFICATION_TOKEN_NOTE.replace("{proxyId}", proxy_id)
+    if isinstance(instructions, dict) and isinstance(instructions.get("tokenPlaceholder"), str):
+        block["tokenPlaceholder"] = instructions["tokenPlaceholder"]
+    block["methods"] = methods_from(instructions)
+    verify_endpoint = raw.get("verifyEndpoint") or (
+        instructions.get("verifyEndpoint") if isinstance(instructions, dict) else None
+    )
+    if verify_endpoint:
+        block["verifyEndpoint"] = verify_endpoint
+    return block
+
+
 def _success_result(claimed: dict, state: ClaimState, config_path: str, now: datetime) -> str:
     proxy = claimed.get("proxy") if isinstance(claimed.get("proxy"), dict) else {}
     proxy_id = proxy.get("proxyId") or "claim"
@@ -831,6 +867,10 @@ def _success_result(claimed: dict, state: ClaimState, config_path: str, now: dat
         "warnings": claimed.get("warnings") or [],
         "claimPaidSats": state.price_sats,
     }
+
+    verification = _verification_block(claimed.get("verification"), config_path, proxy_id)
+    if verification is not None:
+        result["verification"] = verification
 
     stored: Optional[dict] = None
     if isinstance(api_key, str) and api_key:

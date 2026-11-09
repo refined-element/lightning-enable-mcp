@@ -896,6 +896,7 @@ ACTION_IMPLEMENTATIONS = {
     "publish": "publish_l402_service",
     "list_challenges": "list_l402_challenges",
     "sell_url": "sell_url",
+    "verification_token": "verification_token",
 }
 
 #: Actions that only read. Annotations are per TOOL, so these do not change the tool's
@@ -903,7 +904,16 @@ ACTION_IMPLEMENTATIONS = {
 #: and reflected in the action description the model reads.
 READ_ONLY_ACTIONS = frozenset({"status", "list_challenges"})
 WRITE_ACTIONS = frozenset(
-    {"create", "verify", "configure_receive", "create_proxy", "add_endpoint", "publish", "sell_url"}
+    {
+        "create",
+        "verify",
+        "configure_receive",
+        "create_proxy",
+        "add_endpoint",
+        "publish",
+        "sell_url",
+        "verification_token",
+    }
 )
 
 

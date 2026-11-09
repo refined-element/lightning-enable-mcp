@@ -21,7 +21,9 @@ public static class AgentPublishTool
         "Lightning Enable's L402 proxy pipeline. Provide targetUrl — an L402 proxy is created to " +
         "back the listing and handle payment. The event is signed by the Lightning Enable platform " +
         "key. Each call creates a new listing, so publish once; to change a listing, unpublish it " +
-        "and publish again. Requires LIGHTNING_ENABLE_API_KEY.")]
+        "and publish again. Listing waits for ownership verification: the result says " +
+        "published=false and returns a one-time token to publish before " +
+        "l402_producer(action=verify). Requires LIGHTNING_ENABLE_API_KEY.")]
     public static async Task<string> PublishAgentCapability(
         [Description("Unique service identifier (used as d-tag)")] string serviceId,
         [Description("Service categories (e.g., ['ai', 'translation'])")] string[] categories,
@@ -32,6 +34,7 @@ public static class AgentPublishTool
         [Description("Hashtags for discoverability")] string[]? hashtags = null,
         IAgentService? agentService = null,
         ILightningEnableApiService? apiService = null,
+        IBudgetConfigurationService? configService = null,
         CancellationToken cancellationToken = default)
     {
         try
@@ -109,6 +112,11 @@ public static class AgentPublishTool
                 });
             }
 
+            if (result.Published == false)
+            {
+                return Unpublished(result, serviceId, categories, priceSats, configService?.ConfigFilePath);
+            }
+
             return JsonSerializer.Serialize(new
             {
                 success = true,
@@ -136,5 +144,78 @@ public static class AgentPublishTool
                 error = $"Error publishing capability: {ex.Message}"
             });
         }
+    }
+
+    /// <summary>
+    /// The server created the capability's proxy but did not list it: listing a third-party
+    /// target needs ownership verification first. Says so plainly and hands back the one-time
+    /// verification token (never logged) with what to do next.
+    /// </summary>
+    private static string Unpublished(
+        AgentPublishResult result, string serviceId, string[] categories, int priceSats, string? configPath)
+    {
+        var proxyId = result.ProxyId ?? ProxyIdFrom(result.VerifyEndpoint) ?? ProxyIdFrom(result.L402Endpoint);
+        var proxyArg = proxyId is null ? "<proxy id>" : proxyId;
+        var reason = result.Reason ?? "ownership_verification_required";
+
+        var payload = new Dictionary<string, object?>
+        {
+            ["success"] = true,
+            ["published"] = false,
+            ["reason"] = reason,
+            ["serviceId"] = serviceId,
+            ["proxyId"] = proxyId,
+            ["categories"] = categories,
+            ["priceSats"] = priceSats,
+            ["l402Endpoint"] = result.L402Endpoint,
+            ["message"] = $"Capability '{serviceId}' was created but NOT published: it is not on Nostr or in the "
+                + "registry yet, because listing requires proof that you own the target. Its L402 "
+                + "endpoint already works by its direct URL.",
+        };
+
+        var verification = new Dictionary<string, object?>();
+        if (!string.IsNullOrEmpty(result.VerificationToken))
+        {
+            // Kept like sell_url's API key: shown once here, stored owner-only beside config.json
+            // so l402_producer(action="verify") finds it.
+            var storage = proxyId is null
+                ? new ProducerVerification.TokenStorage(false, "(no proxy id)", "the server sent no proxy id")
+                : ProducerVerification.StoreToken(configPath, proxyId, result.VerificationToken, "publish_agent_capability");
+            verification["token"] = result.VerificationToken;
+            verification["tokenNote"] = "This token is shown only this once here, and Lightning Enable keeps only "
+                + $"a hash of it. {ProducerVerification.StorageNote(storage)} If you lose it, issue a new one with "
+                + $"l402_producer(action=\"verification_token\", proxy_id=\"{proxyArg}\").";
+            verification["tokenStorage"] = ProducerVerification.StorageJson(storage);
+        }
+        if (result.VerificationInstructions?["tokenPlaceholder"]?.GetValue<string>() is { } placeholder)
+        {
+            verification["tokenPlaceholder"] = placeholder;
+        }
+        verification["methods"] = ProducerVerification.MethodsFrom(result.VerificationInstructions);
+        payload["verification"] = verification;
+
+        payload["nextSteps"] = new List<string>
+        {
+            string.IsNullOrEmpty(result.VerificationToken)
+                ? $"Get a token with l402_producer(action=\"verification_token\", proxy_id=\"{proxyArg}\")."
+                : "Publish the token by one of the methods above, replacing <token>.",
+            $"Run the check with l402_producer(action=\"verify\", proxy_id=\"{proxyArg}\").",
+            $"Once verified, list it with l402_producer(action=\"publish\", proxy_id=\"{proxyArg}\").",
+        };
+
+        return JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true });
+    }
+
+    /// <summary>The proxy id from <c>/api/proxy/{id}/verify</c> or <c>.../l402/proxy/{id}</c>.</summary>
+    private static string? ProxyIdFrom(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            return null;
+        }
+
+        var segments = url.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        var at = Array.IndexOf(segments, "proxy");
+        return at >= 0 && at + 1 < segments.Length ? segments[at + 1] : null;
     }
 }

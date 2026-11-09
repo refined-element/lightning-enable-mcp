@@ -9,7 +9,8 @@
     "add_endpoint",
     "publish",
     "list_challenges",
-    "sell_url"
+    "sell_url",
+    "verification_token"
   ],
   "arguments": [
     "action",
@@ -39,7 +40,9 @@
     "recovery_nostr_pubkey",
     "list_publicly",
     "accept_terms",
-    "confirmation_nonce"
+    "confirmation_nonce",
+    "method",
+    "reissue"
   ],
   "sellUrlArguments": [
     "target_url",

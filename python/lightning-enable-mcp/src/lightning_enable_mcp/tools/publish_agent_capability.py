@@ -7,7 +7,7 @@ making the agent discoverable by other agents. Requires LIGHTNING_ENABLE_API_KEY
 
 import json
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from mcp.types import Tool
 
@@ -103,6 +103,9 @@ async def publish_agent_capability(
                 "error": result.get("error", "Unknown error publishing capability"),
             })
 
+        if result.get("published") is False:
+            return _unpublished(result, service_id, categories, price_sats)
+
         endpoint = result.get("l402Endpoint")
         return json.dumps({
             "success": True,
@@ -138,6 +141,88 @@ async def publish_agent_capability(
         })
 
 
+def _proxy_id_from(url: str | None) -> str | None:
+    """The proxy id from ``/api/proxy/{id}/verify`` or ``.../l402/proxy/{id}``."""
+    if not url:
+        return None
+    segments = [s for s in url.split("/") if s]
+    if "proxy" in segments:
+        at = segments.index("proxy")
+        if at + 1 < len(segments):
+            return segments[at + 1]
+    return None
+
+
+def _unpublished(
+    result: dict[str, Any], service_id: str, categories: list[str], price_sats: int
+) -> str:
+    """The server created the capability's proxy but did not list it.
+
+    Listing a third-party target needs ownership verification first. Says so plainly and
+    hands back the one-time verification token (never logged) with what to do next.
+    """
+    from .producer_verify import methods_from, storage_note, store_token
+
+    proxy_id = (
+        result.get("proxyId")
+        or _proxy_id_from(result.get("verifyEndpoint"))
+        or _proxy_id_from(result.get("l402Endpoint"))
+    )
+    proxy_arg = proxy_id or "<proxy id>"
+    token = result.get("verificationToken")
+    instructions = result.get("verificationInstructions")
+
+    verification: dict[str, Any] = {}
+    if token:
+        # Kept like sell_url's API key: shown once here, stored owner-only beside config.json
+        # so l402_producer(action="verify") finds it.
+        storage = (
+            store_token(None, proxy_id, token, "publish_agent_capability")
+            if proxy_id
+            else {"written": False, "path": None, "error": "the server sent no proxy id"}
+        )
+        verification["token"] = token
+        verification["tokenNote"] = (
+            "This token is shown only this once here, and Lightning Enable keeps only a hash "
+            f"of it. {storage_note(storage)} If you lose it, issue a new one with "
+            f'l402_producer(action="verification_token", proxy_id="{proxy_arg}").'
+        )
+        verification["tokenStorage"] = storage
+    if isinstance(instructions, dict) and isinstance(instructions.get("tokenPlaceholder"), str):
+        verification["tokenPlaceholder"] = instructions["tokenPlaceholder"]
+    verification["methods"] = methods_from(instructions)
+
+    first_step = (
+        "Publish the token by one of the methods above, replacing <token>."
+        if token
+        else f'Get a token with l402_producer(action="verification_token", proxy_id="{proxy_arg}").'
+    )
+    return json.dumps(
+        {
+            "success": True,
+            "published": False,
+            "reason": result.get("reason") or "ownership_verification_required",
+            "serviceId": service_id,
+            "proxyId": proxy_id,
+            "categories": categories,
+            "priceSats": price_sats,
+            "l402Endpoint": result.get("l402Endpoint"),
+            "message": (
+                f"Capability '{service_id}' was created but NOT published: it is not on Nostr "
+                "or in the registry yet, because listing requires proof that you own the "
+                "target. Its L402 endpoint already works by its direct URL."
+            ),
+            "verification": verification,
+            "nextSteps": [
+                first_step,
+                f'Run the check with l402_producer(action="verify", proxy_id="{proxy_arg}").',
+                f'Once verified, list it with l402_producer(action="publish", proxy_id="{proxy_arg}").',
+            ],
+        },
+        indent=2,
+    )
+
+
 # MCP tool schema (lives beside its handler; registered in tools/registry.py).
 PUBLISH_AGENT_CAPABILITY_TOOL = Tool(
     name="publish_agent_capability",
@@ -148,7 +233,9 @@ PUBLISH_AGENT_CAPABILITY_TOOL = Tool(
         "an L402 proxy is created to back the listing and handle payment. The event "
         "is signed by the Lightning Enable platform key. Each call creates a new "
         "listing, so publish once; to change a listing, unpublish it and publish "
-        "again. Requires LIGHTNING_ENABLE_API_KEY."
+        "again. Listing waits for ownership verification: the result says "
+        "published=false and returns a one-time token to publish before "
+        "l402_producer(action=verify). Requires LIGHTNING_ENABLE_API_KEY."
     ),
     inputSchema={
         "type": "object",

@@ -343,7 +343,7 @@ Some of these are *action* tools: pass `action` (or `source` for `receipts`) to 
 | `wallet_ops` | Free | `action`: `price`, `exchange`, or `send_onchain` (Strike; `send_onchain` also LND). `send_onchain` takes `address`, `amountSats`, `confirmationNonce`, and an optional `intentId` (supply a new one only to pay the same address the same amount again; a repeat is reported as status, never re-sent) |
 | `verify_confirmation_code` | Free | Verify an out-of-band payment confirmation code (verification only — never pays) |
 | `create_lightning_enable_account` | Free | Self-bootstrap signup: pay ~100 sats, get a merchant API key |
-| `l402_producer` | Agentic Commerce | `action`: `sell_url` (no key needed: pays a one-time claim), `configure_receive`, `status`, `create_proxy`, `add_endpoint`, `publish`, `list_challenges`, `create`, `verify` — the whole seller side |
+| `l402_producer` | Agentic Commerce | `action`: `sell_url` (no key needed: pays a one-time claim), `configure_receive`, `status`, `create_proxy`, `add_endpoint`, `publish`, `list_challenges`, `create`, `verify` (a payment, or with `proxy_id` ownership of your API), `verification_token` — the whole seller side, including getting listed |
 | `agent_services` | Agentic Commerce | `action`: `discover`, `request`, `settle`, `publish`, `unpublish`, `attest`, `reputation` |
 | `renew_lightning_enable_subscription` | Agentic Commerce | Pay the server-priced L402 invoice that buys or extends 30 days of Agentic Commerce for the configured API key (`maxSats` defaults to 50,000) |
 
@@ -466,6 +466,8 @@ and none of them can spend your wallet.
 | `list_challenges` | `challenge_status`, `limit`, `offset` | Read back what you minted *(read-only)* |
 | `create` | `resource`, `price_sats`, `description` | Mint a one-off invoice + macaroon challenge |
 | `verify` | `macaroon`, `preimage` | Check a payer's token before granting access |
+| `verify` | `proxy_id`, `method` *(optional)* | Check that you own the API behind a proxy, so it can be listed |
+| `verification_token` | `proxy_id`, `method` *(optional)*, `reissue` | Get the ownership token to publish *(shown once, stored beside `config.json`)* |
 
 ### From a URL and a Lightning Address to a paid endpoint
 
@@ -539,6 +541,33 @@ use `create` / `verify` directly.
 
 Payouts settle on **your** wallet. Lightning Enable does not hold the funds.
 
+### Get listed: verify ownership of your API
+
+Anyone can put a proxy in front of any public URL, so only a proxy whose owner has proved
+control of the target is listed publicly. An unverified proxy keeps working and taking
+payments by its direct URL.
+
+1. **Get a token.** `l402_producer(action="verification_token", proxy_id="weather-api")`
+   returns the token once, with the exact file URL, DNS TXT record name and header for this
+   proxy. The tool also stores it, owner-only, in `verification-<proxyId>.json` beside
+   `config.json`. A `sell_url` claim returns a token the same way, so skip this step after
+   `sell_url`. Issuing a token for a proxy that is already verified needs `reissue=true`,
+   because the new token unverifies and unlists it until you verify again.
+2. **Publish it by one method.** A well-known file proves you control the web root of the
+   target host, a DNS TXT record proves you control its DNS zone, and a response header
+   proves only that you control the API's responses. `method="dns-txt"` (or `well-known`,
+   `header`) only filters the instructions shown.
+3. **Run the check.** `l402_producer(action="verify", proxy_id="weather-api")` returns the
+   state and plain-language next steps for each failure reason. A slow check comes back
+   `pending`; the tool retries a few times, waiting as the server asks (at most 10 seconds
+   each), before handing back. If you stored a token earlier, `verify` points at it rather
+   than at a new one.
+4. **List it.** Once verified, `l402_producer(action="publish", proxy_id="weather-api")`.
+
+`publish_agent_capability` (and `agent_services(action="publish")`) follows the same rule:
+the result says `published: false` and returns the one-time token,
+and the listing goes up after `verify` succeeds.
+
 ## Agent Service Agreements (the `agent_services` tool)
 
 Agent-to-agent commerce on Nostr, behind one tool. Pass `action` to pick the operation.
@@ -549,7 +578,7 @@ The hosted Lightning Enable API refuses `attest`, because it has no route that a
 | Action | Description |
 |--------|-------------|
 | discover | Search for agent capabilities by category, hashtag, or keyword |
-| publish | Publish your agent's services to the Nostr network (kind 38400). Publish once: each call creates a new listing and L402 proxy. To change a listing, `unpublish` it and `publish` again, or edit it in the Lightning Enable dashboard |
+| publish | Publish your agent's services to the Nostr network (kind 38400). Publish once: each call creates a new listing and L402 proxy. To change a listing, `unpublish` it and `publish` again, or edit it in the Lightning Enable dashboard. Listing waits for ownership verification: the result says `published: false`, returns a one-time token, and points at `l402_producer(action="verify")` |
 | unpublish | Take a published listing down: retire the L402 proxy and emit a NIP-09 removal |
 | request | Request a service from another agent (kind 38401) |
 | settle | Pay for an agent service via L402 Lightning settlement |

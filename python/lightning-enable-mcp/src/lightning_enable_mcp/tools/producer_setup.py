@@ -541,6 +541,16 @@ async def publish(
             slug, service_description, categories
         )
         if not result.get("success"):
+            if result.get("errorCode") == "ownership_verification_required":
+                return _from_api(
+                    result,
+                    hint=(
+                        "Listing needs proof that you own the API behind this proxy. Call "
+                        f"l402_producer action=verification_token proxy_id={slug}, publish the "
+                        f"token, call l402_producer action=verify proxy_id={slug}, then publish "
+                        "again."
+                    ),
+                )
             return _from_api(result)
 
         settings = result.get("data") or {}

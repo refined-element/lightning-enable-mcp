@@ -171,6 +171,10 @@ def _unpublished(
     proxy_arg = proxy_id or "<proxy id>"
     token = result.get("verificationToken")
     instructions = result.get("verificationInstructions")
+    # The server's own route for the check; never built locally.
+    verify_endpoint = result.get("verifyEndpoint") or (
+        instructions.get("verifyEndpoint") if isinstance(instructions, dict) else None
+    )
 
     verification: dict[str, Any] = {}
     if token:
@@ -204,6 +208,7 @@ def _unpublished(
             "reason": result.get("reason") or "ownership_verification_required",
             "serviceId": service_id,
             "proxyId": proxy_id,
+            "verifyEndpoint": verify_endpoint,
             "categories": categories,
             "priceSats": price_sats,
             "l402Endpoint": result.get("l402Endpoint"),
@@ -234,7 +239,8 @@ PUBLISH_AGENT_CAPABILITY_TOOL = Tool(
         "is signed by the Lightning Enable platform key. Each call creates a new "
         "listing, so publish once; to change a listing, unpublish it and publish "
         "again. Listing waits for ownership verification: the result says "
-        "published=false and returns a one-time token to publish before "
+        "published=false with proxyId and verifyEndpoint, and returns a one-time "
+        "token to publish before "
         "l402_producer(action=verify). Requires LIGHTNING_ENABLE_API_KEY."
     ),
     inputSchema={

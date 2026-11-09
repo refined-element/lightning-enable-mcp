@@ -774,4 +774,99 @@ public sealed class ProducerVerifyTests : IDisposable
         result.VerificationInstructions!["methods"]!.AsArray().Should().HaveCount(3);
         result.EventId.Should().BeNull();
     }
+    // ── unverified publish: the shared field contract ────────────────────────
+
+    private static JsonElement Unverified(JsonDocument doc) => doc.RootElement.GetProperty("unverifiedPublish");
+
+    private static string? TokenAtPath(JsonElement result, JsonElement unverified)
+    {
+        var node = result;
+        foreach (var key in unverified.GetProperty("tokenPath").EnumerateArray())
+        {
+            if (node.ValueKind != JsonValueKind.Object || !node.TryGetProperty(key.GetString()!, out node))
+            {
+                return null;
+            }
+        }
+        return node.GetString();
+    }
+
+    private static void AssertUnverifiedFields(JsonElement result, JsonElement unverified)
+    {
+        foreach (var field in unverified.GetProperty("fields").EnumerateObject())
+        {
+            result.TryGetProperty(field.Name, out var actual).Should().BeTrue($"{field.Name} must be a field");
+            JsonNode.DeepEquals(JsonNode.Parse(actual.GetRawText()), JsonNode.Parse(field.Value.GetRawText()))
+                .Should().BeTrue($"{field.Name} is {actual.GetRawText()}, expected {field.Value.GetRawText()}");
+        }
+    }
+
+    private static AgentService AgentServiceFor(ScriptedApi api)
+    {
+        var previousUrl = Environment.GetEnvironmentVariable("LIGHTNING_ENABLE_API_URL");
+        try
+        {
+            Environment.SetEnvironmentVariable("LIGHTNING_ENABLE_API_URL", ApiBase);
+            return new AgentService(new HttpClient(api), new StubConfig());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("LIGHTNING_ENABLE_API_URL", previousUrl);
+        }
+    }
+
+    private async Task<string> PublishCapability(JsonObject body)
+    {
+        var api = new ScriptedApi().On("POST", "/api/agents/capabilities",
+            new Reply(HttpStatusCode.Created, body.ToJsonString()));
+        return await AgentPublishTool.PublishAgentCapability(
+            "forecast", new[] { "weather" }, "Forecasts", 10, targetUrl: "https://api.example.com/v1",
+            agentService: AgentServiceFor(api), configService: Config());
+    }
+
+    [Fact]
+    public async Task Unverified_CapabilityPublish_CarriesTheSharedFields()
+    {
+        using var doc = Fixture();
+        var unverified = Unverified(doc);
+        var body = JsonNode.Parse(unverified.GetProperty("capabilityResponse").GetProperty("body").GetRawText())!.AsObject();
+
+        var result = Parse(await PublishCapability(body));
+
+        AssertUnverifiedFields(result, unverified);
+        TokenAtPath(result, unverified).Should().Be(body["verification"]!["token"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task Unverified_CapabilityPublish_WithoutAToken_InventsNone()
+    {
+        using var doc = Fixture();
+        var unverified = Unverified(doc);
+        var body = JsonNode.Parse(unverified.GetProperty("capabilityResponse").GetProperty("body").GetRawText())!.AsObject();
+        body["verification"]!.AsObject().Remove("token");
+
+        var raw = await PublishCapability(body);
+        var result = Parse(raw);
+
+        AssertUnverifiedFields(result, unverified);
+        TokenAtPath(result, unverified).Should().BeNull();
+        raw.Should().NotContain(FixtureVerificationValue);
+    }
+
+    [Fact]
+    public async Task Unverified_ListingRefusal_CarriesTheSharedFields()
+    {
+        using var doc = Fixture();
+        var unverified = Unverified(doc);
+        var refusal = unverified.GetProperty("listingRefusal");
+        var api = new ScriptedApi().On("PUT", "/api/proxy/forecast-api-a1b2/manifest/settings",
+            new Reply((HttpStatusCode)refusal.GetProperty("status").GetInt32(), refusal.GetProperty("body").GetRawText()));
+
+        var result = Parse(await ProducerSetupTools.PublishAsync(ProxyId, null, null, null, Service(api), CancellationToken.None));
+
+        result.GetProperty("success").GetBoolean().Should().BeFalse();
+        result.GetProperty("errorCode").GetString().Should().Be("ownership_verification_required");
+        AssertUnverifiedFields(result, unverified);
+        TokenAtPath(result, unverified).Should().BeNull();
+    }
 }

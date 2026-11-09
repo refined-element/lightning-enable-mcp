@@ -512,6 +512,12 @@ public static class ProducerSetupTools
                 return result.ErrorCode == "ownership_verification_required"
                     ? FromApi(result, new Dictionary<string, object?>
                     {
+                        // Same fields as publish_agent_capability's unverified result
+                        // (shared/l402-producer-verify.json unverifiedPublish).
+                        ["published"] = false,
+                        ["reason"] = "ownership_verification_required",
+                        ["proxyId"] = slug,
+                        ["verifyEndpoint"] = result.VerifyEndpoint,
                         ["hint"] = "Listing needs proof that you own the API behind this proxy. Call "
                             + $"l402_producer action=verification_token proxy_id={slug}, publish the token, "
                             + $"call l402_producer action=verify proxy_id={slug}, then publish again.",

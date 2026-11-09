@@ -158,6 +158,12 @@ public sealed record ApiCallResult
     /// </summary>
     public int? RetryAfterSeconds { get; init; }
 
+    /// <summary>
+    /// The error body's <c>verify_endpoint</c> (e.g. <c>/api/proxy/{id}/verify</c>), sent with
+    /// <c>ownership_verification_required</c>. Copied from the server, never built locally.
+    /// </summary>
+    public string? VerifyEndpoint { get; init; }
+
     /// <summary>A transport-level failure, with no HTTP status to report.</summary>
     public static ApiCallResult Failed(string message) =>
         new() { Success = false, ErrorMessage = message };
@@ -539,6 +545,7 @@ public class LightningEnableApiService : ILightningEnableApiService
         string? type = null;
         string? code = null;
         JsonObject? validation = null;
+        string? verifyEndpoint = null;
 
         if (body is not null)
         {
@@ -555,6 +562,7 @@ public class LightningEnableApiService : ILightningEnableApiService
             type = ReadString(body, "type");
             code = ReadString(body, "error");
             validation = body["errors"] as JsonObject;
+            verifyEndpoint = ReadString(body, "verify_endpoint") ?? ReadString(body, "verifyEndpoint");
         }
 
         return new ApiCallResult
@@ -565,6 +573,7 @@ public class LightningEnableApiService : ILightningEnableApiService
             ErrorCode = code,
             HttpStatus = status,
             ValidationErrors = validation is null ? null : (JsonObject)validation.DeepClone(),
+            VerifyEndpoint = verifyEndpoint,
         };
     }
 

@@ -22,7 +22,8 @@ public static class AgentPublishTool
         "back the listing and handle payment. The event is signed by the Lightning Enable platform " +
         "key. Each call creates a new listing, so publish once; to change a listing, unpublish it " +
         "and publish again. Listing waits for ownership verification: the result says " +
-        "published=false and returns a one-time token to publish before " +
+        "published=false with proxyId and verifyEndpoint, and returns a one-time " +
+        "token to publish before " +
         "l402_producer(action=verify). Requires LIGHTNING_ENABLE_API_KEY.")]
     public static async Task<string> PublishAgentCapability(
         [Description("Unique service identifier (used as d-tag)")] string serviceId,
@@ -165,6 +166,10 @@ public static class AgentPublishTool
             ["reason"] = reason,
             ["serviceId"] = serviceId,
             ["proxyId"] = proxyId,
+            // The server's own route for the check; never built locally.
+            ["verifyEndpoint"] = result.VerifyEndpoint
+                ?? (result.VerificationInstructions?["verifyEndpoint"] is System.Text.Json.Nodes.JsonValue v
+                    && v.TryGetValue<string>(out var endpoint) ? endpoint : null),
             ["categories"] = categories,
             ["priceSats"] = priceSats,
             ["l402Endpoint"] = result.L402Endpoint,

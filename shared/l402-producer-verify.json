@@ -172,6 +172,52 @@
     ],
     "noTokenNote": "The claim response carried no token (a replay does not return it). If you never saved the token from the first response, call l402_producer action=verification_token proxy_id={proxyId}."
   },
+  "unverifiedPublish": {
+    "_comment": "publish_agent_capability (POST /api/agents/capabilities answers published:false, AgentMarketplaceController) and l402_producer action=publish (PUT /api/proxy/{proxyId}/manifest/settings answers 422 ownership_verification_required, ManifestController) must both carry these fields with these values when the proxy is unverified. verifyEndpoint is copied from the server (verifyEndpoint on the capability body, verify_endpoint on the 422), never built locally; the 422 carries no proxy id, so proxyId is the one the caller passed. The token appears only at tokenPath, and only when the server returned one: the 422 never does.",
+    "fields": {
+      "published": false,
+      "reason": "ownership_verification_required",
+      "proxyId": "forecast-api-a1b2",
+      "verifyEndpoint": "/api/proxy/forecast-api-a1b2/verify"
+    },
+    "tokenPath": [
+      "verification",
+      "token"
+    ],
+    "capabilityResponse": {
+      "status": 201,
+      "body": {
+        "serviceId": "forecast",
+        "proxyId": "forecast-api-a1b2",
+        "l402Endpoint": "https://api.example.test/l402/proxy/forecast-api-a1b2",
+        "categories": [
+          "weather"
+        ],
+        "priceSats": 10,
+        "published": false,
+        "reason": "ownership_verification_required",
+        "verifyEndpoint": "/api/proxy/forecast-api-a1b2/verify",
+        "verification": {
+          "token": "fixture-verification-value-0000000000000000",
+          "instructions": {
+            "tokenPlaceholder": "<token>",
+            "methods": [],
+            "tokenEndpoint": "/api/proxy/forecast-api-a1b2/verification/token",
+            "verifyEndpoint": "/api/proxy/forecast-api-a1b2/verify",
+            "note": "Publish the token by any one method."
+          }
+        }
+      }
+    },
+    "listingRefusal": {
+      "status": 422,
+      "body": {
+        "error": "ownership_verification_required",
+        "message": "Verify ownership first.",
+        "verify_endpoint": "/api/proxy/forecast-api-a1b2/verify"
+      }
+    }
+  },
   "serverReasonSamples": {
     "_comment": "Exact reason strings from ProxyVerificationService, each with the hint it must select.",
     "The verification token was re-issued, or the target URL changed, while this check ran. Check again.": "The token was replaced, or the proxy's target URL changed, while the check ran. Publish the newest token on the current target and call verify again."

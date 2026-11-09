@@ -945,6 +945,11 @@ class LightningEnableApiClient:
         if isinstance(validation, dict) and validation:
             result["validationErrors"] = validation
 
+        # Sent with ownership_verification_required; copied from the server, never built here.
+        verify_endpoint = data.get("verify_endpoint") or data.get("verifyEndpoint")
+        if isinstance(verify_endpoint, str) and verify_endpoint:
+            result["verifyEndpoint"] = verify_endpoint
+
         return result
 
     @staticmethod

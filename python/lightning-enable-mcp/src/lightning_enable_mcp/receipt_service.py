@@ -15,9 +15,11 @@ Never contains secrets — no preimage, macaroon, or wallet connection string
 """
 
 import hashlib
+import hmac
 import json
 import logging
 import os
+import secrets
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -32,23 +34,35 @@ def _utc_now_iso() -> str:
 
 RECEIPTS_FILENAME = "receipts.jsonl"
 
-#: Line type carrying the request/response SHA-256 of a paid L402 exchange.
+#: Line type carrying the salted request/response digests of a paid L402 exchange.
 EXCHANGE_DIGEST_TYPE = "exchange_digest"
 
+#: The only digest construction this version writes or publishes (see request_digest).
+DIGEST_SCHEME = "hmac-sha256-v1"
 
-def request_sha256(method: str, url: str, body: bytes | None) -> str:
-    """Digest of a paid request: SHA-256 over ``"<METHOD> <url>\\n"`` (UTF-8, method
-    upper-cased, URL exactly as requested) followed by the body bytes (none for GET/HEAD).
-    Same definition in the .NET port; pinned by the shared golden vector."""
-    h = hashlib.sha256(f"{(method or 'GET').strip().upper()} {url}\n".encode())
-    if body:
-        h.update(body)
-    return h.hexdigest()
+#: Bytes of the per-exchange nonce (256 bits).
+DIGEST_NONCE_BYTES = 32
 
 
-def response_sha256(body: bytes | None) -> str:
-    """SHA-256 of the response body bytes exactly as the client read them."""
-    return hashlib.sha256(body or b"").hexdigest()
+def request_digest(nonce: bytes, method: str, url: str, body: bytes | None) -> str:
+    """Salted digest of a paid request (scheme ``hmac-sha256-v1``).
+
+    ``HMAC-SHA256(key = nonce, message = UTF-8("<METHOD> <url>\\n") || body)``, lowercase
+    hex. METHOD is upper-cased; the URL is exactly as requested (query included); the
+    body is the bytes sent (none for GET/HEAD). Without the nonce, which stays in the
+    local receipt log, a published digest cannot be tested against guessed requests;
+    disclosing the nonce lets anyone check it. Same in the .NET port; pinned by the
+    shared golden vector.
+    """
+    msg = f"{(method or 'GET').strip().upper()} {url}\n".encode() + (body or b"")
+    return hmac.new(nonce, msg, hashlib.sha256).hexdigest()
+
+
+def response_digest(nonce: bytes, body: bytes | None) -> str:
+    """``HMAC-SHA256(key = nonce, message = response body)``, lowercase hex. The body is
+    the entity body after any content-encoding is removed (what the HTTP client hands
+    back); see the README for the parity note."""
+    return hmac.new(nonce, body or b"", hashlib.sha256).hexdigest()
 
 #: What a redacted value is replaced with. Matches the tools' error scrubber.
 REDACTED = "[REDACTED]"
@@ -218,31 +232,46 @@ class ReceiptService:
         return self._append(receipt)
 
     def log_exchange_digest(
-        self, payment_hash: str, request_sha256: str, response_sha256: str
+        self,
+        payment_hash: str,
+        method: str,
+        url: str,
+        request_body: bytes | None,
+        response_body: bytes | None,
+        nonce: bytes | None = None,
     ) -> bool:
-        """Append the SHA-256 digests of a paid L402 exchange (``exchange_digest`` line).
+        """Append the salted digests of a paid L402 exchange (``exchange_digest`` line).
 
         Written after the paid retry returns, because the payment receipt itself is
-        written by the wallet seam before the response exists. Hashes only — the request
-        and response bodies are never stored. ``read_recent`` folds these fields into the
-        matching payment receipt. Never raises.
+        written by the wallet seam before the response exists. A fresh 256-bit nonce is
+        drawn per exchange and kept only in this line; the bodies are never stored.
+        ``read_recent`` folds the digests (not the nonce) into the matching payment
+        receipt. ``nonce`` is for tests only. Never raises.
         """
-        if not (payment_hash and request_sha256 and response_sha256):
+        try:
+            if not payment_hash:
+                return False
+            key = nonce if nonce is not None else secrets.token_bytes(DIGEST_NONCE_BYTES)
+            return self._append(
+                {
+                    "type": EXCHANGE_DIGEST_TYPE,
+                    "timestamp": _utc_now_iso(),
+                    "paymentHash": payment_hash.lower(),
+                    "digestScheme": DIGEST_SCHEME,
+                    "digestNonce": key.hex(),
+                    "requestDigest": request_digest(key, method, url, request_body),
+                    "responseDigest": response_digest(key, response_body),
+                }
+            )
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("Failed to write exchange digest: %s", type(e).__name__)
             return False
-        return self._append(
-            {
-                "type": EXCHANGE_DIGEST_TYPE,
-                "timestamp": _utc_now_iso(),
-                "paymentHash": payment_hash.lower(),
-                "requestSha256": request_sha256.lower(),
-                "responseSha256": response_sha256.lower(),
-            }
-        )
 
     def lookup_payment(self, payment_hash: str, window: int = 2_000) -> dict | None:
         """What the local log knows about ``payment_hash``: None when it is not there,
-        else ``{"paymentHash", "requestSha256"?, "responseSha256"?}`` (digests only when
-        they were recorded)."""
+        else ``{"paymentHash", "requestDigest"?, "responseDigest"?}``. Digests are given
+        only for a salted (``hmac-sha256-v1``) record; an older record without a nonce
+        yields the payment hash alone, so an unsalted digest is never published."""
         wanted = (payment_hash or "").strip().lower()
         if not wanted:
             return None
@@ -251,9 +280,9 @@ class ReceiptService:
             if str(obj.get("paymentHash", "")).lower() != wanted:
                 continue
             found = found or {"paymentHash": wanted}
-            if obj.get("type") == EXCHANGE_DIGEST_TYPE:
-                found["requestSha256"] = obj.get("requestSha256")
-                found["responseSha256"] = obj.get("responseSha256")
+            if _is_salted_digest(obj):
+                found["requestDigest"] = obj["requestDigest"]
+                found["responseDigest"] = obj["responseDigest"]
         return found
 
     def read_recent(self, limit: int = 20) -> list[dict]:
@@ -271,7 +300,7 @@ class ReceiptService:
         digests = {
             str(o.get("paymentHash", "")).lower(): o
             for o in objects
-            if o.get("type") == EXCHANGE_DIGEST_TYPE and o.get("paymentHash")
+            if _is_salted_digest(o) and o.get("paymentHash")
         }
         out: list[dict] = []
         for obj in objects:
@@ -281,8 +310,8 @@ class ReceiptService:
             if digest is not None:
                 obj = {
                     **obj,
-                    "requestSha256": digest.get("requestSha256"),
-                    "responseSha256": digest.get("responseSha256"),
+                    "requestDigest": digest.get("requestDigest"),
+                    "responseDigest": digest.get("responseDigest"),
                 }
             # Redact at the READ boundary so every surface — the `receipts` tool and
             # the lightning-enable://receipts resource alike — is covered by one pass.
@@ -347,3 +376,13 @@ class ReceiptService:
             _restrict_file_permissions(self._path)
         except Exception:  # pragma: no cover - best effort, mirrors config.json
             pass
+
+
+def _is_salted_digest(obj: dict) -> bool:
+    return (
+        obj.get("type") == EXCHANGE_DIGEST_TYPE
+        and obj.get("digestScheme") == DIGEST_SCHEME
+        and isinstance(obj.get("digestNonce"), str)
+        and isinstance(obj.get("requestDigest"), str)
+        and isinstance(obj.get("responseDigest"), str)
+    )

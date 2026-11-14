@@ -68,8 +68,7 @@ async def publish_review(
     subject_url: str | None = None,
     include_query: bool = False,
     payment_hash: str | None = None,
-    request_sha256: str | None = None,
-    response_sha256: str | None = None,
+    allow_unknown_payment: bool = False,
     checks: Mapping[str, Any] | None = None,
     quality: int | None = None,
     agreement_id: str | None = None,
@@ -79,22 +78,49 @@ async def publish_review(
     relay_url: str | None = None,
     timeout: float = nostr_relay.DEFAULT_TIMEOUT_SECONDS,
 ) -> str:
-    """Sign and publish one provider review. Returns a JSON string."""
+    """Sign and publish one provider review. Returns a JSON string.
+
+    A payment hash the local receipt log knows becomes the NIP ``proof`` tag plus the
+    ``receipt`` reference with the salted digests recorded for that call. A hash the log
+    does not know is refused (``errorType: unknown_payment``) unless
+    ``allow_unknown_payment`` is set; then only the ``receipt`` reference is published,
+    WITHOUT ``proof``, and the review counts as unbacked.
+    """
     try:
         subject = att.resolve_subject(subject_pubkey, subject_url, include_query)
-        receipt = att.make_receipt(payment_hash, request_sha256, response_sha256)
+        receipt = att.make_receipt(payment_hash)
         mech = _mech(checks)
         if quality is not None and (isinstance(quality, bool) or not isinstance(quality, int)):
             raise att.AttestationError("quality must be an integer from 1 to 5.")
         text = att.check_content(content)
 
-        receipt_source = None
         known_locally = False
         if receipt is not None:
-            receipt, receipt_source, known_locally = _merge_local_receipt(receipt, receipt_service)
+            local = receipt_service.lookup_payment(receipt.payment_hash) if receipt_service else None
+            if local is not None:
+                known_locally = True
+                receipt = att.ReceiptRef(
+                    receipt.payment_hash,
+                    (local.get("requestDigest") or "").lower(),
+                    (local.get("responseDigest") or "").lower(),
+                )
+            elif not allow_unknown_payment:
+                return _error(
+                    "This payment hash is not in the local receipt log, so this server cannot "
+                    "vouch that the payment happened. Readers that follow the NIP weight a "
+                    "'proof' tag as a verified payment, so it is refused. Pass the hash of a "
+                    "payment this server made, omit it, or set allow_unknown_payment=true to "
+                    "publish it as an unbacked receipt reference without the proof tag.",
+                    "unknown_payment",
+                )
 
         tags = att.build_tags(
-            subject, receipt=receipt, mech=mech, quality=quality, agreement_id=agreement_id
+            subject,
+            receipt=receipt,
+            mech=mech,
+            quality=quality,
+            agreement_id=agreement_id,
+            proof=known_locally,
         )
     except att.AttestationError as e:
         return _error(str(e), "invalid_input")
@@ -120,12 +146,12 @@ async def publish_review(
         "reviewer": {"pubkey": identity.pubkey_hex, "npub": identity.npub},
         "relay": relay,
         "subject": subject.to_dict(),
+        "proofBacked": known_locally,
         "receipt": (
             {
                 "paymentHash": receipt.payment_hash,
-                "requestSha256": receipt.request_sha256 or None,
-                "responseSha256": receipt.response_sha256 or None,
-                "source": receipt_source,
+                "requestDigest": receipt.request_sha256 or None,
+                "responseDigest": receipt.response_sha256 or None,
                 "knownToLocalReceiptLog": known_locally,
             }
             if receipt
@@ -158,37 +184,6 @@ async def publish_review(
     )
 
 
-def _merge_local_receipt(
-    receipt: att.ReceiptRef, receipt_service: ReceiptService | None
-) -> tuple[att.ReceiptRef, str, bool]:
-    """Fill request/response hashes from the local receipt log when it knows the payment.
-
-    A caller-supplied hash that disagrees with the locally recorded one is an error: the
-    local record is what this client actually saw.
-    """
-    local = receipt_service.lookup_payment(receipt.payment_hash) if receipt_service else None
-    if local is None:
-        return receipt, "caller", False
-    req, resp = receipt.request_sha256, receipt.response_sha256
-    filled = False
-    for name, given, recorded in (
-        ("request_sha256", req, local.get("requestSha256")),
-        ("response_sha256", resp, local.get("responseSha256")),
-    ):
-        if recorded and given and given != recorded.lower():
-            raise att.AttestationError(
-                f"{name} does not match the local receipt for this payment hash. Omit it to "
-                "use the recorded value."
-            )
-    if not req and local.get("requestSha256"):
-        req, filled = local["requestSha256"].lower(), True
-    if not resp and local.get("responseSha256"):
-        resp, filled = local["responseSha256"].lower(), True
-    return att.ReceiptRef(receipt.payment_hash, req, resp), (
-        "local_receipt" if filled else "caller"
-    ), True
-
-
 async def read_reviews(
     *,
     subject_pubkey: str | None = None,
@@ -210,8 +205,11 @@ async def read_reviews(
     n = max(1, min(MAX_REVIEWS_LIMIT, n))
 
     relay = relay_url or nostr_relay.resolve_relay_url()
-    flt = {"kinds": [att.ATTESTATION_KIND], f"#{subject.type}": [subject.value], "limit": n}
-    outcome = await nostr_relay.query_events(flt, relay, timeout, max_events=n)
+    # Fetch the full window (not just `n`) so one prolific key cannot fill it and hide
+    # everyone else; `n` only bounds how many individual reviews are listed.
+    fetch = nostr_relay.MAX_QUERY_EVENTS
+    flt = {"kinds": [att.ATTESTATION_KIND], f"#{subject.type}": [subject.value], "limit": fetch}
+    outcome = await nostr_relay.query_events(flt, relay, timeout, max_events=fetch)
     if not outcome.ok and outcome.status != nostr_relay.TIMEOUT:
         return _error(
             f"Could not read reviews from the relay ({outcome.status}): {outcome.message}",
@@ -219,7 +217,7 @@ async def read_reviews(
             relay=relay,
         )
 
-    summary = att.aggregate(outcome.events, subject)
+    summary = att.aggregate(outcome.events, subject, limit=n)
     return json.dumps(
         {
             "success": True,

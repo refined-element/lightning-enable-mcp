@@ -30,20 +30,24 @@ public interface IReceiptService
     string Path { get; }
 
     /// <summary>
-    /// Appends the request/response SHA-256 of a paid L402 exchange (an <c>exchange_digest</c>
-    /// line), written after the paid retry returns. Hashes only — never the bodies. Never throws.
+    /// Appends the salted digests of a paid L402 exchange (an <c>exchange_digest</c> line),
+    /// written after the paid retry returns. A fresh 256-bit nonce is drawn per exchange and kept
+    /// only in that line; the bodies are never stored. <paramref name="nonce"/> is for tests.
+    /// Never throws.
     /// </summary>
-    bool LogExchangeDigest(string paymentHash, string requestSha256, string responseSha256) => false;
+    bool LogExchangeDigest(string paymentHash, string method, string url, byte[]? requestBody,
+        byte[]? responseBody, byte[]? nonce = null) => false;
 
     /// <summary>
     /// What the local log knows about <paramref name="paymentHash"/>: null when it is not there,
-    /// else the payment hash plus the request/response digests when they were recorded.
+    /// else the payment hash plus the salted digests when a salted record exists. An older record
+    /// without a nonce yields the payment hash alone, so an unsalted digest is never published.
     /// </summary>
     LocalPaymentRecord? LookupPayment(string paymentHash) => null;
 }
 
-/// <summary>A payment the local receipt log knows, with its exchange digests if recorded.</summary>
-public sealed record LocalPaymentRecord(string PaymentHash, string? RequestSha256, string? ResponseSha256);
+/// <summary>A payment the local receipt log knows, with its salted exchange digests if recorded.</summary>
+public sealed record LocalPaymentRecord(string PaymentHash, string? RequestDigest, string? ResponseDigest);
 
 /// <summary>
 /// The digest definitions shared with the Python port (pinned by
@@ -53,22 +57,90 @@ public static class ExchangeDigest
 {
     public const string LineType = "exchange_digest";
 
+    /// <summary>The only digest construction this version writes or publishes.</summary>
+    public const string Scheme = "hmac-sha256-v1";
+
+    /// <summary>Bytes of the per-exchange nonce (256 bits).</summary>
+    public const int NonceBytes = 32;
+
     /// <summary>
-    /// SHA-256 over UTF-8 <c>"&lt;METHOD&gt; &lt;url&gt;\n"</c> (method upper-cased, URL exactly as
-    /// requested) followed by the request body bytes (none for GET/HEAD).
+    /// Salted digest of a paid request (scheme <c>hmac-sha256-v1</c>):
+    /// <c>HMAC-SHA256(key = nonce, message = UTF-8("&lt;METHOD&gt; &lt;url&gt;\n") || body)</c>,
+    /// lowercase hex. METHOD upper-cased, the URL exactly as requested (query included), the body
+    /// the bytes sent (none for GET/HEAD). Without the nonce, which stays in the local receipt
+    /// log, a published digest cannot be tested against guessed requests; disclosing the nonce
+    /// lets anyone check it.
     /// </summary>
-    public static string RequestSha256(string method, string url, byte[]? body)
+    public static string RequestDigest(byte[] nonce, string method, string url, byte[]? body)
     {
-        using var h = System.Security.Cryptography.IncrementalHash.CreateHash(System.Security.Cryptography.HashAlgorithmName.SHA256);
         var m = string.IsNullOrWhiteSpace(method) ? "GET" : method.Trim().ToUpperInvariant();
-        h.AppendData(System.Text.Encoding.UTF8.GetBytes($"{m} {url}\n"));
-        if (body is { Length: > 0 }) h.AppendData(body);
-        return Convert.ToHexString(h.GetHashAndReset()).ToLowerInvariant();
+        var head = System.Text.Encoding.UTF8.GetBytes($"{m} {url}\n");
+        var msg = body is { Length: > 0 } ? head.Concat(body).ToArray() : head;
+        return Convert.ToHexString(System.Security.Cryptography.HMACSHA256.HashData(nonce, msg)).ToLowerInvariant();
     }
 
-    /// <summary>SHA-256 of the response body bytes exactly as the client read them.</summary>
-    public static string ResponseSha256(byte[]? body) =>
-        Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(body ?? Array.Empty<byte>())).ToLowerInvariant();
+    /// <summary>
+    /// <c>HMAC-SHA256(key = nonce, message = response body)</c>, lowercase hex. The body is the
+    /// entity body after any content-encoding is removed (see <see cref="DecodeContent"/>).
+    /// </summary>
+    public static string ResponseDigest(byte[] nonce, byte[]? body) =>
+        Convert.ToHexString(System.Security.Cryptography.HMACSHA256.HashData(nonce, body ?? Array.Empty<byte>())).ToLowerInvariant();
+
+    /// <summary>
+    /// The body with its Content-Encoding (gzip, deflate, br; applied in the listed order)
+    /// removed, so the digest covers the same bytes Python's HTTP client hands back. An
+    /// unknown coding, or one that fails to decode, leaves the bytes as received.
+    /// </summary>
+    public static byte[] DecodeContent(byte[] body, IEnumerable<string>? contentEncodings)
+    {
+        var codings = (contentEncodings ?? Array.Empty<string>())
+            .SelectMany(v => v.Split(','))
+            .Select(c => c.Trim().ToLowerInvariant())
+            .Where(c => c.Length > 0 && c != "identity")
+            .ToList();
+        var data = body;
+        for (var i = codings.Count - 1; i >= 0; i--)
+        {
+            try
+            {
+                data = codings[i] switch
+                {
+                    "gzip" or "x-gzip" => Inflate(new System.IO.Compression.GZipStream(new MemoryStream(data), System.IO.Compression.CompressionMode.Decompress)),
+                    "deflate" => InflateDeflate(data),
+                    "br" => Inflate(new System.IO.Compression.BrotliStream(new MemoryStream(data), System.IO.Compression.CompressionMode.Decompress)),
+                    _ => data,
+                };
+            }
+            catch (Exception ex) when (ex is InvalidDataException or IOException)
+            {
+                return body;
+            }
+        }
+        return data;
+    }
+
+    // RFC 9110 "deflate" is zlib-wrapped; some servers send raw deflate. Python accepts both.
+    private static byte[] InflateDeflate(byte[] data)
+    {
+        try
+        {
+            return Inflate(new System.IO.Compression.ZLibStream(new MemoryStream(data), System.IO.Compression.CompressionMode.Decompress));
+        }
+        catch (InvalidDataException)
+        {
+            return Inflate(new System.IO.Compression.DeflateStream(new MemoryStream(data), System.IO.Compression.CompressionMode.Decompress));
+        }
+    }
+
+    private static byte[] Inflate(Stream s)
+    {
+        using (s)
+        using (var outp = new MemoryStream())
+        {
+            s.CopyTo(outp);
+            return outp.ToArray();
+        }
+    }
 }
 
 public sealed class ReceiptService : IReceiptService
@@ -205,19 +277,22 @@ public sealed class ReceiptService : IReceiptService
         catch { /* best effort, mirrors config.json */ }
     }
 
-    public bool LogExchangeDigest(string paymentHash, string requestSha256, string responseSha256)
+    public bool LogExchangeDigest(string paymentHash, string method, string url, byte[]? requestBody,
+        byte[]? responseBody, byte[]? nonce = null)
     {
-        if (string.IsNullOrEmpty(paymentHash) || string.IsNullOrEmpty(requestSha256) || string.IsNullOrEmpty(responseSha256))
-            return false;
+        if (string.IsNullOrEmpty(paymentHash)) return false;
         try
         {
+            var key = nonce ?? System.Security.Cryptography.RandomNumberGenerator.GetBytes(ExchangeDigest.NonceBytes);
             var line = new JsonObject
             {
                 ["type"] = ExchangeDigest.LineType,
                 ["timestamp"] = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
                 ["paymentHash"] = paymentHash.ToLowerInvariant(),
-                ["requestSha256"] = requestSha256.ToLowerInvariant(),
-                ["responseSha256"] = responseSha256.ToLowerInvariant(),
+                ["digestScheme"] = ExchangeDigest.Scheme,
+                ["digestNonce"] = Convert.ToHexString(key).ToLowerInvariant(),
+                ["requestDigest"] = ExchangeDigest.RequestDigest(key, method, url, requestBody),
+                ["responseDigest"] = ExchangeDigest.ResponseDigest(key, responseBody),
             };
             Append(line.ToJsonString());
             return true;
@@ -238,8 +313,8 @@ public sealed class ReceiptService : IReceiptService
         {
             if (!string.Equals(Str(obj, "paymentHash"), wanted, StringComparison.OrdinalIgnoreCase)) continue;
             found ??= new LocalPaymentRecord(wanted, null, null);
-            if (Str(obj, "type") == ExchangeDigest.LineType)
-                found = found with { RequestSha256 = Str(obj, "requestSha256"), ResponseSha256 = Str(obj, "responseSha256") };
+            if (IsSaltedDigest(obj))
+                found = found with { RequestDigest = Str(obj, "requestDigest"), ResponseDigest = Str(obj, "responseDigest") };
         }
         return found;
     }
@@ -259,7 +334,7 @@ public sealed class ReceiptService : IReceiptService
         var digests = new Dictionary<string, JsonObject>(StringComparer.OrdinalIgnoreCase);
         foreach (var o in objects)
         {
-            if (Str(o, "type") == ExchangeDigest.LineType && Str(o, "paymentHash") is { } h)
+            if (IsSaltedDigest(o) && Str(o, "paymentHash") is { } h)
                 digests[h] = o;
         }
         foreach (var o in objects)
@@ -267,8 +342,8 @@ public sealed class ReceiptService : IReceiptService
             if (Str(o, "type") == ExchangeDigest.LineType) continue;
             if (Str(o, "paymentHash") is { } h && digests.TryGetValue(h, out var d))
             {
-                o["requestSha256"] = Str(d, "requestSha256");
-                o["responseSha256"] = Str(d, "responseSha256");
+                o["requestDigest"] = Str(d, "requestDigest");
+                o["responseDigest"] = Str(d, "responseDigest");
             }
             // Redact at the READ boundary so every surface — the `receipts` tool and the
             // lightning-enable://receipts resource alike — is covered by one pass.
@@ -276,6 +351,10 @@ public sealed class ReceiptService : IReceiptService
         }
         return outp.Count > limit ? outp.GetRange(outp.Count - limit, limit) : outp;
     }
+
+    private static bool IsSaltedDigest(JsonObject o) =>
+        Str(o, "type") == ExchangeDigest.LineType && Str(o, "digestScheme") == ExchangeDigest.Scheme
+        && Str(o, "digestNonce") != null && Str(o, "requestDigest") != null && Str(o, "responseDigest") != null;
 
     private static string? Str(JsonObject o, string key) =>
         o[key] is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;

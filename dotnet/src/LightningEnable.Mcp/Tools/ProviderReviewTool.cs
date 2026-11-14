@@ -35,9 +35,22 @@ public static class ProviderReviewTool
         return o.ToJsonString(Indented);
     }
 
+    public const string UnknownPaymentMessage =
+        "This payment hash is not in the local receipt log, so this server cannot vouch that the "
+        + "payment happened. Readers that follow the NIP weight a 'proof' tag as a verified payment, "
+        + "so it is refused. Pass the hash of a payment this server made, omit it, or set "
+        + "allow_unknown_payment=true to publish it as an unbacked receipt reference without the proof tag.";
+
+    /// <summary>
+    /// Sign and publish one provider review. A payment hash the local receipt log knows becomes
+    /// the NIP <c>proof</c> tag plus the <c>receipt</c> reference with the salted digests recorded
+    /// for that call. A hash the log does not know is refused (<c>unknown_payment</c>) unless
+    /// <paramref name="allowUnknownPayment"/>; then only the <c>receipt</c> reference is published,
+    /// WITHOUT <c>proof</c>, and the review counts as unbacked.
+    /// </summary>
     public static async Task<string> PublishReview(
         string? subjectPubkey, string? subjectUrl, bool includeQuery,
-        string? paymentHash, string? requestSha256, string? responseSha256,
+        string? paymentHash, bool allowUnknownPayment,
         IReadOnlyDictionary<string, bool>? checks,
         int? quality, string? agreementId, string? content,
         AttestationKeyStore? keyStore, IReceiptService? receiptService, INostrRelayClient? relayClient,
@@ -48,20 +61,32 @@ public static class ProviderReviewTool
         Dictionary<string, bool> mech;
         JsonArray tags;
         string text;
-        string? receiptSource = null;
         var knownLocally = false;
         try
         {
             subject = Attestations.ResolveSubject(subjectPubkey, subjectUrl, includeQuery);
-            receipt = Attestations.MakeReceipt(paymentHash, requestSha256, responseSha256);
+            receipt = Attestations.MakeReceipt(paymentHash);
             mech = new Dictionary<string, bool>(checks ?? new Dictionary<string, bool>());
             var unknown = mech.Keys.FirstOrDefault(k => !Attestations.MechChecks.Contains(k));
             if (unknown != null)
                 throw new AttestationException($"Unknown check '{unknown}'. Use: {string.Join(", ", Attestations.MechChecks)}.");
             text = Attestations.CheckContent(content);
             if (receipt != null)
-                (receipt, receiptSource, knownLocally) = MergeLocalReceipt(receipt, receiptService);
-            tags = Attestations.BuildTags(subject, receipt, mech, quality, agreementId);
+            {
+                var local = receiptService?.LookupPayment(receipt.PaymentHash);
+                if (local != null)
+                {
+                    knownLocally = true;
+                    receipt = new AttestationReceipt(receipt.PaymentHash,
+                        (local.RequestDigest ?? string.Empty).ToLowerInvariant(),
+                        (local.ResponseDigest ?? string.Empty).ToLowerInvariant());
+                }
+                else if (!allowUnknownPayment)
+                {
+                    return Error(UnknownPaymentMessage, "unknown_payment");
+                }
+            }
+            tags = Attestations.BuildTags(subject, receipt, mech, quality, agreementId, proof: knownLocally);
         }
         catch (AttestationException ex)
         {
@@ -102,12 +127,12 @@ public static class ProviderReviewTool
             reviewer = new { pubkey = identity.PubkeyHex, npub = identity.Npub },
             relay,
             subject = subject.ToResult(),
+            proofBacked = knownLocally,
             receipt = receipt == null ? null : new
             {
                 paymentHash = receipt.PaymentHash,
-                requestSha256 = receipt.RequestSha256.Length > 0 ? receipt.RequestSha256 : null,
-                responseSha256 = receipt.ResponseSha256.Length > 0 ? receipt.ResponseSha256 : null,
-                source = receiptSource,
+                requestDigest = receipt.RequestSha256.Length > 0 ? receipt.RequestSha256 : null,
+                responseDigest = receipt.ResponseSha256.Length > 0 ? receipt.ResponseSha256 : null,
                 knownToLocalReceiptLog = knownLocally,
             },
             mechanical = mech,
@@ -131,37 +156,6 @@ public static class ProviderReviewTool
         return result.ToJsonString(Indented);
     }
 
-    /// <summary>
-    /// Fill request/response hashes from the local receipt log when it knows the payment. A
-    /// caller-supplied hash that disagrees with the recorded one is an error: the local record
-    /// is what this client actually saw.
-    /// </summary>
-    private static (AttestationReceipt Receipt, string Source, bool Known) MergeLocalReceipt(
-        AttestationReceipt receipt, IReceiptService? receiptService)
-    {
-        var local = receiptService?.LookupPayment(receipt.PaymentHash);
-        if (local == null) return (receipt, "caller", false);
-
-        foreach (var (name, given, recorded) in new[]
-                 {
-                     ("request_sha256", receipt.RequestSha256, local.RequestSha256),
-                     ("response_sha256", receipt.ResponseSha256, local.ResponseSha256),
-                 })
-        {
-            if (!string.IsNullOrEmpty(recorded) && given.Length > 0
-                && !string.Equals(given, recorded, StringComparison.OrdinalIgnoreCase))
-                throw new AttestationException(
-                    $"{name} does not match the local receipt for this payment hash. Omit it to use the recorded value.");
-        }
-
-        var req = receipt.RequestSha256;
-        var resp = receipt.ResponseSha256;
-        var filled = false;
-        if (req.Length == 0 && !string.IsNullOrEmpty(local.RequestSha256)) { req = local.RequestSha256.ToLowerInvariant(); filled = true; }
-        if (resp.Length == 0 && !string.IsNullOrEmpty(local.ResponseSha256)) { resp = local.ResponseSha256.ToLowerInvariant(); filled = true; }
-        return (new AttestationReceipt(receipt.PaymentHash, req, resp), filled ? "local_receipt" : "caller", true);
-    }
-
     public static async Task<string> ReadReviews(
         string? subjectPubkey, string? subjectUrl, bool includeQuery, int? limit,
         INostrRelayClient? relayClient, CancellationToken cancellationToken, string? relayUrl = null)
@@ -180,11 +174,13 @@ public static class ProviderReviewTool
 
         var n = Math.Clamp(limit ?? DefaultReviewsLimit, 1, MaxReviewsLimit);
         var relay = relayUrl ?? relayClient.DefaultRelayUrl;
+        // Fetch the full window (not just n) so one prolific key cannot fill it and hide everyone
+        // else; n only bounds how many individual reviews are listed.
         var filter = new JsonObject
         {
             ["kinds"] = new JsonArray { Attestations.Kind },
             [$"#{subject.Type}"] = new JsonArray { subject.Value },
-            ["limit"] = n,
+            ["limit"] = NostrRelayClient.MaxQueryEvents,
         };
         RelayOutcome outcome;
         try
@@ -198,10 +194,10 @@ public static class ProviderReviewTool
         if (!outcome.Ok && outcome.Status != RelayOutcome.Timeout)
             return Error($"Could not read reviews from the relay ({outcome.Status}): {outcome.Message}", outcome.Status, new { relay });
 
-        var events = outcome.Events.Take(n).ToList();
+        var events = outcome.Events.ToList();
         var result = new JsonObject { ["success"] = true, ["relay"] = relay, ["complete"] = outcome.Ok };
         if (!outcome.Ok) result["warning"] = outcome.Message + " Results are partial.";
-        foreach (var (k, v) in JsonSerializer.SerializeToNode(Attestations.Aggregate(events, subject))!.AsObject())
+        foreach (var (k, v) in JsonSerializer.SerializeToNode(Attestations.Aggregate(events, subject, n))!.AsObject())
             result[k] = v?.DeepClone();
         return result.ToJsonString(Indented);
     }

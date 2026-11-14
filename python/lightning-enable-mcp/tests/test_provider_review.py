@@ -7,7 +7,7 @@ import pytest
 from lightning_enable_mcp import attestation as att
 from lightning_enable_mcp import nostr_event
 from lightning_enable_mcp.attestation_key import AttestationKeyStore
-from lightning_enable_mcp.receipt_service import ReceiptService
+from lightning_enable_mcp.receipt_service import ReceiptService, request_digest, response_digest
 from lightning_enable_mcp.tools.provider_review import publish_review, read_reviews, reviewer_key
 
 from .fake_nostr_relay import FakeRelay
@@ -15,6 +15,9 @@ from .fake_nostr_relay import FakeRelay
 URL = "https://API.Example.com/v1/forecast?city=Paris"
 NORMALIZED = "https://api.example.com/v1/forecast"
 PH = "ab" * 32
+NONCE = bytes.fromhex("0f" * 32)  # fixed test nonce
+REQ_DIGEST = request_digest(NONCE, "GET", URL, None)
+RESP_DIGEST = response_digest(NONCE, b"{}")
 
 
 @pytest.fixture
@@ -26,7 +29,7 @@ def keys(tmp_path):
 def receipts(tmp_path):
     svc = ReceiptService(receipts_path=tmp_path / "receipts.jsonl")
     svc.log_payment(kind="l402", amount_sats=10, status="settled", payment_hash=PH)
-    svc.log_exchange_digest(PH, "11" * 32, "22" * 32)
+    svc.log_exchange_digest(PH, "GET", URL, None, b"{}", nonce=NONCE)
     return svc
 
 
@@ -51,51 +54,71 @@ async def test_review_signs_with_reviewer_key_and_attaches_local_receipt_hashes(
     assert nostr_event.verify_event(ev)
     assert ev["pubkey"] == keys.identity().pubkey_hex == out["reviewer"]["pubkey"]
     assert ["u", NORMALIZED] in ev["tags"]
-    assert ["receipt", PH, "11" * 32, "22" * 32] in ev["tags"]
+    assert ["proof", PH] in ev["tags"]
+    assert ["receipt", PH, REQ_DIGEST, RESP_DIGEST] in ev["tags"]
     assert ["mech", "responded", "1"] in ev["tags"]
     assert ["mech", "on_time", "0"] in ev["tags"]
     assert ["judged", "quality", "4"] in ev["tags"]
-    assert out["receipt"]["source"] == "local_receipt"
+    assert out["proofBacked"] is True
     assert out["receipt"]["knownToLocalReceiptLog"] is True
     # The secret never appears in the result.
     assert keys.secret_key().hex() not in json.dumps(out)
 
 
 @pytest.mark.asyncio
-async def test_review_with_unknown_payment_hash_uses_caller_values(keys, receipts):
+async def test_unknown_payment_hash_is_refused_by_default(keys, receipts):
     async with FakeRelay("accept") as relay:
         out = json.loads(
             await publish_review(
-                subject_pubkey="cd" * 32,
-                payment_hash="ef" * 32,
-                response_sha256="33" * 32,
-                quality=5,
-                key_store=keys,
-                receipt_service=receipts,
-                relay_url=relay.url,
+                subject_pubkey="cd" * 32, payment_hash="ef" * 32, quality=5,
+                key_store=keys, receipt_service=receipts, relay_url=relay.url,
             )
         )
-    assert out["success"] is True
-    assert out["receipt"] == {
-        "paymentHash": "ef" * 32,
-        "requestSha256": None,
-        "responseSha256": "33" * 32,
-        "source": "caller",
-        "knownToLocalReceiptLog": False,
-    }
+        stored = list(relay.stored)
+    assert out["success"] is False and out["errorType"] == "unknown_payment"
+    assert "proof" in out["error"] and "allow_unknown_payment" in out["error"]
+    assert stored == []
 
 
 @pytest.mark.asyncio
-async def test_review_conflicting_hash_with_local_receipt_is_refused(keys, receipts):
-    out = json.loads(
-        await publish_review(
-            subject_url=URL, payment_hash=PH, request_sha256="99" * 32, checks={"responded": True},
-            key_store=keys, receipt_service=receipts, relay_url="ws://127.0.0.1:9",
+async def test_unknown_payment_hash_override_publishes_receipt_without_proof(keys, receipts):
+    async with FakeRelay("accept") as relay:
+        out = json.loads(
+            await publish_review(
+                subject_pubkey="cd" * 32, payment_hash="ef" * 32, allow_unknown_payment=True,
+                quality=5, key_store=keys, receipt_service=receipts, relay_url=relay.url,
+            )
         )
-    )
-    assert out["success"] is False and out["errorType"] == "invalid_input"
-    assert "local receipt" in out["error"]
+        ev = relay.stored[0]
+    assert out["success"] is True
+    assert out["proofBacked"] is False
+    assert out["receipt"] == {
+        "paymentHash": "ef" * 32,
+        "requestDigest": None,
+        "responseDigest": None,
+        "knownToLocalReceiptLog": False,
+    }
+    assert not any(t[0] == "proof" for t in ev["tags"])
+    assert ["receipt", "ef" * 32, "", ""] in ev["tags"]
 
+
+@pytest.mark.asyncio
+async def test_known_payment_with_unsalted_legacy_record_publishes_no_digests(keys, tmp_path):
+    path = tmp_path / "legacy.jsonl"
+    svc = ReceiptService(receipts_path=path)
+    svc.log_payment(kind="l402", amount_sats=10, payment_hash=PH)
+    with open(path, "a", encoding="utf-8") as f:
+        f.write(json.dumps({"type": "exchange_digest", "paymentHash": PH,
+                            "requestSha256": "11" * 32, "responseSha256": "22" * 32}) + "\n")
+    async with FakeRelay("accept") as relay:
+        out = json.loads(
+            await publish_review(subject_url=URL, payment_hash=PH, quality=4, key_store=keys,
+                                 receipt_service=svc, relay_url=relay.url)
+        )
+        ev = relay.stored[0]
+    assert out["success"] is True and out["proofBacked"] is True
+    assert ["receipt", PH, "", ""] in ev["tags"]
+    assert "11" * 32 not in json.dumps(ev)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
@@ -132,11 +155,11 @@ async def test_review_relay_rejection_and_auth_are_reported(keys):
 
 
 @pytest.mark.asyncio
-async def test_reviews_round_trip_verifies_and_separates_families(keys, tmp_path):
+async def test_reviews_round_trip_verifies_and_separates_families(keys, receipts, tmp_path):
     other = AttestationKeyStore(config_dir=tmp_path / "other", env={})
     async with FakeRelay("accept") as relay:
         await publish_review(subject_url=URL, payment_hash=PH, checks={"responded": True}, quality=5,
-                             key_store=keys, relay_url=relay.url)
+                             key_store=keys, receipt_service=receipts, relay_url=relay.url)
         await publish_review(subject_url=URL, checks={"responded": False}, quality=1,
                              key_store=other, relay_url=relay.url)
         # A tampered copy of a real event and an event for another subject.

@@ -20,7 +20,6 @@ from bolt11 import decode as decode_bolt11
 from ._redirect import resolve_redirect_location
 from ._url_redact import redact_url_for_display
 from ._version import USER_AGENT_PYTHON
-from .receipt_service import request_sha256, response_sha256
 from .ssrf_transport import build_ssrf_safe_async_transport
 from .wallet_errors import PaymentProofUnavailableError
 
@@ -490,20 +489,18 @@ class L402Client:
     def _record_exchange_digest(
         self, preimage: str, method: str, url: str, content: bytes | None, response: Any
     ) -> None:
-        """Append the paid exchange's request/response SHA-256 to the receipt log.
+        """Append the paid exchange's salted request/response digests to the receipt log.
 
         Keyed by SHA-256(preimage), the same payment hash the wallet seam's receipt line
-        carries. Hashes only; never the bodies. Best-effort: a failure here must never
-        affect the paid response the caller is waiting for.
+        carries. Digests only (see ``receipt_service.request_digest``); never the bodies.
+        Best-effort: a failure here must never affect the paid response.
         """
         if self._receipt_service is None:
             return
         try:
             payment_hash = hashlib.sha256(bytes.fromhex(preimage.strip())).hexdigest()
             self._receipt_service.log_exchange_digest(
-                payment_hash,
-                request_sha256(method, url, content),
-                response_sha256(response.content),
+                payment_hash, method, url, content, response.content
             )
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("Could not record the exchange digest: %s", type(e).__name__)

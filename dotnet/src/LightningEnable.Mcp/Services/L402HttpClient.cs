@@ -592,8 +592,9 @@ public class L402HttpClient : IL402HttpClient
     }
 
     /// <summary>
-    /// Appends the paid exchange's request/response SHA-256 to the receipt log, keyed by
-    /// SHA-256(preimage) — the payment hash the receipt seam's line carries. The body is
+    /// Appends the paid exchange's salted request/response digests to the receipt log, keyed by
+    /// SHA-256(preimage) — the payment hash the receipt seam's line carries. The response
+    /// digest covers the body with any Content-Encoding removed (parity with Python). The body is
     /// already buffered by the string read, so this does no further network I/O. Best-effort:
     /// never affects the paid result the caller is waiting for.
     /// </summary>
@@ -607,11 +608,10 @@ public class L402HttpClient : IL402HttpClient
             var paymentHash = Convert.ToHexString(
                 System.Security.Cryptography.SHA256.HashData(Convert.FromHexString(preimageHex.Trim()))).ToLowerInvariant();
             var requestBody = string.IsNullOrEmpty(body) ? null : Encoding.UTF8.GetBytes(body);
-            var responseBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken);
-            _receiptService.LogExchangeDigest(
-                paymentHash,
-                ExchangeDigest.RequestSha256(method, url, requestBody),
-                ExchangeDigest.ResponseSha256(responseBytes));
+            var responseBytes = ExchangeDigest.DecodeContent(
+                await response.Content.ReadAsByteArrayAsync(cancellationToken),
+                response.Content.Headers.ContentEncoding);
+            _receiptService.LogExchangeDigest(paymentHash, method, url, requestBody, responseBytes);
         }
         catch (Exception ex)
         {

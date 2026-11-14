@@ -736,6 +736,7 @@ class LightningEnableServer:
                             subject_pubkey=arguments.get("subject_pubkey"),
                             subject_url=arguments.get("l402_endpoint"),
                             payment_hash=arguments.get("proof"),
+                            allow_unknown_payment=_as_bool(arguments.get("allow_unknown_payment")),
                             checks=arguments.get("checks"),
                             quality=arguments.get("rating") or None,
                             agreement_id=arguments.get("agreement_id"),

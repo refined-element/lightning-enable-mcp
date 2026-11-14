@@ -223,32 +223,63 @@
       "input": "https://bücher.example/",
       "includeQuery": false,
       "expected": null
+    },
+    {
+      "input": "https://example.com:0443/",
+      "includeQuery": false,
+      "expected": null
+    },
+    {
+      "input": "https://example.com:65536/",
+      "includeQuery": false,
+      "expected": null
+    },
+    {
+      "input": "https://example.com:0/",
+      "includeQuery": false,
+      "expected": null
+    },
+    {
+      "input": "https://Example.COM./a",
+      "includeQuery": false,
+      "expected": "https://example.com/a"
+    },
+    {
+      "input": "http://example.com.:80/x",
+      "includeQuery": false,
+      "expected": "http://example.com/x"
+    },
+    {
+      "input": "https://example.com:65535/",
+      "includeQuery": false,
+      "expected": "https://example.com:65535/"
     }
   ],
   "exchangeDigests": {
-    "description": "request_sha256 = SHA-256 of UTF-8 '<METHOD upper-cased> <url as requested>\\n' followed by the request body bytes (none for GET/HEAD). response_sha256 = SHA-256 of the response body bytes as read.",
+    "description": "Scheme hmac-sha256-v1. requestDigest = HMAC-SHA256(key = nonce, message = UTF-8 '<METHOD upper-cased> <url as requested>\\n' followed by the request body bytes, none for GET/HEAD). responseDigest = HMAC-SHA256(key = nonce, message = response body bytes after content-encoding is removed). The nonce is 32 random bytes per exchange, kept only in the local receipt log; this fixed nonce is a test value.",
+    "nonceHex": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
     "requests": [
       {
         "method": "get",
         "url": "https://api.example.com/v1/forecast?city=Paris",
         "bodyUtf8": null,
-        "requestSha256": "0e9bd4373d4eb2a9b93c670ebed85acee34810fa7bd6286525f674bffc06ce0f"
+        "requestDigest": "c1c0e4b7d3bf877af3cf251ed718273156089b1cabf4434f5adc42d73f1abf2e"
       },
       {
         "method": "POST",
         "url": "https://api.lightningenable.com/api/x",
         "bodyUtf8": "{\"q\":\"café\"}",
-        "requestSha256": "93e4a5748af19641e72da175b8add6fbbc35bff8560a0ccac36df4350b6d7029"
+        "requestDigest": "c59af570e882e2603782e3a103a2594176aff3fc025e8bd8ceebc89491abce77"
       }
     ],
     "responses": [
       {
         "bodyUtf8": "",
-        "responseSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        "responseDigest": "7254bb6c1de1b78d202484a7d2ac38af6cc4f66040cc3936b70f942b6a4a3c2a"
       },
       {
         "bodyUtf8": "{\"temp\":21.5,\"unit\":\"°C\"}",
-        "responseSha256": "c2ae21cc168f0c23fd52b42db68f0d42c35ef67a2134b41c334e945e53500801"
+        "responseDigest": "e5ef37754c8316599cdc0b2b953036fb11e4ad1b846b2bdc10cb38903de4054c"
       }
     ]
   }

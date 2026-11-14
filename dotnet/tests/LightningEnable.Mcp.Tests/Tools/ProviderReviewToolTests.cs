@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.Json.Nodes;
 using FluentAssertions;
 using LightningEnable.Mcp.Models;
@@ -19,6 +20,9 @@ public sealed class ProviderReviewToolTests : IDisposable
     private static readonly string Ph = string.Concat(Enumerable.Repeat("ab", 32));
     private static readonly string H11 = new('1', 64);
     private static readonly string H22 = new('2', 64);
+    private static readonly byte[] Nonce = Convert.FromHexString(string.Concat(Enumerable.Repeat("0f", 32))); // fixed test nonce
+    private static readonly string ReqDigest = ExchangeDigest.RequestDigest(Nonce, "GET", Url, null);
+    private static readonly string RespDigest = ExchangeDigest.ResponseDigest(Nonce, Encoding.UTF8.GetBytes("{}"));
 
     private readonly string _dir = Path.Combine(Path.GetTempPath(), "le-review-" + Guid.NewGuid().ToString("N"));
     private readonly AttestationKeyStore _keys;
@@ -31,7 +35,7 @@ public sealed class ProviderReviewToolTests : IDisposable
         Directory.CreateDirectory(_dir);
         _receipts = new ReceiptService(Path.Combine(_dir, "receipts.jsonl"));
         _receipts.LogPayment(new PaymentReceiptEntry { Kind = "l402", AmountSats = 10, Status = "settled", PaymentHash = Ph, Wallet = "NWC" });
-        _receipts.LogExchangeDigest(Ph, H11, H22);
+        _receipts.LogExchangeDigest(Ph, "GET", Url, null, Encoding.UTF8.GetBytes("{}"), Nonce);
     }
 
     public void Dispose()
@@ -42,11 +46,11 @@ public sealed class ProviderReviewToolTests : IDisposable
     private string Secret => File.ReadAllText(_keys.KeyPath).Trim();
 
     private Task<string> Review(string relay, AttestationKeyStore? keys = null, string? subjectPubkey = null, string? subjectUrl = Url,
-        string? paymentHash = null, string? requestSha256 = null, string? responseSha256 = null,
+        string? paymentHash = null, bool allowUnknownPayment = false, IReceiptService? receipts = null,
         bool? responded = null, bool? onTime = null, int? quality = null, string? content = null) =>
         ProviderReviewTool.PublishReview(subjectPubkey, subjectPubkey != null ? null : subjectUrl, false,
-            paymentHash, requestSha256, responseSha256, Checks(responded, onTime), quality, null, content,
-            keys ?? _keys, _receipts, _client, CancellationToken.None, relay);
+            paymentHash, allowUnknownPayment, Checks(responded, onTime), quality, null, content,
+            keys ?? _keys, receipts ?? _receipts, _client, CancellationToken.None, relay);
 
     private static Dictionary<string, bool>? Checks(bool? responded, bool? onTime)
     {
@@ -59,7 +63,7 @@ public sealed class ProviderReviewToolTests : IDisposable
     [Fact]
     public async Task Review_UnknownCheck_IsInvalid()
     {
-        var o = JsonNode.Parse(await ProviderReviewTool.PublishReview(null, Url, false, null, null, null,
+        var o = JsonNode.Parse(await ProviderReviewTool.PublishReview(null, Url, false, null, false,
             new Dictionary<string, bool> { ["fast"] = true }, null, null, null, _keys, _receipts, _client,
             CancellationToken.None, "ws://127.0.0.1:9/"))!;
         o["errorType"]!.GetValue<string>().Should().Be("invalid_input");
@@ -80,34 +84,56 @@ public sealed class ProviderReviewToolTests : IDisposable
         o["reviewer"]!["pubkey"]!.GetValue<string>().Should().Be(_keys.GetIdentity().PubkeyHex);
         var tags = ev["tags"]!.ToJsonString();
         tags.Should().Contain($"[\"u\",\"{Normalized}\"]");
-        tags.Should().Contain($"[\"receipt\",\"{Ph}\",\"{H11}\",\"{H22}\"]");
+        tags.Should().Contain($"[\"proof\",\"{Ph}\"]");
+        tags.Should().Contain($"[\"receipt\",\"{Ph}\",\"{ReqDigest}\",\"{RespDigest}\"]");
         tags.Should().Contain("[\"mech\",\"responded\",\"1\"]").And.Contain("[\"mech\",\"on_time\",\"0\"]");
         tags.Should().Contain("[\"judged\",\"quality\",\"4\"]");
-        o["receipt"]!["source"]!.GetValue<string>().Should().Be("local_receipt");
+        o["proofBacked"]!.GetValue<bool>().Should().BeTrue();
         o["receipt"]!["knownToLocalReceiptLog"]!.GetValue<bool>().Should().BeTrue();
         o.ToJsonString().Should().NotContain(Secret);
     }
 
     [Fact]
-    public async Task Review_UnknownPaymentHash_UsesCallerValues()
+    public async Task Review_UnknownPaymentHash_IsRefusedByDefault()
     {
         await using var relay = new FakeNostrRelay("accept").Start();
-        var o = JsonNode.Parse(await Review(relay.Url, subjectPubkey: new string('c', 64), paymentHash: new string('e', 64),
-            responseSha256: new string('3', 64), quality: 5))!.AsObject();
-        o["success"]!.GetValue<bool>().Should().BeTrue();
-        o["receipt"]!.ToJsonString().Should().Be(
-            $"{{\"paymentHash\":\"{new string('e', 64)}\",\"requestSha256\":null,\"responseSha256\":\"{new string('3', 64)}\",\"source\":\"caller\",\"knownToLocalReceiptLog\":false}}");
+        var o = JsonNode.Parse(await Review(relay.Url, subjectPubkey: new string('c', 64), paymentHash: new string('e', 64), quality: 5))!;
+        o["success"]!.GetValue<bool>().Should().BeFalse();
+        o["errorType"]!.GetValue<string>().Should().Be("unknown_payment");
+        o["error"]!.GetValue<string>().Should().Contain("proof").And.Contain("allow_unknown_payment");
+        relay.Stored.Should().BeEmpty();
     }
 
     [Fact]
-    public async Task Review_ConflictingHashWithLocalReceipt_IsRefused()
+    public async Task Review_UnknownPaymentHashOverride_PublishesReceiptWithoutProof()
     {
-        var o = JsonNode.Parse(await Review("ws://127.0.0.1:9/", paymentHash: Ph, requestSha256: new string('9', 64), responded: true))!;
-        o["success"]!.GetValue<bool>().Should().BeFalse();
-        o["errorType"]!.GetValue<string>().Should().Be("invalid_input");
-        o["error"]!.GetValue<string>().Should().Contain("local receipt");
+        await using var relay = new FakeNostrRelay("accept").Start();
+        var o = JsonNode.Parse(await Review(relay.Url, subjectPubkey: new string('c', 64), paymentHash: new string('e', 64),
+            allowUnknownPayment: true, quality: 5))!.AsObject();
+        o["success"]!.GetValue<bool>().Should().BeTrue();
+        o["proofBacked"]!.GetValue<bool>().Should().BeFalse();
+        o["receipt"]!.ToJsonString().Should().Be(
+            $"{{\"paymentHash\":\"{new string('e', 64)}\",\"requestDigest\":null,\"responseDigest\":null,\"knownToLocalReceiptLog\":false}}");
+        var tags = relay.Stored.Single()["tags"]!.ToJsonString();
+        tags.Should().NotContain("\"proof\"");
+        tags.Should().Contain($"[\"receipt\",\"{new string('e', 64)}\",\"\",\"\"]");
     }
 
+    [Fact]
+    public async Task Review_KnownPaymentWithUnsaltedLegacyRecord_PublishesNoDigests()
+    {
+        var path = Path.Combine(_dir, "legacy.jsonl");
+        var svc = new ReceiptService(path);
+        svc.LogPayment(new PaymentReceiptEntry { Kind = "l402", AmountSats = 10, PaymentHash = Ph, Wallet = "NWC" });
+        File.AppendAllText(path, $"{{\"type\":\"exchange_digest\",\"paymentHash\":\"{Ph}\",\"requestSha256\":\"{H11}\",\"responseSha256\":\"{H22}\"}}\n");
+        await using var relay = new FakeNostrRelay("accept").Start();
+        var o = JsonNode.Parse(await Review(relay.Url, paymentHash: Ph, receipts: svc, quality: 4))!;
+        o["success"]!.GetValue<bool>().Should().BeTrue();
+        o["proofBacked"]!.GetValue<bool>().Should().BeTrue();
+        var tags = relay.Stored.Single()["tags"]!.ToJsonString();
+        tags.Should().Contain($"[\"receipt\",\"{Ph}\",\"\",\"\"]");
+        tags.Should().NotContain(H11);
+    }
     [Theory]
     [InlineData(null, null)]          // nothing to attest
     [InlineData(9, null)]             // quality out of range
@@ -190,7 +216,7 @@ public sealed class ProviderReviewToolTests : IDisposable
     public async Task NullServices_GiveDescriptiveErrors()
     {
         JsonNode.Parse(ProviderReviewTool.ReviewerKey(null))!["errorType"]!.GetValue<string>().Should().Be("key_unavailable");
-        var o = JsonNode.Parse(await ProviderReviewTool.PublishReview(null, Url, false, null, null, null,
+        var o = JsonNode.Parse(await ProviderReviewTool.PublishReview(null, Url, false, null, false,
             new Dictionary<string, bool> { ["responded"] = true }, null, null, null, null, null, null, CancellationToken.None))!;
         o["errorType"]!.GetValue<string>().Should().Be("key_unavailable");
     }

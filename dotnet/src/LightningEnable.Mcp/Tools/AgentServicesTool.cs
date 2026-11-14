@@ -95,6 +95,7 @@ public static class AgentServicesTool
         [Description("attest: 1-5; review: quality 1-5")] int rating = 0,
         [Description("attest: preimage hash; review: payment hash")] string? proof = null,
         [Description("review: {responded,on_time,well_formed,price_honored}: bool")] Dictionary<string, bool>? checks = null,
+        [Description("review: unrecorded proof, unbacked")] bool allowUnknownPayment = false,
         [Description("reputation: agent pubkey")] string? pubkey = null,
         IAgentService? agentService = null,
         ILightningEnableApiService? apiService = null,
@@ -131,7 +132,7 @@ public static class AgentServicesTool
             // is the URL subject, proof the payment hash, rating the judged quality (0 = not
             // given). Request/response hashes come from the local receipt log.
             AgentServicesAction.review => await ProviderReviewTool.PublishReview(
-                subjectPubkey, l402Endpoint, false, proof, null, null, checks,
+                subjectPubkey, l402Endpoint, false, proof, allowUnknownPayment, checks,
                 rating == 0 ? null : rating, agreementId, content,
                 attestationKeys, receiptService, relayClient, cancellationToken),
             AgentServicesAction.reviews => await ProviderReviewTool.ReadReviews(

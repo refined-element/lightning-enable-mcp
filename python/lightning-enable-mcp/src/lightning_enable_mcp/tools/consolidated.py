@@ -403,6 +403,10 @@ AGENT_SERVICES_TOOL = Tool(
                 "additionalProperties": {"type": "boolean"},
                 "description": "review: {responded,on_time,well_formed,price_honored}: bool",
             },
+            "allow_unknown_payment": {
+                "type": "boolean",
+                "description": "review: unrecorded proof, unbacked",
+            },
             "pubkey": {"type": "string", "description": "reputation: agent pubkey"},
         },
         "required": ["action"],

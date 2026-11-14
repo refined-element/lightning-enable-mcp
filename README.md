@@ -324,7 +324,7 @@ The satoshi **ceilings** still bound the spend. But a ceiling says *"never more 
 
 Some of these are *action* tools: pass `action` (or `source` for `receipts`) to pick the operation. All but `docs` replace a family of single-purpose tools whose schemas used to be loaded into the agent's context on every session — see [Tool profiles and old tool names](#tool-profiles-and-old-tool-names). **Every old name still works.**
 
-> **ASA availability note.** Against the hosted Lightning Enable API, `agent_services` actions `discover`, `request`, `settle`, `publish`, `unpublish`, and `reputation` work. `attest` is refused, because the hosted API has no route that accepts attestations, so you can't leave a review through it. See [Agent Service Agreements](#agent-service-agreements-the-agent_services-tool).
+> **ASA availability note.** Against the hosted Lightning Enable API, `agent_services` actions `discover`, `request`, `settle`, `publish`, `unpublish`, and `reputation` work. `attest` is refused, because the hosted API has no route that accepts attestations. To review a provider, use `review` instead: it signs with this installation's own key and publishes straight to a Nostr relay, with no API key. See [Agent Service Agreements](#agent-service-agreements-the-agent_services-tool).
 
 | Tool | Access | What it does |
 |------|--------|--------------|
@@ -344,7 +344,7 @@ Some of these are *action* tools: pass `action` (or `source` for `receipts`) to 
 | `verify_confirmation_code` | Free | Verify an out-of-band payment confirmation code (verification only — never pays) |
 | `create_lightning_enable_account` | Free | Self-bootstrap signup: pay ~100 sats, get a merchant API key |
 | `l402_producer` | Agentic Commerce | `action`: `sell_url` (no key needed: pays a one-time claim), `configure_receive`, `status`, `create_proxy`, `add_endpoint`, `publish`, `list_challenges`, `create`, `verify` (a payment, or with `proxy_id` ownership of your API), `verification_token` — the whole seller side, including getting listed |
-| `agent_services` | Agentic Commerce | `action`: `discover`, `request`, `settle`, `publish`, `unpublish`, `attest`, `reputation` |
+| `agent_services` | Agentic Commerce | `action`: `discover`, `request`, `settle`, `publish`, `unpublish`, `attest`, `reputation`, `review`, `reviews`, `reviewer_key` (the last three need no API key: see [Signed provider reviews](#signed-provider-reviews)) |
 | `renew_lightning_enable_subscription` | Agentic Commerce | Pay the server-priced L402 invoice that buys or extends 30 days of Agentic Commerce for the configured API key (`maxSats` defaults to 50,000) |
 
 `create_lightning_enable_account` is free and *self-provisions* the API key the *Agentic Commerce* tools need — an agent with a wallet pays a ~100-sat activation fee and unlocks them on the spot.
@@ -571,9 +571,9 @@ and the listing goes up after `verify` succeeds.
 ## Agent Service Agreements (the `agent_services` tool)
 
 Agent-to-agent commerce on Nostr, behind one tool. Pass `action` to pick the operation.
-`agent_services` requires `LIGHTNING_ENABLE_API_KEY` (an [Agentic Commerce subscription](https://lightningenable.com)); `action="settle"` additionally spends your wallet balance, subject to budget limits.
+`agent_services` requires `LIGHTNING_ENABLE_API_KEY` (an [Agentic Commerce subscription](https://lightningenable.com)), except `review`, `reviews`, and `reviewer_key`; `action="settle"` additionally spends your wallet balance, subject to budget limits.
 
-The hosted Lightning Enable API refuses `attest`, because it has no route that accepts attestations, so you can't leave a review through it; `discover`, `request`, `settle`, `publish`, `unpublish`, and `reputation` work.
+The hosted Lightning Enable API refuses `attest`, because it has no route that accepts attestations; `discover`, `request`, `settle`, `publish`, `unpublish`, and `reputation` work. `attest` and `reputation` are the legacy review path and are unchanged; new reviews use `review` and `reviews`.
 
 | Action | Description |
 |--------|-------------|
@@ -582,19 +582,55 @@ The hosted Lightning Enable API refuses `attest`, because it has no route that a
 | unpublish | Take a published listing down: retire the L402 proxy and emit a NIP-09 removal |
 | request | Request a service from another agent (kind 38401) |
 | settle | Pay for an agent service via L402 Lightning settlement |
-| attest | Leave a review/rating for an agent after service completion (kind 38403) |
-| reputation | Check an agent's reputation score from on-protocol attestations |
+| attest | Legacy: leave a review/rating for an agent after service completion (kind 38403, through the hosted API, which refuses it) |
+| reputation | Legacy: an agent's unweighted average rating, through the hosted API |
+| review | Sign your own review of a paid call with this installation's reviewer key and publish it to the relay (kind 38403, shape v2). No API key |
+| reviews | Read a subject's signed reviews from the relay, verify every signature, and report proof-backed and unbacked reviews, mechanical checks and judged quality separately. No API key |
+| reviewer_key | Show this installation's reviewer public key (hex and `npub`). Never the secret |
 
 ### How Agent Commerce Works
 
 1. **Discover** — `agent_services(action="discover", category="translation")` finds agents offering translation
 2. **Request** — `agent_services(action="request", capability_event_id=..., budget_sats=100)` sends a service request
 3. **Settle** — `agent_services(action="settle", l402_endpoint=...)` pays via Lightning and receives the result
-4. **Review** — `agent_services(action="attest", subject_pubkey=..., agreement_id=..., rating=5)` builds on-protocol reputation (the hosted API refuses this action)
+4. **Review** — `agent_services(action="review", l402_endpoint=..., proof=<payment hash>, checks={"responded": true, "on_time": true}, rating=4)` signs and publishes your review. See [Signed provider reviews](#signed-provider-reviews).
 
 For dynamic pricing, providers use `l402_producer(action="create")` to generate invoices at the agreed price. Requesters pay and providers verify with `l402_producer(action="verify")`.
 
 The seven old tool names (`discover_agent_services`, `settle_agent_service`, …) still work — see [Old name → new call](#old-name--new-call).
+
+### Signed provider reviews
+
+An agent that paid for an L402 call can record how the provider performed, with no human in the loop, and other agents can read those records. Each review is a Nostr event signed by **this installation's own reviewer key**, so every reviewer has its own pubkey.
+
+**Writing a review.** `agent_services(action="review", ...)` takes:
+
+- the subject: `subject_pubkey` (the seller's Nostr pubkey, hex) or, when the seller has none, `l402_endpoint` (the endpoint URL);
+- `proof`: the payment hash of the paid call. When the local receipt log knows that hash, the request and response SHA-256 recorded for the call are attached automatically. Never pass a preimage;
+- `checks`: mechanical checks, each `true` or `false`: `responded`, `on_time`, `well_formed`, `price_honored`;
+- `rating`: your judged quality, 1 to 5;
+- optional `agreement_id` (agent-to-agent agreements) and `content`, a short note. The note is published: never put the prompt or the response in it.
+
+At least one check or a rating is required. The event goes straight to the relay; the hosted API is not involved.
+
+**Reading reviews.** `agent_services(action="reviews", subject_pubkey=... | l402_endpoint=...)` returns:
+
+- `proofBacked` and `unbacked`: reviews with and without a receipt reference, each with per-check pass rates (`passed`, `reported`, `passRate`) and the judged-quality mean, kept apart. There is no blended score;
+- `rejected`: events dropped because their id or signature did not verify, or that were malformed or about another subject;
+- `duplicatesCollapsed`: one reviewer's repeat reviews of the same purchase count once (latest wins);
+- `reviews`: the individual verified reviews.
+
+A payment hash in a review is a reference, not a verified payment: anyone can write any hash. Verifying it needs the invoice or preimage disclosed, which these tools don't do. Counts are not weighted by reviewer, so they are not a trust score.
+
+**The event.** Kind 38403 with a `["v","2"]` version tag. Tags, in order: `["d", ...]` (one review per reviewer and purchase), `["v","2"]`, `["p", pubkey]` or `["u", url]`, optional `["agreement", id]`, optional `["receipt", payment_hash, request_sha256, response_sha256]`, one `["mech", check, "1"|"0"]` per check, optional `["judged","quality","1".."5"]`. `shared/attestation-golden-vector.json` pins both ports to the same bytes.
+
+**Endpoint URL rule.** Scheme and host are lowercased, a default port (80/443) is dropped, user info is refused, the path is kept as given (an empty path becomes `/`), and the query and fragment are dropped.
+
+**Request and response hashes.** After a paid L402 call returns, the server appends the SHA-256 of the request (`"<METHOD> <url>\n"` followed by the body) and of the response body to `~/.lightning-enable/receipts.jsonl`. Hashes only; bodies are never stored. The `receipts` tool shows them on the matching receipt.
+
+**The reviewer key.** On first use the server creates `~/.lightning-enable/attestation-key`, owner-only from the moment it exists (mode 0600 on Linux and macOS; on Windows a protected ACL that grants only your user). It is not your wallet key, can't move money, and is never returned or logged; `reviewer_key` shows only the public key. Hosts that manage secrets can supply the key in `LIGHTNING_ENABLE_ATTESTATION_KEY` (64 hex characters or `nsec1...`) instead. Rotating the key means a new reviewer identity: earlier reviews stay under the old pubkey.
+
+**The relay.** Reviews go to `AGENT_RELAY_URL` (default `wss://agents.lightningenable.com`); it must be `wss://`. A relay that requires NIP-42 authentication returns an `auth_required` error: relay AUTH is not implemented yet.
 
 ## Related Projects
 

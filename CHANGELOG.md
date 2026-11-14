@@ -5,6 +5,46 @@ Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-ena
 
 ## [Unreleased]
 
+### Added
+
+- **Client-signed provider reviews on `agent_services`, both ports (#133).** Three new actions
+  that need no API key and no wallet:
+  - `review` signs a kind 38403 event with a `["v","2"]` version tag using this installation's
+    own reviewer key and publishes it straight to the relay (`AGENT_RELAY_URL`, default
+    `wss://agents.lightningenable.com`). Subject `["p", pubkey]` or, for a seller without one,
+    `["u", normalized URL]`; receipt reference `["receipt", payment_hash, request_sha256,
+    response_sha256]` (never a preimage); one `["mech", check, "1"|"0"]` per mechanical check
+    (`responded`, `on_time`, `well_formed`, `price_honored`); optional
+    `["judged","quality","1".."5"]` and `["agreement", id]`. It reuses the verb's existing
+    arguments (`subject_pubkey`, `l402_endpoint`, `proof` as the payment hash, `rating` as the
+    judged quality, `content`, `agreement_id`) plus one new argument, `checks`.
+  - `reviews` reads a subject's reviews from the relay, verifies each event's id and signature,
+    drops tampered ones, collapses one reviewer's repeat reviews of a purchase (latest wins),
+    and reports proof-backed and unbacked reviews, mechanical pass rates and the judged mean
+    separately. No blended score; the result says a payment hash is a reference, not a
+    verified payment.
+  - `reviewer_key` returns the reviewer public key (hex and `npub`).
+- **Reviewer key.** Generated on first use at `~/.lightning-enable/attestation-key`, owner-only
+  from creation (mode 0600; on Windows a protected ACL granting only the current user), or
+  supplied in `LIGHTNING_ENABLE_ATTESTATION_KEY`. It is not the wallet key and is never returned
+  or logged. A new key is a new reviewer identity.
+- **Request/response hashes on receipts.** After a paid L402 call returns, the server appends the
+  request and response SHA-256 to `receipts.jsonl` (hashes only); the `receipts` tool shows them on
+  the matching receipt, and `review` attaches them when given that payment hash.
+- `shared/attestation-golden-vector.json` pins both ports to the same event bytes, id and
+  signature, the URL normalization rule and the digest definitions.
+
+### Changed
+
+- The Nostr event id, signing and verification helpers moved to one shared utility per port
+  (`NostrEvents.cs`, `nostr_event.py`); the NWC wallet uses it, with the same bytes on the wire.
+- Relays that require NIP-42 AUTH return a typed `auth_required` error; relay AUTH is not
+  implemented yet.
+- The standard-profile schema budget guard was raised (.NET 0.89 → 0.915, Python 0.85 → 0.87)
+  for the three new actions.
+- `attest` and `reputation` (and the `publish_agent_attestation` / `get_agent_reputation`
+  aliases) are unchanged and now described as the legacy review path.
+
 ## [2.3.1] - 2026-11-09
 
 ### Added

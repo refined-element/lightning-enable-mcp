@@ -110,7 +110,8 @@ GET_AGENT_REPUTATION_TOOL = Tool(
         "Get an agent's reputation score and reviews. "
         "Queries kind 38403 attestation events for the given pubkey off the relay. "
         "Returns the average rating and individual reviews. Ratings are un-weighted "
-        "on-relay attestations — apply your own proof/Web-of-Trust weighting before trusting them."
+        "on-relay attestations — apply your own proof/Web-of-Trust weighting before trusting them. "
+        'For signed reviews with verified signatures, use agent_services(action="reviews").'
     ),
     inputSchema={
         "type": "object",

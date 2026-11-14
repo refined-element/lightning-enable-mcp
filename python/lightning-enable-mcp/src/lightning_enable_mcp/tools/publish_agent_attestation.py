@@ -133,9 +133,9 @@ PUBLISH_AGENT_ATTESTATION_TOOL = Tool(
         "NOTE: writing attestations is not yet available on the hosted API and "
         "returns an error. The platform holds a single signing key, so a "
         "platform-signed review would share one pubkey across all reviewers — "
-        "worthless for reputation — so this is intentionally disabled until "
-        "per-agent (client-side) signing exists. Reading reputation "
-        "(agent_services action=reputation) works today."
+        "worthless for reputation — so this is intentionally disabled. For a review "
+        "signed with this installation's own key, use "
+        'agent_services(action="review") instead; it needs no API key.'
     ),
     inputSchema={
         "type": "object",

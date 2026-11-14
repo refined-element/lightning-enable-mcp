@@ -31,4 +31,9 @@ regexes = [
   '''71a8c14c1407c113601079c4302dab36460f0ccd0ad506f1f2dc73b5100e4f3c''',
   # test_nwc_wallet.py — second dummy NWC secret
   '''fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210''',
+  # shared/attestation-golden-vector.json — PUBLIC keys, not secrets: the x-only BIP-340
+  # test-vector pubkeys of the scalars 3 and 1 (the latter is the secp256k1 generator's x).
+  # The vector's secret key is the scalar 3 itself (all zeros, then 03), a published test value.
+  '''f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9''',
+  '''79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798''',
 ]

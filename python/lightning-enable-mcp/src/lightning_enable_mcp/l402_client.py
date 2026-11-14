@@ -6,12 +6,13 @@ Handles L402 protocol for HTTP requests with automatic payment.
 
 import asyncio
 import base64
+import hashlib
 import json
 import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import httpx
 from bolt11 import decode as decode_bolt11
@@ -26,6 +27,7 @@ if TYPE_CHECKING:
     from .budget_service import BudgetService
     from .nwc_wallet import NWCWallet
     from .payment_history_service import PaymentHistoryService
+    from .receipt_service import ReceiptService
 
 logger = logging.getLogger("lightning-enable-mcp.l402")
 
@@ -447,6 +449,7 @@ class L402Client:
         wallet: "NWCWallet",
         budget_service: "BudgetService | None" = None,
         payment_history_service: "PaymentHistoryService | None" = None,
+        receipt_service: "ReceiptService | None" = None,
     ) -> None:
         """
         Initialize L402 client.
@@ -458,10 +461,14 @@ class L402Client:
                 passive. Optional (None in unit tests that only exercise parsing / redirects).
             payment_history_service: PaymentHistoryService — the client writes the session
                 audit record here on a settled payment. Optional.
+            receipt_service: ReceiptService — after a paid retry returns, the client appends
+                the request/response SHA-256 of the exchange (hashes only, never bodies) so a
+                later attestation can reference them. Optional.
         """
         self.wallet = wallet
         self._budget_service = budget_service
         self._payment_history_service = payment_history_service
+        self._receipt_service = receipt_service
         self._http_client = httpx.AsyncClient(
             timeout=30.0,
             # User-Agent identifies the server on the initial request AND the paid retry
@@ -478,6 +485,25 @@ class L402Client:
             # socket to it, closing the DNS-rebind TOCTOU window. TLS/SNI preserved.
             transport=build_ssrf_safe_async_transport(),
         )
+
+    def _record_exchange_digest(
+        self, preimage: str, method: str, url: str, content: bytes | None, response: Any
+    ) -> None:
+        """Append the paid exchange's salted request/response digests to the receipt log.
+
+        Keyed by SHA-256(preimage), the same payment hash the wallet seam's receipt line
+        carries. Digests only (see ``receipt_service.request_digest``); never the bodies.
+        Best-effort: a failure here must never affect the paid response.
+        """
+        if self._receipt_service is None:
+            return
+        try:
+            payment_hash = hashlib.sha256(bytes.fromhex(preimage.strip())).hexdigest()
+            self._receipt_service.log_exchange_digest(
+                payment_hash, method, url, content, response.content
+            )
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("Could not record the exchange digest: %s", type(e).__name__)
 
     async def _reserve(self, amount_sats: int) -> "str | None":
         """Atomically reserve ``amount_sats`` against the session cap BEFORE the wallet is
@@ -902,6 +928,11 @@ class L402Client:
                 err.amount_paid = challenge.amount_sats
                 err.l402_token = raw_token
                 raise err
+
+            # The paid exchange produced a response body (2xx or an error page): keep its
+            # request/response SHA-256 for a later attestation. Redirects have no body worth
+            # attesting and are skipped (parity with .NET).
+            self._record_exchange_digest(preimage, method, url, content, response)
 
             if response.status_code >= 400:
                 # The invoice was already paid (preimage obtained, recorded once above) but

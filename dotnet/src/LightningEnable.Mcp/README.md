@@ -79,6 +79,8 @@ dotnet build src/LightningEnable.Mcp
 | `LND_FEE_LIMIT_SATS` | No | 5% of amount, min 2 | Routing-fee ceiling per LND payment. |
 | `LND_PAYMENT_TIMEOUT_SECONDS` | No | 25 | Per-payment bound; a stalled payment surfaces as *pending* (never retried automatically). |
 | `LIGHTNING_ENABLE_API_KEY` | For producer tools | - | API key for `create_l402_challenge` and `verify_l402_payment`. Requires Agentic Commerce subscription. |
+| `LIGHTNING_ENABLE_ATTESTATION_KEY` | No | generated | Reviewer key for `agent_services` `review` (64 hex characters or `nsec1...`). Unset: the server creates `~/.lightning-enable/attestation-key`, owner-only. Not a wallet key; a new key is a new reviewer identity. |
+| `AGENT_RELAY_URL` | No | `wss://agents.lightningenable.com` | Nostr relay that `review` publishes to and `reviews` reads from (`wss://` only). |
 
 Configure one wallet provider. If multiple are set, priority order is: LND > NWC > Strike > OpenNode.
 

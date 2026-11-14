@@ -16,13 +16,21 @@ public class L402HttpClient : IL402HttpClient
     private readonly IWalletService _walletService;
     private readonly IBudgetService _budgetService;
     private readonly IPaymentHistoryService _historyService;
+    private readonly IReceiptService? _receiptService;
 
+    /// <param name="receiptService">
+    /// Optional. After a paid retry returns a body, the client appends the exchange's
+    /// request/response SHA-256 (hashes only, never bodies) so a later attestation can
+    /// reference them.
+    /// </param>
     public L402HttpClient(
         HttpClient httpClient,
         IWalletService walletService,
         IBudgetService budgetService,
-        IPaymentHistoryService historyService)
+        IPaymentHistoryService historyService,
+        IReceiptService? receiptService = null)
     {
+        _receiptService = receiptService;
         _httpClient = httpClient;
         // Prevent servers from sending compressed responses that may not decompress correctly
         // across all environments (Docker, bridge CLI, etc.)
@@ -571,12 +579,44 @@ public class L402HttpClient : IL402HttpClient
         }
         var contentType = retryResponse.Content.Headers.ContentType?.MediaType;
 
+        // The paid exchange produced a body (2xx or an error page): keep its request/response
+        // SHA-256 for a later attestation. Redirects (above) are skipped (parity with Python).
+        await RecordExchangeDigestAsync(paymentResult.PreimageHex, method, url, body, retryResponse, cancellationToken);
+
         if (retryResponse.IsSuccessStatusCode)
         {
             return L402FetchResult.Succeeded(url, content, (int)retryResponse.StatusCode, contentType, amountSats.Value, authToken, protocol, paymentReceipt);
         }
 
         return L402FetchResult.Failed(url, $"Request failed after payment: HTTP {(int)retryResponse.StatusCode}: {content}", (int)retryResponse.StatusCode, amountSats.Value, authToken, protocol);
+    }
+
+    /// <summary>
+    /// Appends the paid exchange's salted request/response digests to the receipt log, keyed by
+    /// SHA-256(preimage) — the payment hash the receipt seam's line carries. The response
+    /// digest covers the body with any Content-Encoding removed (parity with Python). The body is
+    /// already buffered by the string read, so this does no further network I/O. Best-effort:
+    /// never affects the paid result the caller is waiting for.
+    /// </summary>
+    private async Task RecordExchangeDigestAsync(
+        string? preimageHex, string method, string url, string? body,
+        HttpResponseMessage response, CancellationToken cancellationToken)
+    {
+        if (_receiptService == null || string.IsNullOrEmpty(preimageHex)) return;
+        try
+        {
+            var paymentHash = Convert.ToHexString(
+                System.Security.Cryptography.SHA256.HashData(Convert.FromHexString(preimageHex.Trim()))).ToLowerInvariant();
+            var requestBody = string.IsNullOrEmpty(body) ? null : Encoding.UTF8.GetBytes(body);
+            var responseBytes = ExchangeDigest.DecodeContent(
+                await response.Content.ReadAsByteArrayAsync(cancellationToken),
+                response.Content.Headers.ContentEncoding);
+            _receiptService.LogExchangeDigest(paymentHash, method, url, requestBody, responseBytes);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[Lightning Enable] Could not record the exchange digest: {ex.GetType().Name}");
+        }
     }
 
     /// <summary>

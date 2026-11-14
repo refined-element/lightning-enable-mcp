@@ -8,7 +8,8 @@ namespace LightningEnable.Mcp.Services;
 /// Service for Agent Service Agreement (ASA) operations on the Nostr network.
 /// Handles discovery, publishing, service requests, and settlement of agent capabilities.
 ///
-/// v1 implementation uses the Lightning Enable API for all operations.
+/// v1 implementation uses the Lightning Enable API for all operations here. Signed provider
+/// reviews (agent_services review/reviews) bypass it and use <see cref="NostrRelayClient"/>.
 /// TODO: Add direct Nostr relay WebSocket support for discovery and publishing.
 /// </summary>
 public interface IAgentService
@@ -220,10 +221,10 @@ public class AgentService : IAgentService
         _baseUrl = Environment.GetEnvironmentVariable("LIGHTNING_ENABLE_API_URL")?.TrimEnd('/')
             ?? "https://api.lightningenable.com";
 
-        // TODO: _agentRelayUrl is reserved for future direct Nostr relay WebSocket support.
-        // Currently all operations go through the Lightning Enable REST API.
-        // When direct relay queries are implemented, this URL will be used to connect
-        // to the agent relay for publishing and subscribing to capability events.
+        // TODO: _agentRelayUrl is reserved for future direct Nostr relay WebSocket support
+        // for the ASA operations here, which still go through the Lightning Enable REST API.
+        // Signed provider reviews already talk to the relay directly through
+        // NostrRelayClient, which reads the same AGENT_RELAY_URL.
         _agentRelayUrl = Environment.GetEnvironmentVariable("AGENT_RELAY_URL")
             ?? "wss://agents.lightningenable.com";
 

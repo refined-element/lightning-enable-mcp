@@ -58,11 +58,19 @@ public class ToolSchemaTests
     /// <c>verification_token</c> call would silently unlist a verified proxy. The descriptions
     /// were cut first; the surface lands near 88.5%, with roughly 90 bytes of headroom.</para>
     ///
+    /// <para>Raised 0.89 → 0.915 when <c>agent_services</c> gained client-signed reviews
+    /// (<c>review</c>, <c>reviews</c>, <c>reviewer_key</c>; issue #133): three enum values and ONE
+    /// new argument (<c>checks</c>) on an EXISTING verb. Everything else reuses arguments the verb
+    /// already had (<c>subjectPubkey</c>, <c>l402Endpoint</c>, <c>proof</c> as the payment hash,
+    /// <c>rating</c> as the judged quality, <c>content</c>, <c>agreementId</c>, <c>limit</c>);
+    /// request/response hashes come from the local receipt log instead of arguments. The surface
+    /// lands near 90.9%, with roughly 110 bytes of headroom. Owner to confirm.</para>
+    ///
     /// <para>The Python guard (<c>tests/test_tool_profiles.py</c>) holds the same line at a
     /// different number — its schemas are smaller because the .NET SDK emits a richer
     /// per-parameter schema — so the two fractions are tuned independently, not copied.</para>
     /// </summary>
-    private const double MaxStandardFraction = 0.89;
+    private const double MaxStandardFraction = 0.915;
 
     private static readonly IReadOnlySet<string> MoneyMovingTools = new HashSet<string>
     {

@@ -1,0 +1,286 @@
+{
+  "description": "Golden vectors for client-signed provider attestations (kind 38403, shape v2). Both the .NET and the Python test suites rebuild these events from 'input' and must produce exactly 'expected'. TEST-ONLY KEY: secretKeyHex is the BIP-340 test-vector scalar 3 (public knowledge, not a credential); auxRandHex is all zeros so the BIP-340 signature is deterministic.",
+  "secretKeyHex": "0000000000000000000000000000000000000000000000000000000000000003",
+  "pubkeyHex": "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+  "npub": "npub1lycg5qvjtrp3qjf5f7zl382j9x6nrjz9sdhenvyxq8c3808qxmus6gq266",
+  "auxRandHex": "0000000000000000000000000000000000000000000000000000000000000000",
+  "kind": 38403,
+  "events": [
+    {
+      "name": "url-subject-with-receipt",
+      "createdAt": 1767225600,
+      "input": {
+        "subjectUrl": "HTTPS://API.Example.COM:443/v1/Forecast?city=Paris#top",
+        "includeQuery": false,
+        "paymentHash": "1111111111111111111111111111111111111111111111111111111111111111",
+        "requestSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+        "responseSha256": "3333333333333333333333333333333333333333333333333333333333333333",
+        "mechanical": {
+          "responded": true,
+          "on_time": true,
+          "well_formed": false,
+          "price_honored": true
+        },
+        "quality": 4,
+        "content": "Late but complete. \"quoted\" \\ back\nline\ttab é ü 🚀 \u001b end"
+      },
+      "expected": {
+        "tags": [
+          [
+            "d",
+            "receipt:1111111111111111111111111111111111111111111111111111111111111111"
+          ],
+          [
+            "v",
+            "2"
+          ],
+          [
+            "L",
+            "nostr.agent.attestation"
+          ],
+          [
+            "l",
+            "completed",
+            "nostr.agent.attestation"
+          ],
+          [
+            "u",
+            "https://api.example.com/v1/Forecast"
+          ],
+          [
+            "proof",
+            "1111111111111111111111111111111111111111111111111111111111111111"
+          ],
+          [
+            "receipt",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+            "2222222222222222222222222222222222222222222222222222222222222222",
+            "3333333333333333333333333333333333333333333333333333333333333333"
+          ],
+          [
+            "mech",
+            "responded",
+            "1"
+          ],
+          [
+            "mech",
+            "on_time",
+            "1"
+          ],
+          [
+            "mech",
+            "well_formed",
+            "0"
+          ],
+          [
+            "mech",
+            "price_honored",
+            "1"
+          ],
+          [
+            "judged",
+            "quality",
+            "4"
+          ],
+          [
+            "rating",
+            "4"
+          ]
+        ],
+        "serialized": "[0,\"f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9\",1767225600,38403,[[\"d\",\"receipt:1111111111111111111111111111111111111111111111111111111111111111\"],[\"v\",\"2\"],[\"L\",\"nostr.agent.attestation\"],[\"l\",\"completed\",\"nostr.agent.attestation\"],[\"u\",\"https://api.example.com/v1/Forecast\"],[\"proof\",\"1111111111111111111111111111111111111111111111111111111111111111\"],[\"receipt\",\"1111111111111111111111111111111111111111111111111111111111111111\",\"2222222222222222222222222222222222222222222222222222222222222222\",\"3333333333333333333333333333333333333333333333333333333333333333\"],[\"mech\",\"responded\",\"1\"],[\"mech\",\"on_time\",\"1\"],[\"mech\",\"well_formed\",\"0\"],[\"mech\",\"price_honored\",\"1\"],[\"judged\",\"quality\",\"4\"],[\"rating\",\"4\"]],\"Late but complete. \\\"quoted\\\" \\\\ back\\nline\\ttab é ü 🚀 \\u001b end\"]",
+        "serializedUtf8Sha256": "fe54607309540789d722dcdeb6cf1354c8626c5ac4f963392254963d2d9e7048",
+        "id": "fe54607309540789d722dcdeb6cf1354c8626c5ac4f963392254963d2d9e7048",
+        "sig": "a71ae66c394bf919f76c5ec54e84013f38f4a89576fcc346565fdfe27ad7ce40e37138bcaf06e864ad01521a280f2dd57217be20a6659b0d09fce7a56bbea0d4"
+      }
+    },
+    {
+      "name": "pubkey-subject-agreement-unbacked",
+      "createdAt": 1767225660,
+      "input": {
+        "subjectPubkey": "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+        "agreementId": "4444444444444444444444444444444444444444444444444444444444444444",
+        "mechanical": {
+          "responded": true
+        },
+        "quality": 5,
+        "content": ""
+      },
+      "expected": {
+        "tags": [
+          [
+            "d",
+            "p:79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+          ],
+          [
+            "v",
+            "2"
+          ],
+          [
+            "L",
+            "nostr.agent.attestation"
+          ],
+          [
+            "l",
+            "completed",
+            "nostr.agent.attestation"
+          ],
+          [
+            "p",
+            "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+            "",
+            "subject"
+          ],
+          [
+            "e",
+            "4444444444444444444444444444444444444444444444444444444444444444",
+            "",
+            "agreement"
+          ],
+          [
+            "mech",
+            "responded",
+            "1"
+          ],
+          [
+            "judged",
+            "quality",
+            "5"
+          ],
+          [
+            "rating",
+            "5"
+          ]
+        ],
+        "serialized": "[0,\"f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9\",1767225660,38403,[[\"d\",\"p:79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\"],[\"v\",\"2\"],[\"L\",\"nostr.agent.attestation\"],[\"l\",\"completed\",\"nostr.agent.attestation\"],[\"p\",\"79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\",\"\",\"subject\"],[\"e\",\"4444444444444444444444444444444444444444444444444444444444444444\",\"\",\"agreement\"],[\"mech\",\"responded\",\"1\"],[\"judged\",\"quality\",\"5\"],[\"rating\",\"5\"]],\"\"]",
+        "serializedUtf8Sha256": "336630177e0cba2f9e2cfd6fb1bc729995872ce35acaf7983f1e70b1d10a22d4",
+        "id": "336630177e0cba2f9e2cfd6fb1bc729995872ce35acaf7983f1e70b1d10a22d4",
+        "sig": "d426836574f0e334fcd8afb6964c4e14fce2573e4236c1ae6f91c63fc843d23ae0ea02379849d858f0d133f90dd0b5de15c559c75f9d89f76e133ae231c8d0ec"
+      }
+    }
+  ],
+  "urlNormalization": [
+    {
+      "input": "https://Example.COM",
+      "includeQuery": false,
+      "expected": "https://example.com/"
+    },
+    {
+      "input": "HTTP://example.com:80/a/B?x=1#f",
+      "includeQuery": false,
+      "expected": "http://example.com/a/B"
+    },
+    {
+      "input": "http://example.com:8080/a?x=1",
+      "includeQuery": false,
+      "expected": "http://example.com:8080/a"
+    },
+    {
+      "input": "https://example.com:443/a?x=1&y=%20",
+      "includeQuery": true,
+      "expected": "https://example.com/a?x=1&y=%20"
+    },
+    {
+      "input": "https://example.com/a?",
+      "includeQuery": true,
+      "expected": "https://example.com/a"
+    },
+    {
+      "input": "https://[2001:DB8::1]:8443/p",
+      "includeQuery": false,
+      "expected": "https://[2001:db8::1]:8443/p"
+    },
+    {
+      "input": "  https://example.com/Path%2Fx/  ",
+      "includeQuery": false,
+      "expected": "https://example.com/Path%2Fx/"
+    },
+    {
+      "input": "https://user:pw@example.com/",
+      "includeQuery": false,
+      "expected": null
+    },
+    {
+      "input": "ftp://example.com/",
+      "includeQuery": false,
+      "expected": null
+    },
+    {
+      "input": "example.com/path",
+      "includeQuery": false,
+      "expected": null
+    },
+    {
+      "input": "https://exa mple.com/",
+      "includeQuery": false,
+      "expected": null
+    },
+    {
+      "input": "https://example.com:99999x/",
+      "includeQuery": false,
+      "expected": null
+    },
+    {
+      "input": "https://bücher.example/",
+      "includeQuery": false,
+      "expected": null
+    },
+    {
+      "input": "https://example.com:0443/",
+      "includeQuery": false,
+      "expected": null
+    },
+    {
+      "input": "https://example.com:65536/",
+      "includeQuery": false,
+      "expected": null
+    },
+    {
+      "input": "https://example.com:0/",
+      "includeQuery": false,
+      "expected": null
+    },
+    {
+      "input": "https://Example.COM./a",
+      "includeQuery": false,
+      "expected": "https://example.com/a"
+    },
+    {
+      "input": "http://example.com.:80/x",
+      "includeQuery": false,
+      "expected": "http://example.com/x"
+    },
+    {
+      "input": "https://example.com:65535/",
+      "includeQuery": false,
+      "expected": "https://example.com:65535/"
+    }
+  ],
+  "exchangeDigests": {
+    "description": "Scheme hmac-sha256-v1. requestDigest = HMAC-SHA256(key = nonce, message = UTF-8 '<METHOD upper-cased> <url as requested>\\n' followed by the request body bytes, none for GET/HEAD). responseDigest = HMAC-SHA256(key = nonce, message = response body bytes after content-encoding is removed). The nonce is 32 random bytes per exchange, kept only in the local receipt log; this fixed nonce is a test value.",
+    "nonceHex": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+    "requests": [
+      {
+        "method": "get",
+        "url": "https://api.example.com/v1/forecast?city=Paris",
+        "bodyUtf8": null,
+        "requestDigest": "c1c0e4b7d3bf877af3cf251ed718273156089b1cabf4434f5adc42d73f1abf2e"
+      },
+      {
+        "method": "POST",
+        "url": "https://api.lightningenable.com/api/x",
+        "bodyUtf8": "{\"q\":\"café\"}",
+        "requestDigest": "c59af570e882e2603782e3a103a2594176aff3fc025e8bd8ceebc89491abce77"
+      }
+    ],
+    "responses": [
+      {
+        "bodyUtf8": "",
+        "responseDigest": "7254bb6c1de1b78d202484a7d2ac38af6cc4f66040cc3936b70f942b6a4a3c2a"
+      },
+      {
+        "bodyUtf8": "{\"temp\":21.5,\"unit\":\"°C\"}",
+        "responseDigest": "e5ef37754c8316599cdc0b2b953036fb11e4ad1b846b2bdc10cb38903de4054c"
+      }
+    ]
+  }
+}

@@ -305,7 +305,8 @@ AGENT_SERVICES_TOOL = Tool(
     name="agent_services",
     description=(
         "Agent Service Agreements over Nostr: discover, request, settle, publish "
-        "and review agent services. Requires LIGHTNING_ENABLE_API_KEY."
+        "and review agent services. Requires LIGHTNING_ENABLE_API_KEY "
+        "(review/reviews/reviewer_key do not)."
     ),
     inputSchema={
         "type": "object",
@@ -320,14 +321,18 @@ AGENT_SERVICES_TOOL = Tool(
                     "unpublish",
                     "attest",
                     "reputation",
+                    "review",
+                    "reviews",
+                    "reviewer_key",
                 ],
                 "description": (
                     "discover: search listings. request: ask for a service. "
                     "settle: PAY an agreement's L402 endpoint. publish: list your "
                     "service once; to change it, unpublish then publish. "
-                    "unpublish: remove it. attest: review a finished "
-                    "agreement. reputation: read reviews. Pass only the arguments "
-                    "tagged with your action."
+                    "unpublish: remove it. attest/reputation: legacy. review: sign "
+                    "and publish your review of a paid call. reviews: read verified "
+                    "reviews. reviewer_key: your reviewer pubkey. Pass only the "
+                    "arguments tagged with your action."
                 ),
             },
             "category": {"type": "string", "description": "discover: category"},
@@ -352,13 +357,13 @@ AGENT_SERVICES_TOOL = Tool(
             },
             "l402_endpoint": {
                 "type": "string",
-                "description": "settle/publish: L402 endpoint",
+                "description": "settle/publish/review(s): L402 endpoint",
             },
             "method": {"type": "string", "description": "settle: HTTP method"},
             "body": {"type": "string", "description": "settle: request body"},
             "agreement_id": {
                 "type": "string",
-                "description": "settle/attest: agreement id",
+                "description": "settle/attest/review: agreement id",
             },
             "max_sats": {"type": "integer", "description": "settle: max sats"},
             "confirmation_nonce": {
@@ -376,7 +381,7 @@ AGENT_SERVICES_TOOL = Tool(
             },
             "content": {
                 "type": "string",
-                "description": "publish: service text; attest: review text",
+                "description": "publish: service text; attest/review: note (never prompt/response)",
             },
             "price_sats": {
                 "type": "integer",
@@ -389,10 +394,19 @@ AGENT_SERVICES_TOOL = Tool(
             "reason": {"type": "string", "description": "unpublish: reason"},
             "subject_pubkey": {
                 "type": "string",
-                "description": "attest: agent being reviewed",
+                "description": "attest/review(s): subject pubkey",
             },
-            "rating": {"type": "integer", "description": "attest: 1-5"},
-            "proof": {"type": "string", "description": "attest: preimage hash"},
+            "rating": {"type": "integer", "description": "attest: 1-5; review: quality 1-5"},
+            "proof": {"type": "string", "description": "attest: preimage hash; review: payment hash"},
+            "checks": {
+                "type": "object",
+                "additionalProperties": {"type": "boolean"},
+                "description": "review: {responded,on_time,well_formed,price_honored}: bool",
+            },
+            "allow_unknown_payment": {
+                "type": "boolean",
+                "description": "review: unrecorded proof, unbacked",
+            },
             "pubkey": {"type": "string", "description": "reputation: agent pubkey"},
         },
         "required": ["action"],
@@ -432,6 +446,9 @@ ACTION_TOOLS: dict[str, tuple[str, tuple[str, ...]]] = {
             "unpublish",
             "attest",
             "reputation",
+            "review",
+            "reviews",
+            "reviewer_key",
         ),
     ),
 }

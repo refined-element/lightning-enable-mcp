@@ -67,6 +67,8 @@ docker pull refinedelement/lightning-enable-mcp:latest
 | `LND_FEE_LIMIT_SATS` | No | 5% of amount, min 2 | Routing-fee ceiling per LND payment. |
 | `LND_PAYMENT_TIMEOUT_SECONDS` | No | 25 | Per-payment bound; a stalled payment surfaces as *pending* (never retried automatically). |
 | `LIGHTNING_ENABLE_API_KEY` | For producer + ASA publish/request tools | - | Unlocks the producer tools and the ASA request/publish tools. Requires an Agentic Commerce subscription. (ASA discovery, settlement, and reputation reads work without it.) |
+| `LIGHTNING_ENABLE_ATTESTATION_KEY` | No | generated | Reviewer key for `agent_services` `review` (64 hex characters or `nsec1...`). Unset: the server creates `~/.lightning-enable/attestation-key`, owner-only. Not a wallet key; a new key is a new reviewer identity. |
+| `AGENT_RELAY_URL` | No | `wss://agents.lightningenable.com` | Nostr relay that `review` publishes to and `reviews` reads from (`wss://` only). |
 
 Spending limits are a **single source of truth: `BudgetService`**, configured by USD-denominated approval tiers in `~/.lightning-enable/config.json`. These tiers drive the out-of-band confirmation flow. An agent can additionally **tighten** the runtime per-request / per-session sats caps via the `configure_budget` tool (tighten-only — it can never raise a limit above the config file). See `configure_budget` and `get_budget_status` below.
 

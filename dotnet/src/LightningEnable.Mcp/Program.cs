@@ -316,6 +316,12 @@ public class Program
         // Register agent service for ASA (Agent Service Agreement) operations
         builder.Services.AddHttpClient<IAgentService, AgentService>();
 
+        // Client-signed provider reviews (agent_services review/reviews/reviewer_key): this
+        // installation's own reviewer key (created lazily, never the wallet key) and a direct
+        // relay client (AGENT_RELAY_URL, default wss://agents.lightningenable.com).
+        builder.Services.AddSingleton(sp => new AttestationKeyStore(sp.GetService<IBudgetConfigurationService>()));
+        builder.Services.AddSingleton<INostrRelayClient, NostrRelayClient>();
+
         // Approval channel for over-threshold payments. The confirmation code is the human
         // operator's, never the model's — so WHERE it goes has to match the deployment. Locally
         // that is stderr; on a hosted server nobody reads stderr, so the operator picks a

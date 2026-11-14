@@ -5,6 +5,77 @@ Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-ena
 
 ## [Unreleased]
 
+### Added
+
+- **Client-signed provider reviews on `agent_services`, both ports (#133).** Three new actions
+  that need no API key and no wallet:
+  - `review` signs a kind 38403 event with a `["v","2"]` version tag using this installation's
+    own reviewer key and publishes it straight to the relay (`AGENT_RELAY_URL`, default
+    `wss://agents.lightningenable.com`). Subject `["p", pubkey]` or, for a seller without one,
+    `["u", normalized URL]`; receipt reference `["receipt", payment_hash, request_sha256,
+    response_sha256]` (never a preimage); one `["mech", check, "1"|"0"]` per mechanical check
+    (`responded`, `on_time`, `well_formed`, `price_honored`); optional
+    `["judged","quality","1".."5"]`. Aligned with the NostrWolfe ASA NIP
+    draft: the NIP's `L`/`l` labels, `["p", pubkey, "", "subject"]`, `["e", id, "", "agreement"]`,
+    `["proof", payment_hash]` and `["rating", <judged quality>]` are emitted too, so spec readers
+    see a normal attestation; the receipt, `mech`, `judged`, `u` and `v` tags are additive. It reuses the verb's existing
+    arguments (`subject_pubkey`, `l402_endpoint`, `proof` as the payment hash, `rating` as the
+    judged quality, `content`, `agreement_id`) plus one new argument, `checks`.
+  - `reviews` reads a subject's reviews from the relay, verifies each event's id and signature,
+    drops tampered ones, collapses one reviewer's repeat reviews of a purchase (latest wins),
+    and reports proof-backed and unbacked reviews, mechanical pass rates and the judged mean
+    separately. No blended score; the result says a payment hash is a reference, not a
+    verified payment.
+  - `reviewer_key` returns the reviewer public key (hex and `npub`).
+- **Reviewer key.** Generated on first use at `~/.lightning-enable/attestation-key`, owner-only
+  from creation (mode 0600; on Windows a protected ACL granting only the current user), or
+  supplied in `LIGHTNING_ENABLE_ATTESTATION_KEY`. It is not the wallet key and is never returned
+  or logged. A new key is a new reviewer identity.
+- **Salted request/response digests on receipts.** After a paid L402 call returns, the server
+  appends a fresh 32-byte nonce and two HMAC-SHA256 digests (nonce as key; request: `"<METHOD>
+  <url>\n"` plus the body; response: the body after content decoding, in both ports) to
+  `receipts.jsonl`. Bodies are never stored. `review` publishes the digests, never the nonce, so a
+  published digest can't be tested against guessed requests; disclosing the nonce proves it.
+  Unsalted records are never published. The `receipts` tool shows the digests on the matching
+  receipt.
+- `shared/attestation-golden-vector.json` pins both ports to the same event bytes, id and
+  signature, the URL normalization rule and the digest definitions.
+
+### Changed
+
+- The Nostr event id, signing and verification helpers moved to one shared utility per port
+  (`NostrEvents.cs`, `nostr_event.py`); the NWC wallet uses it, with the same bytes on the wire.
+- Relays that require NIP-42 AUTH return a typed `auth_required` error; relay AUTH is not
+  implemented yet.
+- The standard-profile schema budget guard was raised (.NET 0.89 → 0.915, Python 0.85 → 0.87)
+  for the three new actions.
+- `attest` and `reputation` (and the `publish_agent_attestation` / `get_agent_reputation`
+  aliases) are unchanged and now described as the legacy review path.
+- **NWC event serialization (.NET), a behavior change in the wallet path.** The shared NIP-01
+  serializer writes emoji and other non-BMP characters, DEL, U+2028 and U+FEFF raw and other
+  control characters as lowercase `\u00xx`, matching Python and `JSON.stringify`. The old inline
+  `UnsafeRelaxedJsonEscaping` code escaped several of these, so event ids for such content
+  differed from other clients. NWC traffic itself is ASCII (hex tags, base64 ciphertext), whose
+  bytes are unchanged; a test pins each character.
+
+### Security
+
+- `review` writes the NIP `proof` tag only for a payment hash the local receipt log recorded. An
+  unknown hash is refused (`unknown_payment`) unless `allow_unknown_payment=true`, which publishes
+  the receipt reference without `proof` and reports the review as unbacked. Reads count a review
+  as proof-backed only when it carries `proof`, and still say it is a reference.
+- `reviews` resists one key crowding out others: it fetches up to 500 events, gives each reviewer
+  key one vote per score family, reports `reviewerReviewCounts`, and rejects events dated more than
+  15 minutes ahead (`futureDated`).
+- Review text from the relay is cut to 1,000 characters and returned as
+  `content.untrustedReviewerText` with a note that it must not be followed as instructions; other
+  reviewer-controlled values (the agreement id) are passed on only when well-formed.
+- Hardening: a non-integer kind such as `38403.0` is malformed in both ports; event ids are
+  lowercased before deduplication; other kinds are counted as `otherKinds`, not legacy; a deeply
+  nested relay frame is skipped instead of ending the query (Python); URL ports must be 1-65535
+  without a leading zero, and one trailing dot is removed from the host; an existing reviewer key
+  file that other accounts can read is refused, with the command that fixes it.
+
 ## [2.3.1] - 2026-11-09
 
 ### Added

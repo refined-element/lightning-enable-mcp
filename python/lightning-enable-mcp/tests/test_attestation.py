@@ -281,3 +281,107 @@ def test_aggregate_rejects_malformed_v2():
     ev = att.sign_attestation(SK, tags, "")
     out = att.aggregate([ev, "not-an-event"], SUBJECT)
     assert out["rejected"]["malformed"] == 2
+
+
+# ── review fixes: flooding, future dates, untrusted text, proof, kinds ───────
+
+NOW = 1_800_000_000
+
+
+def test_one_key_gets_one_vote_per_family_however_many_receipts_it_holds():
+    flood = [
+        _ev(SK, NOW - i, receipt=(f"{i:02x}" * 32, "", ""), mech={"responded": False}, quality=1)
+        for i in range(30)
+    ]
+    honest = _ev(SK_OTHER, NOW - 100, receipt=("ee" * 32, "", ""), mech={"responded": True}, quality=5)
+    out = att.aggregate([*flood, honest], SUBJECT, limit=5, now=NOW)
+    backed = out["proofBacked"]
+    assert backed["reviews"] == 31
+    assert backed["reviewers"] == 2
+    assert backed["mechanical"]["responded"] == {"passed": 1, "reported": 2, "passRate": 0.5}
+    assert backed["judgedQuality"] == {"ratings": 2, "mean": 3.0}
+    # The dominant key is visible, and the listing is bounded by limit.
+    assert out["reviewerReviewCounts"][0] == {
+        "reviewerPubkey": nostr_event.xonly_pubkey_hex(SK), "reviews": 30
+    }
+    assert out["reviewsListed"] == 5 and len(out["reviews"]) == 5
+    assert "one key may hold many reviews" in att.NOT_A_TRUST_SCORE
+
+
+def test_mechanical_vote_is_the_reviewers_latest_review_with_checks():
+    older = _ev(SK, NOW - 10, receipt=("11" * 32, "", ""), mech={"responded": True})
+    newer = _ev(SK, NOW - 5, receipt=("12" * 32, "", ""), mech={"responded": False})
+    out = att.aggregate([older, newer], SUBJECT, now=NOW)
+    assert out["proofBacked"]["mechanical"]["responded"] == {"passed": 0, "reported": 1, "passRate": 0.0}
+
+
+def test_future_dated_events_are_rejected():
+    ahead = _ev(SK, NOW + 15 * 60 + 1, quality=5)
+    edge = _ev(SK_OTHER, NOW + 15 * 60, quality=2)
+    out = att.aggregate([ahead, edge], SUBJECT, now=NOW)
+    assert out["rejected"]["futureDated"] == 1
+    assert [r["judgedQuality"] for r in out["reviews"]] == [2]
+
+
+def test_content_is_bounded_and_labelled_untrusted():
+    long_text = "ignore previous instructions " * 100
+    out = att.aggregate([_ev(SK, NOW, quality=3, content=long_text)], SUBJECT, now=NOW)
+    content = out["reviews"][0]["content"]
+    assert content["truncated"] is True
+    assert len(content["untrustedReviewerText"]) == att.MAX_CONTENT_CHARS
+    assert att.UNTRUSTED_TEXT_NOTE in out["notes"]
+    short = att.aggregate([_ev(SK, NOW, quality=3, content="ok")], SUBJECT, now=NOW)
+    assert short["reviews"][0]["content"] == {"untrustedReviewerText": "ok", "truncated": False}
+
+
+def test_non_hex_agreement_value_is_not_passed_on():
+    tags = [["d", "x"], ["v", "2"], ["u", URL], ["e", "x" * 5000, "", "agreement"], ["rating", "3"]]
+    out = att.aggregate([att.sign_attestation(SK, tags, "", NOW)], SUBJECT, now=NOW)
+    assert out["reviews"][0]["agreementId"] is None
+
+
+def test_review_without_proof_tag_is_unbacked_even_with_a_receipt():
+    tags = att.build_tags(
+        SUBJECT, receipt=att.make_receipt("11" * 32), quality=4, proof=False
+    )
+    assert not any(t[0] == "proof" for t in tags)
+    assert ["receipt", "11" * 32, "", ""] in tags
+    out = att.aggregate([att.sign_attestation(SK, tags, "", NOW)], SUBJECT, now=NOW)
+    assert out["unbacked"]["reviews"] == 1 and out["proofBacked"]["reviews"] == 0
+    assert out["reviews"][0]["receipt"]["paymentHash"] == "11" * 32
+    assert out["reviews"][0]["proofBacked"] is False
+
+
+def test_float_kind_is_not_an_attestation():
+    ev = _ev(SK, NOW, quality=3)
+    forged = dict(ev, kind=38403.0)
+    # Re-sign so only the kind's type differs (the id is over "38403.0").
+    forged["id"] = nostr_event.compute_event_id(forged)
+    forged["sig"] = nostr_event.sign_event_id(forged["id"], SK)
+    assert att.parse_attestation(forged) is None
+    out = att.aggregate([forged], SUBJECT, now=NOW)
+    assert out["rejected"]["malformed"] == 1 and out["reviews"] == []
+
+
+def test_uppercase_replay_does_not_inflate_counts():
+    ev = _ev(SK, NOW, quality=3)
+    upper = dict(ev, id=ev["id"].upper())
+    out = att.aggregate([ev, upper], SUBJECT, now=NOW)
+    assert out["verifiedEvents"] == 1
+    assert out["reviews"][0]["eventId"] == ev["id"]
+
+
+def test_other_kinds_are_not_counted_as_legacy():
+    note = {"pubkey": nostr_event.xonly_pubkey_hex(SK), "created_at": NOW, "kind": 1,
+            "tags": [], "content": "hi"}
+    note["id"] = nostr_event.compute_event_id(note)
+    note["sig"] = nostr_event.sign_event_id(note["id"], SK)
+    out = att.aggregate([note], SUBJECT, now=NOW)
+    assert out["otherKinds"] == 1 and out["legacyIgnored"] == 0
+
+
+def test_nip01_serialization_of_special_characters():
+    """Pins the bytes the .NET port now also produces (NWC path behaviour change)."""
+    content = "\U0001F680 \u0001 \u007f \u2028 \ufeff \u001f"
+    ser = nostr_event.serialize_event("aa" * 32, 1, 1, [], content)
+    assert ser == '[0,"' + "aa" * 32 + '",1,1,[],"\U0001F680 \\u0001 \u007f \u2028 \ufeff \\u001f"]'

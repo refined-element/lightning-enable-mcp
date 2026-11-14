@@ -66,10 +66,18 @@ PRE_CONSOLIDATION_SCHEMA_BYTES = 17_926
 #: proxy. The descriptions were cut first; the surface lands near 84.2%, with roughly 140
 #: bytes of headroom.
 #:
+#: Raised 0.85 → 0.87 when ``agent_services`` gained client-signed reviews (``review``,
+#: ``reviews``, ``reviewer_key``; issue #133): three enum values and ONE new argument
+#: (``checks``) on an EXISTING verb. Everything else reuses arguments the verb already had
+#: (``subject_pubkey``, ``l402_endpoint``, ``proof`` as the payment hash, ``rating`` as the
+#: judged quality, ``content``, ``agreement_id``, ``limit``); request/response hashes come
+#: from the local receipt log instead of arguments. The surface lands near 86.4%, with
+#: roughly 110 bytes of headroom. Owner to confirm.
+#:
 #: ``ToolSchemaTests.cs`` holds the same line at a different number — the .NET SDK emits a
 #: richer per-parameter schema, so that port's payload is larger. The two fractions are
 #: tuned independently rather than copied.
-MAX_STANDARD_FRACTION = 0.85
+MAX_STANDARD_FRACTION = 0.87
 
 
 def schema_bytes(tools) -> int:
@@ -440,6 +448,9 @@ class TestActionDispatch:
             ("unpublish", "unpublish_agent_capability"),
             ("attest", "publish_agent_attestation"),
             ("reputation", "get_agent_reputation"),
+            ("review", "publish_review"),
+            ("reviews", "read_reviews"),
+            ("reviewer_key", "reviewer_key"),
         ],
     )
     async def test_agent_services_routes_every_action(self, action, impl):
@@ -475,7 +486,8 @@ class TestWalletGuardParity:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
-        "action", ["discover", "request", "publish", "unpublish", "attest", "reputation"]
+        "action",
+        ["discover", "request", "publish", "unpublish", "attest", "reputation", "review", "reviews"],
     )
     async def test_non_settle_agent_actions_need_no_wallet(self, action):
         server = LightningEnableServer()

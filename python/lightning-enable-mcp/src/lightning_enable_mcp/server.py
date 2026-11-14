@@ -31,6 +31,7 @@ from .confirmation_channel import (
     VALID_CHANNELS,
     hosted_first_payment_lockout_warning,
 )
+from .attestation_key import AttestationKeyStore
 from .idempotent_wallet import IdempotentWallet
 from .l402_client import L402Client
 from .lightning_enable_api import LightningEnableApiClient
@@ -82,6 +83,7 @@ from .tools.producer_verify import (
 )
 from .tools.producer_setup import publish as publish_l402_service
 from .tools.profiles import PROFILE_ENV_VAR, resolve_profile
+from .tools.provider_review import publish_review, read_reviews, reviewer_key
 from .tools.publish_agent_attestation import publish_agent_attestation
 from .tools.publish_agent_capability import publish_agent_capability
 from .tools.registry import tools_for_profile
@@ -278,6 +280,9 @@ class LightningEnableServer:
         # Lightning Enable docs (llms-full.txt), cached for an hour. Needs no wallet
         # and no API key; LIGHTNING_ENABLE_DOCS_URL overrides the source.
         self.docs_service: DocsService = DocsService()
+        # This installation's reviewer key for signed provider reviews (agent_services
+        # review/reviews/reviewer_key). Created lazily on first use, never the wallet key.
+        self.attestation_keys: AttestationKeyStore = AttestationKeyStore()
 
         self._setup_handlers()
 
@@ -722,6 +727,30 @@ class LightningEnableServer:
                             limit=arguments.get("limit", 20),
                             api_client=self.api_client,
                         )
+                    elif action == "review":
+                        # Reuses the verb's existing arguments (schema budget): l402_endpoint
+                        # is the URL subject, proof the payment hash, rating the judged
+                        # quality (0 = not given, as for attest). Request/response hashes
+                        # come from the local receipt log.
+                        result = await publish_review(
+                            subject_pubkey=arguments.get("subject_pubkey"),
+                            subject_url=arguments.get("l402_endpoint"),
+                            payment_hash=arguments.get("proof"),
+                            checks=arguments.get("checks"),
+                            quality=arguments.get("rating") or None,
+                            agreement_id=arguments.get("agreement_id"),
+                            content=arguments.get("content"),
+                            key_store=self.attestation_keys,
+                            receipt_service=self.receipt_service,
+                        )
+                    elif action == "reviews":
+                        result = await read_reviews(
+                            subject_pubkey=arguments.get("subject_pubkey"),
+                            subject_url=arguments.get("l402_endpoint"),
+                            limit=arguments.get("limit", 20),
+                        )
+                    elif action == "reviewer_key":
+                        result = await reviewer_key(key_store=self.attestation_keys)
                     elif action == "settle":
                         result = await settle_agent_service(
                             l402_endpoint=arguments.get("l402_endpoint", ""),
@@ -827,8 +856,8 @@ class LightningEnableServer:
         Preserves the pre-consolidation policy exactly, now expressed per action for
         the merged tools: ``receipts`` reads the durable log without a wallet (it is
         the "pull the plug" audit path) but the session list does not; every
-        ``agent_services`` action except ``settle`` talks to the Lightning Enable API
-        or the public registry rather than the wallet.
+        ``agent_services`` action except ``settle`` talks to the Lightning Enable API,
+        the public registry or a Nostr relay rather than the wallet.
         """
         if name in self._WALLET_FREE_TOOLS:
             return False

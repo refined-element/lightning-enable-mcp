@@ -315,6 +315,9 @@ public class ConsolidatedActionDispatchTests
     [InlineData("agent_services", "action", "unpublish")]
     [InlineData("agent_services", "action", "attest")]
     [InlineData("agent_services", "action", "reputation")]
+    [InlineData("agent_services", "action", "review")]
+    [InlineData("agent_services", "action", "reviews")]
+    [InlineData("agent_services", "action", "reviewer_key")]
     public async Task EveryActionRunsAndReturnsJson(string tool, string key, string action)
     {
         await using var host = await McpToolHost.StartAsync(ToolProfile.Standard);

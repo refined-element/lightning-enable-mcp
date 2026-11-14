@@ -1012,6 +1012,7 @@ class LightningEnableServer:
                 wallet=self.paying_wallet,
                 budget_service=self.budget_service,
                 payment_history_service=self.payment_history_service,
+                receipt_service=self.receipt_service,
             )
 
             logger.info("Services initialized successfully")

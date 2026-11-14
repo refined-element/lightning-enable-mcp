@@ -28,6 +28,47 @@ public interface IReceiptService
     List<JsonNode> ReadRecent(int limit);
 
     string Path { get; }
+
+    /// <summary>
+    /// Appends the request/response SHA-256 of a paid L402 exchange (an <c>exchange_digest</c>
+    /// line), written after the paid retry returns. Hashes only — never the bodies. Never throws.
+    /// </summary>
+    bool LogExchangeDigest(string paymentHash, string requestSha256, string responseSha256) => false;
+
+    /// <summary>
+    /// What the local log knows about <paramref name="paymentHash"/>: null when it is not there,
+    /// else the payment hash plus the request/response digests when they were recorded.
+    /// </summary>
+    LocalPaymentRecord? LookupPayment(string paymentHash) => null;
+}
+
+/// <summary>A payment the local receipt log knows, with its exchange digests if recorded.</summary>
+public sealed record LocalPaymentRecord(string PaymentHash, string? RequestSha256, string? ResponseSha256);
+
+/// <summary>
+/// The digest definitions shared with the Python port (pinned by
+/// <c>shared/attestation-golden-vector.json</c>).
+/// </summary>
+public static class ExchangeDigest
+{
+    public const string LineType = "exchange_digest";
+
+    /// <summary>
+    /// SHA-256 over UTF-8 <c>"&lt;METHOD&gt; &lt;url&gt;\n"</c> (method upper-cased, URL exactly as
+    /// requested) followed by the request body bytes (none for GET/HEAD).
+    /// </summary>
+    public static string RequestSha256(string method, string url, byte[]? body)
+    {
+        using var h = System.Security.Cryptography.IncrementalHash.CreateHash(System.Security.Cryptography.HashAlgorithmName.SHA256);
+        var m = string.IsNullOrWhiteSpace(method) ? "GET" : method.Trim().ToUpperInvariant();
+        h.AppendData(System.Text.Encoding.UTF8.GetBytes($"{m} {url}\n"));
+        if (body is { Length: > 0 }) h.AppendData(body);
+        return Convert.ToHexString(h.GetHashAndReset()).ToLowerInvariant();
+    }
+
+    /// <summary>SHA-256 of the response body bytes exactly as the client read them.</summary>
+    public static string ResponseSha256(byte[]? body) =>
+        Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(body ?? Array.Empty<byte>())).ToLowerInvariant();
 }
 
 public sealed class ReceiptService : IReceiptService
@@ -164,10 +205,84 @@ public sealed class ReceiptService : IReceiptService
         catch { /* best effort, mirrors config.json */ }
     }
 
+    public bool LogExchangeDigest(string paymentHash, string requestSha256, string responseSha256)
+    {
+        if (string.IsNullOrEmpty(paymentHash) || string.IsNullOrEmpty(requestSha256) || string.IsNullOrEmpty(responseSha256))
+            return false;
+        try
+        {
+            var line = new JsonObject
+            {
+                ["type"] = ExchangeDigest.LineType,
+                ["timestamp"] = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ"),
+                ["paymentHash"] = paymentHash.ToLowerInvariant(),
+                ["requestSha256"] = requestSha256.ToLowerInvariant(),
+                ["responseSha256"] = responseSha256.ToLowerInvariant(),
+            };
+            Append(line.ToJsonString());
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[Lightning Enable] Failed to write exchange digest: {ex.Message}");
+            return false;
+        }
+    }
+
+    public LocalPaymentRecord? LookupPayment(string paymentHash)
+    {
+        var wanted = (paymentHash ?? string.Empty).Trim().ToLowerInvariant();
+        if (wanted.Length == 0) return null;
+        LocalPaymentRecord? found = null;
+        foreach (var obj in ReadObjects(2_000))
+        {
+            if (!string.Equals(Str(obj, "paymentHash"), wanted, StringComparison.OrdinalIgnoreCase)) continue;
+            found ??= new LocalPaymentRecord(wanted, null, null);
+            if (Str(obj, "type") == ExchangeDigest.LineType)
+                found = found with { RequestSha256 = Str(obj, "requestSha256"), ResponseSha256 = Str(obj, "responseSha256") };
+        }
+        return found;
+    }
+
+    /// <summary>
+    /// The most recent receipts (newest last). <c>exchange_digest</c> lines are not returned on
+    /// their own: their request/response hashes are folded into the payment receipt with the
+    /// same payment hash.
+    /// </summary>
     public List<JsonNode> ReadRecent(int limit)
     {
         var outp = new List<JsonNode>();
         if (limit <= 0) return outp;
+        // Each paid L402 call can add one digest line after its receipt, so read twice the
+        // window to still return `limit` receipts.
+        var objects = ReadObjects(limit * 2);
+        var digests = new Dictionary<string, JsonObject>(StringComparer.OrdinalIgnoreCase);
+        foreach (var o in objects)
+        {
+            if (Str(o, "type") == ExchangeDigest.LineType && Str(o, "paymentHash") is { } h)
+                digests[h] = o;
+        }
+        foreach (var o in objects)
+        {
+            if (Str(o, "type") == ExchangeDigest.LineType) continue;
+            if (Str(o, "paymentHash") is { } h && digests.TryGetValue(h, out var d))
+            {
+                o["requestSha256"] = Str(d, "requestSha256");
+                o["responseSha256"] = Str(d, "responseSha256");
+            }
+            // Redact at the READ boundary so every surface — the `receipts` tool and the
+            // lightning-enable://receipts resource alike — is covered by one pass.
+            outp.Add(ReceiptRedaction.Redact(o)!);
+        }
+        return outp.Count > limit ? outp.GetRange(outp.Count - limit, limit) : outp;
+    }
+
+    private static string? Str(JsonObject o, string key) =>
+        o[key] is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
+
+    private List<JsonObject> ReadObjects(int maxLines)
+    {
+        var outp = new List<JsonObject>();
         try
         {
             // Read the rotated ".1" backup first (older) then the live file (newer), so
@@ -179,18 +294,15 @@ public sealed class ReceiptService : IReceiptService
                 lock (_lock) { lines.AddRange(File.ReadAllLines(p)); }
             }
 
-            var start = Math.Max(0, lines.Count - limit);
+            var start = Math.Max(0, lines.Count - maxLines);
             for (var i = start; i < lines.Count; i++)
             {
                 var l = lines[i].Trim();
                 if (l.Length == 0) continue;
                 try
                 {
-                    var node = JsonNode.Parse(l);
                     // Only surface object lines; skip a torn/interleaved/non-object line.
-                    // Redact at the READ boundary so every surface — the `receipts` tool and
-                    // the lightning-enable://receipts resource alike — is covered by one pass.
-                    if (node is JsonObject) outp.Add(ReceiptRedaction.Redact(node)!);
+                    if (JsonNode.Parse(l) is JsonObject obj) outp.Add(obj);
                 }
                 catch { /* skip a torn/partial line rather than fail the whole read */ }
             }

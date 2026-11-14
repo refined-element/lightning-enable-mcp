@@ -14,6 +14,7 @@ Never contains secrets — no preimage, macaroon, or wallet connection string
 (engineering standard #5). ``revokePath`` is *instructions*, not credentials.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -30,6 +31,24 @@ def _utc_now_iso() -> str:
 
 
 RECEIPTS_FILENAME = "receipts.jsonl"
+
+#: Line type carrying the request/response SHA-256 of a paid L402 exchange.
+EXCHANGE_DIGEST_TYPE = "exchange_digest"
+
+
+def request_sha256(method: str, url: str, body: bytes | None) -> str:
+    """Digest of a paid request: SHA-256 over ``"<METHOD> <url>\\n"`` (UTF-8, method
+    upper-cased, URL exactly as requested) followed by the body bytes (none for GET/HEAD).
+    Same definition in the .NET port; pinned by the shared golden vector."""
+    h = hashlib.sha256(f"{(method or 'GET').strip().upper()} {url}\n".encode())
+    if body:
+        h.update(body)
+    return h.hexdigest()
+
+
+def response_sha256(body: bytes | None) -> str:
+    """SHA-256 of the response body bytes exactly as the client read them."""
+    return hashlib.sha256(body or b"").hexdigest()
 
 #: What a redacted value is replaced with. Matches the tools' error scrubber.
 REDACTED = "[REDACTED]"
@@ -198,11 +217,79 @@ class ReceiptService:
         receipt["revokePath"] = _REVOKE_PATHS.get(label, _REVOKE_DEFAULT)
         return self._append(receipt)
 
+    def log_exchange_digest(
+        self, payment_hash: str, request_sha256: str, response_sha256: str
+    ) -> bool:
+        """Append the SHA-256 digests of a paid L402 exchange (``exchange_digest`` line).
+
+        Written after the paid retry returns, because the payment receipt itself is
+        written by the wallet seam before the response exists. Hashes only — the request
+        and response bodies are never stored. ``read_recent`` folds these fields into the
+        matching payment receipt. Never raises.
+        """
+        if not (payment_hash and request_sha256 and response_sha256):
+            return False
+        return self._append(
+            {
+                "type": EXCHANGE_DIGEST_TYPE,
+                "timestamp": _utc_now_iso(),
+                "paymentHash": payment_hash.lower(),
+                "requestSha256": request_sha256.lower(),
+                "responseSha256": response_sha256.lower(),
+            }
+        )
+
+    def lookup_payment(self, payment_hash: str, window: int = 2_000) -> dict | None:
+        """What the local log knows about ``payment_hash``: None when it is not there,
+        else ``{"paymentHash", "requestSha256"?, "responseSha256"?}`` (digests only when
+        they were recorded)."""
+        wanted = (payment_hash or "").strip().lower()
+        if not wanted:
+            return None
+        found: dict | None = None
+        for obj in self._read_objects(window):
+            if str(obj.get("paymentHash", "")).lower() != wanted:
+                continue
+            found = found or {"paymentHash": wanted}
+            if obj.get("type") == EXCHANGE_DIGEST_TYPE:
+                found["requestSha256"] = obj.get("requestSha256")
+                found["responseSha256"] = obj.get("responseSha256")
+        return found
+
     def read_recent(self, limit: int = 20) -> list[dict]:
-        """Return the most recent receipts (newest last). Tolerant of a missing/partial file."""
+        """Return the most recent receipts (newest last). Tolerant of a missing/partial file.
+
+        ``exchange_digest`` lines are not returned on their own: their request/response
+        hashes are folded into the payment receipt with the same payment hash.
+        """
         if limit <= 0:
             return []
 
+        # Each paid L402 call can add one digest line after its receipt, so read twice
+        # the window to still return ``limit`` receipts.
+        objects = self._read_objects(limit * 2)
+        digests = {
+            str(o.get("paymentHash", "")).lower(): o
+            for o in objects
+            if o.get("type") == EXCHANGE_DIGEST_TYPE and o.get("paymentHash")
+        }
+        out: list[dict] = []
+        for obj in objects:
+            if obj.get("type") == EXCHANGE_DIGEST_TYPE:
+                continue
+            digest = digests.get(str(obj.get("paymentHash", "")).lower()) if obj.get("paymentHash") else None
+            if digest is not None:
+                obj = {
+                    **obj,
+                    "requestSha256": digest.get("requestSha256"),
+                    "responseSha256": digest.get("responseSha256"),
+                }
+            # Redact at the READ boundary so every surface — the `receipts` tool and
+            # the lightning-enable://receipts resource alike — is covered by one pass.
+            out.append(redact_receipt(obj))
+        return out[-limit:]
+
+    def _read_objects(self, max_lines: int) -> list[dict]:
         # Read the rotated ".1" backup first (older) then the live file (newer), so a
         # read right after a rotation still returns recent history rather than the
         # near-empty fresh file.
@@ -210,13 +297,13 @@ class ReceiptService:
         for p in (self._path.with_name(self._path.name + ".1"), self._path):
             try:
                 if p.exists():
-                    with open(p, "r", encoding="utf-8") as f:
+                    with open(p, encoding="utf-8") as f:
                         lines.extend(f.readlines())
             except Exception as e:  # pragma: no cover - defensive
                 logger.warning("Failed to read receipts from %s: %s", p, e)
 
         out: list[dict] = []
-        for line in lines[-limit:]:
+        for line in lines[-max_lines:]:
             line = line.strip()
             if not line:
                 continue
@@ -225,9 +312,7 @@ class ReceiptService:
             except Exception:
                 continue  # skip a torn/partial line rather than fail the whole read
             if isinstance(obj, dict):  # skip non-object lines (hand-edits / interleaved appends)
-                # Redact at the READ boundary so every surface — the `receipts` tool and
-                # the lightning-enable://receipts resource alike — is covered by one pass.
-                out.append(redact_receipt(obj))
+                out.append(obj)
         return out
 
     # ---- internals ----

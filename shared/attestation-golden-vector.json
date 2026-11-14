@@ -190,5 +190,32 @@
       "includeQuery": false,
       "expected": null
     }
-  ]
+  ],
+  "exchangeDigests": {
+    "description": "request_sha256 = SHA-256 of UTF-8 '<METHOD upper-cased> <url as requested>\\n' followed by the request body bytes (none for GET/HEAD). response_sha256 = SHA-256 of the response body bytes as read.",
+    "requests": [
+      {
+        "method": "get",
+        "url": "https://api.example.com/v1/forecast?city=Paris",
+        "bodyUtf8": null,
+        "requestSha256": "0e9bd4373d4eb2a9b93c670ebed85acee34810fa7bd6286525f674bffc06ce0f"
+      },
+      {
+        "method": "POST",
+        "url": "https://api.lightningenable.com/api/x",
+        "bodyUtf8": "{\"q\":\"café\"}",
+        "requestSha256": "93e4a5748af19641e72da175b8add6fbbc35bff8560a0ccac36df4350b6d7029"
+      }
+    ],
+    "responses": [
+      {
+        "bodyUtf8": "",
+        "responseSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      {
+        "bodyUtf8": "{\"temp\":21.5,\"unit\":\"°C\"}",
+        "responseSha256": "c2ae21cc168f0c23fd52b42db68f0d42c35ef67a2134b41c334e945e53500801"
+      }
+    ]
+  }
 }

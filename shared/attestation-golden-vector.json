@@ -1,0 +1,194 @@
+{
+  "description": "Golden vectors for client-signed provider attestations (kind 38403, shape v2). Both the .NET and the Python test suites rebuild these events from 'input' and must produce exactly 'expected'. TEST-ONLY KEY: secretKeyHex is the BIP-340 test-vector scalar 3 (public knowledge, not a credential); auxRandHex is all zeros so the BIP-340 signature is deterministic.",
+  "secretKeyHex": "0000000000000000000000000000000000000000000000000000000000000003",
+  "pubkeyHex": "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+  "npub": "npub1lycg5qvjtrp3qjf5f7zl382j9x6nrjz9sdhenvyxq8c3808qxmus6gq266",
+  "auxRandHex": "0000000000000000000000000000000000000000000000000000000000000000",
+  "kind": 38403,
+  "events": [
+    {
+      "name": "url-subject-with-receipt",
+      "createdAt": 1767225600,
+      "input": {
+        "subjectUrl": "HTTPS://API.Example.COM:443/v1/Forecast?city=Paris#top",
+        "includeQuery": false,
+        "paymentHash": "1111111111111111111111111111111111111111111111111111111111111111",
+        "requestSha256": "2222222222222222222222222222222222222222222222222222222222222222",
+        "responseSha256": "3333333333333333333333333333333333333333333333333333333333333333",
+        "mechanical": {
+          "responded": true,
+          "on_time": true,
+          "well_formed": false,
+          "price_honored": true
+        },
+        "quality": 4,
+        "content": "Late but complete. \"quoted\" \\ back\nline\ttab é ü 🚀 \u001b end"
+      },
+      "expected": {
+        "tags": [
+          [
+            "d",
+            "receipt:1111111111111111111111111111111111111111111111111111111111111111"
+          ],
+          [
+            "v",
+            "2"
+          ],
+          [
+            "u",
+            "https://api.example.com/v1/Forecast"
+          ],
+          [
+            "receipt",
+            "1111111111111111111111111111111111111111111111111111111111111111",
+            "2222222222222222222222222222222222222222222222222222222222222222",
+            "3333333333333333333333333333333333333333333333333333333333333333"
+          ],
+          [
+            "mech",
+            "responded",
+            "1"
+          ],
+          [
+            "mech",
+            "on_time",
+            "1"
+          ],
+          [
+            "mech",
+            "well_formed",
+            "0"
+          ],
+          [
+            "mech",
+            "price_honored",
+            "1"
+          ],
+          [
+            "judged",
+            "quality",
+            "4"
+          ]
+        ],
+        "serialized": "[0,\"f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9\",1767225600,38403,[[\"d\",\"receipt:1111111111111111111111111111111111111111111111111111111111111111\"],[\"v\",\"2\"],[\"u\",\"https://api.example.com/v1/Forecast\"],[\"receipt\",\"1111111111111111111111111111111111111111111111111111111111111111\",\"2222222222222222222222222222222222222222222222222222222222222222\",\"3333333333333333333333333333333333333333333333333333333333333333\"],[\"mech\",\"responded\",\"1\"],[\"mech\",\"on_time\",\"1\"],[\"mech\",\"well_formed\",\"0\"],[\"mech\",\"price_honored\",\"1\"],[\"judged\",\"quality\",\"4\"]],\"Late but complete. \\\"quoted\\\" \\\\ back\\nline\\ttab é ü 🚀 \\u001b end\"]",
+        "serializedUtf8Sha256": "1a46706b78af6ac0cf3854caa1e06d0f95b5aa3064451f28b7403504dd5380dd",
+        "id": "1a46706b78af6ac0cf3854caa1e06d0f95b5aa3064451f28b7403504dd5380dd",
+        "sig": "37d66445dcd8cc5491bb6ea55314930e92ca0cb52ab89f66be7b37b05e086d7be8a8a527dc6ce19e3dab78b8a365310b27bb56d487bb1573d0ac26b46bac0811"
+      }
+    },
+    {
+      "name": "pubkey-subject-agreement-unbacked",
+      "createdAt": 1767225660,
+      "input": {
+        "subjectPubkey": "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+        "agreementId": "4444444444444444444444444444444444444444444444444444444444444444",
+        "mechanical": {
+          "responded": true
+        },
+        "quality": 5,
+        "content": ""
+      },
+      "expected": {
+        "tags": [
+          [
+            "d",
+            "p:79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+          ],
+          [
+            "v",
+            "2"
+          ],
+          [
+            "p",
+            "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+          ],
+          [
+            "agreement",
+            "4444444444444444444444444444444444444444444444444444444444444444"
+          ],
+          [
+            "mech",
+            "responded",
+            "1"
+          ],
+          [
+            "judged",
+            "quality",
+            "5"
+          ]
+        ],
+        "serialized": "[0,\"f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9\",1767225660,38403,[[\"d\",\"p:79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\"],[\"v\",\"2\"],[\"p\",\"79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\"],[\"agreement\",\"4444444444444444444444444444444444444444444444444444444444444444\"],[\"mech\",\"responded\",\"1\"],[\"judged\",\"quality\",\"5\"]],\"\"]",
+        "serializedUtf8Sha256": "a71d06832956844e5178f529488e5763a25e611da5e8635ab996d665142c2973",
+        "id": "a71d06832956844e5178f529488e5763a25e611da5e8635ab996d665142c2973",
+        "sig": "bcc163da886e933f858b75222be1ea1e2e1534715567169046d70c0f8f3bdbed7a37f0cabbcc6ff8d32bfc21a22fabaf6084675ff2b5ad9856969568546ea64e"
+      }
+    }
+  ],
+  "urlNormalization": [
+    {
+      "input": "https://Example.COM",
+      "includeQuery": false,
+      "expected": "https://example.com/"
+    },
+    {
+      "input": "HTTP://example.com:80/a/B?x=1#f",
+      "includeQuery": false,
+      "expected": "http://example.com/a/B"
+    },
+    {
+      "input": "http://example.com:8080/a?x=1",
+      "includeQuery": false,
+      "expected": "http://example.com:8080/a"
+    },
+    {
+      "input": "https://example.com:443/a?x=1&y=%20",
+      "includeQuery": true,
+      "expected": "https://example.com/a?x=1&y=%20"
+    },
+    {
+      "input": "https://example.com/a?",
+      "includeQuery": true,
+      "expected": "https://example.com/a"
+    },
+    {
+      "input": "https://[2001:DB8::1]:8443/p",
+      "includeQuery": false,
+      "expected": "https://[2001:db8::1]:8443/p"
+    },
+    {
+      "input": "  https://example.com/Path%2Fx/  ",
+      "includeQuery": false,
+      "expected": "https://example.com/Path%2Fx/"
+    },
+    {
+      "input": "https://user:pw@example.com/",
+      "includeQuery": false,
+      "expected": null
+    },
+    {
+      "input": "ftp://example.com/",
+      "includeQuery": false,
+      "expected": null
+    },
+    {
+      "input": "example.com/path",
+      "includeQuery": false,
+      "expected": null
+    },
+    {
+      "input": "https://exa mple.com/",
+      "includeQuery": false,
+      "expected": null
+    },
+    {
+      "input": "https://example.com:99999x/",
+      "includeQuery": false,
+      "expected": null
+    },
+    {
+      "input": "https://bücher.example/",
+      "includeQuery": false,
+      "expected": null
+    }
+  ]
+}

@@ -5,6 +5,8 @@ Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-ena
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-11-14
+
 ### Added
 
 - **Client-signed provider reviews on `agent_services`, both ports (#133).** Three new actions

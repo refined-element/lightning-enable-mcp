@@ -94,3 +94,22 @@ def test_relay_url_defaults_and_env_override():
     assert relay.resolve_relay_url({}) == relay.DEFAULT_RELAY_URL
     assert relay.resolve_relay_url({relay.RELAY_ENV_VAR: "${AGENT_RELAY_URL}"}) == relay.DEFAULT_RELAY_URL
     assert relay.resolve_relay_url({relay.RELAY_ENV_VAR: "wss://r.example"}) == "wss://r.example"
+
+
+def test_deeply_nested_frame_is_skipped_not_raised():
+    deep = "[" * 5000 + "]" * 5000
+    assert relay._parse(deep) is None
+    assert relay._parse('["EOSE","s"]') == ["EOSE", "s"]
+    nested_ok = '["EVENT","s",' + "[" * 60 + "]" * 60 + "]"
+    assert relay._parse(nested_ok) is not None
+    assert relay._parse('["X","' + "[" * 100 + '"]') == ["X", "[" * 100]  # brackets in strings
+
+
+@pytest.mark.asyncio
+async def test_query_survives_a_hostile_frame():
+    ev = _event()
+    async with FakeRelay("accept") as r:
+        r.extra_events.append(ev)
+        r.raw_frames.append('["EVENT","x",' + "[" * 5000 + "]" * 5000 + "]")
+        q = await relay.query_events({"kinds": [38403]}, r.url, timeout=5)
+    assert q.ok and q.events == [ev]

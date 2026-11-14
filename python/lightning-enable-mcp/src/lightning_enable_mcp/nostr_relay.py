@@ -197,14 +197,51 @@ async def query_events(
         await _close(ws)
 
 
+#: Deepest JSON nesting accepted in a relay frame (System.Text.Json's default, so both
+#: ports skip the same frames). A Nostr frame needs about 4.
+MAX_FRAME_DEPTH = 64
+
+
 def _parse(raw: Any) -> list[Any] | None:
+    """A relay frame as a list, or None to skip it: unparseable, too deep, or not a
+    ``["TYPE", ...]`` array. Never raises, so one hostile frame cannot end a query."""
     try:
+        if _depth_exceeds(raw, MAX_FRAME_DEPTH):
+            return None
         frame = json.loads(raw)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, RecursionError):
         return None
     if isinstance(frame, list) and frame and isinstance(frame[0], str):
         return frame
     return None
+
+
+def _depth_exceeds(raw: Any, limit: int) -> bool:
+    """Whether the bracket nesting of a JSON text goes deeper than ``limit`` (strings
+    are skipped), checked before json.loads can recurse."""
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", errors="replace")
+    if not isinstance(raw, str):
+        return False
+    depth = 0
+    in_string = escaped = False
+    for ch in raw:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+        elif ch == '"':
+            in_string = True
+        elif ch in "[{":
+            depth += 1
+            if depth > limit:
+                return True
+        elif ch in "]}":
+            depth -= 1
+    return False
 
 
 async def _close(ws: Any) -> None:

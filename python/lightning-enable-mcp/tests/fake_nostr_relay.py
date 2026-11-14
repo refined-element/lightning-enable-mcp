@@ -22,6 +22,7 @@ class FakeRelay:
         self.stored: list[dict[str, Any]] = []
         self.received: list[list[Any]] = []
         self.extra_events: list[dict[str, Any]] = []  # served on REQ even if never published
+        self.raw_frames: list[str] = []  # sent verbatim before the events of every REQ
         self._server: Any = None
         self.url = ""
 
@@ -64,6 +65,8 @@ class FakeRelay:
         if self.mode == "auth":
             await ws.send(json.dumps(["CLOSED", sub, "auth-required: sign in first"]))
             return
+        for raw in self.raw_frames:
+            await ws.send(raw)
         for ev in [*self.extra_events, *self.stored]:
             if _matches(ev, flt):
                 await ws.send(json.dumps(["EVENT", sub, ev], ensure_ascii=False))

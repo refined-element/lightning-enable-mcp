@@ -126,19 +126,57 @@ def test_placeholder_env_var_is_treated_as_unset(tmp_path):
     assert ident.source == "file"
 
 
+def _write_owner_only(path: Path, text: str) -> None:
+    import os
+
+    with os.fdopen(ak.create_owner_only_file(path), "w", encoding="ascii") as f:
+        f.write(text)
+
+
 def test_corrupt_key_file_is_an_error_and_left_untouched(tmp_path):
     store = _store(tmp_path)
     store.key_path.parent.mkdir(parents=True)
-    store.key_path.write_text("garbage\n")
-    with pytest.raises(ak.AttestationKeyError):
+    _write_owner_only(store.key_path, "garbage\n")
+    with pytest.raises(ak.AttestationKeyError) as exc:
         store.identity()
+    assert "not a valid key" in str(exc.value)
     assert store.key_path.read_text() == "garbage\n"
+
+
+def test_key_file_readable_by_other_accounts_is_refused(tmp_path):
+    """Loading applies the creation rule. A plainly written file inherits the folder's
+    access list (on Windows: SYSTEM, Administrators...; on POSIX: made 0644 here)."""
+    import os
+
+    store = _store(tmp_path)
+    store.key_path.parent.mkdir(parents=True)
+    store.key_path.write_text(TEST_KEY_HEX + "\n")
+    if sys.platform != "win32":
+        os.chmod(store.key_path, 0o644)
+    else:
+        # Asserted on the ACL, not on readability: it really lists other accounts.
+        assert ak._windows_other_trustees(store.key_path)
+    with pytest.raises(ak.AttestationKeyError) as exc:
+        store.identity()
+    msg = str(exc.value)
+    assert "other accounts" in msg
+    assert ("icacls" in msg) if sys.platform == "win32" else ("chmod 600" in msg)
+    assert TEST_KEY_HEX not in msg
+    assert store.key_path.read_text() == TEST_KEY_HEX + "\n"
+
+
+def test_owner_only_key_file_is_accepted(tmp_path):
+    store = _store(tmp_path)
+    store.key_path.parent.mkdir(parents=True)
+    _write_owner_only(store.key_path, TEST_KEY_HEX + "\n")
+    assert ak.owner_only_problem(store.key_path) is None
+    assert store.identity().pubkey_hex == TEST_PUBKEY
 
 
 def test_losing_the_creation_race_keeps_the_winners_key(tmp_path):
     store = _store(tmp_path)
     store.key_path.parent.mkdir(parents=True)
-    store.key_path.write_text(TEST_KEY_HEX + "\n")  # the "other process" got there first
+    _write_owner_only(store.key_path, TEST_KEY_HEX + "\n")  # the "other process" won
     assert store._create(store.key_path) is False
     assert store.identity().pubkey_hex == TEST_PUBKEY
     assert not list(store.key_path.parent.glob("*.tmp"))

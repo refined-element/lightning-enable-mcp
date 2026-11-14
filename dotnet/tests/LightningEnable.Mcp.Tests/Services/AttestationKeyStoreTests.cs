@@ -131,10 +131,46 @@ public sealed class AttestationKeyStoreTests : IDisposable
     {
         Directory.CreateDirectory(Dir);
         var store = Store();
-        File.WriteAllText(store.KeyPath, "garbage\n");
+        WriteOwnerOnly(store.KeyPath, "garbage\n");
         var act = () => store.GetIdentity();
-        act.Should().Throw<AttestationKeyException>();
+        act.Should().Throw<AttestationKeyException>().Which.Message.Should().Contain("not a valid key");
         File.ReadAllText(store.KeyPath).Should().Be("garbage\n");
+    }
+
+    private static void WriteOwnerOnly(string path, string text)
+    {
+        using var fs = AttestationKeyStore.CreateOwnerOnlyFile(path);
+        fs.Write(System.Text.Encoding.ASCII.GetBytes(text));
+    }
+
+    [Fact]
+    public void KeyFileReadableByOtherAccounts_IsRefused()
+    {
+        // Loading applies the creation rule. A plainly written file inherits the folder's access
+        // list (on Windows: SYSTEM, Administrators...; on POSIX it is made 0644 here).
+        Directory.CreateDirectory(Dir);
+        var store = Store();
+        File.WriteAllText(store.KeyPath, TestKeyHex + "\n");
+        if (OperatingSystem.IsWindows())
+            AttestationKeyStore.OtherTrustees(store.KeyPath).Should().NotBeEmpty("asserted on the ACL, not on readability");
+        else
+            File.SetUnixFileMode(store.KeyPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+
+        var act = () => store.GetIdentity();
+        var msg = act.Should().Throw<AttestationKeyException>().Which.Message;
+        msg.Should().Contain("other accounts").And.Contain(OperatingSystem.IsWindows() ? "icacls" : "chmod 600");
+        msg.Should().NotContain(TestKeyHex);
+        File.ReadAllText(store.KeyPath).Should().Be(TestKeyHex + "\n");
+    }
+
+    [Fact]
+    public void OwnerOnlyKeyFile_IsAccepted()
+    {
+        Directory.CreateDirectory(Dir);
+        var store = Store();
+        WriteOwnerOnly(store.KeyPath, TestKeyHex + "\n");
+        AttestationKeyStore.OwnerOnlyProblem(store.KeyPath).Should().BeNull();
+        store.GetIdentity().PubkeyHex.Should().Be(TestPubkey);
     }
 
     [Fact]
@@ -142,7 +178,7 @@ public sealed class AttestationKeyStoreTests : IDisposable
     {
         Directory.CreateDirectory(Dir);
         var store = Store();
-        File.WriteAllText(store.KeyPath, TestKeyHex + "\n"); // the "other process" got there first
+        WriteOwnerOnly(store.KeyPath, TestKeyHex + "\n"); // the "other process" got there first
         store.Create(store.KeyPath).Should().BeFalse();
         store.GetIdentity().PubkeyHex.Should().Be(TestPubkey);
         Directory.GetFiles(Dir, "*.tmp").Should().BeEmpty();

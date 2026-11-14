@@ -24,6 +24,8 @@ internal sealed class FakeNostrRelay : IAsyncDisposable
     public ConcurrentQueue<JsonArray> Received { get; } = new();
     public List<JsonObject> Stored { get; } = new();
     public List<JsonObject> ExtraEvents { get; } = new();
+    /// <summary>Sent verbatim before the events of every REQ (hostile-frame tests).</summary>
+    public List<string> RawFrames { get; } = new();
 
     public FakeNostrRelay(string mode = "accept")
     {
@@ -109,6 +111,8 @@ internal sealed class FakeNostrRelay : IAsyncDisposable
                     var filter = frame.Count > 2 ? frame[2]!.AsObject() : new JsonObject();
                     List<JsonObject> all;
                     lock (Stored) all = ExtraEvents.Concat(Stored).ToList();
+                    foreach (var raw in RawFrames)
+                        await ws.SendAsync(Encoding.UTF8.GetBytes(raw), WebSocketMessageType.Text, true, CancellationToken.None);
                     foreach (var ev in all.Where(e => Matches(e, filter)))
                         await SendAsync(ws, new JsonArray { "EVENT", sub, ev.DeepClone() });
                     await SendAsync(ws, new JsonArray { "EOSE", sub });

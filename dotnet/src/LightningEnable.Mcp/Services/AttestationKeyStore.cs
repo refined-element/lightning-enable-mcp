@@ -115,6 +115,8 @@ public sealed class AttestationKeyStore
 
     private static ECPrivKey Read(string path)
     {
+        if (OwnerOnlyProblem(path) is { } problem)
+            throw new AttestationKeyException(problem);
         try
         {
             var text = File.ReadAllText(path).Trim();
@@ -127,6 +129,50 @@ public sealed class AttestationKeyStore
         throw new AttestationKeyException(
             $"The attestation key file {path} is unreadable or not a valid key. It is left "
             + "untouched; move it aside to create a new reviewer identity.");
+    }
+
+    /// <summary>
+    /// Null when <paramref name="path"/> is readable by the current user only — the rule the file
+    /// is created with — else a message saying what is wrong and how to fix it. POSIX: no group or
+    /// other permission bits. Windows: every ALLOW entry (explicit or inherited) names the current
+    /// user's SID — no SYSTEM, Administrators, Users or Everyone.
+    /// </summary>
+    internal static string? OwnerOnlyProblem(string path)
+    {
+        try
+        {
+            if (!OperatingSystem.IsWindows())
+            {
+                const UnixFileMode others = UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute
+                    | UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute;
+                var mode = File.GetUnixFileMode(path);
+                return (mode & others) == 0 ? null
+                    : $"The attestation key file {path} is readable by other accounts (mode {Convert.ToString((int)mode, 8)}). "
+                      + $"Restrict it with:  chmod 600 '{path}'  — or move it aside to create a new reviewer identity.";
+            }
+            var otherSids = OtherTrustees(path);
+            return otherSids.Count == 0 ? null
+                : $"The attestation key file {path} grants access to other accounts ({string.Join(", ", otherSids)}). "
+                  + $"Restrict it to your user with:  icacls \"{path}\" /inheritance:r /grant:r \"%USERNAME%:F\"  "
+                  + $"and remove any other entry that icacls \"{path}\" still lists — or move it aside to create a new reviewer identity.";
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return $"Cannot check the permissions of the attestation key file {path}: {ex.Message}";
+        }
+    }
+
+    [SupportedOSPlatform("windows")]
+    internal static List<string> OtherTrustees(string path)
+    {
+        var me = WindowsIdentity.GetCurrent().User!;
+        return new FileInfo(path).GetAccessControl(AccessControlSections.Access)
+            .GetAccessRules(includeExplicit: true, includeInherited: true, typeof(SecurityIdentifier))
+            .Cast<FileSystemAccessRule>()
+            .Where(r => r.AccessControlType == AccessControlType.Allow && !me.Equals(r.IdentityReference))
+            .Select(r => r.IdentityReference.Value)
+            .Distinct()
+            .ToList();
     }
 
     /// <summary>Create the key file owner-only. False if another process won the race.</summary>

@@ -108,4 +108,16 @@ public class NostrRelayClientTests
         new NostrRelayClient(_ => "${AGENT_RELAY_URL}").DefaultRelayUrl.Should().Be(NostrRelayClient.DefaultRelay);
         new NostrRelayClient(n => n == "AGENT_RELAY_URL" ? "wss://r.example" : null).DefaultRelayUrl.Should().Be("wss://r.example");
     }
+
+    [Fact]
+    public async Task Query_SurvivesAHostileDeeplyNestedFrame()
+    {
+        await using var relay = new FakeNostrRelay("accept").Start();
+        var ev = Event();
+        relay.ExtraEvents.Add(ev);
+        relay.RawFrames.Add("[\"EVENT\",\"x\"," + new string('[', 5000) + new string(']', 5000) + "]");
+        var q = await Client.QueryAsync(new JsonObject { ["kinds"] = new JsonArray { 38403 } }, relay.Url, T, CancellationToken.None);
+        q.Ok.Should().BeTrue();
+        q.Events.Should().ContainSingle();
+    }
 }

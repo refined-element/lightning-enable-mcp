@@ -140,6 +140,9 @@ class AttestationKeyStore:
 
     @staticmethod
     def _read(path: Path) -> bytes:
+        problem = owner_only_problem(path)
+        if problem:
+            raise AttestationKeyError(problem)
         try:
             text = path.read_text(encoding="ascii").strip()
             return nostr_event.parse_secret_key(text)
@@ -180,6 +183,53 @@ class AttestationKeyStore:
                 pass
             except OSError:  # pragma: no cover - best effort
                 logger.warning("Could not remove temporary key file %s", tmp)
+
+
+def owner_only_problem(path: Path) -> str | None:
+    """None when ``path`` is readable by the current user only — the rule the file is
+    created with — else a message saying what is wrong and how to fix it.
+
+    POSIX: no group or other permission bits. Windows: every ALLOW entry in the DACL
+    names the current user's SID (no SYSTEM, Administrators, Users, Everyone...).
+    """
+    try:
+        if sys.platform != "win32":
+            mode = path.stat().st_mode & 0o777
+            if mode & 0o077:
+                return (
+                    f"The attestation key file {path} is readable by other accounts (mode "
+                    f"{mode:o}). Restrict it with:  chmod 600 '{path}'  — or move it aside to "
+                    "create a new reviewer identity."
+                )
+            return None
+        others = _windows_other_trustees(path)
+    except OSError as e:
+        return f"Cannot check the permissions of the attestation key file {path}: {e.strerror}"
+    if others:
+        return (
+            f"The attestation key file {path} grants access to other accounts "
+            f"({', '.join(others)}). Restrict it to your user with:  icacls \"{path}\" "
+            "/inheritance:r /grant:r \"%USERNAME%:F\"  and remove any other entry that "
+            f"icacls \"{path}\" still lists — or move it aside to create a new reviewer identity."
+        )
+    return None
+
+
+def _windows_other_trustees(path: Path) -> list[str]:  # pragma: no cover - Windows only
+    import re
+
+    me = current_user_sid()
+    sddl = read_dacl_sddl(path)
+    dacl = sddl.split("D:", 1)[1] if "D:" in sddl else ""
+    others: list[str] = []
+    for ace in re.findall(r"\(([^)]*)\)", dacl):
+        fields = ace.split(";")
+        if len(fields) < 6 or fields[0] not in ("A", "OA"):
+            continue  # deny entries never widen access
+        trustee = canonical_sid(fields[5])
+        if trustee != me and trustee not in others:
+            others.append(trustee)
+    return others
 
 
 def _generate_secret() -> bytes:

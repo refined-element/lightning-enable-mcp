@@ -31,9 +31,13 @@ Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-ena
   from creation (mode 0600; on Windows a protected ACL granting only the current user), or
   supplied in `LIGHTNING_ENABLE_ATTESTATION_KEY`. It is not the wallet key and is never returned
   or logged. A new key is a new reviewer identity.
-- **Request/response hashes on receipts.** After a paid L402 call returns, the server appends the
-  request and response SHA-256 to `receipts.jsonl` (hashes only); the `receipts` tool shows them on
-  the matching receipt, and `review` attaches them when given that payment hash.
+- **Salted request/response digests on receipts.** After a paid L402 call returns, the server
+  appends a fresh 32-byte nonce and two HMAC-SHA256 digests (nonce as key; request: `"<METHOD>
+  <url>\n"` plus the body; response: the body after content decoding, in both ports) to
+  `receipts.jsonl`. Bodies are never stored. `review` publishes the digests, never the nonce, so a
+  published digest can't be tested against guessed requests; disclosing the nonce proves it.
+  Unsalted records are never published. The `receipts` tool shows the digests on the matching
+  receipt.
 - `shared/attestation-golden-vector.json` pins both ports to the same event bytes, id and
   signature, the URL normalization rule and the digest definitions.
 
@@ -47,6 +51,30 @@ Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-ena
   for the three new actions.
 - `attest` and `reputation` (and the `publish_agent_attestation` / `get_agent_reputation`
   aliases) are unchanged and now described as the legacy review path.
+- **NWC event serialization (.NET), a behavior change in the wallet path.** The shared NIP-01
+  serializer writes emoji and other non-BMP characters, DEL, U+2028 and U+FEFF raw and other
+  control characters as lowercase `\u00xx`, matching Python and `JSON.stringify`. The old inline
+  `UnsafeRelaxedJsonEscaping` code escaped several of these, so event ids for such content
+  differed from other clients. NWC traffic itself is ASCII (hex tags, base64 ciphertext), whose
+  bytes are unchanged; a test pins each character.
+
+### Security
+
+- `review` writes the NIP `proof` tag only for a payment hash the local receipt log recorded. An
+  unknown hash is refused (`unknown_payment`) unless `allow_unknown_payment=true`, which publishes
+  the receipt reference without `proof` and reports the review as unbacked. Reads count a review
+  as proof-backed only when it carries `proof`, and still say it is a reference.
+- `reviews` resists one key crowding out others: it fetches up to 500 events, gives each reviewer
+  key one vote per score family, reports `reviewerReviewCounts`, and rejects events dated more than
+  15 minutes ahead (`futureDated`).
+- Review text from the relay is cut to 1,000 characters and returned as
+  `content.untrustedReviewerText` with a note that it must not be followed as instructions; other
+  reviewer-controlled values (the agreement id) are passed on only when well-formed.
+- Hardening: a non-integer kind such as `38403.0` is malformed in both ports; event ids are
+  lowercased before deduplication; other kinds are counted as `otherKinds`, not legacy; a deeply
+  nested relay frame is skipped instead of ending the query (Python); URL ports must be 1-65535
+  without a leading zero, and one trailing dot is removed from the host; an existing reviewer key
+  file that other accounts can read is refused, with the command that fixes it.
 
 ## [2.3.1] - 2026-11-09
 

@@ -177,7 +177,9 @@ public class AttestationTests
         var receipt = tags.Single(t => t![0]!.GetValue<string>() == "receipt")!.AsArray();
         receipt.Select(n => n!.GetValue<string>()).Should().Equal("receipt", string.Concat(Enumerable.Repeat("ab", 32)), "", new string('c', 64));
         tags[0]!.AsArray()[1]!.GetValue<string>().Should().Be("receipt:" + string.Concat(Enumerable.Repeat("ab", 32)));
-        tags.Select(t => t![0]!.GetValue<string>()).Should().NotContain(new[] { "preimage", "proof" });
+        // The NIP proof tag carries the payment hash, never a preimage.
+        tags.ToJsonString().Should().Contain("[\"proof\",\"" + string.Concat(Enumerable.Repeat("ab", 32)) + "\"]");
+        tags.Select(t => t![0]!.GetValue<string>()).Should().NotContain("preimage");
     }
 
     [Fact]
@@ -203,7 +205,43 @@ public class AttestationTests
         var tags = Attestations.BuildTags(Attestations.ResolveSubject(pk, null), null,
             new Dictionary<string, bool> { ["on_time"] = false, ["responded"] = true }, 2);
         tags.ToJsonString().Should().Be(
-            $"[[\"d\",\"p:{pk}\"],[\"v\",\"2\"],[\"p\",\"{pk}\"],[\"mech\",\"responded\",\"1\"],[\"mech\",\"on_time\",\"0\"],[\"judged\",\"quality\",\"2\"]]");
+            $"[[\"d\",\"p:{pk}\"],[\"v\",\"2\"],[\"L\",\"nostr.agent.attestation\"],[\"l\",\"completed\",\"nostr.agent.attestation\"],"
+            + $"[\"p\",\"{pk}\",\"\",\"subject\"],[\"mech\",\"responded\",\"1\"],[\"mech\",\"on_time\",\"0\"],[\"judged\",\"quality\",\"2\"],[\"rating\",\"2\"]]");
+    }
+
+    [Fact]
+    public void Receipt_AlsoEmitsTheNipProofTag()
+    {
+        var ab = string.Concat(Enumerable.Repeat("ab", 32));
+        var tags = Attestations.BuildTags(Attestations.ResolveSubject(null, "https://api.example.com/x"),
+            Attestations.MakeReceipt(ab), quality: 3);
+        tags.ToJsonString().Should().Contain($"[\"proof\",\"{ab}\"]");
+    }
+
+    [Fact]
+    public void SpecStyleEvent_WithoutJudgedTag_ReadsRatingAndProof()
+    {
+        var ab = string.Concat(Enumerable.Repeat("ab", 32));
+        var tags = new JsonArray
+        {
+            new JsonArray { "d", "x" }, new JsonArray { "v", "2" }, new JsonArray { "p", new string('a', 64), "", "subject" },
+            new JsonArray { "rating", "4" }, new JsonArray { "proof", ab },
+        };
+        var parsed = Attestations.Parse(Attestations.Sign(Sk, tags, "", 1));
+        parsed.Should().NotBeNull();
+        parsed!.Quality.Should().Be(4);
+        parsed.Receipt.Should().Be(new AttestationReceipt(ab));
+    }
+
+    [Fact]
+    public void RatingDisagreeingWithJudged_IsMalformed()
+    {
+        var tags = new JsonArray
+        {
+            new JsonArray { "d", "x" }, new JsonArray { "v", "2" }, new JsonArray { "u", Url },
+            new JsonArray { "judged", "quality", "5" }, new JsonArray { "rating", "1" },
+        };
+        Attestations.Parse(Attestations.Sign(Sk, tags, "", 1)).Should().BeNull();
     }
 
     [Fact]

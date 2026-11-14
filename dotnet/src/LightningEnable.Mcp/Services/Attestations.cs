@@ -22,10 +22,16 @@ public sealed record AttestationReceipt(string PaymentHash, string RequestSha256
 /// <c>attestation</c> module; <c>shared/attestation-golden-vector.json</c> pins both ports
 /// to the same event bytes.
 ///
-/// Tags, in this order (optional ones omitted, never sent empty):
-/// <c>["d", key]</c>, <c>["v","2"]</c>, <c>["p", pubkey]</c> or <c>["u", url]</c>,
-/// <c>["agreement", id]</c>?, <c>["receipt", payment_hash, request_sha256, response_sha256]</c>?,
-/// one <c>["mech", check, "1"|"0"]</c> per check, <c>["judged","quality","1".."5"]</c>?.
+/// Tags, in this order (optional ones omitted, never sent empty). Every tag a reader of the
+/// NostrWolfe ASA NIP draft ("Kind 38403 — Agent Attestation") uses follows that draft; the rest
+/// are additive tags such a reader ignores:
+/// <c>["d", key]</c>, <c>["v","2"]</c> (additive), <c>["L","nostr.agent.attestation"]</c>,
+/// <c>["l","completed","nostr.agent.attestation"]</c>, <c>["p", pubkey, "", "subject"]</c> or
+/// <c>["u", url]</c> (additive, seller without a pubkey), <c>["e", id, "", "agreement"]</c>?,
+/// <c>["proof", payment_hash]</c>?, <c>["receipt", payment_hash, request_sha256, response_sha256]</c>?
+/// (additive), one <c>["mech", check, "1"|"0"]</c> per check (additive),
+/// <c>["judged","quality","1".."5"]</c>? (additive) and <c>["rating", same value]</c>? for spec
+/// readers — <c>rating</c> carries ONLY the judged quality.
 ///
 /// Kind 38403 is addressable, so a relay keeps one event per (reviewer, kind, d). <c>d</c> is
 /// <c>receipt:&lt;payment_hash&gt;</c> for a receipt-backed review and <c>p:&lt;pubkey&gt;</c> /
@@ -38,6 +44,7 @@ public static class Attestations
 {
     public const int Kind = 38403;
     public const string ShapeVersion = "2";
+    public const string LabelNamespace = "nostr.agent.attestation";
     public const int MaxContentChars = 1000;
 
     public static readonly IReadOnlyList<string> MechChecks =
@@ -211,19 +218,30 @@ public static class Attestations
         {
             new JsonArray { "d", d },
             new JsonArray { "v", ShapeVersion },
-            new JsonArray { subject.Type, subject.Value },
+            new JsonArray { "L", LabelNamespace },
+            new JsonArray { "l", "completed", LabelNamespace },
+            subject.Type == "p"
+                ? new JsonArray { "p", subject.Value, "", "subject" }
+                : new JsonArray { "u", subject.Value },
         };
         if (agreement.Length > 0)
-            tags.Add(new JsonArray { "agreement", agreement });
+            tags.Add(new JsonArray { "e", agreement, "", "agreement" });
         if (receipt != null)
+        {
+            tags.Add(new JsonArray { "proof", receipt.PaymentHash });
             tags.Add(new JsonArray { "receipt", receipt.PaymentHash, receipt.RequestSha256, receipt.ResponseSha256 });
+        }
         foreach (var check in MechChecks)
         {
             if (mech.TryGetValue(check, out var passed))
                 tags.Add(new JsonArray { "mech", check, passed ? "1" : "0" });
         }
         if (quality != null)
-            tags.Add(new JsonArray { "judged", "quality", quality.Value.ToString(CultureInfo.InvariantCulture) });
+        {
+            var q = quality.Value.ToString(CultureInfo.InvariantCulture);
+            tags.Add(new JsonArray { "judged", "quality", q });
+            tags.Add(new JsonArray { "rating", q });
+        }
         return tags;
     }
 
@@ -311,10 +329,10 @@ public static class Attestations
         try
         {
             if (ev["kind"]?.GetValue<int>() != Kind || !IsVersion2(ev)) return null;
-            AttestationSubject? subject = null;
+            string? pMarked = null, pFirst = null, uFirst = null, proof = null;
             AttestationReceipt? receipt = null;
             var mech = new Dictionary<string, bool>();
-            int? quality = null;
+            int? quality = null, rating = null;
             string? agreement = null;
 
             foreach (var node in (JsonArray)ev["tags"]!)
@@ -327,10 +345,30 @@ public static class Attestations
                     vals.Add(s);
                 }
 
-                if ((name == "p" || name == "u") && subject == null && vals.Count > 0)
+                if (name == "p" && vals.Count > 0)
                 {
-                    if (name == "p" && !NostrEvents.IsHex(vals[0], 64)) return null;
-                    subject = new AttestationSubject(name, name == "p" ? vals[0].ToLowerInvariant() : vals[0]);
+                    // NIP: the reviewed agent is the p tag marked "subject" (4th element).
+                    if (!NostrEvents.IsHex(vals[0], 64)) return null;
+                    pFirst ??= vals[0].ToLowerInvariant();
+                    if (vals.Count >= 3 && vals[2] == "subject") pMarked ??= vals[0].ToLowerInvariant();
+                }
+                else if (name == "u" && vals.Count > 0 && uFirst == null)
+                {
+                    uFirst = vals[0];
+                }
+                else if (name == "proof" && vals.Count > 0 && proof == null)
+                {
+                    if (!NostrEvents.IsHex(vals[0], 64)) return null;
+                    proof = vals[0].ToLowerInvariant();
+                }
+                else if (name == "rating" && vals.Count > 0 && rating == null)
+                {
+                    if (vals[0] is not ("1" or "2" or "3" or "4" or "5")) return null;
+                    rating = vals[0][0] - '0';
+                }
+                else if (name == "e" && vals.Count > 0 && (agreement == null || (vals.Count >= 3 && vals[2] == "agreement")))
+                {
+                    agreement = vals[0];
                 }
                 else if (name == "receipt" && receipt == null)
                 {
@@ -348,12 +386,24 @@ public static class Attestations
                     if (vals[1] is not ("1" or "2" or "3" or "4" or "5") || quality != null) return null;
                     quality = vals[1][0] - '0';
                 }
-                else if (name == "agreement" && vals.Count > 0 && agreement == null)
-                {
-                    agreement = vals[0];
-                }
             }
 
+            // The NIP `rating` carries the judged quality; it must agree with `judged`.
+            if (rating != null)
+            {
+                if (quality != null && quality != rating) return null;
+                quality = rating;
+            }
+            // The NIP `proof` is the payment hash; it must agree with the receipt reference.
+            if (proof != null)
+            {
+                if (receipt != null && receipt.PaymentHash != proof) return null;
+                receipt ??= new AttestationReceipt(proof);
+            }
+            var subjectPk = pMarked ?? pFirst;
+            if (subjectPk != null && uFirst != null) return null; // ambiguous subject
+            AttestationSubject? subject = subjectPk != null ? new("p", subjectPk)
+                : uFirst != null ? new("u", uFirst) : null;
             if (subject == null || (mech.Count == 0 && quality == null)) return null;
             return new Parsed(
                 ev["id"]!.GetValue<string>(),

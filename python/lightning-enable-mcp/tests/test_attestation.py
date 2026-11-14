@@ -102,7 +102,9 @@ def test_receipt_tag_shape_and_never_a_preimage():
     tags = att.build_tags(subject, receipt=receipt, mech={"responded": True})
     assert ["receipt", "ab" * 32, "", "cd" * 32] in tags
     assert tags[0] == ["d", "receipt:" + "ab" * 32]
-    assert not any(t[0] in ("preimage", "proof") for t in tags)
+    # The NIP proof tag carries the payment hash, never a preimage.
+    assert ["proof", "ab" * 32] in tags
+    assert not any(t[0] == "preimage" for t in tags)
 
 
 def test_request_hash_without_payment_hash_rejected():
@@ -123,11 +125,36 @@ def test_mechanical_and_judged_are_separate_tags():
     assert tags == [
         ["d", "p:" + "aa" * 32],
         ["v", "2"],
-        ["p", "aa" * 32],
+        ["L", "nostr.agent.attestation"],
+        ["l", "completed", "nostr.agent.attestation"],
+        ["p", "aa" * 32, "", "subject"],
         ["mech", "responded", "1"],
         ["mech", "on_time", "0"],
         ["judged", "quality", "2"],
+        ["rating", "2"],
     ]
+
+
+def test_receipt_also_emits_the_nip_proof_tag():
+    subject = att.resolve_subject(None, "https://api.example.com/x")
+    tags = att.build_tags(subject, receipt=att.make_receipt("ab" * 32), quality=3)
+    assert ["proof", "ab" * 32] in tags
+
+
+def test_spec_style_event_without_judged_tag_reads_rating_and_proof():
+    # A v2 event carrying only the NIP tags for quality and payment still parses.
+    tags = [
+        ["d", "x"], ["v", "2"], ["p", "aa" * 32, "", "subject"],
+        ["rating", "4"], ["proof", "ab" * 32],
+    ]
+    parsed = att.parse_attestation(att.sign_attestation(SK, tags, ""))
+    assert parsed is not None and parsed.quality == 4
+    assert parsed.receipt == att.ReceiptRef("ab" * 32)
+
+
+def test_rating_disagreeing_with_judged_is_malformed():
+    tags = [["d", "x"], ["v", "2"], ["u", URL], ["judged", "quality", "5"], ["rating", "1"]]
+    assert att.parse_attestation(att.sign_attestation(SK, tags, "")) is None
 
 
 def test_nothing_to_attest_rejected():
@@ -240,7 +267,7 @@ def test_aggregate_rejects_tampered_event():
 
 
 def test_aggregate_counts_legacy_and_wrong_subject():
-    legacy_tags = [["d", "att-1"], ["p", "aa" * 32, "", "subject"], ["rating", "5"]]
+    legacy_tags = [["d", "att-1"], ["p", "aa" * 32, "", "subject"], ["rating", "5"], ["proof", "ab" * 32]]
     legacy = att.sign_attestation(SK, legacy_tags, "great")
     elsewhere = _ev(SK, 5, quality=4, subject=att.Subject("u", "https://other.example/"))
     out = att.aggregate([legacy, elsewhere], SUBJECT)

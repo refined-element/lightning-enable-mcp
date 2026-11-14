@@ -5,15 +5,25 @@ An agent that paid for an L402 call signs, with its OWN reviewer key, a small No
 event saying how the provider performed. Mirrors the .NET ``Attestations`` class;
 ``shared/attestation-golden-vector.json`` pins both ports to the same event bytes.
 
-Event shape (tags in this order; optional ones omitted, never sent empty)::
+Event shape (tags in this order; optional ones omitted, never sent empty). It follows
+the NostrWolfe ASA NIP draft (``nips/agent-service-agreements.md``, "Kind 38403 — Agent
+Attestation") for every tag a spec reader uses, and adds the rest as tags such a reader
+ignores::
 
-    ["d", <dedup key>]                       addressable-event key (see below)
-    ["v", "2"]                               shape version
-    ["p", <subject pubkey>] | ["u", <normalized endpoint URL>]
-    ["agreement", <event id>]                optional, agent-to-agent case
-    ["receipt", <payment_hash>, <request_sha256>, <response_sha256>]   optional
-    ["mech", "responded"|"on_time"|"well_formed"|"price_honored", "1"|"0"]  one per check
-    ["judged", "quality", "1".."5"]          optional
+    ["d", <dedup key>]                       NIP: required, unique per attestation
+    ["v", "2"]                               additive: shape version
+    ["L", "nostr.agent.attestation"]         NIP: label namespace
+    ["l", "completed", "nostr.agent.attestation"]   NIP: label
+    ["p", <subject pubkey>, "", "subject"]   NIP: the reviewed agent ...
+      | ["u", <normalized endpoint URL>]     ... additive: a seller with no pubkey
+    ["e", <agreement id>, "", "agreement"]   NIP: optional here (agent-to-agent case)
+    ["proof", <payment_hash>]                NIP: payment hash (SHA-256 of the preimage)
+    ["receipt", <payment_hash>, <request_sha256>, <response_sha256>]   additive
+    ["mech", "responded"|"on_time"|"well_formed"|"price_honored", "1"|"0"]  additive
+    ["judged", "quality", "1".."5"]          additive: judged quality ...
+    ["rating", "1".."5"]                     NIP: ... the same value, for spec readers
+
+``rating`` carries ONLY the judged quality, never a blend with the mechanical checks.
 
 Kind 38403 is in the addressable range, so a relay keeps one event per
 (reviewer, kind, d). ``d`` is ``receipt:<payment_hash>`` for a receipt-backed review
@@ -39,6 +49,8 @@ from . import nostr_event
 
 ATTESTATION_KIND = 38403
 SHAPE_VERSION = "2"
+#: NIP-32 label namespace the ASA NIP draft requires on kind 38403.
+LABEL_NAMESPACE = "nostr.agent.attestation"
 
 MECH_CHECKS: tuple[str, ...] = ("responded", "on_time", "well_formed", "price_honored")
 
@@ -230,10 +242,17 @@ def build_tags(
         raise AttestationError("agreement_id must be a 64-character hex event id.")
 
     d = f"receipt:{receipt.payment_hash}" if receipt else f"{subject.type}:{subject.value}"
-    tags: list[list[str]] = [["d", d], ["v", SHAPE_VERSION], [subject.type, subject.value]]
+    tags: list[list[str]] = [
+        ["d", d],
+        ["v", SHAPE_VERSION],
+        ["L", LABEL_NAMESPACE],
+        ["l", "completed", LABEL_NAMESPACE],
+        ["p", subject.value, "", "subject"] if subject.type == "p" else ["u", subject.value],
+    ]
     if agreement:
-        tags.append(["agreement", agreement])
+        tags.append(["e", agreement, "", "agreement"])
     if receipt:
+        tags.append(["proof", receipt.payment_hash])
         tags.append(
             ["receipt", receipt.payment_hash, receipt.request_sha256, receipt.response_sha256]
         )
@@ -242,6 +261,7 @@ def build_tags(
             tags.append(["mech", check, "1" if mech[check] else "0"])
     if quality is not None:
         tags.append(["judged", "quality", str(int(quality))])
+        tags.append(["rating", str(int(quality))])
     return tags
 
 
@@ -339,19 +359,40 @@ def parse_attestation(event: dict[str, Any]) -> ParsedAttestation | None:
         if event.get("kind") != ATTESTATION_KIND or not is_version2(event):
             return None
         tags = [t for t in event["tags"] if isinstance(t, list) and t and isinstance(t[0], str)]
-        subject: Subject | None = None
+        p_marked: str | None = None
+        p_first: str | None = None
+        u_first: str | None = None
         receipt: ReceiptRef | None = None
+        proof: str | None = None
         mech: dict[str, bool] = {}
         quality: int | None = None
+        rating: int | None = None
         agreement: str | None = None
         for tag in tags:
             name, vals = tag[0], tag[1:]
             if not all(isinstance(v, str) for v in vals):
                 return None
-            if name in ("p", "u") and subject is None and vals:
-                if name == "p" and not nostr_event.is_hex(vals[0], 64):
+            if name == "p" and vals:
+                # NIP: the reviewed agent is the p tag marked "subject" (4th element).
+                if not nostr_event.is_hex(vals[0], 64):
                     return None
-                subject = Subject(name, vals[0].lower() if name == "p" else vals[0])
+                p_first = p_first or vals[0].lower()
+                if len(vals) >= 3 and vals[2] == "subject" and p_marked is None:
+                    p_marked = vals[0].lower()
+            elif name == "u" and vals and u_first is None:
+                u_first = vals[0]
+            elif name == "proof" and vals and proof is None:
+                if not nostr_event.is_hex(vals[0], 64):
+                    return None
+                proof = vals[0].lower()
+            elif name == "rating" and vals and rating is None:
+                if vals[0] not in ("1", "2", "3", "4", "5"):
+                    return None
+                rating = int(vals[0])
+            elif name == "e" and vals and (
+                agreement is None or (len(vals) >= 3 and vals[2] == "agreement")
+            ):
+                agreement = vals[0]
             elif name == "receipt" and receipt is None:
                 if len(vals) != 3 or not nostr_event.is_hex(vals[0], 64):
                     return None
@@ -367,8 +408,20 @@ def parse_attestation(event: dict[str, Any]) -> ParsedAttestation | None:
                 if vals[1] not in ("1", "2", "3", "4", "5") or quality is not None:
                     return None
                 quality = int(vals[1])
-            elif name == "agreement" and vals and agreement is None:
-                agreement = vals[0]
+        # The NIP `rating` carries the judged quality; it must agree with `judged`.
+        if rating is not None:
+            if quality is not None and quality != rating:
+                return None
+            quality = rating
+        # The NIP `proof` is the payment hash; it must agree with the receipt reference.
+        if proof is not None:
+            if receipt is not None and receipt.payment_hash != proof:
+                return None
+            receipt = receipt or ReceiptRef(proof)
+        subject_pk = p_marked or p_first
+        if subject_pk and u_first:
+            return None  # ambiguous subject
+        subject = Subject("p", subject_pk) if subject_pk else (Subject("u", u_first) if u_first else None)
         if subject is None or (not mech and quality is None):
             return None
         return ParsedAttestation(

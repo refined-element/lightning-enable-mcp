@@ -35,8 +35,21 @@
             "2"
           ],
           [
+            "L",
+            "nostr.agent.attestation"
+          ],
+          [
+            "l",
+            "completed",
+            "nostr.agent.attestation"
+          ],
+          [
             "u",
             "https://api.example.com/v1/Forecast"
+          ],
+          [
+            "proof",
+            "1111111111111111111111111111111111111111111111111111111111111111"
           ],
           [
             "receipt",
@@ -68,12 +81,16 @@
             "judged",
             "quality",
             "4"
+          ],
+          [
+            "rating",
+            "4"
           ]
         ],
-        "serialized": "[0,\"f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9\",1767225600,38403,[[\"d\",\"receipt:1111111111111111111111111111111111111111111111111111111111111111\"],[\"v\",\"2\"],[\"u\",\"https://api.example.com/v1/Forecast\"],[\"receipt\",\"1111111111111111111111111111111111111111111111111111111111111111\",\"2222222222222222222222222222222222222222222222222222222222222222\",\"3333333333333333333333333333333333333333333333333333333333333333\"],[\"mech\",\"responded\",\"1\"],[\"mech\",\"on_time\",\"1\"],[\"mech\",\"well_formed\",\"0\"],[\"mech\",\"price_honored\",\"1\"],[\"judged\",\"quality\",\"4\"]],\"Late but complete. \\\"quoted\\\" \\\\ back\\nline\\ttab é ü 🚀 \\u001b end\"]",
-        "serializedUtf8Sha256": "1a46706b78af6ac0cf3854caa1e06d0f95b5aa3064451f28b7403504dd5380dd",
-        "id": "1a46706b78af6ac0cf3854caa1e06d0f95b5aa3064451f28b7403504dd5380dd",
-        "sig": "37d66445dcd8cc5491bb6ea55314930e92ca0cb52ab89f66be7b37b05e086d7be8a8a527dc6ce19e3dab78b8a365310b27bb56d487bb1573d0ac26b46bac0811"
+        "serialized": "[0,\"f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9\",1767225600,38403,[[\"d\",\"receipt:1111111111111111111111111111111111111111111111111111111111111111\"],[\"v\",\"2\"],[\"L\",\"nostr.agent.attestation\"],[\"l\",\"completed\",\"nostr.agent.attestation\"],[\"u\",\"https://api.example.com/v1/Forecast\"],[\"proof\",\"1111111111111111111111111111111111111111111111111111111111111111\"],[\"receipt\",\"1111111111111111111111111111111111111111111111111111111111111111\",\"2222222222222222222222222222222222222222222222222222222222222222\",\"3333333333333333333333333333333333333333333333333333333333333333\"],[\"mech\",\"responded\",\"1\"],[\"mech\",\"on_time\",\"1\"],[\"mech\",\"well_formed\",\"0\"],[\"mech\",\"price_honored\",\"1\"],[\"judged\",\"quality\",\"4\"],[\"rating\",\"4\"]],\"Late but complete. \\\"quoted\\\" \\\\ back\\nline\\ttab é ü 🚀 \\u001b end\"]",
+        "serializedUtf8Sha256": "fe54607309540789d722dcdeb6cf1354c8626c5ac4f963392254963d2d9e7048",
+        "id": "fe54607309540789d722dcdeb6cf1354c8626c5ac4f963392254963d2d9e7048",
+        "sig": "a71ae66c394bf919f76c5ec54e84013f38f4a89576fcc346565fdfe27ad7ce40e37138bcaf06e864ad01521a280f2dd57217be20a6659b0d09fce7a56bbea0d4"
       }
     },
     {
@@ -99,12 +116,25 @@
             "2"
           ],
           [
-            "p",
-            "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+            "L",
+            "nostr.agent.attestation"
           ],
           [
-            "agreement",
-            "4444444444444444444444444444444444444444444444444444444444444444"
+            "l",
+            "completed",
+            "nostr.agent.attestation"
+          ],
+          [
+            "p",
+            "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+            "",
+            "subject"
+          ],
+          [
+            "e",
+            "4444444444444444444444444444444444444444444444444444444444444444",
+            "",
+            "agreement"
           ],
           [
             "mech",
@@ -115,12 +145,16 @@
             "judged",
             "quality",
             "5"
+          ],
+          [
+            "rating",
+            "5"
           ]
         ],
-        "serialized": "[0,\"f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9\",1767225660,38403,[[\"d\",\"p:79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\"],[\"v\",\"2\"],[\"p\",\"79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\"],[\"agreement\",\"4444444444444444444444444444444444444444444444444444444444444444\"],[\"mech\",\"responded\",\"1\"],[\"judged\",\"quality\",\"5\"]],\"\"]",
-        "serializedUtf8Sha256": "a71d06832956844e5178f529488e5763a25e611da5e8635ab996d665142c2973",
-        "id": "a71d06832956844e5178f529488e5763a25e611da5e8635ab996d665142c2973",
-        "sig": "bcc163da886e933f858b75222be1ea1e2e1534715567169046d70c0f8f3bdbed7a37f0cabbcc6ff8d32bfc21a22fabaf6084675ff2b5ad9856969568546ea64e"
+        "serialized": "[0,\"f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9\",1767225660,38403,[[\"d\",\"p:79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\"],[\"v\",\"2\"],[\"L\",\"nostr.agent.attestation\"],[\"l\",\"completed\",\"nostr.agent.attestation\"],[\"p\",\"79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798\",\"\",\"subject\"],[\"e\",\"4444444444444444444444444444444444444444444444444444444444444444\",\"\",\"agreement\"],[\"mech\",\"responded\",\"1\"],[\"judged\",\"quality\",\"5\"],[\"rating\",\"5\"]],\"\"]",
+        "serializedUtf8Sha256": "336630177e0cba2f9e2cfd6fb1bc729995872ce35acaf7983f1e70b1d10a22d4",
+        "id": "336630177e0cba2f9e2cfd6fb1bc729995872ce35acaf7983f1e70b1d10a22d4",
+        "sig": "d426836574f0e334fcd8afb6964c4e14fce2573e4236c1ae6f91c63fc843d23ae0ea02379849d858f0d133f90dd0b5de15c559c75f9d89f76e133ae231c8d0ec"
       }
     }
   ],

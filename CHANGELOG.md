@@ -15,7 +15,10 @@ Versions apply to both ports (NuGet: `LightningEnable.Mcp`, PyPI: `lightning-ena
     `["u", normalized URL]`; receipt reference `["receipt", payment_hash, request_sha256,
     response_sha256]` (never a preimage); one `["mech", check, "1"|"0"]` per mechanical check
     (`responded`, `on_time`, `well_formed`, `price_honored`); optional
-    `["judged","quality","1".."5"]` and `["agreement", id]`. It reuses the verb's existing
+    `["judged","quality","1".."5"]`. Aligned with the NostrWolfe ASA NIP
+    draft: the NIP's `L`/`l` labels, `["p", pubkey, "", "subject"]`, `["e", id, "", "agreement"]`,
+    `["proof", payment_hash]` and `["rating", <judged quality>]` are emitted too, so spec readers
+    see a normal attestation; the receipt, `mech`, `judged`, `u` and `v` tags are additive. It reuses the verb's existing
     arguments (`subject_pubkey`, `l402_endpoint`, `proof` as the payment hash, `rating` as the
     judged quality, `content`, `agreement_id`) plus one new argument, `checks`.
   - `reviews` reads a subject's reviews from the relay, verifies each event's id and signature,

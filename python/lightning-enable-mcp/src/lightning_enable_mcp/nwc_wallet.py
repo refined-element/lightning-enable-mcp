@@ -19,6 +19,7 @@ import websockets
 from bolt11 import decode as decode_bolt11
 from websockets.client import WebSocketClientProtocol
 
+from . import nostr_event
 from .wallet_errors import PreimageUnavailableError, is_valid_preimage
 
 logger = logging.getLogger("lightning-enable-mcp.nwc")
@@ -162,21 +163,14 @@ def _sha256(data: bytes) -> bytes:
     return hashlib.sha256(data).digest()
 
 
+# The Nostr event helpers live in nostr_event.py (shared with the signed-attestation
+# code). These module-level names stay so NWCWallet keeps calling them through this
+# module — tests patch e.g. ``nwc_wallet._get_pubkey`` — with unchanged behaviour.
+
+
 def _compute_event_id(event: dict[str, Any]) -> str:
-    """Compute Nostr event ID."""
-    serialized = json.dumps(
-        [
-            0,
-            event["pubkey"],
-            event["created_at"],
-            event["kind"],
-            event["tags"],
-            event["content"],
-        ],
-        separators=(",", ":"),
-        ensure_ascii=False,
-    )
-    return _sha256(serialized.encode()).hex()
+    """Compute Nostr event ID (see :func:`nostr_event.compute_event_id`)."""
+    return nostr_event.compute_event_id(event)
 
 
 def _verify_nostr_event_signature(event: dict[str, Any]) -> bool:
@@ -189,92 +183,17 @@ def _verify_nostr_event_signature(event: dict[str, Any]) -> bool:
     forge an INFO event attributed to the wallet pubkey and force an encryption
     downgrade. Returns False on any malformed input (defensive).
     """
-    try:
-        id_hex = event.get("id")
-        pubkey_hex = event.get("pubkey")
-        sig_hex = event.get("sig")
-        if (
-            not id_hex
-            or not pubkey_hex
-            or not sig_hex
-            or len(id_hex) != 64
-            or len(pubkey_hex) != 64
-            or len(sig_hex) != 128
-        ):
-            return False
-
-        # Recompute the event id from the canonical serialisation. Tampering
-        # with any field (including the encryption tag we're about to read)
-        # produces a different id.
-        recomputed_id = _compute_event_id(event)
-        if recomputed_id.lower() != id_hex.lower():
-            return False
-
-        from coincurve import PublicKeyXOnly
-
-        pubkey_bytes = bytes.fromhex(pubkey_hex)
-        sig_bytes = bytes.fromhex(sig_hex)
-        id_bytes = bytes.fromhex(id_hex)
-
-        # BIP340 verification takes the 32-byte x-only pubkey directly.
-        pubkey = PublicKeyXOnly(pubkey_bytes)
-        # verify(signature, message) — message is the raw 32-byte event id (not hashed).
-        return bool(pubkey.verify(sig_bytes, id_bytes))
-    except Exception:
-        # Defensive: any parsing/crypto exception → treat as unverified.
-        return False
+    return nostr_event.verify_event(event)
 
 
 def _sign_event(event: dict[str, Any], secret_key: bytes) -> str:
-    """
-    Sign a Nostr event using BIP340 Schnorr (coincurve).
-
-    Args:
-        event: Event dict with id field set
-        secret_key: 32-byte secret key
-
-    Returns:
-        Hex-encoded signature
-    """
-    try:
-        from coincurve import PrivateKey
-
-        privkey = PrivateKey(secret_key)
-        event_id_bytes = bytes.fromhex(event["id"])
-        # BIP340 schnorr over the raw 32-byte event id (coincurve does not hash it).
-        sig = privkey.sign_schnorr(event_id_bytes)
-        return sig.hex()
-    except ImportError:
-        raise ImportError(
-            "coincurve is required for NWC (Nostr Wallet Connect) signing. "
-            "It ships with this package — reinstall via:  pip install --upgrade lightning-enable-mcp "
-            "(or install it directly:  pip install 'coincurve>=20.0.0')."
-        )
+    """Sign a Nostr event (id already set) using BIP340 Schnorr; hex signature."""
+    return nostr_event.sign_event(event, secret_key)
 
 
 def _get_pubkey(secret_key: bytes) -> str:
-    """
-    Get public key from secret key.
-
-    Args:
-        secret_key: 32-byte secret key
-
-    Returns:
-        Hex-encoded public key (x-only, 32 bytes)
-    """
-    try:
-        from coincurve import PrivateKey
-
-        privkey = PrivateKey(secret_key)
-        # 33-byte compressed pubkey (prefix || X); return x-only (drop the prefix).
-        pubkey = privkey.public_key.format(compressed=True)
-        return pubkey[1:33].hex()
-    except ImportError:
-        raise ImportError(
-            "coincurve is required for NWC (Nostr Wallet Connect) wallets. "
-            "It ships with this package — reinstall via:  pip install --upgrade lightning-enable-mcp "
-            "(or install it directly:  pip install 'coincurve>=20.0.0')."
-        )
+    """Hex-encoded x-only (32-byte) public key for a 32-byte secret key."""
+    return nostr_event.xonly_pubkey_hex(secret_key)
 
 
 def _encrypt_content(plaintext: str, secret_key: bytes, recipient_pubkey: str) -> str:

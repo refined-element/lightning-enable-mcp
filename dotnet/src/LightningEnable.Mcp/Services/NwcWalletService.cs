@@ -962,9 +962,7 @@ public class NwcWalletService : IWalletService, IDisposable
             var eventId = ComputeEventId(_myPubkeyHex, createdAt, 23194, tags, content);
 
             // Sign with BIP340 Schnorr signature
-            var eventIdBytes = Convert.FromHexString(eventId);
-            _privateKey.TrySignBIP340(eventIdBytes, null, out var sig);
-            var sigHex = sig != null ? Convert.ToHexString(sig.ToBytes()).ToLowerInvariant() : "";
+            var sigHex = NostrEvents.SignId(_privateKey, eventId);
 
             var nostrEvent = new JsonObject
             {
@@ -1261,16 +1259,11 @@ public class NwcWalletService : IWalletService, IDisposable
     }
 
     /// <summary>
-    /// Computes Nostr event ID as SHA256 of the serialized event array.
-    /// Uses UnsafeRelaxedJsonEscaping to avoid escaping characters like + as \u002B.
+    /// Computes the Nostr event id: SHA-256 of the canonical NIP-01 serialisation. Delegates
+    /// to <see cref="NostrEvents.ComputeId"/>, shared with signed attestations.
     /// </summary>
     private static string ComputeEventId(string pubkey, long createdAt, int kind, JsonArray tags, string content)
-    {
-        var eventArray = new JsonArray { 0, pubkey, createdAt, kind, JsonNode.Parse(tags.ToJsonString(NostrJsonOptions)), content };
-        var serialized = eventArray.ToJsonString(NostrJsonOptions);
-        var hash = System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(serialized));
-        return Convert.ToHexString(hash).ToLowerInvariant();
-    }
+        => NostrEvents.ComputeId(pubkey, createdAt, kind, tags, content);
 
     /// <summary>
     /// Verifies a Nostr event's BIP340 Schnorr signature against its claimed pubkey.
@@ -1314,49 +1307,9 @@ public class NwcWalletService : IWalletService, IDisposable
         return true;
     }
 
-    private static bool VerifyNostrEventSignatureImpl(JsonObject ev)
-    {
-        try
-        {
-            var idHex = ev["id"]?.GetValue<string>();
-            var pubkeyHex = ev["pubkey"]?.GetValue<string>();
-            var sigHex = ev["sig"]?.GetValue<string>();
-            var createdAt = ev["created_at"]?.GetValue<long>();
-            var kind = ev["kind"]?.GetValue<int>();
-            var tags = ev["tags"]?.AsArray();
-            var content = ev["content"]?.GetValue<string>();
-
-            if (idHex == null || pubkeyHex == null || sigHex == null
-                || createdAt == null || kind == null || tags == null || content == null)
-                return false;
-            if (idHex.Length != 64 || pubkeyHex.Length != 64 || sigHex.Length != 128)
-                return false;
-
-            // Recompute the event id from the canonical serialisation. If the event
-            // was tampered with (e.g. relay swapped the encryption tag), the recomputed
-            // id won't match the claimed id.
-            var recomputedId = ComputeEventId(pubkeyHex, createdAt.Value, kind.Value, tags, content);
-            if (!string.Equals(recomputedId, idHex, StringComparison.OrdinalIgnoreCase))
-                return false;
-
-            var pubkeyBytes = Convert.FromHexString(pubkeyHex);
-            var sigBytes = Convert.FromHexString(sigHex);
-            var idBytes = Convert.FromHexString(idHex);
-
-            if (!ECXOnlyPubKey.TryCreate(pubkeyBytes, out var pubkey) || pubkey == null)
-                return false;
-            if (!SecpSchnorrSignature.TryCreate(sigBytes, out var sig) || sig == null)
-                return false;
-
-            // BIP340 Schnorr verify. Returns false on signature mismatch.
-            return pubkey.SigVerifyBIP340(sig, idBytes);
-        }
-        catch
-        {
-            // Defensive: any parsing/crypto exception → treat as unverified.
-            return false;
-        }
-    }
+    // Recomputes the id from the canonical serialisation (so a relay that swapped e.g. the
+    // encryption tag fails) and checks the BIP340 signature. Shared with attestations.
+    private static bool VerifyNostrEventSignatureImpl(JsonObject ev) => NostrEvents.Verify(ev);
 
     /// <summary>
     /// Encrypts content using NIP-04 (ECDH + AES-256-CBC).

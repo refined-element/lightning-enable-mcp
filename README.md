@@ -65,7 +65,7 @@ Run setup_wallet
 
 With no arguments it reports which wallet is configured and where the credential came from — the provider and the source, never the credential itself. If there is no wallet, it hands back the setup steps.
 
-**The shortest path is NWC.** In your wallet app (Alby Hub, CoinOS, or any NIP-47 wallet) create a Nostr Wallet Connect connection, copy the `nostr+walletconnect://` string, and give it to the agent:
+**The shortest path is NWC.** In your wallet app (Alby Hub, CoinOS, Rizful, or any NIP-47 wallet) create a Nostr Wallet Connect connection, copy the `nostr+walletconnect://` string, and give it to the agent:
 
 ```
 Run setup_wallet with this connection string: nostr+walletconnect://...
@@ -76,7 +76,7 @@ Run setup_wallet with this connection string: nostr+walletconnect://...
 **Or set an environment variable** (in the [Claude Desktop config](#claude-desktop-config) below, say). L402 — the whole point of this server — needs a wallet that returns the payment **preimage**:
 
 - **Strike** — `STRIKE_API_KEY`, from https://dashboard.strike.me
-- **NWC** — `NWC_CONNECTION_STRING`, from CoinOS / CLINK / Alby Hub
+- **NWC** — `NWC_CONNECTION_STRING`, from CoinOS / CLINK / Alby Hub / Rizful
 - **LND** (your own node — always returns a preimage) — `LND_REST_HOST` + `LND_MACAROON_HEX`
   - Self-signed node cert? Set `LND_TLS_CERT_PATH` to the node's `tls.cert` (pins TLS to that cert). `LND_SKIP_TLS_VERIFY=true` is the escape hatch, not the recommendation. Optional: `LND_FEE_LIMIT_SATS`, `LND_PAYMENT_TIMEOUT_SECONDS`.
 
@@ -267,6 +267,7 @@ were approved for.
 | **NWC (CoinOS)** | Connection string | Yes |
 | **NWC (CLINK)** | Connection string | Yes |
 | **NWC (Alby Hub)** | Connection string | Yes |
+| **NWC (Rizful)** | Connection string | Yes |
 | **OpenNode** | API key | No (no preimage) |
 
 ## Spending limits
